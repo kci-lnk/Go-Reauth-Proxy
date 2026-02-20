@@ -19,7 +19,7 @@ tasks:
       GOARCH: arm64
     cmds:
       - mkdir -p build
-      - go build -o build/go-reauth-proxy-darwin-arm64 cmd/server/main.go
+      - go build -ldflags="-s -w" -trimpath -o build/go-reauth-proxy-darwin-arm64 cmd/server/main.go
       - echo "Built macOS ARM64 binary at build/go-reauth-proxy-darwin-arm64"
 
   build:linux:
@@ -29,7 +29,8 @@ tasks:
       GOARCH: amd64
     cmds:
       - mkdir -p build
-      - go build -o build/go-reauth-proxy-linux-amd64 cmd/server/main.go
+      - go build -ldflags="-s -w" -trimpath -o build/go-reauth-proxy-linux-amd64 cmd/server/main.go
+      - upx --best --lzma build/go-reauth-proxy-linux-amd64 || echo "UPX compression skipped"
       - echo "Built Linux AMD64 binary at build/go-reauth-proxy-linux-amd64"
 
   run:

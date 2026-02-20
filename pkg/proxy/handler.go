@@ -108,16 +108,18 @@ func (h *Handler) GetRules() []models.Rule {
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	h.mu.RLock()
 	var matchedRule *models.Rule
+	var longestMatch int
 	for _, rule := range h.Rules {
-		if strings.HasPrefix(r.URL.Path, rule.Path) {
+		if strings.HasPrefix(r.URL.Path, rule.Path) && len(rule.Path) > longestMatch {
 			rCopy := rule
 			matchedRule = &rCopy
-			break
+			longestMatch = len(rule.Path)
 		}
 	}
 
 	if matchedRule == nil {
-		canUseCookie := r.URL.Path == "/" || r.Header.Get("Referer") != ""
+		isWebSocket := strings.ToLower(r.Header.Get("Upgrade")) == "websocket"
+		canUseCookie := r.URL.Path == "/" || r.Header.Get("Referer") != "" || r.Header.Get("Origin") != "" || isWebSocket
 		if canUseCookie {
 			if cookie, err := r.Cookie("__proxy_path"); err == nil && cookie.Value != "" {
 				for _, rule := range h.Rules {
@@ -135,11 +137,12 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			if referer != "" {
 				refURL, err := url.Parse(referer)
 				if err == nil {
+					var longestRefMatch int
 					for _, rule := range h.Rules {
-						if strings.HasPrefix(refURL.Path, rule.Path) {
+						if strings.HasPrefix(refURL.Path, rule.Path) && len(rule.Path) > longestRefMatch {
 							rCopy := rule
 							matchedRule = &rCopy
-							break
+							longestRefMatch = len(rule.Path)
 						}
 					}
 				}
@@ -183,6 +186,12 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		response.HTML(w, errors.CodeProxyTargetInvalid, "Invalid target URL configuration")
 		return
+	}
+
+	if targetURL.Scheme == "ws" {
+		targetURL.Scheme = "http"
+	} else if targetURL.Scheme == "wss" {
+		targetURL.Scheme = "https"
 	}
 
 	proxy := &httputil.ReverseProxy{
@@ -281,11 +290,12 @@ func (h *Handler) checkAuth(w http.ResponseWriter, r *http.Request, rule *models
 	if strings.HasPrefix(authURL, "/") {
 		h.mu.RLock()
 		var matchedAuthRule *models.Rule
+		var longestAuthMatch int
 		for _, r := range h.Rules {
-			if strings.HasPrefix(authURL, r.Path) {
+			if strings.HasPrefix(authURL, r.Path) && len(r.Path) > longestAuthMatch {
 				rCopy := r
 				matchedAuthRule = &rCopy
-				break
+				longestAuthMatch = len(r.Path)
 			}
 		}
 		h.mu.RUnlock()

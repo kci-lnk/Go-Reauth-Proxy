@@ -1,0 +1,389 @@
+basePath: /
+definitions:
+  admin.ServerInfo:
+    properties:
+      version:
+        example: 0.0.1
+        type: string
+    type: object
+  iptables.initRequest:
+    properties:
+      chain_name:
+        type: string
+      exempt_ports:
+        items:
+          type: string
+        type: array
+      parent_chain:
+        description: string or []string
+    type: object
+  iptables.ipRequest:
+    properties:
+      ip:
+        example: 192.168.1.100
+        type: string
+    type: object
+  models.Rule:
+    properties:
+      auth_url:
+        description: External Auth Verification URL. If empty, no auth.
+        example: http://auth-service/verify
+        type: string
+      login_url:
+        description: Redirect URL on auth failure.
+        example: http://auth-service/login
+        type: string
+      path:
+        description: Path prefix to match (e.g., "/api")
+        example: /api
+        type: string
+      rewrite_html:
+        description: If true, rewrites absolute paths in HTML response to include
+          Path prefix.
+        example: true
+        type: boolean
+      strip_path:
+        description: If true, strips the Path prefix from the request before forwarding.
+        example: true
+        type: boolean
+      target:
+        description: Target URL (e.g., "http://localhost:9091")
+        example: http://localhost:8080
+        type: string
+      use_root_mode:
+        description: If true, sets cookie and redirects matched path to /.
+        example: false
+        type: boolean
+    type: object
+  response.ErrorResponse:
+    properties:
+      code:
+        example: 400
+        type: integer
+      data: {}
+      message:
+        example: Bad Request
+        type: string
+      success:
+        example: false
+        type: boolean
+      timestamp:
+        example: 1678888888000
+        type: integer
+    type: object
+  response.Response:
+    properties:
+      code:
+        example: 200
+        type: integer
+      data: {}
+      message:
+        example: Success
+        type: string
+      success:
+        example: true
+        type: boolean
+      timestamp:
+        example: 1678888888000
+        type: integer
+    type: object
+host: 127.0.0.1:9091
+info:
+  contact:
+    email: support@swagger.io
+    name: API Support
+    url: http://www.swagger.io/support
+  description: API for managing proxy rules and iptables.
+  license:
+    name: Apache 2.0
+    url: http://www.apache.org/licenses/LICENSE-2.0.html
+  termsOfService: http://swagger.io/terms/
+  title: Go Reauth Proxy Admin API
+  version: "1.0"
+paths:
+  /api/flush:
+    post:
+      description: Remove all proxy rules
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/response.Response'
+      summary: Flush all rules
+      tags:
+      - rules
+  /api/info:
+    get:
+      description: Get version and other server info
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/response.Response'
+            - properties:
+                data:
+                  $ref: '#/definitions/admin.ServerInfo'
+              type: object
+      summary: Get server info
+      tags:
+      - info
+  /api/iptables/allow:
+    post:
+      consumes:
+      - application/json
+      description: Add an ALLOW rule for a specific IP
+      parameters:
+      - description: IP to allow
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/iptables.ipRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/response.Response'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/response.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/response.ErrorResponse'
+      summary: Allow IP
+      tags:
+      - iptables
+  /api/iptables/allow-all:
+    post:
+      description: Remove the catch-all DROP rule
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/response.Response'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/response.ErrorResponse'
+      summary: Allow all traffic
+      tags:
+      - iptables
+  /api/iptables/block:
+    post:
+      consumes:
+      - application/json
+      description: Add a DROP rule for a specific IP
+      parameters:
+      - description: IP to block
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/iptables.ipRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/response.Response'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/response.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/response.ErrorResponse'
+      summary: Block IP
+      tags:
+      - iptables
+  /api/iptables/block-all:
+    post:
+      description: Add a catch-all DROP rule at the end of the chain
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/response.Response'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/response.ErrorResponse'
+      summary: Block all traffic
+      tags:
+      - iptables
+  /api/iptables/clean:
+    post:
+      description: Remove the custom iptables chain
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/response.Response'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/response.ErrorResponse'
+      summary: Clean iptables
+      tags:
+      - iptables
+  /api/iptables/flush:
+    post:
+      description: Flush all rules in the custom chain
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/response.Response'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/response.ErrorResponse'
+      summary: Flush iptables rules
+      tags:
+      - iptables
+  /api/iptables/init:
+    post:
+      consumes:
+      - application/json
+      description: Initialize the custom iptables chain
+      parameters:
+      - description: Initialization options
+        in: body
+        name: request
+        schema:
+          $ref: '#/definitions/iptables.initRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/response.Response'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/response.ErrorResponse'
+      summary: Initialize iptables
+      tags:
+      - iptables
+  /api/iptables/list:
+    get:
+      description: List all rules in the custom chain
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/response.Response'
+            - properties:
+                data:
+                  items:
+                    type: string
+                  type: array
+              type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/response.ErrorResponse'
+      summary: List iptables rules
+      tags:
+      - iptables
+  /api/rules:
+    get:
+      description: Get all configured proxy rules
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/response.Response'
+            - properties:
+                data:
+                  items:
+                    $ref: '#/definitions/models.Rule'
+                  type: array
+              type: object
+      summary: Get all rules
+      tags:
+      - rules
+    post:
+      consumes:
+      - application/json
+      description: Add one or more proxy rules
+      parameters:
+      - description: List of rules to add
+        in: body
+        name: rules
+        required: true
+        schema:
+          items:
+            $ref: '#/definitions/models.Rule'
+          type: array
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/response.Response'
+            - properties:
+                data:
+                  items:
+                    $ref: '#/definitions/models.Rule'
+                  type: array
+              type: object
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/response.ErrorResponse'
+      summary: Add rules
+      tags:
+      - rules
+  /api/rules/delete:
+    post:
+      description: Remove a proxy rule by path
+      parameters:
+      - description: Path of the rule to remove
+        in: query
+        name: path
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/response.Response'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/response.ErrorResponse'
+      summary: Remove a rule
+      tags:
+      - rules
+swagger: "2.0"

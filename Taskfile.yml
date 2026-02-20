@@ -1,0 +1,53 @@
+version: '3'
+
+tasks:
+  default:
+    desc: "Build all binaries"
+    cmds:
+      - task: build
+
+  build:
+    desc: "Build binaries for all platforms (macOS ARM & Linux x86_64)"
+    cmds:
+      - task: build:mac
+      - task: build:linux
+
+  build:mac:
+    desc: "Build the go-reauth-proxy binary for macOS (ARM64)"
+    env:
+      GOOS: darwin
+      GOARCH: arm64
+    cmds:
+      - mkdir -p build
+      - go build -o build/go-reauth-proxy-darwin-arm64 cmd/server/main.go
+      - echo "Built macOS ARM64 binary at build/go-reauth-proxy-darwin-arm64"
+
+  build:linux:
+    desc: "Build the go-reauth-proxy binary for Linux (AMD64)"
+    env:
+      GOOS: linux
+      GOARCH: amd64
+    cmds:
+      - mkdir -p build
+      - go build -o build/go-reauth-proxy-linux-amd64 cmd/server/main.go
+      - echo "Built Linux AMD64 binary at build/go-reauth-proxy-linux-amd64"
+
+  run:
+    desc: "Run the go-reauth-proxy server (usage: task run -- -proxy-port 8090 -admin-port 8091)"
+    cmds:
+      - go run cmd/server/main.go {{.CLI_ARGS}}
+
+  test:
+    desc: "Run all tests"
+    cmds:
+      - go test -v ./...
+
+  clean:
+    desc: "Clean build artifacts"
+    cmds:
+      - rm -rf build/
+  
+  stop:
+    desc: "Stop the go-reauth-proxy server"
+    cmds:
+      - sh -c 'PID=$(lsof -ti:9090); if [ -n "$PID" ]; then kill -9 $PID; echo "Server stopped."; else echo "Server is not running."; fi'

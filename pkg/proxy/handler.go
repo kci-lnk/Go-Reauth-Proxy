@@ -19,21 +19,26 @@ import (
 )
 
 type Handler struct {
-	mu        sync.RWMutex
-	Rules     []models.Rule
-	AuthCache *auth.Cache
-	AdminPort int
+	mu           sync.RWMutex
+	Rules        []models.Rule
+	DefaultRoute string
+	AuthCache    *auth.Cache
+	AdminPort    int
 }
 
 func NewHandler(cache *auth.Cache, adminPort int) *Handler {
 	return &Handler{
-		Rules:     make([]models.Rule, 0),
-		AuthCache: cache,
-		AdminPort: adminPort,
+		Rules:        make([]models.Rule, 0),
+		DefaultRoute: "/__select__",
+		AuthCache:    cache,
+		AdminPort:    adminPort,
 	}
 }
 
 func (h *Handler) AddRule(newRule models.Rule) error {
+	if newRule.Path == "/" || newRule.Path == "" {
+		return fmt.Errorf("cannot add rule for root path '/'")
+	}
 	if err := h.checkSafeTarget(newRule.Target); err != nil {
 		return fmt.Errorf("invalid target: %v", err)
 	}
@@ -105,7 +110,45 @@ func (h *Handler) GetRules() []models.Rule {
 	return rules
 }
 
+func (h *Handler) GetDefaultRoute() string {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	return h.DefaultRoute
+}
+
+func (h *Handler) SetDefaultRoute(route string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if route == "" {
+		h.DefaultRoute = "/__select__"
+	} else {
+		h.DefaultRoute = route
+	}
+}
+
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path == "/__select__" {
+		h.mu.RLock()
+		var authRule *models.Rule
+		for _, rule := range h.Rules {
+			if rule.AuthURL != "" {
+				authRule = &rule
+				break
+			}
+		}
+		rules := h.GetRules()
+		h.mu.RUnlock()
+
+		if authRule != nil {
+			if !h.checkAuth(w, r, authRule) {
+				return
+			}
+		}
+
+		response.SelectPage(w, rules)
+		return
+	}
+
 	h.mu.RLock()
 	var matchedRule *models.Rule
 	var longestMatch int
@@ -161,6 +204,9 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				response.Welcome(w)
 				return
 			}
+
+			http.Redirect(w, r, h.GetDefaultRoute(), http.StatusFound)
+			return
 		}
 
 		response.HTML(w, errors.CodeNotFound, "Not Found")

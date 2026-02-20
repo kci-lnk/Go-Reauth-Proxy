@@ -50,6 +50,8 @@ func (s *Server) Start() error {
 	r.HandleFunc("/api/rules/delete", s.handleRemoveRule).Methods("POST")
 	r.HandleFunc("/api/flush", s.handleFlushRules).Methods("POST")
 	r.HandleFunc("/api/info", s.handleInfo).Methods("GET")
+	r.HandleFunc("/api/config/default-route", s.handleGetDefaultRoute).Methods("GET")
+	r.HandleFunc("/api/config/default-route", s.handleSetDefaultRoute).Methods("POST")
 
 	r.HandleFunc("/docs", func(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/docs/index.html", http.StatusMovedPermanently)
@@ -150,6 +152,10 @@ func (s *Server) handleAddRule(w http.ResponseWriter, r *http.Request) {
 			response.Error(w, errors.CodeInvalidRule, fmt.Sprintf("Path and Target are required for rule: %+v", req))
 			return
 		}
+		if req.Path == "/" {
+			response.Error(w, errors.CodeInvalidRule, "Cannot add rule for root path '/'")
+			return
+		}
 
 		stripPath := true
 		if req.StripPath != nil {
@@ -247,4 +253,44 @@ func (s *Server) handleInfo(w http.ResponseWriter, r *http.Request) {
 	response.Success(w, ServerInfo{
 		Version: version.Version,
 	})
+}
+
+// handleGetDefaultRoute gets the default route
+// @Summary Get default route
+// @Description Get the configured default route when root route is requested
+// @Tags config
+// @Produce  json
+// @Success 200 {object} response.Response{data=string}
+// @Router /api/config/default-route [get]
+func (s *Server) handleGetDefaultRoute(w http.ResponseWriter, r *http.Request) {
+	route := s.ProxyHandler.GetDefaultRoute()
+	response.Success(w, route)
+}
+
+// handleSetDefaultRoute sets the default route
+// @Summary Set default route
+// @Description Set the configured default route when root route is requested
+// @Tags config
+// @Accept  json
+// @Produce  json
+// @Param rule body string true "Route configuration, example: {\"default_route\": \"/test\"}"
+// @Success 200 {object} response.Response
+// @Failure 400 {object} response.ErrorResponse
+// @Router /api/config/default-route [post]
+func (s *Server) handleSetDefaultRoute(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		DefaultRoute string `json:"default_route"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		response.Error(w, errors.CodeInvalidJSON, "Invalid JSON object")
+		return
+	}
+
+	if req.DefaultRoute == "" {
+		response.Error(w, errors.CodeBadRequest, "default_route is required")
+		return
+	}
+
+	s.ProxyHandler.SetDefaultRoute(req.DefaultRoute)
+	response.Success(w, nil)
 }

@@ -52,3 +52,8 @@ tasks:
     desc: "Stop the go-reauth-proxy server"
     cmds:
       - sh -c 'PID=$(lsof -ti:9090); if [ -n "$PID" ]; then kill -9 $PID; echo "Server stopped."; else echo "Server is not running."; fi'
+  docs:
+    desc: "Generate swagger docs"
+    cmds:
+      - sh -c 'cd cmd/server && swag init && echo "Swagger docs generated at cmd/server/docs"'
+    

@@ -32,7 +32,7 @@ type initRequest struct {
 // @Produce  json
 // @Param request body initRequest false "Initialization options"
 // @Success 200 {object} response.Response
-// @Failure 500 {object} response.ErrorResponse
+// @Failure 500 {object} response.Response
 // @Router /api/iptables/init [post]
 func (h *Handler) HandleInit(w http.ResponseWriter, r *http.Request) {
 	bodyBytes, err := io.ReadAll(r.Body)
@@ -76,7 +76,7 @@ func (h *Handler) HandleInit(w http.ResponseWriter, r *http.Request) {
 // @Tags iptables
 // @Produce  json
 // @Success 200 {object} response.Response
-// @Failure 500 {object} response.ErrorResponse
+// @Failure 500 {object} response.Response
 // @Router /api/iptables/clean [post]
 func (h *Handler) HandleClean(w http.ResponseWriter, r *http.Request) {
 	if err := h.Manager.Destroy(); err != nil {
@@ -92,7 +92,7 @@ func (h *Handler) HandleClean(w http.ResponseWriter, r *http.Request) {
 // @Tags iptables
 // @Produce  json
 // @Success 200 {object} response.Response
-// @Failure 500 {object} response.ErrorResponse
+// @Failure 500 {object} response.Response
 // @Router /api/iptables/flush [post]
 func (h *Handler) HandleFlush(w http.ResponseWriter, r *http.Request) {
 	if err := h.Manager.Flush(); err != nil {
@@ -115,8 +115,8 @@ type ipRequest struct {
 // @Produce  json
 // @Param request body ipRequest true "IP to allow"
 // @Success 200 {object} response.Response
-// @Failure 400 {object} response.ErrorResponse
-// @Failure 500 {object} response.ErrorResponse
+// @Failure 400 {object} response.Response
+// @Failure 500 {object} response.Response
 // @Router /api/iptables/allow [post]
 func (h *Handler) HandleAllowIP(w http.ResponseWriter, r *http.Request) {
 	var req ipRequest
@@ -144,8 +144,8 @@ func (h *Handler) HandleAllowIP(w http.ResponseWriter, r *http.Request) {
 // @Produce  json
 // @Param request body ipRequest true "IP to block"
 // @Success 200 {object} response.Response
-// @Failure 400 {object} response.ErrorResponse
-// @Failure 500 {object} response.ErrorResponse
+// @Failure 400 {object} response.Response
+// @Failure 500 {object} response.Response
 // @Router /api/iptables/block [post]
 func (h *Handler) HandleBlockIP(w http.ResponseWriter, r *http.Request) {
 	var req ipRequest
@@ -171,7 +171,7 @@ func (h *Handler) HandleBlockIP(w http.ResponseWriter, r *http.Request) {
 // @Tags iptables
 // @Produce  json
 // @Success 200 {object} response.Response
-// @Failure 500 {object} response.ErrorResponse
+// @Failure 500 {object} response.Response
 // @Router /api/iptables/block-all [post]
 func (h *Handler) HandleBlockAll(w http.ResponseWriter, r *http.Request) {
 	if err := h.Manager.BlockAll(); err != nil {
@@ -187,7 +187,7 @@ func (h *Handler) HandleBlockAll(w http.ResponseWriter, r *http.Request) {
 // @Tags iptables
 // @Produce  json
 // @Success 200 {object} response.Response
-// @Failure 500 {object} response.ErrorResponse
+// @Failure 500 {object} response.Response
 // @Router /api/iptables/allow-all [post]
 func (h *Handler) HandleAllowAll(w http.ResponseWriter, r *http.Request) {
 	if err := h.Manager.AllowAll(); err != nil {
@@ -203,7 +203,7 @@ func (h *Handler) HandleAllowAll(w http.ResponseWriter, r *http.Request) {
 // @Tags iptables
 // @Produce  json
 // @Success 200 {object} response.Response{data=[]string}
-// @Failure 500 {object} response.ErrorResponse
+// @Failure 500 {object} response.Response
 // @Router /api/iptables/list [get]
 func (h *Handler) HandleList(w http.ResponseWriter, r *http.Request) {
 	rules, err := h.Manager.ParseRules()

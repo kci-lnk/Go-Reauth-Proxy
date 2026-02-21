@@ -55,5 +55,14 @@ tasks:
   docs:
     desc: "Generate swagger docs"
     cmds:
-      - sh -c 'cd cmd/server && swag init && echo "Swagger docs generated at cmd/server/docs"'
+      - sh -c 'swag init -d ./cmd/server,./pkg -g main.go -o ./cmd/server/docs && echo "Swagger docs generated at cmd/server/docs"'
+  build:auth-server:
+    desc: "Build the auth-server binary for Linux (AMD64)"
+    env:
+      GOOS: linux
+      GOARCH: amd64
+    cmds:
+      - mkdir -p build
+      - sh -c 'cd example/auth-server && bun build ./index.ts --compile --target bun-linux-x64 --outfile ../../build/auth-server'
+      - echo "Built Linux AMD64 binary at build/auth-server"
     

@@ -20,7 +20,7 @@ import (
 
 	"github.com/soheilhy/cmux"
 
-	_ "go-reauth-proxy/docs" // load Swagger docs
+	_ "go-reauth-proxy/cmd/server/docs" // load Swagger docs
 )
 
 // @title Go Reauth Proxy Admin API

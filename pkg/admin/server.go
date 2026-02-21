@@ -1,7 +1,6 @@
 package admin
 
 import (
-	"bytes"
 	"crypto/tls"
 	"encoding/json"
 	"fmt"
@@ -48,8 +47,7 @@ func (s *Server) Start() error {
 
 	r.HandleFunc("/api/rules", s.handleGetRules).Methods("GET")
 	r.HandleFunc("/api/rules", s.handleAddRule).Methods("POST")
-	r.HandleFunc("/api/rules/delete", s.handleRemoveRule).Methods("POST")
-	r.HandleFunc("/api/flush", s.handleFlushRules).Methods("POST")
+	r.HandleFunc("/api/rules", s.handleFlushRules).Methods("DELETE")
 	r.HandleFunc("/api/info", s.handleInfo).Methods("GET")
 	r.HandleFunc("/api/config/default-route", s.handleGetDefaultRoute).Methods("GET")
 	r.HandleFunc("/api/config/default-route", s.handleSetDefaultRoute).Methods("POST")
@@ -105,15 +103,15 @@ func (s *Server) handleGetRules(w http.ResponseWriter, r *http.Request) {
 	response.Success(w, rules)
 }
 
-// handleAddRule adds one or more proxy rules
-// @Summary Add rules
-// @Description Add one or more proxy rules
+// handleAddRule sets proxy rules (overrides existing)
+// @Summary Set rules
+// @Description Set proxy rules (overrides existing rules)
 // @Tags rules
 // @Accept  json
 // @Produce  json
-// @Param rules body []models.Rule true "List of rules to add"
+// @Param rules body []models.Rule true "List of rules to set"
 // @Success 200 {object} response.Response{data=[]models.Rule}
-// @Failure 400 {object} response.ErrorResponse
+// @Failure 400 {object} response.Response
 // @Router /api/rules [post]
 func (s *Server) handleAddRule(w http.ResponseWriter, r *http.Request) {
 	bodyBytes, err := io.ReadAll(r.Body)
@@ -133,23 +131,12 @@ func (s *Server) handleAddRule(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var reqs []ruleRequest
-
-	trimmedBody := bytes.TrimSpace(bodyBytes)
-	if len(trimmedBody) > 0 && trimmedBody[0] == '[' {
-		// Array
-		if err := json.Unmarshal(bodyBytes, &reqs); err != nil {
-			response.Error(w, errors.CodeInvalidJSON, "Invalid JSON array: "+err.Error())
-			return
-		}
-	} else {
-		// Single Object
-		var singleReq ruleRequest
-		if err := json.Unmarshal(bodyBytes, &singleReq); err != nil {
-			response.Error(w, errors.CodeInvalidJSON, "Invalid JSON object: "+err.Error())
-			return
-		}
-		reqs = append(reqs, singleReq)
+	if err := json.Unmarshal(bodyBytes, &reqs); err != nil {
+		response.Error(w, errors.CodeInvalidJSON, "Invalid JSON array: "+err.Error())
+		return
 	}
+
+	s.ProxyHandler.FlushRules()
 
 	var addedRules []models.Rule
 	for _, req := range reqs {
@@ -179,50 +166,7 @@ func (s *Server) handleAddRule(w http.ResponseWriter, r *http.Request) {
 		addedRules = append(addedRules, rule)
 	}
 
-	if len(addedRules) == 1 {
-		if len(trimmedBody) > 0 && trimmedBody[0] == '{' {
-			response.Success(w, addedRules[0])
-		} else {
-			response.Success(w, addedRules)
-		}
-	} else {
-		response.Success(w, addedRules)
-	}
-}
-
-// handleRemoveRule removes a proxy rule
-// @Summary Remove a rule
-// @Description Remove a proxy rule by path
-// @Tags rules
-// @Produce  json
-// @Param path query string true "Path of the rule to remove"
-// @Success 200 {object} response.Response
-// @Failure 400 {object} response.ErrorResponse
-// @Router /api/rules/delete [post]
-func (s *Server) handleRemoveRule(w http.ResponseWriter, r *http.Request) {
-	// For POST /api/rules/delete, we expect JSON body or query param?
-	// User didn't specify, but query param is easier for migration.
-	// But standard POST usually has body. Let's support both or just body.
-	// Previous implementation used query param. Let's stick to query param for simplicity or check body.
-	// Let's check body first for "path" field, then query param.
-
-	path := r.URL.Query().Get("path")
-	if path == "" {
-		var body struct {
-			Path string `json:"path"`
-		}
-		if err := json.NewDecoder(r.Body).Decode(&body); err == nil {
-			path = body.Path
-		}
-	}
-
-	if path == "" {
-		response.Error(w, errors.CodeBadRequest, "Path is required")
-		return
-	}
-
-	s.ProxyHandler.RemoveRule(path)
-	response.Success(w, nil)
+	response.Success(w, addedRules)
 }
 
 // handleFlushRules clears all proxy rules
@@ -231,7 +175,7 @@ func (s *Server) handleRemoveRule(w http.ResponseWriter, r *http.Request) {
 // @Tags rules
 // @Produce  json
 // @Success 200 {object} response.Response
-// @Router /api/flush [post]
+// @Router /api/rules [delete]
 func (s *Server) handleFlushRules(w http.ResponseWriter, r *http.Request) {
 	s.ProxyHandler.FlushRules()
 	response.Success(w, nil)
@@ -270,7 +214,7 @@ func (s *Server) handleGetDefaultRoute(w http.ResponseWriter, r *http.Request) {
 // @Produce  json
 // @Param rule body string true "Route configuration, example: {\"default_route\": \"/test\"}"
 // @Success 200 {object} response.Response
-// @Failure 400 {object} response.ErrorResponse
+// @Failure 400 {object} response.Response
 // @Router /api/config/default-route [post]
 func (s *Server) handleSetDefaultRoute(w http.ResponseWriter, r *http.Request) {
 	var req struct {
@@ -310,7 +254,7 @@ func (s *Server) handleGetAuth(w http.ResponseWriter, r *http.Request) {
 // @Produce  json
 // @Param config body models.AuthConfig true "Auth configuration"
 // @Success 200 {object} response.Response
-// @Failure 400 {object} response.ErrorResponse
+// @Failure 400 {object} response.Response
 // @Router /api/auth [post]
 func (s *Server) handleSetAuth(w http.ResponseWriter, r *http.Request) {
 	var req models.AuthConfig
@@ -346,7 +290,7 @@ func (s *Server) handleGetSSL(w http.ResponseWriter, r *http.Request) {
 // @Produce  json
 // @Param ssl body models.SSLRequest true "SSL Certificate and Key"
 // @Success 200 {object} response.Response
-// @Failure 400 {object} response.ErrorResponse
+// @Failure 400 {object} response.Response
 // @Router /api/ssl [post]
 func (s *Server) handleSetSSL(w http.ResponseWriter, r *http.Request) {
 	var req models.SSLRequest

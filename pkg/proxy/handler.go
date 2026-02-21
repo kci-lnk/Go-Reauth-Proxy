@@ -9,6 +9,7 @@ import (
 	"go-reauth-proxy/pkg/response"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
@@ -44,7 +45,10 @@ func NewHandler(cache *auth.Cache, adminPort int) *Handler {
 
 func (h *Handler) AddRule(newRule models.Rule) error {
 	if newRule.Path == "/" || newRule.Path == "" {
-		return fmt.Errorf("cannot add rule for root path '/'")
+		return fmt.Errorf("cannot add rule for root path '/' or empty path")
+	}
+	if newRule.Target == "" {
+		return fmt.Errorf("cannot add rule with empty target")
 	}
 	if strings.HasPrefix(newRule.Path, "/__") || strings.HasPrefix(newRule.Path, "__") {
 		return fmt.Errorf("cannot add rule for reserved path starting with '__'")
@@ -77,6 +81,34 @@ func (h *Handler) checkSafeTarget(target string) error {
 	}
 	hostname := u.Hostname()
 	port := u.Port()
+
+	isInternal := false
+	if hostname == "localhost" {
+		isInternal = true
+	} else if ip := net.ParseIP(hostname); ip != nil {
+		if ip.IsPrivate() || ip.IsLoopback() || ip.IsUnspecified() || ip.IsLinkLocalUnicast() {
+			isInternal = true
+		}
+	} else {
+		ips, err := net.LookupIP(hostname)
+		if err != nil {
+			return fmt.Errorf("failed to resolve target hostname: %v", err)
+		}
+
+		if len(ips) > 0 {
+			isInternal = true
+			for _, ip := range ips {
+				if !ip.IsPrivate() && !ip.IsLoopback() && !ip.IsUnspecified() && !ip.IsLinkLocalUnicast() {
+					isInternal = false
+					break
+				}
+			}
+		}
+	}
+
+	if !isInternal {
+		return fmt.Errorf("target must be an internal network address, external address not allowed: %s", hostname)
+	}
 
 	if hostname == "localhost" || hostname == "127.0.0.1" || hostname == "::1" {
 		if port == strconv.Itoa(h.AdminPort) {

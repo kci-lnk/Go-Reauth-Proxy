@@ -149,15 +149,6 @@ func (s *Server) handleAddRule(w http.ResponseWriter, r *http.Request) {
 
 	var addedRules []models.Rule
 	for _, req := range reqs {
-		if req.Path == "" || req.Target == "" {
-			response.Error(w, errors.CodeInvalidRule, fmt.Sprintf("Path and Target are required for rule: %+v", req))
-			return
-		}
-		if req.Path == "/" {
-			response.Error(w, errors.CodeInvalidRule, "Cannot add rule for root path '/'")
-			return
-		}
-
 		stripPath := true
 		if req.StripPath != nil {
 			stripPath = *req.StripPath

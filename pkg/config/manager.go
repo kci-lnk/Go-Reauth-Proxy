@@ -41,6 +41,7 @@ func (m *Manager) Load() (*AppConfig, error) {
 					AuthPort:        7997,
 					AuthURL:         "/auth",
 					LoginURL:        "/login",
+					LogoutURL:       "/logout",
 					AuthCacheExpire: 60,
 				},
 			}, nil
@@ -68,6 +69,9 @@ func (m *Manager) Load() (*AppConfig, error) {
 	}
 	if config.AuthConfig.LoginURL == "" {
 		config.AuthConfig.LoginURL = "/login"
+	}
+	if config.AuthConfig.LogoutURL == "" {
+		config.AuthConfig.LogoutURL = "/logout"
 	}
 	if config.AuthConfig.AuthCacheExpire <= 0 {
 		config.AuthConfig.AuthCacheExpire = 60

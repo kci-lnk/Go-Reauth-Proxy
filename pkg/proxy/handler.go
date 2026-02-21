@@ -265,6 +265,9 @@ func (h *Handler) SetAuthConfig(config models.AuthConfig) error {
 	if config.LoginURL == "" {
 		config.LoginURL = "/login"
 	}
+	if config.LogoutURL == "" {
+		config.LogoutURL = "/logout"
+	}
 	if config.AuthCacheExpire <= 0 {
 		config.AuthCacheExpire = 60
 	}
@@ -309,12 +312,18 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		targetURL, _ := url.Parse(fmt.Sprintf("http://127.0.0.1:%d", authConfig.AuthPort))
 
 		proxyPath := r.URL.Path
-		if r.URL.Path == "/__auth__/login" {
+		switch r.URL.Path {
+		case "/__auth__/login":
 			proxyPath = authConfig.LoginURL
 			if proxyPath == "" {
 				proxyPath = "/login"
 			}
-		} else {
+		case "/__auth__/logout":
+			proxyPath = authConfig.LogoutURL
+			if proxyPath == "" {
+				proxyPath = "/logout"
+			}
+		default:
 			proxyPath = strings.TrimPrefix(r.URL.Path, "/__auth__")
 		}
 
@@ -476,7 +485,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 
-			if matchedRule.RewriteHTML {
+			if matchedRule.RewriteHTML || matchedRule.UseAuth {
 				pr.Out.Header.Del("Accept-Encoding")
 			}
 		},
@@ -494,13 +503,18 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		resp.Header.Add("Set-Cookie", cookie.String())
 
-		if !matchedRule.RewriteHTML || matchedRule.UseRootMode {
+		needsRewrite := matchedRule.RewriteHTML && !matchedRule.UseRootMode
+		needsToolbar := matchedRule.UseAuth
+
+		if !needsRewrite && !needsToolbar {
 			return nil
 		}
 
-		if location := resp.Header.Get("Location"); location != "" {
-			if strings.HasPrefix(location, "/") {
-				resp.Header.Set("Location", matchedRule.Path+location)
+		if needsRewrite {
+			if location := resp.Header.Get("Location"); location != "" {
+				if strings.HasPrefix(location, "/") {
+					resp.Header.Set("Location", matchedRule.Path+location)
+				}
 			}
 		}
 
@@ -515,19 +529,36 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		resp.Body.Close()
 
 		bodyStr := string(bodyBytes)
-		prefix := matchedRule.Path
-		replacements := []struct {
-			old string
-			new string
-		}{
-			{`href="/`, `href="` + prefix + `/`},
-			{`src="/`, `src="` + prefix + `/`},
-			{`action="/`, `action="` + prefix + `/`},
-			{`<base href="/">`, `<base href="` + prefix + `/">`},
+
+		if needsRewrite {
+			prefix := matchedRule.Path
+			replacements := []struct {
+				old string
+				new string
+			}{
+				{`href="/`, `href="` + prefix + `/`},
+				{`src="/`, `src="` + prefix + `/`},
+				{`action="/`, `action="` + prefix + `/`},
+				{`<base href="/">`, `<base href="` + prefix + `/">`},
+			}
+
+			for _, rep := range replacements {
+				bodyStr = strings.ReplaceAll(bodyStr, rep.old, rep.new)
+			}
 		}
 
-		for _, rep := range replacements {
-			bodyStr = strings.ReplaceAll(bodyStr, rep.old, rep.new)
+		if needsToolbar {
+			h.mu.RLock()
+			rules := h.GetRules()
+			h.mu.RUnlock()
+			toolbarHTML := response.GenerateToolbar(rules)
+
+			lowerBody := strings.ToLower(bodyStr)
+			if idx := strings.LastIndex(lowerBody, "</body>"); idx != -1 {
+				bodyStr = bodyStr[:idx] + toolbarHTML + bodyStr[idx:]
+			} else if strings.Contains(lowerBody, "<html") || strings.Contains(lowerBody, "<head") || strings.Contains(lowerBody, "<body") || strings.Contains(lowerBody, "<!doctype") {
+				bodyStr += toolbarHTML
+			}
 		}
 
 		newBody := []byte(bodyStr)

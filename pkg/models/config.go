@@ -13,6 +13,7 @@ type AuthConfig struct {
 	AuthPort        int    `json:"auth_port" example:"3000"`       // Local Auth Service Port
 	AuthURL         string `json:"auth_url" example:"/auth"`       // Relative Verify URL (default /auth)
 	LoginURL        string `json:"login_url" example:"/login"`     // Relative Login URL (default /login)
+	LogoutURL       string `json:"logout_url" example:"/logout"`   // Relative Logout URL (default /logout)
 	AuthCacheExpire int    `json:"auth_cache_expire" example:"60"` // Cache expiration in seconds (default 60)
 }
 

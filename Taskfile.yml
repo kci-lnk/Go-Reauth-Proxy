@@ -38,6 +38,11 @@ tasks:
     cmds:
       - go run cmd/server/main.go {{.CLI_ARGS}}
 
+  run:auth-server:
+    desc: "Run the auth-server server (usage: task run:auth-server -- -port 7997)"
+    cmds:
+      - cd example/auth-server && bun run index.ts --watch {{.CLI_ARGS}}
+
   test:
     desc: "Run all tests"
     cmds:

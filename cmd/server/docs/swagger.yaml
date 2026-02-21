@@ -112,16 +112,12 @@ definitions:
     type: object
 host: 127.0.0.1:9091
 info:
-  contact:
-    email: support@swagger.io
-    name: API Support
-    url: http://www.swagger.io/support
+  contact: {}
   description: API for managing proxy rules and iptables.
   license:
-    name: Apache 2.0
-    url: http://www.apache.org/licenses/LICENSE-2.0.html
-  termsOfService: http://swagger.io/terms/
-  title: Go Reauth Proxy Admin API
+    name: MIT
+    url: https://opensource.org/license/MIT
+  title: Go-Reauth-Proxy
   version: "1.0"
 paths:
   /api/auth:

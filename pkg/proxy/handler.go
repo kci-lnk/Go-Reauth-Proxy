@@ -546,58 +546,68 @@ func (h *Handler) checkAuth(w http.ResponseWriter, r *http.Request, authConfig m
 	authHeader := r.Header.Get("Authorization")
 
 	cacheKey := auth.GenerateKey(cookieHeader, authHeader)
+	canCachePositively := cookieHeader != "" || authHeader != ""
 
-	if valid, found := h.AuthCache.Get(cacheKey); found && valid {
-		return true
-	}
+	if valid, found := h.AuthCache.Get(cacheKey); found {
+		if valid {
+			return true
+		}
+	} else {
 
-	authTransport := http.DefaultTransport.(*http.Transport).Clone()
-	authTransport.MaxIdleConns = 100
-	authTransport.MaxIdleConnsPerHost = 100
-	authTransport.IdleConnTimeout = 90 * time.Second
-	authTransport.ForceAttemptHTTP2 = true
+		authTransport := http.DefaultTransport.(*http.Transport).Clone()
+		authTransport.MaxIdleConns = 100
+		authTransport.MaxIdleConnsPerHost = 100
+		authTransport.IdleConnTimeout = 90 * time.Second
+		authTransport.ForceAttemptHTTP2 = true
 
-	client := &http.Client{
-		Timeout:   5 * time.Second,
-		Transport: authTransport,
-	}
+		client := &http.Client{
+			Timeout:   5 * time.Second,
+			Transport: authTransport,
+		}
 
-	if authConfig.AuthPort <= 0 {
-		log.Printf("Auth check requested but AuthPort is not configured")
-		response.HTML(w, errors.CodeInternal, "Authentication Service Not Configured")
-		return false
-	}
+		if authConfig.AuthPort <= 0 {
+			log.Printf("Auth check requested but AuthPort is not configured")
+			response.HTML(w, errors.CodeInternal, "Authentication Service Not Configured")
+			return false
+		}
 
-	authURLPath := authConfig.AuthURL
-	if authURLPath == "" {
-		authURLPath = "/auth"
-	}
-	if !strings.HasPrefix(authURLPath, "/") {
-		authURLPath = "/" + authURLPath
-	}
+		authURLPath := authConfig.AuthURL
+		if authURLPath == "" {
+			authURLPath = "/auth"
+		}
+		if !strings.HasPrefix(authURLPath, "/") {
+			authURLPath = "/" + authURLPath
+		}
 
-	authURL := fmt.Sprintf("http://127.0.0.1:%d%s", authConfig.AuthPort, authURLPath)
+		authURL := fmt.Sprintf("http://127.0.0.1:%d%s", authConfig.AuthPort, authURLPath)
 
-	authReq, err := http.NewRequest("GET", authURL, nil)
-	if err != nil {
-		log.Printf("Failed to create auth request: %v", err)
-		response.HTML(w, errors.CodeInternal, "Internal Server Error during Auth")
-		return false
-	}
+		authReq, err := http.NewRequest("GET", authURL, nil)
+		if err != nil {
+			log.Printf("Failed to create auth request: %v", err)
+			response.HTML(w, errors.CodeInternal, "Internal Server Error during Auth")
+			return false
+		}
 
-	authReq.Header = r.Header.Clone()
+		authReq.Header = r.Header.Clone()
 
-	resp, err := client.Do(authReq)
-	if err != nil {
-		log.Printf("Auth request failed: %v", err)
-		response.HTML(w, errors.CodeProxyAuthFailed, "Authentication Service Unavailable")
-		return false
-	}
-	defer resp.Body.Close()
+		resp, err := client.Do(authReq)
+		if err != nil {
+			log.Printf("Auth request failed: %v", err)
+			response.HTML(w, errors.CodeProxyAuthFailed, "Authentication Service Unavailable")
+			return false
+		}
+		defer resp.Body.Close()
 
-	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
-		h.AuthCache.Set(cacheKey, true)
-		return true
+		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+			if canCachePositively {
+				h.AuthCache.Set(cacheKey, true)
+			}
+			return true
+		}
+
+		if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+			h.AuthCache.SetWithTTL(cacheKey, false, 5*time.Second)
+		}
 	}
 
 	scheme := "http"

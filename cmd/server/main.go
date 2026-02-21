@@ -22,21 +22,14 @@ import (
 
 	"github.com/soheilhy/cmux"
 
-	_ "go-reauth-proxy/cmd/server/docs" // load Swagger docs
+	_ "go-reauth-proxy/cmd/server/docs"
 )
 
-// @title Go Reauth Proxy Admin API
+// @title Go-Reauth-Proxy
 // @version 1.0
 // @description API for managing proxy rules and iptables.
-// @termsOfService http://swagger.io/terms/
-
-// @contact.name API Support
-// @contact.url http://www.swagger.io/support
-// @contact.email support@swagger.io
-
-// @license.name Apache 2.0
-// @license.url http://www.apache.org/licenses/LICENSE-2.0.html
-
+// @license.name MIT
+// @license.url https://opensource.org/license/MIT
 // @host 127.0.0.1:9091
 // @BasePath /
 

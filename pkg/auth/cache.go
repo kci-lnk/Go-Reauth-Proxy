@@ -53,10 +53,23 @@ func (c *Cache) Set(key string, valid bool) {
 	}
 }
 
+func (c *Cache) SetWithTTL(key string, valid bool, ttl time.Duration) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	c.items[key] = AuthResult{
+		Valid:      valid,
+		ValidUntil: time.Now().Add(ttl),
+	}
+}
+
 func GenerateKey(identifiers ...string) string {
 	h := sha256.New()
-	for _, id := range identifiers {
+	for i, id := range identifiers {
 		h.Write([]byte(id))
+		if i < len(identifiers)-1 {
+			h.Write([]byte("\x00"))
+		}
 	}
 	return hex.EncodeToString(h.Sum(nil))
 }

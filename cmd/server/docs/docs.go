@@ -9,15 +9,10 @@ const docTemplate = `{
     "info": {
         "description": "{{escape .Description}}",
         "title": "{{.Title}}",
-        "termsOfService": "http://swagger.io/terms/",
-        "contact": {
-            "name": "API Support",
-            "url": "http://www.swagger.io/support",
-            "email": "support@swagger.io"
-        },
+        "contact": {},
         "license": {
-            "name": "Apache 2.0",
-            "url": "http://www.apache.org/licenses/LICENSE-2.0.html"
+            "name": "MIT",
+            "url": "https://opensource.org/license/MIT"
         },
         "version": "{{.Version}}"
     },
@@ -827,7 +822,7 @@ var SwaggerInfo = &swag.Spec{
 	Host:             "127.0.0.1:9091",
 	BasePath:         "/",
 	Schemes:          []string{},
-	Title:            "Go Reauth Proxy Admin API",
+	Title:            "Go-Reauth-Proxy",
 	Description:      "API for managing proxy rules and iptables.",
 	InfoInstanceName: "swagger",
 	SwaggerTemplate:  docTemplate,

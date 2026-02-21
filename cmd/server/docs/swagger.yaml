@@ -9,13 +9,23 @@ definitions:
   iptables.initRequest:
     properties:
       chain_name:
+        example: KNOCK_FW
         type: string
       exempt_ports:
+        example:
+        - "9090"
+        - "7999"
         items:
           type: string
         type: array
       parent_chain:
         description: string or []string
+        example:
+        - INPUT
+        - DOCKER-USER
+        items:
+          type: string
+        type: array
     type: object
   iptables.ipRequest:
     properties:

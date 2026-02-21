@@ -19,9 +19,9 @@ func NewHandler(manager *Manager) *Handler {
 }
 
 type initRequest struct {
-	ChainName   string      `json:"chain_name"`
-	ParentChain interface{} `json:"parent_chain"` // string or []string
-	ExemptPorts []string    `json:"exempt_ports"`
+	ChainName   string      `json:"chain_name" example:"KNOCK_FW"`
+	ParentChain interface{} `json:"parent_chain" swaggertype:"array,string" example:"INPUT,DOCKER-USER"` // string or []string
+	ExemptPorts []string    `json:"exempt_ports" example:"9090,7999"`
 }
 
 // HandleInit initializes the iptables chain

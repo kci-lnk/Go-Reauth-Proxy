@@ -684,16 +684,29 @@ const docTemplate = `{
             "type": "object",
             "properties": {
                 "chain_name": {
-                    "type": "string"
+                    "type": "string",
+                    "example": "KNOCK_FW"
                 },
                 "exempt_ports": {
                     "type": "array",
                     "items": {
                         "type": "string"
-                    }
+                    },
+                    "example": [
+                        "9090",
+                        "7999"
+                    ]
                 },
                 "parent_chain": {
-                    "description": "string or []string"
+                    "description": "string or []string",
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    },
+                    "example": [
+                        "INPUT",
+                        "DOCKER-USER"
+                    ]
                 }
             }
         },

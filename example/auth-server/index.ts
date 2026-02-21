@@ -1,6 +1,8 @@
-const PORT = 3000;
+const PORT = 7997;
 
 console.log(`Auth Server running on http://localhost:${PORT}`);
+
+const sessions = new Map<string, { expiresAt: number }>();
 
 Bun.serve({
   port: PORT,
@@ -8,9 +10,15 @@ Bun.serve({
     const url = new URL(req.url);
 
     if (url.pathname === "/auth") {
+      console.log("Auth request received", req.headers.get("cookie"))
       const cookie = req.headers.get("cookie") || "";
-      if (cookie.includes("auth_token=valid_token")) {
-        return new Response("Authorized", { status: 200 });
+      const match = cookie.match(/session_id=([^;]+)/);
+      if (match && match[1]) {
+        const sessionId = match[1];
+        const session = sessions.get(sessionId);
+        if (session && session.expiresAt > Date.now()) {
+          return new Response("Authorized", { status: 200 });
+        }
       }
       return new Response("Unauthorized", { status: 401 });
     }
@@ -32,7 +40,7 @@ Bun.serve({
         <body>
           <div class="card">
             <h2>Login to Service</h2>
-            <form method="POST" action="/login">
+            <form method="POST" action="">
               <input type="text" name="username" placeholder="Username (admin)" required />
               <input type="password" name="password" placeholder="Password (admin)" required />
               <button type="submit">Login</button>
@@ -49,28 +57,37 @@ Bun.serve({
       const password = formData.get("password");
 
       if (username === "admin" && password === "admin") {
+        const sessionId = crypto.randomUUID();
+        sessions.set(sessionId, { expiresAt: Date.now() + 3600 * 1000 });
+        const redirectUri = url.searchParams.get("redirect_uri") || "/";
+
         return new Response("Redirecting...", {
           status: 302,
           headers: {
             // Set cookie for 1 hour
-            "Set-Cookie": "auth_token=valid_token; Path=/; HttpOnly; Max-Age=3600",
-            "Location": "/"
+            "Set-Cookie": "session_id=" + sessionId + "; Path=/; HttpOnly; Max-Age=3600",
+            "Location": redirectUri
           }
         });
       }
 
-      return new Response("Invalid credentials. <a href='/login'>Try again</a>", {
+      return new Response("Invalid credentials. <a href=''>Try again</a>", {
         status: 401,
         headers: { "Content-Type": "text/html" }
       });
     }
 
     if (url.pathname === "/logout") {
+      const cookie = req.headers.get("cookie") || "";
+      const match = cookie.match(/session_id=([^;]+)/);
+      if (match && match[1]) {
+        sessions.delete(match[1]);
+      }
       return new Response("Logged out", {
         status: 302,
         headers: {
-          "Set-Cookie": "auth_token=; Path=/; Max-Age=0",
-          "Location": "/login"
+          "Set-Cookie": "session_id=; Path=/; Max-Age=0",
+          "Location": "/__auth__/login"
         }
       });
     }

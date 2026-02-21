@@ -2,6 +2,7 @@ package response
 
 import (
 	"encoding/json"
+	"go-reauth-proxy/pkg/errors"
 	"go-reauth-proxy/pkg/models"
 	"go-reauth-proxy/pkg/version"
 	"html/template"
@@ -50,7 +51,26 @@ func Error(w http.ResponseWriter, code int, message string) {
 
 func HTML(w http.ResponseWriter, code int, message string) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.WriteHeader(code)
+
+	httpStatus := http.StatusInternalServerError
+	if code >= 200 && code < 600 {
+		httpStatus = code
+	} else {
+		switch code {
+		case errors.CodeProxyAuthFailed, errors.CodeProxyTargetInvalid:
+			httpStatus = http.StatusBadGateway
+		case errors.CodeProxyTimeout:
+			httpStatus = http.StatusGatewayTimeout
+		case errors.CodeUnauthorized:
+			httpStatus = http.StatusUnauthorized
+		case errors.CodeNotFound:
+			httpStatus = http.StatusNotFound
+		case errors.CodeBadRequest:
+			httpStatus = http.StatusBadRequest
+		}
+	}
+
+	w.WriteHeader(httpStatus)
 
 	data := struct {
 		Title    string

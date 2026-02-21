@@ -22,6 +22,7 @@ type Handler struct {
 	mu           sync.RWMutex
 	Rules        []models.Rule
 	DefaultRoute string
+	AuthConfig   models.AuthConfig
 	AuthCache    *auth.Cache
 	AdminPort    int
 }
@@ -30,8 +31,14 @@ func NewHandler(cache *auth.Cache, adminPort int) *Handler {
 	return &Handler{
 		Rules:        make([]models.Rule, 0),
 		DefaultRoute: "/__select__",
-		AuthCache:    cache,
-		AdminPort:    adminPort,
+		AuthConfig: models.AuthConfig{
+			AuthPort:        7997,
+			AuthURL:         "/auth",
+			LoginURL:        "/login",
+			AuthCacheExpire: 60,
+		},
+		AuthCache: cache,
+		AdminPort: adminPort,
 	}
 }
 
@@ -39,13 +46,11 @@ func (h *Handler) AddRule(newRule models.Rule) error {
 	if newRule.Path == "/" || newRule.Path == "" {
 		return fmt.Errorf("cannot add rule for root path '/'")
 	}
+	if strings.HasPrefix(newRule.Path, "/__") || strings.HasPrefix(newRule.Path, "__") {
+		return fmt.Errorf("cannot add rule for reserved path starting with '__'")
+	}
 	if err := h.checkSafeTarget(newRule.Target); err != nil {
 		return fmt.Errorf("invalid target: %v", err)
-	}
-	if newRule.AuthURL != "" && !strings.HasPrefix(newRule.AuthURL, "/") {
-		if err := h.checkSafeTarget(newRule.AuthURL); err != nil {
-			return fmt.Errorf("invalid auth_url: %v", err)
-		}
 	}
 
 	h.mu.Lock()
@@ -126,26 +131,90 @@ func (h *Handler) SetDefaultRoute(route string) {
 	}
 }
 
+func (h *Handler) GetAuthConfig() models.AuthConfig {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	return h.AuthConfig
+}
+
+func (h *Handler) SetAuthConfig(config models.AuthConfig) error {
+	if config.AuthPort <= 0 {
+		config.AuthPort = 7997
+	}
+	if config.AuthURL == "" {
+		config.AuthURL = "/auth"
+	}
+	if config.LoginURL == "" {
+		config.LoginURL = "/login"
+	}
+	if config.AuthCacheExpire <= 0 {
+		config.AuthCacheExpire = 60
+	}
+
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.AuthConfig = config
+	if h.AuthCache != nil {
+		h.AuthCache.SetTTL(time.Duration(config.AuthCacheExpire) * time.Second)
+	}
+	return nil
+}
+
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Path == "/__select__" {
 		h.mu.RLock()
-		var authRule *models.Rule
-		for _, rule := range h.Rules {
-			if rule.AuthURL != "" {
-				authRule = &rule
-				break
-			}
-		}
+		authConfig := h.AuthConfig
 		rules := h.GetRules()
 		h.mu.RUnlock()
 
-		if authRule != nil {
-			if !h.checkAuth(w, r, authRule) {
+		if authConfig.AuthURL != "" {
+			if !h.checkAuth(w, r, authConfig) {
 				return
 			}
 		}
 
 		response.SelectPage(w, rules)
+		return
+	}
+
+	if strings.HasPrefix(r.URL.Path, "/__auth__/") {
+		h.mu.RLock()
+		authConfig := h.AuthConfig
+		h.mu.RUnlock()
+
+		if authConfig.AuthPort <= 0 {
+			response.HTML(w, errors.CodeInternal, "Authentication service is not configured")
+			return
+		}
+
+		targetURL, _ := url.Parse(fmt.Sprintf("http://127.0.0.1:%d", authConfig.AuthPort))
+
+		proxyPath := r.URL.Path
+		if r.URL.Path == "/__auth__/login" {
+			proxyPath = authConfig.LoginURL
+			if proxyPath == "" {
+				proxyPath = "/login"
+			}
+		} else {
+			proxyPath = strings.TrimPrefix(r.URL.Path, "/__auth__")
+		}
+
+		if !strings.HasPrefix(proxyPath, "/") {
+			proxyPath = "/" + proxyPath
+		}
+
+		targetURL.Path = singleJoiningSlash(targetURL.Path, proxyPath)
+
+		proxy := httputil.NewSingleHostReverseProxy(targetURL)
+
+		originalDirector := proxy.Director
+		proxy.Director = func(req *http.Request) {
+			originalDirector(req)
+			req.Host = targetURL.Host
+			req.URL.Path = targetURL.Path
+		}
+
+		proxy.ServeHTTP(w, r)
 		return
 	}
 
@@ -222,9 +291,14 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/", http.StatusFound)
 		return
 	}
-	if matchedRule.AuthURL != "" {
-		if !h.checkAuth(w, r, matchedRule) {
-			return
+	if matchedRule.UseAuth {
+		h.mu.RLock()
+		authConfig := h.AuthConfig
+		h.mu.RUnlock()
+		if authConfig.AuthURL != "" {
+			if !h.checkAuth(w, r, authConfig) {
+				return
+			}
 		}
 	}
 
@@ -234,9 +308,10 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if targetURL.Scheme == "ws" {
+	switch targetURL.Scheme {
+	case "ws":
 		targetURL.Scheme = "http"
-	} else if targetURL.Scheme == "wss" {
+	case "wss":
 		targetURL.Scheme = "https"
 	}
 
@@ -321,7 +396,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	proxy.ServeHTTP(w, r)
 }
 
-func (h *Handler) checkAuth(w http.ResponseWriter, r *http.Request, rule *models.Rule) bool {
+func (h *Handler) checkAuth(w http.ResponseWriter, r *http.Request, authConfig models.AuthConfig) bool {
 	cookieHeader := r.Header.Get("Cookie")
 	authHeader := r.Header.Get("Authorization")
 
@@ -332,40 +407,21 @@ func (h *Handler) checkAuth(w http.ResponseWriter, r *http.Request, rule *models
 	}
 	client := &http.Client{Timeout: 5 * time.Second}
 
-	authURL := rule.AuthURL
-	if strings.HasPrefix(authURL, "/") {
-		h.mu.RLock()
-		var matchedAuthRule *models.Rule
-		var longestAuthMatch int
-		for _, r := range h.Rules {
-			if strings.HasPrefix(authURL, r.Path) && len(r.Path) > longestAuthMatch {
-				rCopy := r
-				matchedAuthRule = &rCopy
-				longestAuthMatch = len(r.Path)
-			}
-		}
-		h.mu.RUnlock()
-
-		if matchedAuthRule != nil {
-			target, err := url.Parse(matchedAuthRule.Target)
-			if err == nil {
-
-				finalPath := authURL
-				if matchedAuthRule.StripPath {
-					finalPath = strings.TrimPrefix(authURL, matchedAuthRule.Path)
-					if !strings.HasPrefix(finalPath, "/") {
-						finalPath = "/" + finalPath
-					}
-				}
-
-				u := *target
-				u.Path = singleJoiningSlash(u.Path, finalPath)
-				authURL = u.String()
-			}
-		} else {
-			log.Printf("Relative AuthURL %s has no matching rule", authURL)
-		}
+	if authConfig.AuthPort <= 0 {
+		log.Printf("Auth check requested but AuthPort is not configured")
+		response.HTML(w, errors.CodeInternal, "Authentication Service Not Configured")
+		return false
 	}
+
+	authURLPath := authConfig.AuthURL
+	if authURLPath == "" {
+		authURLPath = "/auth"
+	}
+	if !strings.HasPrefix(authURLPath, "/") {
+		authURLPath = "/" + authURLPath
+	}
+
+	authURL := fmt.Sprintf("http://127.0.0.1:%d%s", authConfig.AuthPort, authURLPath)
 
 	authReq, err := http.NewRequest("GET", authURL, nil)
 	if err != nil {
@@ -389,40 +445,30 @@ func (h *Handler) checkAuth(w http.ResponseWriter, r *http.Request, rule *models
 		return true
 	}
 
-	if rule.LoginURL != "" {
-		scheme := "http"
-		if r.TLS != nil || r.Header.Get("X-Forwarded-Proto") == "https" {
-			scheme = "https"
-		}
-
-		host := r.Host
-		if forwardedHost := r.Header.Get("X-Forwarded-Host"); forwardedHost != "" {
-			host = forwardedHost
-		}
-
-		originalURL := url.URL{
-			Scheme:   scheme,
-			Host:     host,
-			Path:     r.URL.Path,
-			RawQuery: r.URL.RawQuery,
-		}
-
-		loginURL, err := url.Parse(rule.LoginURL)
-		if err != nil {
-			log.Printf("Failed to parse LoginURL: %v", err)
-			response.HTML(w, errors.CodeInternal, "Internal Server Error")
-			return false
-		}
-
-		q := loginURL.Query()
-		q.Set("redirect_uri", originalURL.String())
-		loginURL.RawQuery = q.Encode()
-
-		http.Redirect(w, r, loginURL.String(), http.StatusFound)
-		return false
+	scheme := "http"
+	if r.TLS != nil || r.Header.Get("X-Forwarded-Proto") == "https" {
+		scheme = "https"
 	}
 
-	response.HTML(w, errors.CodeUnauthorized, "Unauthorized")
+	host := r.Host
+	if forwardedHost := r.Header.Get("X-Forwarded-Host"); forwardedHost != "" {
+		host = forwardedHost
+	}
+
+	originalURL := url.URL{
+		Scheme:   scheme,
+		Host:     host,
+		Path:     r.URL.Path,
+		RawQuery: r.URL.RawQuery,
+	}
+
+	loginURL, _ := url.Parse("/__auth__/login")
+
+	q := loginURL.Query()
+	q.Set("redirect_uri", originalURL.String())
+	loginURL.RawQuery = q.Encode()
+
+	http.Redirect(w, r, loginURL.String(), http.StatusFound)
 	return false
 }
 

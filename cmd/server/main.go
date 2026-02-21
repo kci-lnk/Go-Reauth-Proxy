@@ -35,12 +35,17 @@ import (
 func main() {
 	adminPort := flag.Int("admin-port", 9091, "Port for the Admin API (binds to 127.0.0.1)")
 	proxyPort := flag.Int("proxy-port", 9090, "Port for the Reverse Proxy (binds to 0.0.0.0)")
+	authCacheExpire := flag.Int("auth-cache-expire", 60, "Cache expiration time in seconds for authentication")
 	flag.Parse()
 
 	log.Printf("Starting Go Reauth Proxy Service...")
 
-	authCache := auth.NewCache(5 * time.Minute)
+	authCache := auth.NewCache(time.Duration(*authCacheExpire) * time.Second)
 	proxyHandler := proxy.NewHandler(authCache, *adminPort)
+
+	currentConfig := proxyHandler.GetAuthConfig()
+	currentConfig.AuthCacheExpire = *authCacheExpire
+	proxyHandler.SetAuthConfig(currentConfig)
 
 	adminServer := admin.NewServer(proxyHandler, *adminPort)
 	go func() {

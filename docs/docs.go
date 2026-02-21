@@ -24,6 +24,76 @@ const docTemplate = `{
     "host": "{{.Host}}",
     "basePath": "{{.BasePath}}",
     "paths": {
+        "/api/auth": {
+            "get": {
+                "description": "Get the configured global authentication URLs and port",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "config"
+                ],
+                "summary": "Get global auth config",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "allOf": [
+                                {
+                                    "$ref": "#/definitions/go-reauth-proxy_pkg_response.Response"
+                                },
+                                {
+                                    "type": "object",
+                                    "properties": {
+                                        "data": {
+                                            "$ref": "#/definitions/go-reauth-proxy_pkg_models.AuthConfig"
+                                        }
+                                    }
+                                }
+                            ]
+                        }
+                    }
+                }
+            },
+            "post": {
+                "description": "Set the global authentication configurations (port, auth_url, login_url)",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "config"
+                ],
+                "summary": "Set global auth config",
+                "parameters": [
+                    {
+                        "description": "Auth configuration",
+                        "name": "config",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/go-reauth-proxy_pkg_models.AuthConfig"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/go-reauth-proxy_pkg_response.Response"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/go-reauth-proxy_pkg_response.ErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
         "/api/config/default-route": {
             "get": {
                 "description": "Get the configured default route when root route is requested",
@@ -40,7 +110,7 @@ const docTemplate = `{
                         "schema": {
                             "allOf": [
                                 {
-                                    "$ref": "#/definitions/response.Response"
+                                    "$ref": "#/definitions/go-reauth-proxy_pkg_response.Response"
                                 },
                                 {
                                     "type": "object",
@@ -82,13 +152,13 @@ const docTemplate = `{
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "$ref": "#/definitions/response.Response"
+                            "$ref": "#/definitions/go-reauth-proxy_pkg_response.Response"
                         }
                     },
                     "400": {
                         "description": "Bad Request",
                         "schema": {
-                            "$ref": "#/definitions/response.ErrorResponse"
+                            "$ref": "#/definitions/go-reauth-proxy_pkg_response.ErrorResponse"
                         }
                     }
                 }
@@ -108,7 +178,7 @@ const docTemplate = `{
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "$ref": "#/definitions/response.Response"
+                            "$ref": "#/definitions/go-reauth-proxy_pkg_response.Response"
                         }
                     }
                 }
@@ -130,13 +200,13 @@ const docTemplate = `{
                         "schema": {
                             "allOf": [
                                 {
-                                    "$ref": "#/definitions/response.Response"
+                                    "$ref": "#/definitions/go-reauth-proxy_pkg_response.Response"
                                 },
                                 {
                                     "type": "object",
                                     "properties": {
                                         "data": {
-                                            "$ref": "#/definitions/admin.ServerInfo"
+                                            "$ref": "#/definitions/pkg_admin.ServerInfo"
                                         }
                                     }
                                 }
@@ -166,7 +236,7 @@ const docTemplate = `{
                         "in": "body",
                         "required": true,
                         "schema": {
-                            "$ref": "#/definitions/iptables.ipRequest"
+                            "$ref": "#/definitions/pkg_iptables.ipRequest"
                         }
                     }
                 ],
@@ -174,19 +244,19 @@ const docTemplate = `{
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "$ref": "#/definitions/response.Response"
+                            "$ref": "#/definitions/go-reauth-proxy_pkg_response.Response"
                         }
                     },
                     "400": {
                         "description": "Bad Request",
                         "schema": {
-                            "$ref": "#/definitions/response.ErrorResponse"
+                            "$ref": "#/definitions/go-reauth-proxy_pkg_response.ErrorResponse"
                         }
                     },
                     "500": {
                         "description": "Internal Server Error",
                         "schema": {
-                            "$ref": "#/definitions/response.ErrorResponse"
+                            "$ref": "#/definitions/go-reauth-proxy_pkg_response.ErrorResponse"
                         }
                     }
                 }
@@ -206,13 +276,13 @@ const docTemplate = `{
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "$ref": "#/definitions/response.Response"
+                            "$ref": "#/definitions/go-reauth-proxy_pkg_response.Response"
                         }
                     },
                     "500": {
                         "description": "Internal Server Error",
                         "schema": {
-                            "$ref": "#/definitions/response.ErrorResponse"
+                            "$ref": "#/definitions/go-reauth-proxy_pkg_response.ErrorResponse"
                         }
                     }
                 }
@@ -238,7 +308,7 @@ const docTemplate = `{
                         "in": "body",
                         "required": true,
                         "schema": {
-                            "$ref": "#/definitions/iptables.ipRequest"
+                            "$ref": "#/definitions/pkg_iptables.ipRequest"
                         }
                     }
                 ],
@@ -246,19 +316,19 @@ const docTemplate = `{
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "$ref": "#/definitions/response.Response"
+                            "$ref": "#/definitions/go-reauth-proxy_pkg_response.Response"
                         }
                     },
                     "400": {
                         "description": "Bad Request",
                         "schema": {
-                            "$ref": "#/definitions/response.ErrorResponse"
+                            "$ref": "#/definitions/go-reauth-proxy_pkg_response.ErrorResponse"
                         }
                     },
                     "500": {
                         "description": "Internal Server Error",
                         "schema": {
-                            "$ref": "#/definitions/response.ErrorResponse"
+                            "$ref": "#/definitions/go-reauth-proxy_pkg_response.ErrorResponse"
                         }
                     }
                 }
@@ -278,13 +348,13 @@ const docTemplate = `{
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "$ref": "#/definitions/response.Response"
+                            "$ref": "#/definitions/go-reauth-proxy_pkg_response.Response"
                         }
                     },
                     "500": {
                         "description": "Internal Server Error",
                         "schema": {
-                            "$ref": "#/definitions/response.ErrorResponse"
+                            "$ref": "#/definitions/go-reauth-proxy_pkg_response.ErrorResponse"
                         }
                     }
                 }
@@ -304,13 +374,13 @@ const docTemplate = `{
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "$ref": "#/definitions/response.Response"
+                            "$ref": "#/definitions/go-reauth-proxy_pkg_response.Response"
                         }
                     },
                     "500": {
                         "description": "Internal Server Error",
                         "schema": {
-                            "$ref": "#/definitions/response.ErrorResponse"
+                            "$ref": "#/definitions/go-reauth-proxy_pkg_response.ErrorResponse"
                         }
                     }
                 }
@@ -330,13 +400,13 @@ const docTemplate = `{
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "$ref": "#/definitions/response.Response"
+                            "$ref": "#/definitions/go-reauth-proxy_pkg_response.Response"
                         }
                     },
                     "500": {
                         "description": "Internal Server Error",
                         "schema": {
-                            "$ref": "#/definitions/response.ErrorResponse"
+                            "$ref": "#/definitions/go-reauth-proxy_pkg_response.ErrorResponse"
                         }
                     }
                 }
@@ -361,7 +431,7 @@ const docTemplate = `{
                         "name": "request",
                         "in": "body",
                         "schema": {
-                            "$ref": "#/definitions/iptables.initRequest"
+                            "$ref": "#/definitions/pkg_iptables.initRequest"
                         }
                     }
                 ],
@@ -369,13 +439,13 @@ const docTemplate = `{
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "$ref": "#/definitions/response.Response"
+                            "$ref": "#/definitions/go-reauth-proxy_pkg_response.Response"
                         }
                     },
                     "500": {
                         "description": "Internal Server Error",
                         "schema": {
-                            "$ref": "#/definitions/response.ErrorResponse"
+                            "$ref": "#/definitions/go-reauth-proxy_pkg_response.ErrorResponse"
                         }
                     }
                 }
@@ -397,7 +467,7 @@ const docTemplate = `{
                         "schema": {
                             "allOf": [
                                 {
-                                    "$ref": "#/definitions/response.Response"
+                                    "$ref": "#/definitions/go-reauth-proxy_pkg_response.Response"
                                 },
                                 {
                                     "type": "object",
@@ -416,7 +486,7 @@ const docTemplate = `{
                     "500": {
                         "description": "Internal Server Error",
                         "schema": {
-                            "$ref": "#/definitions/response.ErrorResponse"
+                            "$ref": "#/definitions/go-reauth-proxy_pkg_response.ErrorResponse"
                         }
                     }
                 }
@@ -438,7 +508,7 @@ const docTemplate = `{
                         "schema": {
                             "allOf": [
                                 {
-                                    "$ref": "#/definitions/response.Response"
+                                    "$ref": "#/definitions/go-reauth-proxy_pkg_response.Response"
                                 },
                                 {
                                     "type": "object",
@@ -446,7 +516,7 @@ const docTemplate = `{
                                         "data": {
                                             "type": "array",
                                             "items": {
-                                                "$ref": "#/definitions/models.Rule"
+                                                "$ref": "#/definitions/go-reauth-proxy_pkg_models.Rule"
                                             }
                                         }
                                     }
@@ -477,7 +547,7 @@ const docTemplate = `{
                         "schema": {
                             "type": "array",
                             "items": {
-                                "$ref": "#/definitions/models.Rule"
+                                "$ref": "#/definitions/go-reauth-proxy_pkg_models.Rule"
                             }
                         }
                     }
@@ -488,7 +558,7 @@ const docTemplate = `{
                         "schema": {
                             "allOf": [
                                 {
-                                    "$ref": "#/definitions/response.Response"
+                                    "$ref": "#/definitions/go-reauth-proxy_pkg_response.Response"
                                 },
                                 {
                                     "type": "object",
@@ -496,7 +566,7 @@ const docTemplate = `{
                                         "data": {
                                             "type": "array",
                                             "items": {
-                                                "$ref": "#/definitions/models.Rule"
+                                                "$ref": "#/definitions/go-reauth-proxy_pkg_models.Rule"
                                             }
                                         }
                                     }
@@ -507,7 +577,7 @@ const docTemplate = `{
                     "400": {
                         "description": "Bad Request",
                         "schema": {
-                            "$ref": "#/definitions/response.ErrorResponse"
+                            "$ref": "#/definitions/go-reauth-proxy_pkg_response.ErrorResponse"
                         }
                     }
                 }
@@ -536,13 +606,13 @@ const docTemplate = `{
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "$ref": "#/definitions/response.Response"
+                            "$ref": "#/definitions/go-reauth-proxy_pkg_response.Response"
                         }
                     },
                     "400": {
                         "description": "Bad Request",
                         "schema": {
-                            "$ref": "#/definitions/response.ErrorResponse"
+                            "$ref": "#/definitions/go-reauth-proxy_pkg_response.ErrorResponse"
                         }
                     }
                 }
@@ -550,54 +620,29 @@ const docTemplate = `{
         }
     },
     "definitions": {
-        "admin.ServerInfo": {
+        "go-reauth-proxy_pkg_models.AuthConfig": {
             "type": "object",
             "properties": {
-                "version": {
-                    "type": "string",
-                    "example": "0.0.1"
-                }
-            }
-        },
-        "iptables.initRequest": {
-            "type": "object",
-            "properties": {
-                "chain_name": {
-                    "type": "string"
+                "auth_port": {
+                    "description": "Local Auth Service Port",
+                    "type": "integer",
+                    "example": 3000
                 },
-                "exempt_ports": {
-                    "type": "array",
-                    "items": {
-                        "type": "string"
-                    }
-                },
-                "parent_chain": {
-                    "description": "string or []string"
-                }
-            }
-        },
-        "iptables.ipRequest": {
-            "type": "object",
-            "properties": {
-                "ip": {
-                    "type": "string",
-                    "example": "192.168.1.100"
-                }
-            }
-        },
-        "models.Rule": {
-            "type": "object",
-            "properties": {
                 "auth_url": {
-                    "description": "External Auth Verification URL. If empty, no auth.",
+                    "description": "Relative Verify URL (default /auth)",
                     "type": "string",
-                    "example": "http://auth-service/verify"
+                    "example": "/auth"
                 },
                 "login_url": {
-                    "description": "Redirect URL on auth failure.",
+                    "description": "Relative Login URL (default /login)",
                     "type": "string",
-                    "example": "http://auth-service/login"
-                },
+                    "example": "/login"
+                }
+            }
+        },
+        "go-reauth-proxy_pkg_models.Rule": {
+            "type": "object",
+            "properties": {
                 "path": {
                     "description": "Path prefix to match (e.g., \"/api\")",
                     "type": "string",
@@ -622,10 +667,15 @@ const docTemplate = `{
                     "description": "If true, sets cookie and redirects matched path to /.",
                     "type": "boolean",
                     "example": false
+                },
+                "use_auth": {
+                    "description": "If true, invokes global authentication check before proxying.",
+                    "type": "boolean",
+                    "example": false
                 }
             }
         },
-        "response.ErrorResponse": {
+        "go-reauth-proxy_pkg_response.ErrorResponse": {
             "type": "object",
             "properties": {
                 "code": {
@@ -647,7 +697,7 @@ const docTemplate = `{
                 }
             }
         },
-        "response.Response": {
+        "go-reauth-proxy_pkg_response.Response": {
             "type": "object",
             "properties": {
                 "code": {
@@ -666,6 +716,41 @@ const docTemplate = `{
                 "timestamp": {
                     "type": "integer",
                     "example": 1678888888000
+                }
+            }
+        },
+        "pkg_admin.ServerInfo": {
+            "type": "object",
+            "properties": {
+                "version": {
+                    "type": "string",
+                    "example": "0.0.1"
+                }
+            }
+        },
+        "pkg_iptables.initRequest": {
+            "type": "object",
+            "properties": {
+                "chain_name": {
+                    "type": "string"
+                },
+                "exempt_ports": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "parent_chain": {
+                    "description": "string or []string"
+                }
+            }
+        },
+        "pkg_iptables.ipRequest": {
+            "type": "object",
+            "properties": {
+                "ip": {
+                    "type": "string",
+                    "example": "192.168.1.100"
                 }
             }
         }

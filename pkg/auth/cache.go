@@ -61,6 +61,12 @@ func GenerateKey(identifiers ...string) string {
 	return hex.EncodeToString(h.Sum(nil))
 }
 
+func (c *Cache) SetTTL(ttl time.Duration) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.ttl = ttl
+}
+
 func (c *Cache) cleanupLoop() {
 	ticker := time.NewTicker(10 * time.Minute)
 	for range ticker.C {

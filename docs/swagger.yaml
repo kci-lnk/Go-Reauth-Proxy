@@ -1,38 +1,22 @@
 basePath: /
 definitions:
-  admin.ServerInfo:
+  go-reauth-proxy_pkg_models.AuthConfig:
     properties:
-      version:
-        example: 0.0.1
-        type: string
-    type: object
-  iptables.initRequest:
-    properties:
-      chain_name:
-        type: string
-      exempt_ports:
-        items:
-          type: string
-        type: array
-      parent_chain:
-        description: string or []string
-    type: object
-  iptables.ipRequest:
-    properties:
-      ip:
-        example: 192.168.1.100
-        type: string
-    type: object
-  models.Rule:
-    properties:
+      auth_port:
+        description: Local Auth Service Port
+        example: 3000
+        type: integer
       auth_url:
-        description: External Auth Verification URL. If empty, no auth.
-        example: http://auth-service/verify
+        description: Relative Verify URL (default /auth)
+        example: /auth
         type: string
       login_url:
-        description: Redirect URL on auth failure.
-        example: http://auth-service/login
+        description: Relative Login URL (default /login)
+        example: /login
         type: string
+    type: object
+  go-reauth-proxy_pkg_models.Rule:
+    properties:
       path:
         description: Path prefix to match (e.g., "/api")
         example: /api
@@ -54,8 +38,12 @@ definitions:
         description: If true, sets cookie and redirects matched path to /.
         example: false
         type: boolean
+      use_auth:
+        description: If true, invokes global authentication check before proxying.
+        example: false
+        type: boolean
     type: object
-  response.ErrorResponse:
+  go-reauth-proxy_pkg_response.ErrorResponse:
     properties:
       code:
         example: 400
@@ -71,7 +59,7 @@ definitions:
         example: 1678888888000
         type: integer
     type: object
-  response.Response:
+  go-reauth-proxy_pkg_response.Response:
     properties:
       code:
         example: 200
@@ -87,6 +75,29 @@ definitions:
         example: 1678888888000
         type: integer
     type: object
+  pkg_admin.ServerInfo:
+    properties:
+      version:
+        example: 0.0.1
+        type: string
+    type: object
+  pkg_iptables.initRequest:
+    properties:
+      chain_name:
+        type: string
+      exempt_ports:
+        items:
+          type: string
+        type: array
+      parent_chain:
+        description: string or []string
+    type: object
+  pkg_iptables.ipRequest:
+    properties:
+      ip:
+        example: 192.168.1.100
+        type: string
+    type: object
 host: 127.0.0.1:9091
 info:
   contact:
@@ -101,6 +112,49 @@ info:
   title: Go Reauth Proxy Admin API
   version: "1.0"
 paths:
+  /api/auth:
+    get:
+      description: Get the configured global authentication URLs and port
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/go-reauth-proxy_pkg_response.Response'
+            - properties:
+                data:
+                  $ref: '#/definitions/go-reauth-proxy_pkg_models.AuthConfig'
+              type: object
+      summary: Get global auth config
+      tags:
+      - config
+    post:
+      consumes:
+      - application/json
+      description: Set the global authentication configurations (port, auth_url, login_url)
+      parameters:
+      - description: Auth configuration
+        in: body
+        name: config
+        required: true
+        schema:
+          $ref: '#/definitions/go-reauth-proxy_pkg_models.AuthConfig'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/go-reauth-proxy_pkg_response.Response'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/go-reauth-proxy_pkg_response.ErrorResponse'
+      summary: Set global auth config
+      tags:
+      - config
   /api/config/default-route:
     get:
       description: Get the configured default route when root route is requested
@@ -111,7 +165,7 @@ paths:
           description: OK
           schema:
             allOf:
-            - $ref: '#/definitions/response.Response'
+            - $ref: '#/definitions/go-reauth-proxy_pkg_response.Response'
             - properties:
                 data:
                   type: string
@@ -136,11 +190,11 @@ paths:
         "200":
           description: OK
           schema:
-            $ref: '#/definitions/response.Response'
+            $ref: '#/definitions/go-reauth-proxy_pkg_response.Response'
         "400":
           description: Bad Request
           schema:
-            $ref: '#/definitions/response.ErrorResponse'
+            $ref: '#/definitions/go-reauth-proxy_pkg_response.ErrorResponse'
       summary: Set default route
       tags:
       - config
@@ -153,7 +207,7 @@ paths:
         "200":
           description: OK
           schema:
-            $ref: '#/definitions/response.Response'
+            $ref: '#/definitions/go-reauth-proxy_pkg_response.Response'
       summary: Flush all rules
       tags:
       - rules
@@ -167,10 +221,10 @@ paths:
           description: OK
           schema:
             allOf:
-            - $ref: '#/definitions/response.Response'
+            - $ref: '#/definitions/go-reauth-proxy_pkg_response.Response'
             - properties:
                 data:
-                  $ref: '#/definitions/admin.ServerInfo'
+                  $ref: '#/definitions/pkg_admin.ServerInfo'
               type: object
       summary: Get server info
       tags:
@@ -186,22 +240,22 @@ paths:
         name: request
         required: true
         schema:
-          $ref: '#/definitions/iptables.ipRequest'
+          $ref: '#/definitions/pkg_iptables.ipRequest'
       produces:
       - application/json
       responses:
         "200":
           description: OK
           schema:
-            $ref: '#/definitions/response.Response'
+            $ref: '#/definitions/go-reauth-proxy_pkg_response.Response'
         "400":
           description: Bad Request
           schema:
-            $ref: '#/definitions/response.ErrorResponse'
+            $ref: '#/definitions/go-reauth-proxy_pkg_response.ErrorResponse'
         "500":
           description: Internal Server Error
           schema:
-            $ref: '#/definitions/response.ErrorResponse'
+            $ref: '#/definitions/go-reauth-proxy_pkg_response.ErrorResponse'
       summary: Allow IP
       tags:
       - iptables
@@ -214,11 +268,11 @@ paths:
         "200":
           description: OK
           schema:
-            $ref: '#/definitions/response.Response'
+            $ref: '#/definitions/go-reauth-proxy_pkg_response.Response'
         "500":
           description: Internal Server Error
           schema:
-            $ref: '#/definitions/response.ErrorResponse'
+            $ref: '#/definitions/go-reauth-proxy_pkg_response.ErrorResponse'
       summary: Allow all traffic
       tags:
       - iptables
@@ -233,22 +287,22 @@ paths:
         name: request
         required: true
         schema:
-          $ref: '#/definitions/iptables.ipRequest'
+          $ref: '#/definitions/pkg_iptables.ipRequest'
       produces:
       - application/json
       responses:
         "200":
           description: OK
           schema:
-            $ref: '#/definitions/response.Response'
+            $ref: '#/definitions/go-reauth-proxy_pkg_response.Response'
         "400":
           description: Bad Request
           schema:
-            $ref: '#/definitions/response.ErrorResponse'
+            $ref: '#/definitions/go-reauth-proxy_pkg_response.ErrorResponse'
         "500":
           description: Internal Server Error
           schema:
-            $ref: '#/definitions/response.ErrorResponse'
+            $ref: '#/definitions/go-reauth-proxy_pkg_response.ErrorResponse'
       summary: Block IP
       tags:
       - iptables
@@ -261,11 +315,11 @@ paths:
         "200":
           description: OK
           schema:
-            $ref: '#/definitions/response.Response'
+            $ref: '#/definitions/go-reauth-proxy_pkg_response.Response'
         "500":
           description: Internal Server Error
           schema:
-            $ref: '#/definitions/response.ErrorResponse'
+            $ref: '#/definitions/go-reauth-proxy_pkg_response.ErrorResponse'
       summary: Block all traffic
       tags:
       - iptables
@@ -278,11 +332,11 @@ paths:
         "200":
           description: OK
           schema:
-            $ref: '#/definitions/response.Response'
+            $ref: '#/definitions/go-reauth-proxy_pkg_response.Response'
         "500":
           description: Internal Server Error
           schema:
-            $ref: '#/definitions/response.ErrorResponse'
+            $ref: '#/definitions/go-reauth-proxy_pkg_response.ErrorResponse'
       summary: Clean iptables
       tags:
       - iptables
@@ -295,11 +349,11 @@ paths:
         "200":
           description: OK
           schema:
-            $ref: '#/definitions/response.Response'
+            $ref: '#/definitions/go-reauth-proxy_pkg_response.Response'
         "500":
           description: Internal Server Error
           schema:
-            $ref: '#/definitions/response.ErrorResponse'
+            $ref: '#/definitions/go-reauth-proxy_pkg_response.ErrorResponse'
       summary: Flush iptables rules
       tags:
       - iptables
@@ -313,18 +367,18 @@ paths:
         in: body
         name: request
         schema:
-          $ref: '#/definitions/iptables.initRequest'
+          $ref: '#/definitions/pkg_iptables.initRequest'
       produces:
       - application/json
       responses:
         "200":
           description: OK
           schema:
-            $ref: '#/definitions/response.Response'
+            $ref: '#/definitions/go-reauth-proxy_pkg_response.Response'
         "500":
           description: Internal Server Error
           schema:
-            $ref: '#/definitions/response.ErrorResponse'
+            $ref: '#/definitions/go-reauth-proxy_pkg_response.ErrorResponse'
       summary: Initialize iptables
       tags:
       - iptables
@@ -338,7 +392,7 @@ paths:
           description: OK
           schema:
             allOf:
-            - $ref: '#/definitions/response.Response'
+            - $ref: '#/definitions/go-reauth-proxy_pkg_response.Response'
             - properties:
                 data:
                   items:
@@ -348,7 +402,7 @@ paths:
         "500":
           description: Internal Server Error
           schema:
-            $ref: '#/definitions/response.ErrorResponse'
+            $ref: '#/definitions/go-reauth-proxy_pkg_response.ErrorResponse'
       summary: List iptables rules
       tags:
       - iptables
@@ -362,11 +416,11 @@ paths:
           description: OK
           schema:
             allOf:
-            - $ref: '#/definitions/response.Response'
+            - $ref: '#/definitions/go-reauth-proxy_pkg_response.Response'
             - properties:
                 data:
                   items:
-                    $ref: '#/definitions/models.Rule'
+                    $ref: '#/definitions/go-reauth-proxy_pkg_models.Rule'
                   type: array
               type: object
       summary: Get all rules
@@ -383,7 +437,7 @@ paths:
         required: true
         schema:
           items:
-            $ref: '#/definitions/models.Rule'
+            $ref: '#/definitions/go-reauth-proxy_pkg_models.Rule'
           type: array
       produces:
       - application/json
@@ -392,17 +446,17 @@ paths:
           description: OK
           schema:
             allOf:
-            - $ref: '#/definitions/response.Response'
+            - $ref: '#/definitions/go-reauth-proxy_pkg_response.Response'
             - properties:
                 data:
                   items:
-                    $ref: '#/definitions/models.Rule'
+                    $ref: '#/definitions/go-reauth-proxy_pkg_models.Rule'
                   type: array
               type: object
         "400":
           description: Bad Request
           schema:
-            $ref: '#/definitions/response.ErrorResponse'
+            $ref: '#/definitions/go-reauth-proxy_pkg_response.ErrorResponse'
       summary: Add rules
       tags:
       - rules
@@ -421,11 +475,11 @@ paths:
         "200":
           description: OK
           schema:
-            $ref: '#/definitions/response.Response'
+            $ref: '#/definitions/go-reauth-proxy_pkg_response.Response'
         "400":
           description: Bad Request
           schema:
-            $ref: '#/definitions/response.ErrorResponse'
+            $ref: '#/definitions/go-reauth-proxy_pkg_response.ErrorResponse'
       summary: Remove a rule
       tags:
       - rules

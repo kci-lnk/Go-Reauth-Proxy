@@ -52,6 +52,8 @@ func (s *Server) Start() error {
 	r.HandleFunc("/api/info", s.handleInfo).Methods("GET")
 	r.HandleFunc("/api/config/default-route", s.handleGetDefaultRoute).Methods("GET")
 	r.HandleFunc("/api/config/default-route", s.handleSetDefaultRoute).Methods("POST")
+	r.HandleFunc("/api/auth", s.handleGetAuth).Methods("GET")
+	r.HandleFunc("/api/auth", s.handleSetAuth).Methods("POST")
 
 	r.HandleFunc("/docs", func(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/docs/index.html", http.StatusMovedPermanently)
@@ -120,8 +122,7 @@ func (s *Server) handleAddRule(w http.ResponseWriter, r *http.Request) {
 	type ruleRequest struct {
 		Path        string `json:"path"`
 		Target      string `json:"target"`
-		AuthURL     string `json:"auth_url"`
-		LoginURL    string `json:"login_url"`
+		UseAuth     *bool  `json:"use_auth"`
 		StripPath   *bool  `json:"strip_path"`
 		RewriteHTML *bool  `json:"rewrite_html"`
 		UseRootMode *bool  `json:"use_root_mode"`
@@ -170,8 +171,7 @@ func (s *Server) handleAddRule(w http.ResponseWriter, r *http.Request) {
 		rule := models.Rule{
 			Path:        req.Path,
 			Target:      req.Target,
-			AuthURL:     req.AuthURL,
-			LoginURL:    req.LoginURL,
+			UseAuth:     req.UseAuth != nil && *req.UseAuth,
 			StripPath:   stripPath,
 			RewriteHTML: rewriteHTML,
 			UseRootMode: req.UseRootMode != nil && *req.UseRootMode,
@@ -292,5 +292,41 @@ func (s *Server) handleSetDefaultRoute(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.ProxyHandler.SetDefaultRoute(req.DefaultRoute)
+	response.Success(w, nil)
+}
+
+// handleGetAuth gets the global auth configuration (port and relative urls)
+// @Summary Get global auth config
+// @Description Get the configured global authentication URLs and port
+// @Tags config
+// @Produce  json
+// @Success 200 {object} response.Response{data=models.AuthConfig}
+// @Router /api/auth [get]
+func (s *Server) handleGetAuth(w http.ResponseWriter, r *http.Request) {
+	config := s.ProxyHandler.GetAuthConfig()
+	response.Success(w, config)
+}
+
+// handleSetAuth sets the global auth configuration
+// @Summary Set global auth config
+// @Description Set the global authentication configurations (port, auth_url, login_url)
+// @Tags config
+// @Accept  json
+// @Produce  json
+// @Param config body models.AuthConfig true "Auth configuration"
+// @Success 200 {object} response.Response
+// @Failure 400 {object} response.ErrorResponse
+// @Router /api/auth [post]
+func (s *Server) handleSetAuth(w http.ResponseWriter, r *http.Request) {
+	var req models.AuthConfig
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		response.Error(w, errors.CodeInvalidJSON, "Invalid JSON object")
+		return
+	}
+
+	if err := s.ProxyHandler.SetAuthConfig(req); err != nil {
+		response.Error(w, errors.CodeBadRequest, err.Error())
+		return
+	}
 	response.Success(w, nil)
 }

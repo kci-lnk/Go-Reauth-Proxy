@@ -2,6 +2,7 @@ package admin
 
 import (
 	"bytes"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"go-reauth-proxy/pkg/errors"
@@ -54,6 +55,9 @@ func (s *Server) Start() error {
 	r.HandleFunc("/api/config/default-route", s.handleSetDefaultRoute).Methods("POST")
 	r.HandleFunc("/api/auth", s.handleGetAuth).Methods("GET")
 	r.HandleFunc("/api/auth", s.handleSetAuth).Methods("POST")
+	r.HandleFunc("/api/ssl", s.handleGetSSL).Methods("GET")
+	r.HandleFunc("/api/ssl", s.handleSetSSL).Methods("POST")
+	r.HandleFunc("/api/ssl", s.handleClearSSL).Methods("DELETE")
 
 	r.HandleFunc("/docs", func(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/docs/index.html", http.StatusMovedPermanently)
@@ -319,5 +323,56 @@ func (s *Server) handleSetAuth(w http.ResponseWriter, r *http.Request) {
 		response.Error(w, errors.CodeBadRequest, err.Error())
 		return
 	}
+	response.Success(w, nil)
+}
+
+// handleGetSSL gets the current SSL status
+// @Summary Get SSL status
+// @Description Check if dynamic SSL is currently enabled and configured on the proxy port
+// @Tags ssl
+// @Produce  json
+// @Success 200 {object} response.Response{data=models.SSLInfo}
+// @Router /api/ssl [get]
+func (s *Server) handleGetSSL(w http.ResponseWriter, r *http.Request) {
+	cert := s.ProxyHandler.GetSSLCertificate()
+	response.Success(w, models.SSLInfo{Enabled: cert != nil})
+}
+
+// handleSetSSL sets the dynamic SSL certificate
+// @Summary Set SSL certificate
+// @Description Upload a PEM encoded certificate and private key to enable HTTPS on the proxy port
+// @Tags ssl
+// @Accept  json
+// @Produce  json
+// @Param ssl body models.SSLRequest true "SSL Certificate and Key"
+// @Success 200 {object} response.Response
+// @Failure 400 {object} response.ErrorResponse
+// @Router /api/ssl [post]
+func (s *Server) handleSetSSL(w http.ResponseWriter, r *http.Request) {
+	var req models.SSLRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		response.Error(w, errors.CodeInvalidJSON, "Invalid JSON object")
+		return
+	}
+
+	cert, err := tls.X509KeyPair([]byte(req.Cert), []byte(req.Key))
+	if err != nil {
+		response.Error(w, errors.CodeBadRequest, fmt.Sprintf("Invalid certificate or key: %v", err))
+		return
+	}
+
+	s.ProxyHandler.SetSSLCertificate(&cert)
+	response.Success(w, nil)
+}
+
+// handleClearSSL clears the dynamic SSL certificate
+// @Summary Clear SSL certificate
+// @Description Clear the configured SSL certificate and disable HTTPS on the proxy port
+// @Tags ssl
+// @Produce  json
+// @Success 200 {object} response.Response
+// @Router /api/ssl [delete]
+func (s *Server) handleClearSSL(w http.ResponseWriter, r *http.Request) {
+	s.ProxyHandler.ClearSSLCertificate()
 	response.Success(w, nil)
 }

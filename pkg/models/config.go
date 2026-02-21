@@ -20,3 +20,12 @@ type PortConfig struct {
 	Port  int    `json:"port"`
 	Rules []Rule `json:"rules"`
 }
+
+type SSLInfo struct {
+	Enabled bool `json:"enabled"`
+}
+
+type SSLRequest struct {
+	Cert string `json:"cert" example:"-----BEGIN CERTIFICATE-----\n..."`
+	Key  string `json:"key" example:"-----BEGIN RSA PRIVATE KEY-----\n..."`
+}

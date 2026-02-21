@@ -1,6 +1,7 @@
 package main
 
 import (
+	"crypto/tls"
 	"flag"
 	"fmt"
 	"go-reauth-proxy/pkg/admin"
@@ -8,11 +9,16 @@ import (
 	"go-reauth-proxy/pkg/middleware"
 	"go-reauth-proxy/pkg/proxy"
 	"log"
+	"net"
 	"net/http"
+	"strings"
+
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
+
+	"github.com/soheilhy/cmux"
 
 	_ "go-reauth-proxy/docs" // load Swagger docs
 )
@@ -55,15 +61,60 @@ func main() {
 	}()
 
 	proxyAddr := fmt.Sprintf(":%d", *proxyPort)
-	proxyServer := &http.Server{
-		Addr:    proxyAddr,
-		Handler: middleware.Logger(proxyHandler),
+	tcpListener, err := net.Listen("tcp", proxyAddr)
+	if err != nil {
+		log.Fatalf("Failed to listen on proxy port: %v", err)
+	}
+
+	m := cmux.New(tcpListener)
+	tlsL := m.Match(cmux.TLS())
+	httpL := m.Match(cmux.HTTP1Fast(), cmux.HTTP2())
+
+	httpsServer := &http.Server{
+		Handler:           middleware.Logger(proxyHandler),
+		ReadHeaderTimeout: 10 * time.Second,
+		IdleTimeout:       120 * time.Second,
+		TLSConfig: &tls.Config{
+			NextProtos: []string{"h2", "http/1.1"},
+			GetCertificate: func(info *tls.ClientHelloInfo) (*tls.Certificate, error) {
+				cert := proxyHandler.GetSSLCertificate()
+				if cert == nil {
+					return nil, fmt.Errorf("SSL not enabled")
+				}
+				return cert, nil
+			},
+		},
+	}
+
+	httpServer := &http.Server{
+		ReadHeaderTimeout: 10 * time.Second,
+		IdleTimeout:       120 * time.Second,
+		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if proxyHandler.GetSSLCertificate() != nil {
+				target := "https://" + r.Host + r.URL.String()
+				http.Redirect(w, r, target, http.StatusTemporaryRedirect)
+				return
+			}
+			middleware.Logger(proxyHandler).ServeHTTP(w, r)
+		}),
 	}
 
 	go func() {
+		if err := httpsServer.Serve(tls.NewListener(tlsL, httpsServer.TLSConfig)); err != nil && err != http.ErrServerClosed {
+			log.Fatalf("HTTPS server failed: %v", err)
+		}
+	}()
+
+	go func() {
+		if err := httpServer.Serve(httpL); err != nil && err != http.ErrServerClosed {
+			log.Fatalf("HTTP server failed: %v", err)
+		}
+	}()
+
+	go func() {
 		log.Printf("Reverse Proxy listening on 0.0.0.0:%d", *proxyPort)
-		if err := proxyServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Fatalf("Proxy server failed: %v", err)
+		if err := m.Serve(); err != nil && !strings.Contains(err.Error(), "use of closed network connection") {
+			log.Fatalf("cmux server failed: %v", err)
 		}
 	}()
 

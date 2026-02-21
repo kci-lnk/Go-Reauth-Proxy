@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"bytes"
+	"crypto/tls"
 	"fmt"
 	"go-reauth-proxy/pkg/auth"
 	"go-reauth-proxy/pkg/errors"
@@ -16,6 +17,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -26,10 +28,11 @@ type Handler struct {
 	AuthConfig   models.AuthConfig
 	AuthCache    *auth.Cache
 	AdminPort    int
+	sslCert      atomic.Value
 }
 
 func NewHandler(cache *auth.Cache, adminPort int) *Handler {
-	return &Handler{
+	h := &Handler{
 		Rules:        make([]models.Rule, 0),
 		DefaultRoute: "/__select__",
 		AuthConfig: models.AuthConfig{
@@ -41,6 +44,30 @@ func NewHandler(cache *auth.Cache, adminPort int) *Handler {
 		AuthCache: cache,
 		AdminPort: adminPort,
 	}
+	h.ClearSSLCertificate()
+	return h
+}
+
+func (h *Handler) SetSSLCertificate(cert *tls.Certificate) {
+	if cert == nil {
+		h.ClearSSLCertificate()
+	} else {
+		h.sslCert.Store(cert)
+	}
+}
+
+func (h *Handler) GetSSLCertificate() *tls.Certificate {
+	val := h.sslCert.Load()
+	if val == nil {
+		return nil
+	}
+	cert, _ := val.(*tls.Certificate)
+	return cert
+}
+
+func (h *Handler) ClearSSLCertificate() {
+	var empty *tls.Certificate
+	h.sslCert.Store(empty)
 }
 
 func (h *Handler) AddRule(newRule models.Rule) error {
@@ -239,6 +266,19 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 		proxy := httputil.NewSingleHostReverseProxy(targetURL)
 
+		transport := http.DefaultTransport.(*http.Transport).Clone()
+		transport.DialContext = (&net.Dialer{
+			Timeout:   6 * time.Second,
+			KeepAlive: 30 * time.Second,
+		}).DialContext
+		transport.TLSHandshakeTimeout = 10 * time.Second
+		transport.ResponseHeaderTimeout = 10 * time.Second
+		transport.MaxIdleConns = 100
+		transport.MaxIdleConnsPerHost = 100
+		transport.IdleConnTimeout = 90 * time.Second
+		transport.ForceAttemptHTTP2 = true
+		proxy.Transport = transport
+
 		originalDirector := proxy.Director
 		proxy.Director = func(req *http.Request) {
 			originalDirector(req)
@@ -347,7 +387,20 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		targetURL.Scheme = "https"
 	}
 
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.DialContext = (&net.Dialer{
+		Timeout:   6 * time.Second,
+		KeepAlive: 30 * time.Second,
+	}).DialContext
+	transport.TLSHandshakeTimeout = 10 * time.Second
+	transport.ResponseHeaderTimeout = 10 * time.Second
+	transport.MaxIdleConns = 100
+	transport.MaxIdleConnsPerHost = 100
+	transport.IdleConnTimeout = 90 * time.Second
+	transport.ForceAttemptHTTP2 = true
+
 	proxy := &httputil.ReverseProxy{
+		Transport: transport,
 		Rewrite: func(pr *httputil.ProxyRequest) {
 			pr.SetXForwarded()
 			pr.SetURL(targetURL)
@@ -437,7 +490,17 @@ func (h *Handler) checkAuth(w http.ResponseWriter, r *http.Request, authConfig m
 	if valid, found := h.AuthCache.Get(cacheKey); found && valid {
 		return true
 	}
-	client := &http.Client{Timeout: 5 * time.Second}
+
+	authTransport := http.DefaultTransport.(*http.Transport).Clone()
+	authTransport.MaxIdleConns = 100
+	authTransport.MaxIdleConnsPerHost = 100
+	authTransport.IdleConnTimeout = 90 * time.Second
+	authTransport.ForceAttemptHTTP2 = true
+
+	client := &http.Client{
+		Timeout:   5 * time.Second,
+		Transport: authTransport,
+	}
 
 	if authConfig.AuthPort <= 0 {
 		log.Printf("Auth check requested but AuthPort is not configured")

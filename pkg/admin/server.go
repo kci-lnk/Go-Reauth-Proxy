@@ -305,7 +305,7 @@ func (s *Server) handleSetSSL(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.ProxyHandler.SetSSLCertificate(&cert)
+	s.ProxyHandler.SetSSLCertificate(&cert, req.Cert, req.Key)
 	response.Success(w, nil)
 }
 

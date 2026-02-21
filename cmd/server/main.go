@@ -6,11 +6,13 @@ import (
 	"fmt"
 	"go-reauth-proxy/pkg/admin"
 	"go-reauth-proxy/pkg/auth"
+	"go-reauth-proxy/pkg/config"
 	"go-reauth-proxy/pkg/middleware"
 	"go-reauth-proxy/pkg/proxy"
 	"log"
 	"net"
 	"net/http"
+	"path/filepath"
 	"strings"
 
 	"os"
@@ -46,8 +48,26 @@ func main() {
 
 	log.Printf("Starting Go Reauth Proxy Service...")
 
+	execPath, err := os.Executable()
+	if err != nil {
+		log.Fatalf("Failed to get executable path: %v", err)
+	}
+
+	execDir := filepath.Dir(execPath)
+	if strings.Contains(execDir, "go-build") || strings.Contains(execDir, "T") {
+		pwd, _ := os.Getwd()
+		execDir = pwd
+	}
+	configPath := filepath.Join(execDir, "config.json")
+
+	cfgManager := config.NewManager(configPath)
+	initialCfg, err := cfgManager.Load()
+	if err != nil {
+		log.Fatalf("Failed to load config: %v", err)
+	}
+
 	authCache := auth.NewCache(time.Duration(*authCacheExpire) * time.Second)
-	proxyHandler := proxy.NewHandler(authCache, *adminPort)
+	proxyHandler := proxy.NewHandler(authCache, *adminPort, cfgManager, initialCfg)
 
 	currentConfig := proxyHandler.GetAuthConfig()
 	currentConfig.AuthCacheExpire = *authCacheExpire

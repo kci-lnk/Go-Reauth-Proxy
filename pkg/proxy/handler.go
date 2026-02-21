@@ -5,7 +5,9 @@ import (
 	"crypto/tls"
 	"fmt"
 	"go-reauth-proxy/pkg/auth"
+	"go-reauth-proxy/pkg/config"
 	"go-reauth-proxy/pkg/errors"
+
 	"go-reauth-proxy/pkg/models"
 	"go-reauth-proxy/pkg/response"
 	"io"
@@ -29,31 +31,79 @@ type Handler struct {
 	AuthCache    *auth.Cache
 	AdminPort    int
 	sslCert      atomic.Value
+
+	configManager *config.Manager
+	certPEM       string
+	keyPEM        string
 }
 
-func NewHandler(cache *auth.Cache, adminPort int) *Handler {
+func NewHandler(cache *auth.Cache, adminPort int, cfgManager *config.Manager, initialCfg *config.AppConfig) *Handler {
 	h := &Handler{
-		Rules:        make([]models.Rule, 0),
-		DefaultRoute: "/__select__",
-		AuthConfig: models.AuthConfig{
-			AuthPort:        7997,
-			AuthURL:         "/auth",
-			LoginURL:        "/login",
-			AuthCacheExpire: 60,
-		},
-		AuthCache: cache,
-		AdminPort: adminPort,
+		Rules:         initialCfg.Rules,
+		DefaultRoute:  initialCfg.DefaultRoute,
+		AuthConfig:    initialCfg.AuthConfig,
+		AuthCache:     cache,
+		AdminPort:     adminPort,
+		configManager: cfgManager,
+		certPEM:       initialCfg.SSLCert,
+		keyPEM:        initialCfg.SSLKey,
 	}
-	h.ClearSSLCertificate()
+
+	if h.certPEM != "" && h.keyPEM != "" {
+		cert, err := tls.X509KeyPair([]byte(h.certPEM), []byte(h.keyPEM))
+		if err == nil {
+			h.sslCert.Store(&cert)
+		} else {
+			log.Printf("Failed to load initial SSL cert: %v", err)
+			var empty *tls.Certificate
+			h.sslCert.Store(empty)
+		}
+	} else {
+		var empty *tls.Certificate
+		h.sslCert.Store(empty)
+	}
+
+	if h.AuthCache != nil {
+		h.AuthCache.SetTTL(time.Duration(initialCfg.AuthConfig.AuthCacheExpire) * time.Second)
+	}
+
 	return h
 }
 
-func (h *Handler) SetSSLCertificate(cert *tls.Certificate) {
+func (h *Handler) saveConfigLocked() {
+	if h.configManager == nil {
+		return
+	}
+
+	rulesCopy := make([]models.Rule, len(h.Rules))
+	copy(rulesCopy, h.Rules)
+
+	conf := &config.AppConfig{
+		Rules:        rulesCopy,
+		DefaultRoute: h.DefaultRoute,
+		AuthConfig:   h.AuthConfig,
+		SSLCert:      h.certPEM,
+		SSLKey:       h.keyPEM,
+	}
+	if err := h.configManager.Save(conf); err != nil {
+		log.Printf("Failed to save config: %v", err)
+	}
+}
+
+func (h *Handler) SetSSLCertificate(cert *tls.Certificate, certPEM, keyPEM string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
 	if cert == nil {
-		h.ClearSSLCertificate()
+		var empty *tls.Certificate
+		h.sslCert.Store(empty)
+		h.certPEM = ""
+		h.keyPEM = ""
 	} else {
 		h.sslCert.Store(cert)
+		h.certPEM = certPEM
+		h.keyPEM = keyPEM
 	}
+	h.saveConfigLocked()
 }
 
 func (h *Handler) GetSSLCertificate() *tls.Certificate {
@@ -66,8 +116,13 @@ func (h *Handler) GetSSLCertificate() *tls.Certificate {
 }
 
 func (h *Handler) ClearSSLCertificate() {
+	h.mu.Lock()
+	defer h.mu.Unlock()
 	var empty *tls.Certificate
 	h.sslCert.Store(empty)
+	h.certPEM = ""
+	h.keyPEM = ""
+	h.saveConfigLocked()
 }
 
 func (h *Handler) AddRule(newRule models.Rule) error {
@@ -98,6 +153,7 @@ func (h *Handler) AddRule(newRule models.Rule) error {
 	if !updated {
 		h.Rules = append(h.Rules, newRule)
 	}
+	h.saveConfigLocked()
 	return nil
 }
 
@@ -156,6 +212,7 @@ func (h *Handler) RemoveRule(path string) {
 		}
 	}
 	h.Rules = newRules
+	h.saveConfigLocked()
 }
 
 func (h *Handler) FlushRules() {
@@ -163,6 +220,7 @@ func (h *Handler) FlushRules() {
 	defer h.mu.Unlock()
 
 	h.Rules = make([]models.Rule, 0)
+	h.saveConfigLocked()
 }
 
 func (h *Handler) GetRules() []models.Rule {
@@ -188,6 +246,7 @@ func (h *Handler) SetDefaultRoute(route string) {
 	} else {
 		h.DefaultRoute = route
 	}
+	h.saveConfigLocked()
 }
 
 func (h *Handler) GetAuthConfig() models.AuthConfig {
@@ -216,6 +275,7 @@ func (h *Handler) SetAuthConfig(config models.AuthConfig) error {
 	if h.AuthCache != nil {
 		h.AuthCache.SetTTL(time.Duration(config.AuthCacheExpire) * time.Second)
 	}
+	h.saveConfigLocked()
 	return nil
 }
 

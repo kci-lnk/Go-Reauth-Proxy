@@ -8,6 +8,7 @@ import (
 	"html/template"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -139,7 +140,7 @@ const selectContent = `
 			</div>
 		{{else}}
 			{{range .Rules}}
-			<a href="{{.Path}}"
+			<a href="{{ensureSlash .Path}}"
 			   class="group block p-5 border border-black bg-white 
 			          hover:bg-black hover:text-white 
 			          transition-colors duration-200 
@@ -211,8 +212,17 @@ const selectContent = `
 {{end}}
 `
 
+var htmlFuncMap = template.FuncMap{
+	"ensureSlash": func(path string) string {
+		if !strings.HasSuffix(path, "/") {
+			return path + "/"
+		}
+		return path
+	},
+}
+
 var selectTmpl = template.Must(
-	template.New("base").
+	template.New("base").Funcs(htmlFuncMap).
 		Parse(baseTemplate + footerTemplate + selectContent),
 )
 

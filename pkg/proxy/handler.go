@@ -135,6 +135,9 @@ func (h *Handler) AddRule(newRule models.Rule) error {
 	if strings.HasPrefix(newRule.Path, "/__") || strings.HasPrefix(newRule.Path, "__") {
 		return fmt.Errorf("cannot add rule for reserved path starting with '__'")
 	}
+	if strings.HasSuffix(newRule.Path, "/") {
+		return fmt.Errorf("path cannot end with a slash '/'")
+	}
 	if err := h.checkSafeTarget(newRule.Target); err != nil {
 		return fmt.Errorf("invalid target: %v", err)
 	}
@@ -362,15 +365,31 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	h.mu.RLock()
 	var matchedRule *models.Rule
 	var longestMatch int
+	var needsSlashRedirect string
+
 	for _, rule := range h.Rules {
 		if strings.HasPrefix(r.URL.Path, rule.Path) && len(rule.Path) > longestMatch {
 			rCopy := rule
 			matchedRule = &rCopy
 			longestMatch = len(rule.Path)
 		}
+		if r.URL.Path+"/" == rule.Path {
+			needsSlashRedirect = rule.Path
+		}
 	}
 
-	if matchedRule == nil {
+	if matchedRule != nil && matchedRule.Path != "/" && r.URL.Path == matchedRule.Path && !strings.HasSuffix(matchedRule.Path, "/") {
+		if r.Method == http.MethodGet {
+			needsSlashRedirect = matchedRule.Path + "/"
+			matchedRule = nil
+		}
+	} else if longestMatch == len(r.URL.Path) {
+		needsSlashRedirect = ""
+	} else if needsSlashRedirect != "" {
+		matchedRule = nil
+	}
+
+	if matchedRule == nil && needsSlashRedirect == "" {
 		isWebSocket := strings.ToLower(r.Header.Get("Upgrade")) == "websocket"
 		canUseCookie := r.URL.Path == "/" || r.Header.Get("Referer") != "" || r.Header.Get("Origin") != "" || isWebSocket
 		if canUseCookie {
@@ -403,6 +422,15 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	h.mu.RUnlock()
+
+	if needsSlashRedirect != "" {
+		newPath := needsSlashRedirect
+		if r.URL.RawQuery != "" {
+			newPath += "?" + r.URL.RawQuery
+		}
+		http.Redirect(w, r, newPath, http.StatusMovedPermanently)
+		return
+	}
 
 	if matchedRule == nil {
 		if r.URL.Path == "/" {
@@ -485,6 +513,24 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 
+			if origin := pr.In.Header.Get("Origin"); origin != "" {
+				pr.Out.Header.Set("Origin", targetURL.Scheme+"://"+targetURL.Host)
+			}
+			if referer := pr.In.Header.Get("Referer"); referer != "" {
+				ref, err := url.Parse(referer)
+				if err == nil {
+					ref.Scheme = targetURL.Scheme
+					ref.Host = targetURL.Host
+					if matchedRule.StripPath {
+						ref.Path = strings.TrimPrefix(ref.Path, matchedRule.Path)
+						if ref.Path == "" {
+							ref.Path = "/"
+						}
+					}
+					pr.Out.Header.Set("Referer", ref.String())
+				}
+			}
+
 			if matchedRule.RewriteHTML || matchedRule.UseAuth {
 				pr.Out.Header.Del("Accept-Encoding")
 			}
@@ -531,7 +577,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		bodyStr := string(bodyBytes)
 
 		if needsRewrite {
-			prefix := matchedRule.Path
+			prefix := strings.TrimSuffix(matchedRule.Path, "/")
 			replacements := []struct {
 				old string
 				new string

@@ -3,6 +3,7 @@ package response
 import (
 	"bytes"
 	"go-reauth-proxy/pkg/models"
+	"strings"
 	"text/template"
 )
 
@@ -233,10 +234,10 @@ const toolbarTemplate = `
         <div id="wrapper" style="position: relative;">
             <div id="menu">
                 <div class="menu-header">
-                    <span><i class="dot"></i> Access Routes</span>
+                    <span><i class="dot"></i> Go Reauth Proxy</span>
                 </div>
                 {{range .Rules}}
-                <a href="{{.Path}}" class="menu-item">{{.Path}} <span style="float: right; color: #9ca3af; font-size: 12px;">Go</span></a>
+                <a href="{{ensureSlash .Path}}" class="menu-item">{{.Path}} <span style="float: right; color: #9ca3af; font-size: 12px;">Go</span></a>
                 {{end}}
                 <div style="height: 4px; background: #f9fafb;"></div>
                 <a href="/__auth__/logout" class="menu-item logout-btn">Logout</a>
@@ -549,7 +550,16 @@ const toolbarTemplate = `
 </script>
 `
 
-var toolbarTmpl = template.Must(template.New("toolbar").Parse(toolbarTemplate))
+var funcMap = template.FuncMap{
+	"ensureSlash": func(path string) string {
+		if !strings.HasSuffix(path, "/") {
+			return path + "/"
+		}
+		return path
+	},
+}
+
+var toolbarTmpl = template.Must(template.New("toolbar").Funcs(funcMap).Parse(toolbarTemplate))
 
 func GenerateToolbar(rules []models.Rule) string {
 	var buf bytes.Buffer

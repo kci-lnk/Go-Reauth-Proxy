@@ -66,6 +66,10 @@ const baseTemplate = `
 <head>
 	<meta charset="UTF-8">
 	<meta name="viewport" content="width=device-width, initial-scale=1.0">
+	<link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png">
+	<link rel="icon" type="image/png" sizes="32x32" href="/favicon-32x32.png">
+	<link rel="icon" type="image/png" sizes="16x16" href="/favicon-16x16.png">
+	<link rel="manifest" href="/site.webmanifest">
 	<title>{{.Title}} - Go Reauth Proxy</title>
 	<style>` + baseStyle + `</style>
 </head>
@@ -95,6 +99,7 @@ const footerTemplate = `
 const errorContent = `
 {{define "content"}}
 <div class="text-center px-5 max-w-md">
+	<img src="/android-chrome-512x512.png" alt="Logo" style="width:64px;height:64px;margin:0 auto 1.25rem;display:block;border-radius:16px;">
 	<h1 class="text-6xl font-semibold tracking-tight mb-4">{{.Title}}</h1>
 	<p class="text-xl text-gray-600 mb-8">{{.Message}}</p>
 

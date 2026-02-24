@@ -286,6 +286,12 @@ func (h *Handler) SetAuthConfig(config models.AuthConfig) error {
 }
 
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	// Serve embedded favicon/static files
+	if response.IsFaviconPath(r.URL.Path) {
+		response.ServeFavicon(w, r)
+		return
+	}
+
 	if r.URL.Path == "/__select__" {
 		h.mu.RLock()
 		authConfig := h.AuthConfig

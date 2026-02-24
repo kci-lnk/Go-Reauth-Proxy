@@ -299,9 +299,12 @@ const selectContent = `
 <div class="select-container">
 	<div class="header-card">
 		<div class="header-top">
-			<div>
+			<div style="display:flex;align-items:center;gap:1rem;">
+				<img src="/android-chrome-512x512.png" alt="Logo" style="width:50px;height:50px;border-radius:8px;flex-shrink:0;">
+				<div>
 				<h1 class="header-title">Go Reauth Proxy</h1>
 				<p class="header-desc">Choose a destination to continue</p>
+			</div>
 			</div>
 			<button onclick="document.getElementById('logout-modal').classList.add('active')" class="btn-logout">
 				<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">

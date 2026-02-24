@@ -69,7 +69,6 @@ const selectStyle = `
   }
   .header-title {
     font-size: 1.75rem;
-    font-weight: 700;
     letter-spacing: -0.025em;
     color: var(--foreground);
     line-height: 1.2;
@@ -301,7 +300,7 @@ const selectContent = `
 	<div class="header-card">
 		<div class="header-top">
 			<div>
-				<h1 class="header-title">Select a Route</h1>
+				<h1 class="header-title">Go Reauth Proxy</h1>
 				<p class="header-desc">Choose a destination to continue</p>
 			</div>
 			<button onclick="document.getElementById('logout-modal').classList.add('active')" class="btn-logout">

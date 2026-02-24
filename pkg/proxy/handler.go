@@ -308,7 +308,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.mu.RUnlock()
 
 		if authConfig.AuthPort <= 0 {
-			response.HTML(w, errors.CodeInternal, "Authentication service is not configured")
+			response.HTML(w, errors.CodeInternal, "Authentication service is not configured", nil)
 			return
 		}
 
@@ -439,7 +439,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			h.mu.RUnlock()
 
 			if count == 0 {
-				response.Welcome(w)
+				response.Welcome(w, nil)
 				return
 			}
 
@@ -447,7 +447,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		response.HTML(w, errors.CodeNotFound, "Not Found")
+		response.HTML(w, errors.CodeNotFound, "Not Found", h.GetRules())
 		return
 	}
 
@@ -473,7 +473,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	targetURL, err := url.Parse(matchedRule.Target)
 	if err != nil {
-		response.HTML(w, errors.CodeProxyTargetInvalid, "Invalid target URL configuration")
+		response.HTML(w, errors.CodeProxyTargetInvalid, "Invalid target URL configuration", h.GetRules())
 		return
 	}
 
@@ -537,7 +537,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		},
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
 			log.Printf("Proxy error: %v", err)
-			response.HTML(w, errors.CodeProxyTimeout, "Upstream unavailable: "+err.Error())
+			response.HTML(w, errors.CodeProxyTimeout, "Upstream unavailable: "+err.Error(), h.GetRules())
 		},
 	}
 
@@ -597,7 +597,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			h.mu.RLock()
 			rules := h.GetRules()
 			h.mu.RUnlock()
-			toolbarHTML := response.GenerateToolbar(rules)
+			toolbarHTML := response.GenerateToolbar(rules, matchedRule.Path)
 
 			lowerBody := strings.ToLower(bodyStr)
 			if idx := strings.LastIndex(lowerBody, "</body>"); idx != -1 {
@@ -644,7 +644,7 @@ func (h *Handler) checkAuth(w http.ResponseWriter, r *http.Request, authConfig m
 
 		if authConfig.AuthPort <= 0 {
 			log.Printf("Auth check requested but AuthPort is not configured")
-			response.HTML(w, errors.CodeInternal, "Authentication Service Not Configured")
+			response.HTML(w, errors.CodeInternal, "Authentication Service Not Configured", nil)
 			return false
 		}
 
@@ -661,7 +661,7 @@ func (h *Handler) checkAuth(w http.ResponseWriter, r *http.Request, authConfig m
 		authReq, err := http.NewRequest("GET", authURL, nil)
 		if err != nil {
 			log.Printf("Failed to create auth request: %v", err)
-			response.HTML(w, errors.CodeInternal, "Internal Server Error during Auth")
+			response.HTML(w, errors.CodeInternal, "Internal Server Error during Auth", nil)
 			return false
 		}
 
@@ -670,7 +670,7 @@ func (h *Handler) checkAuth(w http.ResponseWriter, r *http.Request, authConfig m
 		resp, err := client.Do(authReq)
 		if err != nil {
 			log.Printf("Auth request failed: %v", err)
-			response.HTML(w, errors.CodeProxyAuthFailed, "Authentication Service Unavailable")
+			response.HTML(w, errors.CodeProxyAuthFailed, "Authentication Service Unavailable", nil)
 			return false
 		}
 		defer resp.Body.Close()

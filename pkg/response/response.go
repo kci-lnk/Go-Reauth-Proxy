@@ -8,7 +8,6 @@ import (
 	"html/template"
 	"net/http"
 	"strconv"
-	"strings"
 	"time"
 )
 
@@ -44,13 +43,14 @@ func Error(w http.ResponseWriter, code int, message string) {
 }
 
 type pageData struct {
-	Title     string
-	Message   string
-	Year      int
-	ShowBack  bool
-	Version   string
-	BodyClass string
-	Rules     []models.Rule
+	Title       string
+	Message     string
+	Year        int
+	ShowBack    bool
+	Version     string
+	BodyClass   string
+	Rules       []models.Rule
+	ToolbarHTML template.HTML
 }
 
 const baseStyle = `
@@ -71,6 +71,7 @@ const baseTemplate = `
 </head>
 <body class="{{.BodyClass}}">
 	{{block "content" .}}{{end}}
+	{{.ToolbarHTML}}
 </body>
 </html>
 {{end}}
@@ -98,12 +99,12 @@ const errorContent = `
 	<p class="text-xl text-gray-600 mb-8">{{.Message}}</p>
 
 	{{if .ShowBack}}
-	<a href="/"
+	<a href="/__select__"
 	   class="inline-block px-5 py-2.5 text-sm font-medium 
 	          text-white bg-black hover:bg-gray-900 
 	          transition-colors duration-150 
 	          border border-black">
-		Back to Home
+		Go to Select
 	</a>
 	{{end}}
 
@@ -119,160 +120,50 @@ var errorTmpl = template.Must(
 		Parse(baseTemplate + footerTemplate + errorContent),
 )
 
-const selectContent = `
-{{define "content"}}
-<div class="w-full max-w-2xl flex flex-col items-center py-12 px-4">
-	<div class="w-full flex justify-end mb-4">
-		<button onclick="document.getElementById('logout-modal').classList.add('active')" 
-				class="px-5 py-2 text-sm font-medium border border-black bg-white text-black 
-				       hover:bg-black hover:text-white transition-colors duration-200">
-			Logout
-		</button>
-	</div>
-
-	<h1 class="text-4xl font-semibold tracking-tight mb-2">Select a Route</h1>
-	<p class="text-gray-500 mb-10 text-sm">Choose a destination to continue</p>
-
-	<div class="w-full flex flex-col gap-3">
-		{{if not .Rules}}
-			<div class="text-center py-12 border border-gray-200 text-gray-500 text-sm">
-				No routes available.
-			</div>
-		{{else}}
-			{{range .Rules}}
-			<a href="{{ensureSlash .Path}}"
-			   class="group block p-5 border border-black bg-white 
-			          hover:bg-black hover:text-white 
-			          transition-colors duration-200 
-			          flex justify-between items-center">
-				<div>
-					<div class="font-medium text-lg mb-1">{{.Path}}</div>
-					<div class="text-sm text-gray-500">{{.Target}}</div>
-				</div>
-			</a>
-			{{end}}
-		{{end}}
-	</div>
-
-	<div class="mt-16">
-		{{template "footer" .}}
-	</div>
-</div>
-
-<style>
-.modal-overlay {
-	position: fixed;
-	top: 0; right: 0; bottom: 0; left: 0;
-	background-color: rgba(0, 0, 0, 0.5);
-	display: flex;
-	align-items: center;
-	justify-content: center;
-	z-index: 50;
-	opacity: 0;
-	pointer-events: none;
-	transition: opacity 0.2s ease-in-out;
-}
-.modal-overlay.active {
-	opacity: 1;
-	pointer-events: auto;
-}
-.modal-content {
-	background-color: white;
-	border: 1px solid black;
-	padding: 2rem;
-	width: 100%;
-	max-width: 24rem;
-	box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.25);
-	transform: translateY(10px);
-	transition: transform 0.2s ease-in-out;
-}
-.modal-overlay.active .modal-content {
-	transform: translateY(0);
-}
-</style>
-
-<div id="logout-modal" class="modal-overlay">
-	<div class="modal-content">
-		<h2 class="text-2xl font-semibold mb-4 tracking-tight">Logout</h2>
-		<p class="text-gray-600 mb-8">Are you sure you want to log out?</p>
-		<div class="flex justify-end gap-3">
-			<button onclick="document.getElementById('logout-modal').classList.remove('active')" 
-					class="px-5 py-2.5 text-sm font-medium border border-gray-200 text-gray-600 
-						   hover:text-black transition-colors duration-200">
-				Cancel
-			</button>
-			<a href="/__auth__/logout" 
-			   class="px-5 py-2.5 text-sm font-medium border border-black bg-black text-white 
-					  hover:bg-gray-900 transition-colors duration-200 flex items-center justify-center">
-				Confirm
-			</a>
-		</div>
-	</div>
-</div>
-{{end}}
-`
-
-var htmlFuncMap = template.FuncMap{
-	"ensureSlash": func(path string) string {
-		if !strings.HasSuffix(path, "/") {
-			return path + "/"
-		}
-		return path
-	},
-}
-
-var selectTmpl = template.Must(
-	template.New("base").Funcs(htmlFuncMap).
-		Parse(baseTemplate + footerTemplate + selectContent),
-)
-
-func HTML(w http.ResponseWriter, code int, message string) {
+func HTML(w http.ResponseWriter, code int, message string, rules []models.Rule) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 
 	httpStatus := mapHTTPStatus(code)
 	w.WriteHeader(httpStatus)
 
+	var toolbarHTML template.HTML
+	if len(rules) > 0 {
+		toolbarHTML = template.HTML(GenerateToolbar(rules, ""))
+	}
+
 	data := pageData{
-		Title:     strconv.Itoa(code),
-		Message:   message,
-		Year:      time.Now().Year(),
-		ShowBack:  true,
-		Version:   version.Version,
-		BodyClass: "flex items-center justify-center h-screen bg-white",
+		Title:       strconv.Itoa(code),
+		Message:     message,
+		Year:        time.Now().Year(),
+		ShowBack:    true,
+		Version:     version.Version,
+		BodyClass:   "flex items-center justify-center h-screen bg-white",
+		ToolbarHTML: toolbarHTML,
 	}
 
 	_ = errorTmpl.ExecuteTemplate(w, "layout", data)
 }
 
-func Welcome(w http.ResponseWriter) {
+func Welcome(w http.ResponseWriter, rules []models.Rule) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
 
+	var toolbarHTML template.HTML
+	if len(rules) > 0 {
+		toolbarHTML = template.HTML(GenerateToolbar(rules, ""))
+	}
+
 	data := pageData{
-		Title:     "It's working!",
-		Message:   "Welcome to Go Reauth Proxy",
-		Year:      time.Now().Year(),
-		ShowBack:  false,
-		Version:   version.Version,
-		BodyClass: "flex items-center justify-center h-screen bg-white",
+		Title:       "It's working!",
+		Message:     "Welcome to Go Reauth Proxy",
+		Year:        time.Now().Year(),
+		ShowBack:    false,
+		Version:     version.Version,
+		BodyClass:   "flex items-center justify-center h-screen bg-white",
+		ToolbarHTML: toolbarHTML,
 	}
 
 	_ = errorTmpl.ExecuteTemplate(w, "layout", data)
-}
-
-func SelectPage(w http.ResponseWriter, rules []models.Rule) {
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.WriteHeader(http.StatusOK)
-
-	data := pageData{
-		Title:     "Select Route",
-		Year:      time.Now().Year(),
-		Version:   version.Version,
-		BodyClass: "bg-white min-h-screen flex flex-col justify-center items-center",
-		Rules:     rules,
-	}
-
-	_ = selectTmpl.ExecuteTemplate(w, "layout", data)
 }
 
 func mapHTTPStatus(code int) int {

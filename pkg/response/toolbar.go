@@ -113,6 +113,7 @@ const toolbarTemplate = `
             text-overflow: ellipsis;
             white-space: nowrap;
             overflow: hidden;
+            position: relative;
         }
         .menu-item:last-child {
             border-bottom: none;
@@ -120,6 +121,17 @@ const toolbarTemplate = `
         .menu-item:hover {
             background-color: #f9fafb;
             color: #111827;
+        }
+        .menu-item.active {
+            color: #18181b;
+            font-weight: 600;
+        }
+        .menu-item.active:hover {
+            background-color: #f9fafb;
+        }
+        .menu-item.active span
+        {
+            color: #10b981;
         }
         .logout-btn {
             color: #ef4444;
@@ -237,7 +249,7 @@ const toolbarTemplate = `
                     <span><i class="dot"></i> Go Reauth Proxy</span>
                 </div>
                 {{range .Rules}}
-                <a href="{{ensureSlash .Path}}" class="menu-item">{{.Path}} <span style="float: right; color: #9ca3af; font-size: 12px;">Go</span></a>
+                <a href="{{ensureSlash .Path}}" class="menu-item{{if isActive .Path $.CurrentPath}} active{{end}}">{{.Path}} <span style="float: right; font-size: 12px;">{{if isActive .Path $.CurrentPath}}●{{else}}Go{{end}}</span></a>
                 {{end}}
                 <div style="height: 4px; background: #f9fafb;"></div>
                 <a href="/__auth__/logout" class="menu-item logout-btn">Logout</a>
@@ -550,23 +562,34 @@ const toolbarTemplate = `
 </script>
 `
 
-var funcMap = template.FuncMap{
+var toolbarFuncMap = template.FuncMap{
 	"ensureSlash": func(path string) string {
 		if !strings.HasSuffix(path, "/") {
 			return path + "/"
 		}
 		return path
 	},
+	"isActive": func(rulePath, currentPath string) bool {
+		if currentPath == "" {
+			return false
+		}
+		// Normalize paths for comparison
+		rp := strings.TrimSuffix(rulePath, "/")
+		cp := strings.TrimSuffix(currentPath, "/")
+		return rp == cp || strings.HasPrefix(cp, rp+"/") || strings.HasPrefix(cp, rp)
+	},
 }
 
-var toolbarTmpl = template.Must(template.New("toolbar").Funcs(funcMap).Parse(toolbarTemplate))
+var toolbarTmpl = template.Must(template.New("toolbar").Funcs(toolbarFuncMap).Parse(toolbarTemplate))
 
-func GenerateToolbar(rules []models.Rule) string {
+func GenerateToolbar(rules []models.Rule, currentPath string) string {
 	var buf bytes.Buffer
 	data := struct {
-		Rules []models.Rule
+		Rules       []models.Rule
+		CurrentPath string
 	}{
-		Rules: rules,
+		Rules:       rules,
+		CurrentPath: currentPath,
 	}
 	_ = toolbarTmpl.Execute(&buf, data)
 	return buf.String()

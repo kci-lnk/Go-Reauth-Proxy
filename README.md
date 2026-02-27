@@ -41,10 +41,10 @@ task build:linux  # 仅编译 Linux (AMD64) 版本
 
 ### 2. 运行
 
-启动代理服务与管理服务（默认代理端口 9090，管理端口 9091）：
+启动代理服务与管理服务（默认代理端口 7999，管理端口 7996）：
 
 ```bash
-task run -- -proxy-port 9090 -admin-port 9091 -auth-cache-expire 60
+task run -- -proxy-port 7999 -admin-port 7996 -auth-cache-expire 60
 ```
 
 服务同时提供了示例用的鉴权节点服务器，您可以用如下命令将其启动：
@@ -54,8 +54,8 @@ task run:auth-server -- -port 7997
 ```
 
 *   **启动参数说明**：
-    *   `-proxy-port`: 反向代理监听端口 (默认 9090，绑定 0.0.0.0)。
-    *   `-admin-port`: 管理 API 监听端口 (默认 9091，绑定 127.0.0.1)。
+    *   `-proxy-port`: 反向代理监听端口 (默认 7999，绑定 0.0.0.0)。
+    *   `-admin-port`: 管理 API 监听端口 (默认 7996，绑定 127.0.0.1)。
     *   `-auth-cache-expire`: 成功鉴权的缓存时间（秒），默认为 60 秒。
 
 持久化文件 `config.json` 会在首次运行并在发生配置改变时被自动写入到二进制文件的同一目录下。
@@ -64,13 +64,13 @@ task run:auth-server -- -port 7997
 
 启动服务后，访问以下地址查看完整的 API 文档：
 
-`http://127.0.0.1:9091/docs/index.html`
+`http://127.0.0.1:7996/docs/index.html`
 
-*(注：请将 `9091` 替换为您实际配置的 `-admin-port` 端口)*
+*(注：请将 `7996` 替换为您实际配置的 `-admin-port` 端口)*
 
 ## 管理 API 示例
 
-所有管理 API 均需要通过 Admin Port (默认为 127.0.0.1:9091) 访问。
+所有管理 API 均需要通过 Admin Port (默认为 127.0.0.1:7996) 访问。
 
 ### 1. 代理规则管理
 
@@ -125,7 +125,7 @@ task run:auth-server -- -port 7997
   {
     "chain_name": "REAUTH_FW",
     "parent_chain": ["INPUT", "DOCKER-USER"],
-    "exempt_ports": ["9090", "7999"]
+    "exempt_ports": ["7999", "7999"]
   }
   ```
 *   **封禁/解封单个 IP (POST /api/iptables/block | allow)**

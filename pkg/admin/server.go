@@ -4,6 +4,7 @@ import (
 	"crypto/tls"
 	"encoding/json"
 	"fmt"
+	"go-reauth-proxy/pkg/config"
 	"go-reauth-proxy/pkg/errors"
 	"go-reauth-proxy/pkg/iptables"
 	"go-reauth-proxy/pkg/middleware"
@@ -28,12 +29,17 @@ type ServerInfo struct {
 	Version string `json:"version" example:"0.0.1"`
 }
 
-func NewServer(handler *proxy.Handler, port int) *Server {
+func NewServer(handler *proxy.Handler, port int, cfgManager *config.Manager, initialCfg *config.AppConfig) *Server {
+	iptablesChainName := "REAUTH_FW"
+	if initialCfg != nil && initialCfg.IptablesChainName != "" {
+		iptablesChainName = initialCfg.IptablesChainName
+	}
+
 	iptablesManager := iptables.NewManager(iptables.Options{
-		ChainName:   "REAUTH_FW",
+		ChainName:   iptablesChainName,
 		ParentChain: []string{"INPUT", "DOCKER-USER"},
 	})
-	iptablesHandler := iptables.NewHandler(iptablesManager)
+	iptablesHandler := iptables.NewHandler(iptablesManager, cfgManager)
 
 	return &Server{
 		ProxyHandler:    handler,
@@ -72,6 +78,7 @@ func (s *Server) Start() error {
 	r.HandleFunc("/api/iptables/flush", s.IptablesHandler.HandleFlush).Methods("POST")
 	r.HandleFunc("/api/iptables/allow", s.IptablesHandler.HandleAllowIP).Methods("POST")
 	r.HandleFunc("/api/iptables/block", s.IptablesHandler.HandleBlockIP).Methods("POST")
+	r.HandleFunc("/api/iptables/remove", s.IptablesHandler.HandleRemoveIP).Methods("POST")
 	r.HandleFunc("/api/iptables/block-all", s.IptablesHandler.HandleBlockAll).Methods("POST")
 	r.HandleFunc("/api/iptables/allow-all", s.IptablesHandler.HandleAllowAll).Methods("POST")
 	r.HandleFunc("/api/iptables/list", s.IptablesHandler.HandleList).Methods("GET")

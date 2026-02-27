@@ -252,7 +252,7 @@ const toolbarTemplate = `
                 <a href="{{ensureSlash .Path}}" class="menu-item{{if isActive .Path $.CurrentPath}} active{{end}}">{{.Path}} <span style="float: right; font-size: 12px;">{{if isActive .Path $.CurrentPath}}●{{else}}Go{{end}}</span></a>
                 {{end}}
                 <div style="height: 4px; background: #f9fafb;"></div>
-                <a href="/__auth__/logout" class="menu-item logout-btn">Logout</a>
+                <a href="/__auth__/api/auth/logout" class="menu-item logout-btn">Logout</a>
             </div>
             <div id="fab">
                 <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">

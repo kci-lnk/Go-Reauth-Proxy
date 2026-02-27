@@ -2,26 +2,68 @@ package iptables
 
 import (
 	"encoding/json"
+	"go-reauth-proxy/pkg/config"
 	"go-reauth-proxy/pkg/errors"
 	"go-reauth-proxy/pkg/response"
 	"io"
 	"net/http"
+	"strconv"
+	"strings"
 )
 
 type Handler struct {
-	Manager *Manager
+	Manager       *Manager
+	configManager *config.Manager
 }
 
-func NewHandler(manager *Manager) *Handler {
+func NewHandler(manager *Manager, cfgManager *config.Manager) *Handler {
 	return &Handler{
-		Manager: manager,
+		Manager:       manager,
+		configManager: cfgManager,
 	}
 }
 
 type initRequest struct {
 	ChainName   string      `json:"chain_name" example:"KNOCK_FW"`
 	ParentChain interface{} `json:"parent_chain" swaggertype:"array,string" example:"INPUT,DOCKER-USER"` // string or []string
-	ExemptPorts []string    `json:"exempt_ports" example:"9090,7999"`
+	ExemptPorts *PortList   `json:"exempt_ports" example:"7999,7999"`
+}
+
+type PortList []string
+
+func (p *PortList) UnmarshalJSON(data []byte) error {
+	var stringsValue []string
+	if err := json.Unmarshal(data, &stringsValue); err == nil {
+		ports := make([]string, 0, len(stringsValue))
+		for _, s := range stringsValue {
+			s = strings.TrimSpace(s)
+			if s != "" {
+				ports = append(ports, s)
+			}
+		}
+		*p = ports
+		return nil
+	}
+
+	var numbersValue []int
+	if err := json.Unmarshal(data, &numbersValue); err == nil {
+		ports := make([]string, 0, len(numbersValue))
+		for _, n := range numbersValue {
+			if n > 0 {
+				ports = append(ports, strconv.Itoa(n))
+			}
+		}
+		*p = ports
+		return nil
+	}
+
+	var singleString string
+	if err := json.Unmarshal(data, &singleString); err == nil {
+		*p = splitCommaSeparated(singleString)
+		return nil
+	}
+
+	return errors.New(errors.CodeInvalidJSON, "Invalid exempt_ports")
 }
 
 // HandleInit initializes the iptables chain
@@ -35,29 +77,22 @@ type initRequest struct {
 // @Failure 500 {object} response.Response
 // @Router /api/iptables/init [post]
 func (h *Handler) HandleInit(w http.ResponseWriter, r *http.Request) {
+	var chainName string
 	bodyBytes, err := io.ReadAll(r.Body)
 	if err == nil && len(bodyBytes) > 0 {
 		var req initRequest
 		if err := json.Unmarshal(bodyBytes, &req); err == nil {
 			if req.ChainName != "" {
 				h.Manager.Chain = req.ChainName
+				chainName = req.ChainName
 			}
 			if req.ParentChain != nil {
-				switch v := req.ParentChain.(type) {
-				case string:
-					h.Manager.ParentChains = []string{v}
-				case []interface{}: // JSON arrays come as []interface{}
-					var parents []string
-					for _, item := range v {
-						if s, ok := item.(string); ok {
-							parents = append(parents, s)
-						}
-					}
+				if parents := parseParentChains(req.ParentChain); len(parents) > 0 {
 					h.Manager.ParentChains = parents
 				}
 			}
-			if len(req.ExemptPorts) > 0 {
-				h.Manager.ExemptPorts = req.ExemptPorts
+			if req.ExemptPorts != nil {
+				h.Manager.ExemptPorts = []string(*req.ExemptPorts)
 			}
 		}
 	}
@@ -66,6 +101,16 @@ func (h *Handler) HandleInit(w http.ResponseWriter, r *http.Request) {
 	if err := h.Manager.Init(); err != nil {
 		handleError(w, err)
 		return
+	}
+
+	if chainName != "" && h.configManager != nil {
+		if err := h.configManager.Update(func(cfg *config.AppConfig) error {
+			cfg.IptablesChainName = chainName
+			return nil
+		}); err != nil {
+			handleError(w, errors.New(errors.CodeInternal, "Failed to save config: "+err.Error()))
+			return
+		}
 	}
 	response.Success(w, nil)
 }
@@ -159,6 +204,35 @@ func (h *Handler) HandleBlockIP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := h.Manager.BlockIP(req.IP); err != nil {
+		handleError(w, err)
+		return
+	}
+	response.Success(w, nil)
+}
+
+// HandleRemoveIP removes an IP rule (ACCEPT/DROP) if exists
+// @Summary Remove IP rule
+// @Description Remove an ALLOW/BLOCK rule for a specific IP
+// @Tags iptables
+// @Accept  json
+// @Produce  json
+// @Param request body ipRequest true "IP to remove"
+// @Success 200 {object} response.Response
+// @Failure 400 {object} response.Response
+// @Failure 500 {object} response.Response
+// @Router /api/iptables/remove [post]
+func (h *Handler) HandleRemoveIP(w http.ResponseWriter, r *http.Request) {
+	var req ipRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		response.Error(w, errors.CodeInvalidJSON, "Invalid JSON body")
+		return
+	}
+	if req.IP == "" {
+		response.Error(w, errors.CodeBadRequest, "IP is required")
+		return
+	}
+
+	if err := h.Manager.RemoveIPRule(req.IP); err != nil {
 		handleError(w, err)
 		return
 	}

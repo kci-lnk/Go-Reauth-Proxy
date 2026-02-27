@@ -78,14 +78,14 @@ func (h *Handler) saveConfigLocked() {
 	rulesCopy := make([]models.Rule, len(h.Rules))
 	copy(rulesCopy, h.Rules)
 
-	conf := &config.AppConfig{
-		Rules:        rulesCopy,
-		DefaultRoute: h.DefaultRoute,
-		AuthConfig:   h.AuthConfig,
-		SSLCert:      h.certPEM,
-		SSLKey:       h.keyPEM,
-	}
-	if err := h.configManager.Save(conf); err != nil {
+	if err := h.configManager.Update(func(conf *config.AppConfig) error {
+		conf.Rules = rulesCopy
+		conf.DefaultRoute = h.DefaultRoute
+		conf.AuthConfig = h.AuthConfig
+		conf.SSLCert = h.certPEM
+		conf.SSLKey = h.keyPEM
+		return nil
+	}); err != nil {
 		log.Printf("Failed to save config: %v", err)
 	}
 }
@@ -263,13 +263,13 @@ func (h *Handler) SetAuthConfig(config models.AuthConfig) error {
 		config.AuthPort = 7997
 	}
 	if config.AuthURL == "" {
-		config.AuthURL = "/auth"
+		config.AuthURL = "/api/auth/verify"
 	}
 	if config.LoginURL == "" {
 		config.LoginURL = "/login"
 	}
 	if config.LogoutURL == "" {
-		config.LogoutURL = "/logout"
+		config.LogoutURL = "/api/auth/logout"
 	}
 	if config.AuthCacheExpire <= 0 {
 		config.AuthCacheExpire = 60
@@ -327,10 +327,10 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			if proxyPath == "" {
 				proxyPath = "/login"
 			}
-		case "/__auth__/logout":
+		case "/__auth__/api/auth/logout":
 			proxyPath = authConfig.LogoutURL
 			if proxyPath == "" {
-				proxyPath = "/logout"
+				proxyPath = "/api/auth/logout"
 			}
 		default:
 			proxyPath = strings.TrimPrefix(r.URL.Path, "/__auth__")
@@ -656,7 +656,7 @@ func (h *Handler) checkAuth(w http.ResponseWriter, r *http.Request, authConfig m
 
 		authURLPath := authConfig.AuthURL
 		if authURLPath == "" {
-			authURLPath = "/auth"
+			authURLPath = "/api/auth/verify"
 		}
 		if !strings.HasPrefix(authURLPath, "/") {
 			authURLPath = "/" + authURLPath

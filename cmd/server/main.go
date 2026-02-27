@@ -30,12 +30,12 @@ import (
 // @description API for managing proxy rules and iptables.
 // @license.name MIT
 // @license.url https://opensource.org/license/MIT
-// @host 127.0.0.1:9091
+// @host 127.0.0.1:7996
 // @BasePath /
 
 func main() {
-	adminPort := flag.Int("admin-port", 9091, "Port for the Admin API (binds to 127.0.0.1)")
-	proxyPort := flag.Int("proxy-port", 9090, "Port for the Reverse Proxy (binds to 0.0.0.0)")
+	adminPort := flag.Int("admin-port", 7996, "Port for the Admin API (binds to 127.0.0.1)")
+	proxyPort := flag.Int("proxy-port", 7999, "Port for the Reverse Proxy (binds to 0.0.0.0)")
 	authCacheExpire := flag.Int("auth-cache-expire", 60, "Cache expiration time in seconds for authentication")
 	flag.Parse()
 
@@ -66,7 +66,7 @@ func main() {
 	currentConfig.AuthCacheExpire = *authCacheExpire
 	proxyHandler.SetAuthConfig(currentConfig)
 
-	adminServer := admin.NewServer(proxyHandler, *adminPort)
+	adminServer := admin.NewServer(proxyHandler, *adminPort, cfgManager, initialCfg)
 	go func() {
 		if err := adminServer.Start(); err != nil {
 			log.Fatalf("Admin server failed: %v", err)

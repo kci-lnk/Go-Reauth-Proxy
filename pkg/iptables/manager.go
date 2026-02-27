@@ -22,31 +22,52 @@ type Manager struct {
 	BaseRuleCount int
 }
 
+func parseParentChains(value interface{}) []string {
+	switch v := value.(type) {
+	case string:
+		return splitCommaSeparated(v)
+	case []string:
+		var out []string
+		for _, item := range v {
+			out = append(out, splitCommaSeparated(item)...)
+		}
+		return out
+	case []interface{}:
+		var out []string
+		for _, item := range v {
+			if s, ok := item.(string); ok {
+				out = append(out, splitCommaSeparated(s)...)
+			}
+		}
+		return out
+	default:
+		return nil
+	}
+}
+
+func splitCommaSeparated(s string) []string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return nil
+	}
+	parts := strings.Split(s, ",")
+	out := make([]string, 0, len(parts))
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part != "" {
+			out = append(out, part)
+		}
+	}
+	return out
+}
+
 func NewManager(opts Options) *Manager {
 	chain := opts.ChainName
 	if chain == "" {
 		chain = "REAUTH_FW"
 	}
 
-	var parents []string
-	switch v := opts.ParentChain.(type) {
-	case string:
-		if v != "" {
-			parents = []string{v}
-		} else {
-			parents = []string{"INPUT"}
-		}
-	case []string:
-		parents = v
-	case []interface{}:
-		for _, item := range v {
-			if s, ok := item.(string); ok {
-				parents = append(parents, s)
-			}
-		}
-	default:
-		parents = []string{"INPUT"}
-	}
+	parents := parseParentChains(opts.ParentChain)
 	if len(parents) == 0 {
 		parents = []string{"INPUT"}
 	}
@@ -190,7 +211,7 @@ func (m *Manager) RemoveBlockAll() error {
 }
 
 func (m *Manager) AllowIP(ip string) error {
-	m.RemoveIPRule(ip)
+	_ = m.RemoveIPRule(ip)
 	insertPos := strconv.Itoa(m.BaseRuleCount + 1)
 	if err := m.runIptables("-I", m.Chain, insertPos, "-s", ip, "-j", "ACCEPT"); err != nil {
 		return errors.New(errors.CodeIptablesCommandError, fmt.Sprintf("Failed to allow IP %s: %v", ip, err))
@@ -199,7 +220,7 @@ func (m *Manager) AllowIP(ip string) error {
 }
 
 func (m *Manager) BlockIP(ip string) error {
-	m.RemoveIPRule(ip)
+	_ = m.RemoveIPRule(ip)
 	insertPos := strconv.Itoa(m.BaseRuleCount + 1)
 	if err := m.runIptables("-I", m.Chain, insertPos, "-s", ip, "-j", "DROP"); err != nil {
 		return errors.New(errors.CodeIptablesCommandError, fmt.Sprintf("Failed to block IP %s: %v", ip, err))
@@ -207,9 +228,10 @@ func (m *Manager) BlockIP(ip string) error {
 	return nil
 }
 
-func (m *Manager) RemoveIPRule(ip string) {
+func (m *Manager) RemoveIPRule(ip string) error {
 	_ = m.runIptables("-D", m.Chain, "-s", ip, "-j", "ACCEPT")
 	_ = m.runIptables("-D", m.Chain, "-s", ip, "-j", "DROP")
+	return nil
 }
 
 type Rule struct {

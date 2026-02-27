@@ -9,7 +9,7 @@ Bun.serve({
   async fetch(req) {
     const url = new URL(req.url);
 
-    if (url.pathname === "/auth") {
+    if (url.pathname === "/api/auth/verify") {
       console.log("Auth request received", req.headers.get("cookie"))
       const cookie = req.headers.get("cookie") || "";
       const match = cookie.match(/session_id=([^;]+)/);

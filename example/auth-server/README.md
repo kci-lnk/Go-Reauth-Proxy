@@ -31,7 +31,7 @@ Configure `go-reauth-proxy` to use this server globally:
    Point the proxy to this authentication server via the Admin API:
 
    ```bash
-   curl -X POST http://127.0.0.1:9091/api/auth \
+   curl -X POST http://127.0.0.1:7996/api/auth \
      -H "Content-Type: application/json" \
      -d '{
        "auth_port": 7997,
@@ -45,7 +45,7 @@ Configure `go-reauth-proxy` to use this server globally:
    Create a reverse proxy rule that enforces authentication (`"use_auth": true`):
 
    ```bash
-   curl -X POST http://127.0.0.1:9091/api/rules \
+   curl -X POST http://127.0.0.1:7996/api/rules \
      -H "Content-Type: application/json" \
      -d '[{
        "path": "/protected",
@@ -55,4 +55,4 @@ Configure `go-reauth-proxy` to use this server globally:
        "rewrite_html": true
      }]'
    ```
-   *Note: With this setup, navigating to `http://localhost:9090/protected` will automatically redirect unauthenticated users to the login page.*
+   *Note: With this setup, navigating to `http://localhost:7999/protected` will automatically redirect unauthenticated users to the login page.*

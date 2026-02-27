@@ -361,7 +361,7 @@ const selectContent = `
 			<button onclick="document.getElementById('logout-modal').classList.remove('active')" class="modal-btn modal-btn-cancel">
 				Cancel
 			</button>
-			<a href="/__auth__/logout" class="modal-btn modal-btn-confirm" style="text-decoration:none;text-align:center;display:inline-flex;align-items:center;justify-content:center;">
+			<a href="/__auth__/api/auth/logout" class="modal-btn modal-btn-confirm" style="text-decoration:none;text-align:center;display:inline-flex;align-items:center;justify-content:center;">
 				Confirm
 			</a>
 		</div>

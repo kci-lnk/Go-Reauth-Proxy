@@ -467,6 +467,52 @@ const docTemplate = `{
                 }
             }
         },
+        "/api/iptables/remove": {
+            "post": {
+                "description": "Remove an ALLOW/BLOCK rule for a specific IP",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "iptables"
+                ],
+                "summary": "Remove IP rule",
+                "parameters": [
+                    {
+                        "description": "IP to remove",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/iptables.ipRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/response.Response"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/response.Response"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/response.Response"
+                        }
+                    }
+                }
+            }
+        },
         "/api/rules": {
             "get": {
                 "description": "Get all configured proxy rules",
@@ -688,7 +734,7 @@ const docTemplate = `{
                         "type": "string"
                     },
                     "example": [
-                        "9090",
+                        "7999",
                         "7999"
                     ]
                 },
@@ -728,14 +774,19 @@ const docTemplate = `{
                     "example": 3000
                 },
                 "auth_url": {
-                    "description": "Relative Verify URL (default /auth)",
+                    "description": "Relative Verify URL (default /api/auth/verify)",
                     "type": "string",
-                    "example": "/auth"
+                    "example": "/api/auth/verify"
                 },
                 "login_url": {
                     "description": "Relative Login URL (default /login)",
                     "type": "string",
                     "example": "/login"
+                },
+                "logout_url": {
+                    "description": "Relative Logout URL (default /api/auth/logout)",
+                    "type": "string",
+                    "example": "/api/auth/logout"
                 }
             }
         },
@@ -758,7 +809,7 @@ const docTemplate = `{
                     "example": true
                 },
                 "target": {
-                    "description": "Target URL (e.g., \"http://localhost:9091\")",
+                    "description": "Target URL (e.g., \"http://localhost:7996\")",
                     "type": "string",
                     "example": "http://localhost:8080"
                 },
@@ -819,7 +870,7 @@ const docTemplate = `{
 // SwaggerInfo holds exported Swagger Info so clients can modify it
 var SwaggerInfo = &swag.Spec{
 	Version:          "1.0",
-	Host:             "127.0.0.1:9091",
+	Host:             "127.0.0.1:7996",
 	BasePath:         "/",
 	Schemes:          []string{},
 	Title:            "Go-Reauth-Proxy",

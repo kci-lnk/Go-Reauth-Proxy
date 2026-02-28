@@ -33,11 +33,10 @@ func defaultConfig() *AppConfig {
 		Rules:        []models.Rule{},
 		DefaultRoute: "/__select__",
 		AuthConfig: models.AuthConfig{
-			AuthPort:        7997,
-			AuthURL:         "/api/auth/verify",
-			LoginURL:        "/login",
-			LogoutURL:       "/api/auth/logout",
-			AuthCacheExpire: 60,
+			AuthPort:  7997,
+			AuthURL:   "/api/auth/verify",
+			LoginURL:  "/login",
+			LogoutURL: "/api/auth/logout",
 		},
 	}
 }
@@ -61,9 +60,6 @@ func applyDefaults(cfg *AppConfig) {
 	}
 	if cfg.AuthConfig.LogoutURL == "" {
 		cfg.AuthConfig.LogoutURL = "/api/auth/logout"
-	}
-	if cfg.AuthConfig.AuthCacheExpire <= 0 {
-		cfg.AuthConfig.AuthCacheExpire = 60
 	}
 }
 

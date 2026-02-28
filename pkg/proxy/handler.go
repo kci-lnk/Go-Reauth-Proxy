@@ -3,8 +3,8 @@ package proxy
 import (
 	"bytes"
 	"crypto/tls"
+	"encoding/json"
 	"fmt"
-	"go-reauth-proxy/pkg/auth"
 	"go-reauth-proxy/pkg/config"
 	"go-reauth-proxy/pkg/errors"
 
@@ -28,7 +28,6 @@ type Handler struct {
 	Rules        []models.Rule
 	DefaultRoute string
 	AuthConfig   models.AuthConfig
-	AuthCache    *auth.Cache
 	AdminPort    int
 	sslCert      atomic.Value
 
@@ -37,12 +36,11 @@ type Handler struct {
 	keyPEM        string
 }
 
-func NewHandler(cache *auth.Cache, adminPort int, cfgManager *config.Manager, initialCfg *config.AppConfig) *Handler {
+func NewHandler(adminPort int, cfgManager *config.Manager, initialCfg *config.AppConfig) *Handler {
 	h := &Handler{
 		Rules:         initialCfg.Rules,
 		DefaultRoute:  initialCfg.DefaultRoute,
 		AuthConfig:    initialCfg.AuthConfig,
-		AuthCache:     cache,
 		AdminPort:     adminPort,
 		configManager: cfgManager,
 		certPEM:       initialCfg.SSLCert,
@@ -62,11 +60,6 @@ func NewHandler(cache *auth.Cache, adminPort int, cfgManager *config.Manager, in
 		var empty *tls.Certificate
 		h.sslCert.Store(empty)
 	}
-
-	if h.AuthCache != nil {
-		h.AuthCache.SetTTL(time.Duration(initialCfg.AuthConfig.AuthCacheExpire) * time.Second)
-	}
-
 	return h
 }
 
@@ -271,16 +264,10 @@ func (h *Handler) SetAuthConfig(config models.AuthConfig) error {
 	if config.LogoutURL == "" {
 		config.LogoutURL = "/api/auth/logout"
 	}
-	if config.AuthCacheExpire <= 0 {
-		config.AuthCacheExpire = 60
-	}
 
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.AuthConfig = config
-	if h.AuthCache != nil {
-		h.AuthCache.SetTTL(time.Duration(config.AuthCacheExpire) * time.Second)
-	}
 	h.saveConfigLocked()
 	return nil
 }
@@ -362,6 +349,10 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			originalDirector(req)
 			req.Host = targetURL.Host
 			req.URL.Path = targetURL.Path
+
+			remoteIP, _, _ := net.SplitHostPort(r.RemoteAddr)
+			req.Header.Set("X-Real-IP", remoteIP)
+			req.Header.Set("X-Forwarded-For", remoteIP)
 		}
 
 		proxy.ServeHTTP(w, r)
@@ -505,7 +496,10 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	proxy := &httputil.ReverseProxy{
 		Transport: transport,
 		Rewrite: func(pr *httputil.ProxyRequest) {
+			remoteIP, _, _ := net.SplitHostPort(pr.In.RemoteAddr)
 			pr.SetXForwarded()
+			pr.Out.Header.Set("X-Forwarded-For", remoteIP)
+			pr.Out.Header.Set("X-Real-IP", remoteIP)
 			pr.SetURL(targetURL)
 			pr.Out.Host = targetURL.Host
 
@@ -625,79 +619,79 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) checkAuth(w http.ResponseWriter, r *http.Request, authConfig models.AuthConfig) bool {
-	cookieHeader := r.Header.Get("Cookie")
-	authHeader := r.Header.Get("Authorization")
+	authTransport := http.DefaultTransport.(*http.Transport).Clone()
+	authTransport.MaxIdleConns = 100
+	authTransport.MaxIdleConnsPerHost = 100
+	authTransport.IdleConnTimeout = 90 * time.Second
+	authTransport.ForceAttemptHTTP2 = true
 
-	cacheKey := auth.GenerateKey(cookieHeader, authHeader)
-	canCachePositively := cookieHeader != "" || authHeader != ""
-
-	if valid, found := h.AuthCache.Get(cacheKey); found {
-		if valid {
-			return true
-		}
-	} else {
-
-		authTransport := http.DefaultTransport.(*http.Transport).Clone()
-		authTransport.MaxIdleConns = 100
-		authTransport.MaxIdleConnsPerHost = 100
-		authTransport.IdleConnTimeout = 90 * time.Second
-		authTransport.ForceAttemptHTTP2 = true
-
-		client := &http.Client{
-			Timeout:   5 * time.Second,
-			Transport: authTransport,
-		}
-
-		if authConfig.AuthPort <= 0 {
-			log.Printf("Auth check requested but AuthPort is not configured")
-			response.HTML(w, errors.CodeInternal, "Authentication Service Not Configured", nil)
-			return false
-		}
-
-		authURLPath := authConfig.AuthURL
-		if authURLPath == "" {
-			authURLPath = "/api/auth/verify"
-		}
-		if !strings.HasPrefix(authURLPath, "/") {
-			authURLPath = "/" + authURLPath
-		}
-
-		authURL := fmt.Sprintf("http://127.0.0.1:%d%s", authConfig.AuthPort, authURLPath)
-
-		authReq, err := http.NewRequest("GET", authURL, nil)
-		if err != nil {
-			log.Printf("Failed to create auth request: %v", err)
-			response.HTML(w, errors.CodeInternal, "Internal Server Error during Auth", nil)
-			return false
-		}
-
-		authReq.Header = r.Header.Clone()
-
-		resp, err := client.Do(authReq)
-		if err != nil {
-			log.Printf("Auth request failed: %v", err)
-			response.HTML(w, errors.CodeProxyAuthFailed, "Authentication Service Unavailable", nil)
-			return false
-		}
-		defer resp.Body.Close()
-
-		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
-			if canCachePositively {
-				h.AuthCache.Set(cacheKey, true)
-			}
-			return true
-		}
-
-		if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
-			h.AuthCache.SetWithTTL(cacheKey, false, 5*time.Second)
-		}
+	client := &http.Client{
+		Timeout:   5 * time.Second,
+		Transport: authTransport,
 	}
+
+	if authConfig.AuthPort <= 0 {
+		log.Printf("Auth check requested but AuthPort is not configured")
+		response.HTML(w, errors.CodeInternal, "Authentication Service Not Configured", nil)
+		return false
+	}
+
+	authURLPath := authConfig.AuthURL
+	if authURLPath == "" {
+		authURLPath = "/api/auth/verify"
+	}
+	if !strings.HasPrefix(authURLPath, "/") {
+		authURLPath = "/" + authURLPath
+	}
+
+	authURL := fmt.Sprintf("http://127.0.0.1:%d%s", authConfig.AuthPort, authURLPath)
+
+	authReq, err := http.NewRequest("GET", authURL, nil)
+	if err != nil {
+		log.Printf("Failed to create auth request: %v", err)
+		response.HTML(w, errors.CodeInternal, "Internal Server Error during Auth", nil)
+		return false
+	}
+
+	remoteIP, _, _ := net.SplitHostPort(r.RemoteAddr)
+
+	authReq.Header.Set("X-Real-IP", remoteIP)
+	authReq.Header.Set("X-Forwarded-For", remoteIP)
+
+	if cookie := r.Header.Get("Cookie"); cookie != "" {
+		authReq.Header.Set("Cookie", cookie)
+	}
+	if auth := r.Header.Get("Authorization"); auth != "" {
+		authReq.Header.Set("Authorization", auth)
+	}
+
+	resp, err := client.Do(authReq)
+	if err != nil {
+		log.Printf("Auth request failed: %v", err)
+		response.HTML(w, errors.CodeProxyAuthFailed, "Authentication Service Unavailable", nil)
+		return false
+	}
+	defer resp.Body.Close()
+
+	var authResponse struct {
+		Success bool   `json:"success"`
+		Message string `json:"message"`
+	}
+
+	if err := json.NewDecoder(resp.Body).Decode(&authResponse); err != nil {
+		log.Printf("Failed to decode auth response: %v", err)
+		response.HTML(w, errors.CodeInternal, "Invalid Auth Response Format", nil)
+		return false
+	}
+	if authResponse.Success {
+		return true
+	}
+	log.Printf("Auth failed: %s", authResponse.Message)
 
 	scheme := "http"
 	if r.TLS != nil || r.Header.Get("X-Forwarded-Proto") == "https" {
 		scheme = "https"
 	}
-
 	host := r.Host
 	if forwardedHost := r.Header.Get("X-Forwarded-Host"); forwardedHost != "" {
 		host = forwardedHost
@@ -711,7 +705,6 @@ func (h *Handler) checkAuth(w http.ResponseWriter, r *http.Request, authConfig m
 	}
 
 	loginURL, _ := url.Parse("/__auth__/login")
-
 	q := loginURL.Query()
 	q.Set("redirect_uri", originalURL.String())
 	loginURL.RawQuery = q.Encode()

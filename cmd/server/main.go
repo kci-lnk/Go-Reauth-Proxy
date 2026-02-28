@@ -5,7 +5,6 @@ import (
 	"flag"
 	"fmt"
 	"go-reauth-proxy/pkg/admin"
-	"go-reauth-proxy/pkg/auth"
 	"go-reauth-proxy/pkg/config"
 	"go-reauth-proxy/pkg/middleware"
 	"go-reauth-proxy/pkg/proxy"
@@ -36,7 +35,6 @@ import (
 func main() {
 	adminPort := flag.Int("admin-port", 7996, "Port for the Admin API (binds to 127.0.0.1)")
 	proxyPort := flag.Int("proxy-port", 7999, "Port for the Reverse Proxy (binds to 0.0.0.0)")
-	authCacheExpire := flag.Int("auth-cache-expire", 60, "Cache expiration time in seconds for authentication")
 	flag.Parse()
 
 	log.Printf("Starting Go Reauth Proxy Service...")
@@ -58,12 +56,9 @@ func main() {
 	if err != nil {
 		log.Fatalf("Failed to load config: %v", err)
 	}
-
-	authCache := auth.NewCache(time.Duration(*authCacheExpire) * time.Second)
-	proxyHandler := proxy.NewHandler(authCache, *adminPort, cfgManager, initialCfg)
+	proxyHandler := proxy.NewHandler(*adminPort, cfgManager, initialCfg)
 
 	currentConfig := proxyHandler.GetAuthConfig()
-	currentConfig.AuthCacheExpire = *authCacheExpire
 	proxyHandler.SetAuthConfig(currentConfig)
 
 	adminServer := admin.NewServer(proxyHandler, *adminPort, cfgManager, initialCfg)

@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"os"
 	"os/signal"
@@ -83,7 +84,8 @@ func main() {
 		ReadHeaderTimeout: 10 * time.Second,
 		IdleTimeout:       120 * time.Second,
 		TLSConfig: &tls.Config{
-			NextProtos: []string{"h2", "http/1.1"},
+			NextProtos:             []string{"h2", "http/1.1"},
+			SessionTicketsDisabled: true,
 			GetCertificate: func(info *tls.ClientHelloInfo) (*tls.Certificate, error) {
 				cert := proxyHandler.GetSSLCertificate()
 				if cert == nil {
@@ -106,6 +108,41 @@ func main() {
 			middleware.Logger(proxyHandler).ServeHTTP(w, r)
 		}),
 	}
+
+	type connTracker struct {
+		m sync.Map
+	}
+
+	closeIdle := func(ct *connTracker) {
+		ct.m.Range(func(key, value any) bool {
+			if state, ok := value.(http.ConnState); ok && state == http.StateIdle {
+				_ = key.(net.Conn).Close()
+			}
+			return true
+		})
+	}
+
+	httpsConns := &connTracker{}
+	httpConns := &connTracker{}
+	httpsServer.ConnState = func(c net.Conn, state http.ConnState) {
+		if state == http.StateClosed || state == http.StateHijacked {
+			httpsConns.m.Delete(c)
+			return
+		}
+		httpsConns.m.Store(c, state)
+	}
+	httpServer.ConnState = func(c net.Conn, state http.ConnState) {
+		if state == http.StateClosed || state == http.StateHijacked {
+			httpConns.m.Delete(c)
+			return
+		}
+		httpConns.m.Store(c, state)
+	}
+
+	proxyHandler.SetSSLChangeHook(func() {
+		closeIdle(httpsConns)
+		closeIdle(httpConns)
+	})
 
 	go func() {
 		if err := httpsServer.Serve(tls.NewListener(tlsL, httpsServer.TLSConfig)); err != nil && err != http.ErrServerClosed {

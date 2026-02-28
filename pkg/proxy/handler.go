@@ -30,6 +30,7 @@ type Handler struct {
 	AuthConfig   models.AuthConfig
 	AdminPort    int
 	sslCert      atomic.Value
+	sslOnChange  atomic.Value
 
 	configManager *config.Manager
 	certPEM       string
@@ -47,6 +48,9 @@ func NewHandler(adminPort int, cfgManager *config.Manager, initialCfg *config.Ap
 		keyPEM:        initialCfg.SSLKey,
 	}
 
+	var emptyHook func()
+	h.sslOnChange.Store(emptyHook)
+
 	if h.certPEM != "" && h.keyPEM != "" {
 		cert, err := tls.X509KeyPair([]byte(h.certPEM), []byte(h.keyPEM))
 		if err == nil {
@@ -61,6 +65,19 @@ func NewHandler(adminPort int, cfgManager *config.Manager, initialCfg *config.Ap
 		h.sslCert.Store(empty)
 	}
 	return h
+}
+
+func (h *Handler) SetSSLChangeHook(hook func()) {
+	h.sslOnChange.Store(hook)
+}
+
+func (h *Handler) getSSLChangeHook() func() {
+	val := h.sslOnChange.Load()
+	if val == nil {
+		return nil
+	}
+	hook, _ := val.(func())
+	return hook
 }
 
 func (h *Handler) saveConfigLocked() {
@@ -85,7 +102,6 @@ func (h *Handler) saveConfigLocked() {
 
 func (h *Handler) SetSSLCertificate(cert *tls.Certificate, certPEM, keyPEM string) {
 	h.mu.Lock()
-	defer h.mu.Unlock()
 	if cert == nil {
 		var empty *tls.Certificate
 		h.sslCert.Store(empty)
@@ -97,6 +113,11 @@ func (h *Handler) SetSSLCertificate(cert *tls.Certificate, certPEM, keyPEM strin
 		h.keyPEM = keyPEM
 	}
 	h.saveConfigLocked()
+	hook := h.getSSLChangeHook()
+	h.mu.Unlock()
+	if hook != nil {
+		hook()
+	}
 }
 
 func (h *Handler) GetSSLCertificate() *tls.Certificate {
@@ -110,12 +131,16 @@ func (h *Handler) GetSSLCertificate() *tls.Certificate {
 
 func (h *Handler) ClearSSLCertificate() {
 	h.mu.Lock()
-	defer h.mu.Unlock()
 	var empty *tls.Certificate
 	h.sslCert.Store(empty)
 	h.certPEM = ""
 	h.keyPEM = ""
 	h.saveConfigLocked()
+	hook := h.getSSLChangeHook()
+	h.mu.Unlock()
+	if hook != nil {
+		hook()
+	}
 }
 
 func (h *Handler) AddRule(newRule models.Rule) error {

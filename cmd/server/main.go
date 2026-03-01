@@ -11,15 +11,15 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"os"
+	"os/signal"
 	"path/filepath"
 	"strings"
 	"sync"
-
-	"os"
-	"os/signal"
 	"syscall"
 	"time"
 
+	"github.com/pires/go-proxyproto"
 	"github.com/soheilhy/cmux"
 
 	_ "go-reauth-proxy/cmd/server/docs"
@@ -75,7 +75,15 @@ func main() {
 		log.Fatalf("Failed to listen on proxy port: %v", err)
 	}
 
-	m := cmux.New(tcpListener)
+	proxyListener := &proxyproto.Listener{
+		Listener: tcpListener,
+		Policy: func(upstream net.Addr) (proxyproto.Policy, error) {
+			return proxyproto.REQUIRE, nil
+		},
+	}
+
+	// 将包装后的 proxyListener 交给 cmux
+	m := cmux.New(proxyListener)
 	tlsL := m.Match(cmux.TLS())
 	httpL := m.Match(cmux.HTTP1Fast(), cmux.HTTP2())
 

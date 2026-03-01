@@ -16,6 +16,7 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"path"
 	"strconv"
 	"strings"
 	"sync"
@@ -35,6 +36,47 @@ type Handler struct {
 	configManager *config.Manager
 	certPEM       string
 	keyPEM        string
+}
+
+// getRealIP 实现了多级回退获取真实 IP 的逻辑
+func (h *Handler) getRealIP(r *http.Request) string {
+	// 优先级 1: 检查常见的代理头（如果 FRP 之后还接了 Nginx 等）
+	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+		parts := strings.Split(xff, ",")
+		return strings.TrimSpace(parts[0])
+	}
+	if xri := r.Header.Get("X-Real-IP"); xri != "" {
+		return xri
+	}
+
+	// 优先级 2: 获取连接本身的 RemoteAddr
+	// 如果 main.go 里的 proxyproto 生效了，这里拿到的就是 FRP 传过来的真实客户端 IP
+	remoteIP, _, _ := net.SplitHostPort(r.RemoteAddr)
+	return remoteIP
+}
+
+// getClientIP 尝试从多个来源获取真实 IP，具备回退方案
+func (h *Handler) getClientIP(r *http.Request) string {
+	// 1. 优先尝试 X-Forwarded-For (多级代理)
+	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+		// 取第一个 IP（最原始的客户端 IP）
+		parts := strings.Split(xff, ",")
+		if len(parts) > 0 {
+			ip := strings.TrimSpace(parts[0])
+			if ip != "" {
+				return ip
+			}
+		}
+	}
+
+	// 2. 尝试 X-Real-IP
+	if xri := r.Header.Get("X-Real-IP"); xri != "" {
+		return xri
+	}
+
+	// 3. 最后回退到 RemoteAddr (如果监听器开启了 Proxy Protocol，这里就是真实 IP)
+	remoteIP, _, _ := net.SplitHostPort(r.RemoteAddr)
+	return remoteIP
 }
 
 func NewHandler(adminPort int, cfgManager *config.Manager, initialCfg *config.AppConfig) *Handler {
@@ -298,7 +340,11 @@ func (h *Handler) SetAuthConfig(config models.AuthConfig) error {
 }
 
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	// Serve embedded favicon/static files
+	cleanedPath := path.Clean(r.URL.Path)
+	if strings.HasSuffix(r.URL.Path, "/") && cleanedPath != "/" {
+		cleanedPath += "/"
+	}
+	r.URL.Path = cleanedPath
 	if response.IsFaviconPath(r.URL.Path) {
 		response.ServeFavicon(w, r)
 		return
@@ -345,11 +391,11 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				proxyPath = "/api/auth/logout"
 			}
 		default:
-			proxyPath = strings.TrimPrefix(r.URL.Path, "/__auth__")
-		}
-
-		if !strings.HasPrefix(proxyPath, "/") {
-			proxyPath = "/" + proxyPath
+			rawProxyPath := strings.TrimPrefix(r.URL.Path, "/__auth__")
+			if !strings.HasPrefix(rawProxyPath, "/") {
+				rawProxyPath = "/" + rawProxyPath
+			}
+			proxyPath = path.Clean(rawProxyPath)
 		}
 
 		targetURL.Path = singleJoiningSlash(targetURL.Path, proxyPath)
@@ -375,7 +421,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			req.Host = targetURL.Host
 			req.URL.Path = targetURL.Path
 
-			remoteIP, _, _ := net.SplitHostPort(r.RemoteAddr)
+			remoteIP := h.getClientIP(r)
 			req.Header.Set("X-Real-IP", remoteIP)
 			req.Header.Set("X-Forwarded-For", remoteIP)
 		}
@@ -521,7 +567,8 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	proxy := &httputil.ReverseProxy{
 		Transport: transport,
 		Rewrite: func(pr *httputil.ProxyRequest) {
-			remoteIP, _, _ := net.SplitHostPort(pr.In.RemoteAddr)
+			remoteIP := h.getClientIP(pr.In)
+
 			pr.SetXForwarded()
 			pr.Out.Header.Set("X-Forwarded-For", remoteIP)
 			pr.Out.Header.Set("X-Real-IP", remoteIP)
@@ -530,12 +577,10 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 			if matchedRule.StripPath {
 				pr.Out.URL.Path = strings.TrimPrefix(pr.Out.URL.Path, matchedRule.Path)
-				if pr.Out.URL.RawPath != "" {
-					pr.Out.URL.RawPath = strings.TrimPrefix(pr.Out.URL.RawPath, matchedRule.Path)
+				if !strings.HasPrefix(pr.Out.URL.Path, "/") {
+					pr.Out.URL.Path = "/" + pr.Out.URL.Path
 				}
-				if pr.Out.URL.Path == "" {
-					pr.Out.URL.Path = "/"
-				}
+				pr.Out.URL.RawPath = ""
 			}
 
 			if origin := pr.In.Header.Get("Origin"); origin != "" {
@@ -546,12 +591,16 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				if err == nil {
 					ref.Scheme = targetURL.Scheme
 					ref.Host = targetURL.Host
+					ref.Path = path.Clean(ref.Path)
+
 					if matchedRule.StripPath {
 						ref.Path = strings.TrimPrefix(ref.Path, matchedRule.Path)
-						if ref.Path == "" {
-							ref.Path = "/"
+						if !strings.HasPrefix(ref.Path, "/") {
+							ref.Path = "/" + ref.Path
 						}
 					}
+					ref.RawPath = ""
+
 					pr.Out.Header.Set("Referer", ref.String())
 				}
 			}
@@ -678,7 +727,7 @@ func (h *Handler) checkAuth(w http.ResponseWriter, r *http.Request, authConfig m
 		return false
 	}
 
-	remoteIP, _, _ := net.SplitHostPort(r.RemoteAddr)
+	remoteIP := h.getClientIP(r)
 
 	authReq.Header.Set("X-Real-IP", remoteIP)
 	authReq.Header.Set("X-Forwarded-For", remoteIP)

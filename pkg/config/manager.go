@@ -35,10 +35,11 @@ func defaultConfig() *AppConfig {
 		Rules:        []models.Rule{},
 		DefaultRoute: "/__select__",
 		AuthConfig: models.AuthConfig{
-			AuthPort:  7997,
-			AuthURL:   "/api/auth/verify",
-			LoginURL:  "/login",
-			LogoutURL: "/api/auth/logout",
+			AuthPort:     7997,
+			AuthURL:      "/api/auth/verify",
+			LoginURL:     "/login",
+			LogoutURL:    "/api/auth/logout",
+			PreflightURL: "/api/auth/preflight",
 		},
 		AdminPort:          7996,
 		ProxyProtocolForce: false,
@@ -64,6 +65,9 @@ func applyDefaults(cfg *AppConfig) {
 	}
 	if cfg.AuthConfig.LogoutURL == "" {
 		cfg.AuthConfig.LogoutURL = "/api/auth/logout"
+	}
+	if cfg.AuthConfig.PreflightURL == "" {
+		cfg.AuthConfig.PreflightURL = "/api/auth/preflight"
 	}
 
 	if cfg.AdminPort <= 0 {

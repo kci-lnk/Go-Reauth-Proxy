@@ -61,6 +61,71 @@ func (h *Handler) getClientIP(r *http.Request) string {
 	return remoteIP
 }
 
+func (h *Handler) shouldDenyByPreflight(r *http.Request, authConfig models.AuthConfig, isMatch bool) bool {
+	if authConfig.AuthPort <= 0 {
+		return false
+	}
+
+	preflightURLPath := authConfig.PreflightURL
+	if preflightURLPath == "" {
+		preflightURLPath = "/api/auth/preflight"
+	}
+	if !strings.HasPrefix(preflightURLPath, "/") {
+		preflightURLPath = "/" + preflightURLPath
+	}
+
+	preflightURL := fmt.Sprintf("http://127.0.0.1:%d%s", authConfig.AuthPort, preflightURLPath)
+
+	preflightReq, err := http.NewRequest(http.MethodHead, preflightURL, nil)
+	if err != nil {
+		log.Printf("Failed to create preflight request: %v", err)
+		return false
+	}
+
+	remoteIP := h.getClientIP(r)
+	preflightReq.Header.Set("X-Real-IP", remoteIP)
+	preflightReq.Header.Set("X-Forwarded-For", remoteIP)
+	preflightReq.Header.Set("X-Forwarded-Path", r.URL.RequestURI())
+	preflightReq.Header.Set("X-Match", strconv.FormatBool(isMatch))
+
+	if cookie := r.Header.Get("Cookie"); cookie != "" {
+		preflightReq.Header.Set("Cookie", cookie)
+	}
+	if auth := r.Header.Get("Authorization"); auth != "" {
+		preflightReq.Header.Set("Authorization", auth)
+	}
+
+	preflightTransport := http.DefaultTransport.(*http.Transport).Clone()
+	preflightTransport.MaxIdleConns = 100
+	preflightTransport.MaxIdleConnsPerHost = 100
+	preflightTransport.IdleConnTimeout = 90 * time.Second
+	preflightTransport.ForceAttemptHTTP2 = true
+
+	client := &http.Client{
+		Timeout:   5 * time.Second,
+		Transport: preflightTransport,
+	}
+
+	resp, err := client.Do(preflightReq)
+	if err != nil {
+		log.Printf("Preflight request failed: %v", err)
+		return false
+	}
+	resp.Body.Close()
+
+	return strings.EqualFold(resp.Header.Get("X-Option"), "deny")
+}
+
+func (h *Handler) abortConnection(w http.ResponseWriter) {
+	rc := http.NewResponseController(w)
+	conn, _, err := rc.Hijack()
+	if err == nil && conn != nil {
+		conn.Close()
+		return
+	}
+	panic(http.ErrAbortHandler)
+}
+
 func NewHandler(adminPort int, cfgManager *config.Manager, initialCfg *config.AppConfig) *Handler {
 	h := &Handler{
 		Rules:              initialCfg.Rules,
@@ -347,6 +412,9 @@ func (h *Handler) SetAuthConfig(config models.AuthConfig) error {
 	if config.LogoutURL == "" {
 		config.LogoutURL = "/api/auth/logout"
 	}
+	if config.PreflightURL == "" {
+		config.PreflightURL = "/api/auth/preflight"
+	}
 
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -372,6 +440,11 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		rules := h.GetRules()
 		h.mu.RUnlock()
 
+		if h.shouldDenyByPreflight(r, authConfig, true) {
+			h.abortConnection(w)
+			return
+		}
+
 		if authConfig.AuthURL != "" {
 			if !h.checkAuth(w, r, authConfig) {
 				return
@@ -389,6 +462,11 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 		if authConfig.AuthPort <= 0 {
 			response.HTML(w, errors.CodeInternal, "Authentication service is not configured", nil)
+			return
+		}
+
+		if h.shouldDenyByPreflight(r, authConfig, true) {
+			h.abortConnection(w)
 			return
 		}
 
@@ -440,7 +518,9 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			remoteIP := h.getClientIP(r)
 			req.Header.Set("X-Real-IP", remoteIP)
 			req.Header.Set("X-Forwarded-For", remoteIP)
+			// Prevent X-Forwarded-Path and X-Match from being passed to the backend
 			req.Header.Del("X-Forwarded-Path")
+			req.Header.Del("X-Match")
 		}
 
 		proxy.ServeHTTP(w, r)
@@ -518,20 +598,30 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if matchedRule == nil {
+		h.mu.RLock()
+		authConfig := h.AuthConfig
+		h.mu.RUnlock()
+
 		if r.URL.Path == "/" {
 			h.mu.RLock()
 			count := len(h.Rules)
 			h.mu.RUnlock()
 
+			if h.shouldDenyByPreflight(r, authConfig, true) {
+				h.abortConnection(w)
+				return
+			}
 			if count == 0 {
 				response.Welcome(w, nil)
 				return
 			}
-
 			http.Redirect(w, r, h.GetDefaultRoute(), http.StatusFound)
 			return
 		}
-
+		if h.shouldDenyByPreflight(r, authConfig, false) {
+			h.abortConnection(w)
+			return
+		}
 		response.HTML(w, errors.CodeNotFound, "Not Found", h.GetRules())
 		return
 	}
@@ -554,6 +644,14 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
+	}
+
+	h.mu.RLock()
+	authConfig := h.AuthConfig
+	h.mu.RUnlock()
+	if h.shouldDenyByPreflight(r, authConfig, true) {
+		h.abortConnection(w)
+		return
 	}
 
 	targetURL, err := url.Parse(matchedRule.Target)

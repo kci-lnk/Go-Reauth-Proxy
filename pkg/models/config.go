@@ -10,10 +10,11 @@ type Rule struct {
 }
 
 type AuthConfig struct {
-	AuthPort  int    `json:"auth_port" example:"3000"`              // Local Auth Service Port
-	AuthURL   string `json:"auth_url" example:"/api/auth/verify"`   // Relative Verify URL (default /api/auth/verify)
-	LoginURL  string `json:"login_url" example:"/login"`            // Relative Login URL (default /login)
-	LogoutURL string `json:"logout_url" example:"/api/auth/logout"` // Relative Logout URL (default /api/auth/logout)
+	AuthPort     int    `json:"auth_port" example:"3000"`                    // Local Auth Service Port
+	AuthURL      string `json:"auth_url" example:"/api/auth/verify"`         // Relative Verify URL (default /api/auth/verify)
+	LoginURL     string `json:"login_url" example:"/login"`                  // Relative Login URL (default /login)
+	LogoutURL    string `json:"logout_url" example:"/api/auth/logout"`       // Relative Logout URL (default /api/auth/logout)
+	PreflightURL string `json:"preflight_url" example:"/api/auth/preflight"` // Relative Preflight URL (default /api/auth/preflight)
 }
 
 type PortConfig struct {

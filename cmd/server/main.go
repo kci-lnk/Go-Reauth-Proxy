@@ -2,6 +2,7 @@ package main
 
 import (
 	"crypto/tls"
+	"errors"
 	"flag"
 	"fmt"
 	"go-reauth-proxy/pkg/admin"
@@ -14,6 +15,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -33,9 +35,170 @@ import (
 // @host 127.0.0.1:7996
 // @BasePath /
 
+type proxyStack struct {
+	mu          sync.Mutex
+	host        string
+	listenAddr  string
+	proxyPort   int
+	handler     *proxy.Handler
+	httpServer  *http.Server
+	httpsServer *http.Server
+
+	stop     func()
+	rebindCh chan struct{}
+}
+
+func newProxyStack(proxyPort int, handler *proxy.Handler, httpServer *http.Server, httpsServer *http.Server) *proxyStack {
+	return &proxyStack{
+		proxyPort:   proxyPort,
+		handler:     handler,
+		httpServer:  httpServer,
+		httpsServer: httpsServer,
+		rebindCh:    make(chan struct{}, 1),
+	}
+}
+
+func (s *proxyStack) desiredHost() string {
+	if s.handler.GetProxyProtocolForce() {
+		return "127.0.0.1"
+	}
+	return "0.0.0.0"
+}
+
+func (s *proxyStack) Start() error {
+	if err := s.rebind(); err != nil {
+		return err
+	}
+	go func() {
+		for range s.rebindCh {
+			if err := s.rebind(); err != nil {
+				log.Printf("Failed to rebind proxy listener: %v", err)
+			}
+		}
+	}()
+	return nil
+}
+
+func (s *proxyStack) RequestRebind() {
+	select {
+	case s.rebindCh <- struct{}{}:
+	default:
+	}
+}
+
+func (s *proxyStack) Stop() {
+	s.mu.Lock()
+	stop := s.stop
+	s.stop = nil
+	s.mu.Unlock()
+	if stop != nil {
+		stop()
+	}
+}
+
+func (s *proxyStack) ListenAddr() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.listenAddr
+}
+
+func (s *proxyStack) rebind() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	desiredHost := s.desiredHost()
+	if s.host == desiredHost && s.stop != nil {
+		return nil
+	}
+
+	if s.stop != nil {
+		s.stop()
+		s.stop = nil
+	}
+
+	stop, listenAddr, err := startProxyServers(desiredHost, s.proxyPort, s.handler, s.httpServer, s.httpsServer)
+	if err != nil {
+		return err
+	}
+	s.host = desiredHost
+	s.stop = stop
+	s.listenAddr = listenAddr
+	log.Printf("Reverse Proxy listening on %s", listenAddr)
+	return nil
+}
+
+func isClosedConnErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, net.ErrClosed) {
+		return true
+	}
+	return strings.Contains(err.Error(), "use of closed network connection")
+}
+
+func startProxyServers(host string, proxyPort int, proxyHandler *proxy.Handler, httpServer *http.Server, httpsServer *http.Server) (func(), string, error) {
+	addr := net.JoinHostPort(host, strconv.Itoa(proxyPort))
+	tcpListener, err := net.Listen("tcp4", addr)
+	if err != nil {
+		return nil, "", err
+	}
+
+	proxyListener := &proxyproto.Listener{
+		Listener: tcpListener,
+		Policy: func(upstream net.Addr) (proxyproto.Policy, error) {
+			if proxyHandler.GetProxyProtocolForce() {
+				return proxyproto.REQUIRE, nil
+			}
+			return proxyproto.USE, nil
+		},
+	}
+
+	m := cmux.New(proxyListener)
+	tlsL := m.Match(cmux.TLS())
+	httpL := m.Match(cmux.HTTP1Fast(), cmux.HTTP2())
+
+	var wg sync.WaitGroup
+	wg.Add(3)
+
+	go func() {
+		defer wg.Done()
+		err := httpsServer.Serve(tls.NewListener(tlsL, httpsServer.TLSConfig))
+		if err != nil && err != http.ErrServerClosed && !isClosedConnErr(err) {
+			log.Printf("HTTPS server failed: %v", err)
+		}
+	}()
+
+	go func() {
+		defer wg.Done()
+		err := httpServer.Serve(httpL)
+		if err != nil && err != http.ErrServerClosed && !isClosedConnErr(err) {
+			log.Printf("HTTP server failed: %v", err)
+		}
+	}()
+
+	go func() {
+		defer wg.Done()
+		err := m.Serve()
+		if err != nil && !isClosedConnErr(err) {
+			log.Printf("cmux server failed: %v", err)
+		}
+	}()
+
+	var once sync.Once
+	stop := func() {
+		once.Do(func() {
+			_ = proxyListener.Close()
+			wg.Wait()
+		})
+	}
+
+	return stop, tcpListener.Addr().String(), nil
+}
+
 func main() {
 	adminPort := flag.Int("admin-port", 7996, "Port for the Admin API (0 uses config or default 7996, binds to 127.0.0.1)")
-	proxyPort := flag.Int("proxy-port", 7999, "Port for the Reverse Proxy (binds to 0.0.0.0)")
+	proxyPort := flag.Int("proxy-port", 7999, "Port for the Reverse Proxy (binds to 0.0.0.0 or 127.0.0.1 based on proxy_protocol_force)")
 	flag.Parse()
 
 	log.Printf("Starting Go Reauth Proxy Service...")
@@ -77,27 +240,6 @@ func main() {
 			log.Fatalf("Admin server failed: %v", err)
 		}
 	}()
-
-	proxyAddr := fmt.Sprintf(":%d", *proxyPort)
-	tcpListener, err := net.Listen("tcp", proxyAddr)
-	if err != nil {
-		log.Fatalf("Failed to listen on proxy port: %v", err)
-	}
-
-	proxyListener := &proxyproto.Listener{
-		Listener: tcpListener,
-		Policy: func(upstream net.Addr) (proxyproto.Policy, error) {
-			if proxyHandler.GetProxyProtocolForce() {
-				return proxyproto.REQUIRE, nil
-			}
-			return proxyproto.USE, nil
-		},
-	}
-
-	// 将包装后的 proxyListener 交给 cmux
-	m := cmux.New(proxyListener)
-	tlsL := m.Match(cmux.TLS())
-	httpL := m.Match(cmux.HTTP1Fast(), cmux.HTTP2())
 
 	httpsServer := &http.Server{
 		Handler:           middleware.Logger(proxyHandler),
@@ -164,33 +306,21 @@ func main() {
 		closeIdle(httpConns)
 	})
 
+	proxyStack := newProxyStack(*proxyPort, proxyHandler, httpServer, httpsServer)
+	if err := proxyStack.Start(); err != nil {
+		log.Fatalf("Failed to start proxy stack: %v", err)
+	}
+
 	proxyHandler.SetProxyProtocolForceChangeHook(func() {
 		closeIdle(httpsConns)
 		closeIdle(httpConns)
+		proxyStack.RequestRebind()
 	})
-
-	go func() {
-		if err := httpsServer.Serve(tls.NewListener(tlsL, httpsServer.TLSConfig)); err != nil && err != http.ErrServerClosed {
-			log.Fatalf("HTTPS server failed: %v", err)
-		}
-	}()
-
-	go func() {
-		if err := httpServer.Serve(httpL); err != nil && err != http.ErrServerClosed {
-			log.Fatalf("HTTP server failed: %v", err)
-		}
-	}()
-
-	go func() {
-		log.Printf("Reverse Proxy listening on 0.0.0.0:%d", *proxyPort)
-		if err := m.Serve(); err != nil && !strings.Contains(err.Error(), "use of closed network connection") {
-			log.Fatalf("cmux server failed: %v", err)
-		}
-	}()
 
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	<-quit
 
 	log.Println("Shutting down...")
+	proxyStack.Stop()
 }

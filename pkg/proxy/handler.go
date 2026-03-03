@@ -440,6 +440,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			remoteIP := h.getClientIP(r)
 			req.Header.Set("X-Real-IP", remoteIP)
 			req.Header.Set("X-Forwarded-For", remoteIP)
+			req.Header.Del("X-Forwarded-Path")
 		}
 
 		proxy.ServeHTTP(w, r)
@@ -754,6 +755,8 @@ func (h *Handler) checkAuth(w http.ResponseWriter, r *http.Request, authConfig m
 	if auth := r.Header.Get("Authorization"); auth != "" {
 		authReq.Header.Set("Authorization", auth)
 	}
+
+	authReq.Header.Set("X-Forwarded-Path", r.URL.RequestURI())
 
 	resp, err := client.Do(authReq)
 	if err != nil {

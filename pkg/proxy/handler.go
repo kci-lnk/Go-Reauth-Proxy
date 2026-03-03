@@ -25,41 +25,27 @@ import (
 )
 
 type Handler struct {
-	mu           sync.RWMutex
-	Rules        []models.Rule
-	DefaultRoute string
-	AuthConfig   models.AuthConfig
-	AdminPort    int
-	sslCert      atomic.Value
-	sslOnChange  atomic.Value
+	mu                    sync.RWMutex
+	Rules                 []models.Rule
+	DefaultRoute          string
+	AuthConfig            models.AuthConfig
+	AdminPort             int
+	ProxyProtocolForce    bool
+	sslCert               atomic.Value
+	sslOnChange           atomic.Value
+	proxyProtocolOnChange atomic.Value
 
 	configManager *config.Manager
 	certPEM       string
 	keyPEM        string
 }
 
-// getRealIP 实现了多级回退获取真实 IP 的逻辑
-func (h *Handler) getRealIP(r *http.Request) string {
-	// 优先级 1: 检查常见的代理头（如果 FRP 之后还接了 Nginx 等）
-	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-		parts := strings.Split(xff, ",")
-		return strings.TrimSpace(parts[0])
-	}
-	if xri := r.Header.Get("X-Real-IP"); xri != "" {
-		return xri
-	}
-
-	// 优先级 2: 获取连接本身的 RemoteAddr
-	// 如果 main.go 里的 proxyproto 生效了，这里拿到的就是 FRP 传过来的真实客户端 IP
-	remoteIP, _, _ := net.SplitHostPort(r.RemoteAddr)
-	return remoteIP
-}
-
-// getClientIP 尝试从多个来源获取真实 IP，具备回退方案
 func (h *Handler) getClientIP(r *http.Request) string {
-	// 1. 优先尝试 X-Forwarded-For (多级代理)
+	if !h.ProxyProtocolForce {
+		remoteIP, _, _ := net.SplitHostPort(r.RemoteAddr)
+		return remoteIP
+	}
 	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-		// 取第一个 IP（最原始的客户端 IP）
 		parts := strings.Split(xff, ",")
 		if len(parts) > 0 {
 			ip := strings.TrimSpace(parts[0])
@@ -68,30 +54,28 @@ func (h *Handler) getClientIP(r *http.Request) string {
 			}
 		}
 	}
-
-	// 2. 尝试 X-Real-IP
 	if xri := r.Header.Get("X-Real-IP"); xri != "" {
 		return xri
 	}
-
-	// 3. 最后回退到 RemoteAddr (如果监听器开启了 Proxy Protocol，这里就是真实 IP)
 	remoteIP, _, _ := net.SplitHostPort(r.RemoteAddr)
 	return remoteIP
 }
 
 func NewHandler(adminPort int, cfgManager *config.Manager, initialCfg *config.AppConfig) *Handler {
 	h := &Handler{
-		Rules:         initialCfg.Rules,
-		DefaultRoute:  initialCfg.DefaultRoute,
-		AuthConfig:    initialCfg.AuthConfig,
-		AdminPort:     adminPort,
-		configManager: cfgManager,
-		certPEM:       initialCfg.SSLCert,
-		keyPEM:        initialCfg.SSLKey,
+		Rules:              initialCfg.Rules,
+		DefaultRoute:       initialCfg.DefaultRoute,
+		AuthConfig:         initialCfg.AuthConfig,
+		AdminPort:          adminPort,
+		ProxyProtocolForce: initialCfg.ProxyProtocolForce,
+		configManager:      cfgManager,
+		certPEM:            initialCfg.SSLCert,
+		keyPEM:             initialCfg.SSLKey,
 	}
 
 	var emptyHook func()
 	h.sslOnChange.Store(emptyHook)
+	h.proxyProtocolOnChange.Store(emptyHook)
 
 	if h.certPEM != "" && h.keyPEM != "" {
 		cert, err := tls.X509KeyPair([]byte(h.certPEM), []byte(h.keyPEM))
@@ -122,6 +106,19 @@ func (h *Handler) getSSLChangeHook() func() {
 	return hook
 }
 
+func (h *Handler) SetProxyProtocolForceChangeHook(hook func()) {
+	h.proxyProtocolOnChange.Store(hook)
+}
+
+func (h *Handler) getProxyProtocolForceChangeHook() func() {
+	val := h.proxyProtocolOnChange.Load()
+	if val == nil {
+		return nil
+	}
+	hook, _ := val.(func())
+	return hook
+}
+
 func (h *Handler) saveConfigLocked() {
 	if h.configManager == nil {
 		return
@@ -134,11 +131,30 @@ func (h *Handler) saveConfigLocked() {
 		conf.Rules = rulesCopy
 		conf.DefaultRoute = h.DefaultRoute
 		conf.AuthConfig = h.AuthConfig
+		conf.ProxyProtocolForce = h.ProxyProtocolForce
 		conf.SSLCert = h.certPEM
 		conf.SSLKey = h.keyPEM
 		return nil
 	}); err != nil {
 		log.Printf("Failed to save config: %v", err)
+	}
+}
+
+func (h *Handler) GetProxyProtocolForce() bool {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	return h.ProxyProtocolForce
+}
+
+func (h *Handler) SetProxyProtocolForce(force bool) {
+	h.mu.Lock()
+	changed := h.ProxyProtocolForce != force
+	h.ProxyProtocolForce = force
+	h.saveConfigLocked()
+	hook := h.getProxyProtocolForceChangeHook()
+	h.mu.Unlock()
+	if changed && hook != nil {
+		hook()
 	}
 }
 

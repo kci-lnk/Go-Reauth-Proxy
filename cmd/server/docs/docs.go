@@ -159,6 +159,88 @@ const docTemplate = `{
                 }
             }
         },
+        "/api/config/proxy-protocol": {
+            "get": {
+                "description": "Get whether the proxy port requires Proxy Protocol header",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "config"
+                ],
+                "summary": "Get proxy protocol force",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "allOf": [
+                                {
+                                    "$ref": "#/definitions/response.Response"
+                                },
+                                {
+                                    "type": "object",
+                                    "properties": {
+                                        "data": {
+                                            "$ref": "#/definitions/admin.proxyProtocolForceResponse"
+                                        }
+                                    }
+                                }
+                            ]
+                        }
+                    }
+                }
+            },
+            "post": {
+                "description": "Enable or disable requiring Proxy Protocol header on proxy port",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "config"
+                ],
+                "summary": "Set proxy protocol force",
+                "parameters": [
+                    {
+                        "description": "Proxy protocol options",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/admin.proxyProtocolForceRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "allOf": [
+                                {
+                                    "$ref": "#/definitions/response.Response"
+                                },
+                                {
+                                    "type": "object",
+                                    "properties": {
+                                        "data": {
+                                            "$ref": "#/definitions/admin.proxyProtocolForceResponse"
+                                        }
+                                    }
+                                }
+                            ]
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/response.Response"
+                        }
+                    }
+                }
+            }
+        },
         "/api/info": {
             "get": {
                 "description": "Get version and other server info",
@@ -721,6 +803,24 @@ const docTemplate = `{
                 }
             }
         },
+        "admin.proxyProtocolForceRequest": {
+            "type": "object",
+            "properties": {
+                "proxy_protocol_force": {
+                    "type": "boolean",
+                    "example": true
+                }
+            }
+        },
+        "admin.proxyProtocolForceResponse": {
+            "type": "object",
+            "properties": {
+                "proxy_protocol_force": {
+                    "type": "boolean",
+                    "example": false
+                }
+            }
+        },
         "iptables.initRequest": {
             "type": "object",
             "properties": {
@@ -763,11 +863,6 @@ const docTemplate = `{
         "models.AuthConfig": {
             "type": "object",
             "properties": {
-                "auth_cache_expire": {
-                    "description": "Cache expiration in seconds (default 60)",
-                    "type": "integer",
-                    "example": 60
-                },
                 "auth_port": {
                     "description": "Local Auth Service Port",
                     "type": "integer",

@@ -9,12 +9,14 @@ import (
 )
 
 type AppConfig struct {
-	Rules             []models.Rule     `json:"rules"`
-	DefaultRoute      string            `json:"default_route"`
-	AuthConfig        models.AuthConfig `json:"auth_config"`
-	IptablesChainName string            `json:"iptables_chain_name,omitempty"`
-	SSLCert           string            `json:"ssl_cert,omitempty"`
-	SSLKey            string            `json:"ssl_key,omitempty"`
+	Rules              []models.Rule     `json:"rules"`
+	DefaultRoute       string            `json:"default_route"`
+	AuthConfig         models.AuthConfig `json:"auth_config"`
+	AdminPort          int               `json:"admin_port,omitempty"`
+	ProxyProtocolForce bool              `json:"proxy_protocol_force,omitempty"`
+	IptablesChainName  string            `json:"iptables_chain_name,omitempty"`
+	SSLCert            string            `json:"ssl_cert,omitempty"`
+	SSLKey             string            `json:"ssl_key,omitempty"`
 }
 
 type Manager struct {
@@ -38,6 +40,8 @@ func defaultConfig() *AppConfig {
 			LoginURL:  "/login",
 			LogoutURL: "/api/auth/logout",
 		},
+		AdminPort:          7996,
+		ProxyProtocolForce: false,
 	}
 }
 
@@ -61,23 +65,27 @@ func applyDefaults(cfg *AppConfig) {
 	if cfg.AuthConfig.LogoutURL == "" {
 		cfg.AuthConfig.LogoutURL = "/api/auth/logout"
 	}
+
+	if cfg.AdminPort <= 0 {
+		cfg.AdminPort = 7996
+	}
 }
 
-func (m *Manager) loadUnlocked() (*AppConfig, error) {
+func (m *Manager) loadUnlocked() (*AppConfig, bool, error) {
 	data, err := os.ReadFile(m.filePath)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return defaultConfig(), nil
+			return defaultConfig(), false, nil
 		}
-		return nil, err
+		return nil, false, err
 	}
 
 	var cfg AppConfig
 	if err := json.Unmarshal(data, &cfg); err != nil {
-		return nil, err
+		return nil, true, err
 	}
 	applyDefaults(&cfg)
-	return &cfg, nil
+	return &cfg, true, nil
 }
 
 func (m *Manager) saveUnlocked(cfg *AppConfig) error {
@@ -95,9 +103,19 @@ func (m *Manager) saveUnlocked(cfg *AppConfig) error {
 }
 
 func (m *Manager) Load() (*AppConfig, error) {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	return m.loadUnlocked()
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	cfg, existed, err := m.loadUnlocked()
+	if err != nil {
+		return nil, err
+	}
+	if !existed {
+		if err := m.saveUnlocked(cfg); err != nil {
+			return nil, err
+		}
+	}
+	return cfg, nil
 }
 
 func (m *Manager) Save(config *AppConfig) error {
@@ -111,7 +129,7 @@ func (m *Manager) Update(updateFn func(*AppConfig) error) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	cfg, err := m.loadUnlocked()
+	cfg, _, err := m.loadUnlocked()
 	if err != nil {
 		return err
 	}

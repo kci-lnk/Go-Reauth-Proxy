@@ -22,6 +22,7 @@ import (
 type Server struct {
 	ProxyHandler    *proxy.Handler
 	IptablesHandler *iptables.Handler
+	ConfigManager   *config.Manager
 	Port            int
 }
 
@@ -44,6 +45,7 @@ func NewServer(handler *proxy.Handler, port int, cfgManager *config.Manager, ini
 	return &Server{
 		ProxyHandler:    handler,
 		IptablesHandler: iptablesHandler,
+		ConfigManager:   cfgManager,
 		Port:            port,
 	}
 }
@@ -57,6 +59,8 @@ func (s *Server) Start() error {
 	r.HandleFunc("/api/info", s.handleInfo).Methods("GET")
 	r.HandleFunc("/api/config/default-route", s.handleGetDefaultRoute).Methods("GET")
 	r.HandleFunc("/api/config/default-route", s.handleSetDefaultRoute).Methods("POST")
+	r.HandleFunc("/api/config/proxy-protocol", s.handleGetProxyProtocolForce).Methods("GET")
+	r.HandleFunc("/api/config/proxy-protocol", s.handleSetProxyProtocolForce).Methods("POST")
 	r.HandleFunc("/api/auth", s.handleGetAuth).Methods("GET")
 	r.HandleFunc("/api/auth", s.handleSetAuth).Methods("POST")
 	r.HandleFunc("/api/ssl", s.handleGetSSL).Methods("GET")
@@ -239,6 +243,61 @@ func (s *Server) handleSetDefaultRoute(w http.ResponseWriter, r *http.Request) {
 
 	s.ProxyHandler.SetDefaultRoute(req.DefaultRoute)
 	response.Success(w, nil)
+}
+
+type proxyProtocolForceResponse struct {
+	ProxyProtocolForce bool `json:"proxy_protocol_force" example:"false"`
+}
+
+type proxyProtocolForceRequest struct {
+	ProxyProtocolForce bool `json:"proxy_protocol_force" example:"true"`
+}
+
+// handleGetProxyProtocolForce gets the current proxy protocol policy
+// @Summary Get proxy protocol force
+// @Description Get whether the proxy port requires Proxy Protocol header
+// @Tags config
+// @Produce  json
+// @Success 200 {object} response.Response{data=proxyProtocolForceResponse}
+// @Router /api/config/proxy-protocol [get]
+func (s *Server) handleGetProxyProtocolForce(w http.ResponseWriter, r *http.Request) {
+	if s.ConfigManager == nil {
+		response.Error(w, errors.CodeInternal, "Config manager not initialized")
+		return
+	}
+	cfg, err := s.ConfigManager.Load()
+	if err != nil {
+		response.Error(w, errors.CodeInternal, "Failed to load config: "+err.Error())
+		return
+	}
+	response.Success(w, proxyProtocolForceResponse{ProxyProtocolForce: cfg.ProxyProtocolForce})
+}
+
+// handleSetProxyProtocolForce sets whether the proxy port requires Proxy Protocol header
+// @Summary Set proxy protocol force
+// @Description Enable or disable requiring Proxy Protocol header on proxy port
+// @Tags config
+// @Accept  json
+// @Produce  json
+// @Param request body proxyProtocolForceRequest true "Proxy protocol options"
+// @Success 200 {object} response.Response{data=proxyProtocolForceResponse}
+// @Failure 400 {object} response.Response
+// @Router /api/config/proxy-protocol [post]
+func (s *Server) handleSetProxyProtocolForce(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		ProxyProtocolForce *bool `json:"proxy_protocol_force"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		response.Error(w, errors.CodeInvalidJSON, "Invalid JSON object")
+		return
+	}
+	if req.ProxyProtocolForce == nil {
+		response.Error(w, errors.CodeBadRequest, "proxy_protocol_force is required")
+		return
+	}
+
+	s.ProxyHandler.SetProxyProtocolForce(*req.ProxyProtocolForce)
+	response.Success(w, proxyProtocolForceResponse{ProxyProtocolForce: *req.ProxyProtocolForce})
 }
 
 // handleGetAuth gets the global auth configuration (port and relative urls)

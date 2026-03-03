@@ -6,6 +6,18 @@ definitions:
         example: 0.0.1
         type: string
     type: object
+  admin.proxyProtocolForceRequest:
+    properties:
+      proxy_protocol_force:
+        example: true
+        type: boolean
+    type: object
+  admin.proxyProtocolForceResponse:
+    properties:
+      proxy_protocol_force:
+        example: false
+        type: boolean
+    type: object
   iptables.initRequest:
     properties:
       chain_name:
@@ -35,10 +47,6 @@ definitions:
     type: object
   models.AuthConfig:
     properties:
-      auth_cache_expire:
-        description: Cache expiration in seconds (default 60)
-        example: 60
-        type: integer
       auth_port:
         description: Local Auth Service Port
         example: 3000
@@ -208,6 +216,54 @@ paths:
           schema:
             $ref: '#/definitions/response.Response'
       summary: Set default route
+      tags:
+      - config
+  /api/config/proxy-protocol:
+    get:
+      description: Get whether the proxy port requires Proxy Protocol header
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/response.Response'
+            - properties:
+                data:
+                  $ref: '#/definitions/admin.proxyProtocolForceResponse'
+              type: object
+      summary: Get proxy protocol force
+      tags:
+      - config
+    post:
+      consumes:
+      - application/json
+      description: Enable or disable requiring Proxy Protocol header on proxy port
+      parameters:
+      - description: Proxy protocol options
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/admin.proxyProtocolForceRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/response.Response'
+            - properties:
+                data:
+                  $ref: '#/definitions/admin.proxyProtocolForceResponse'
+              type: object
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/response.Response'
+      summary: Set proxy protocol force
       tags:
       - config
   /api/info:

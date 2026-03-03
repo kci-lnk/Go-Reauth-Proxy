@@ -34,7 +34,7 @@ import (
 // @BasePath /
 
 func main() {
-	adminPort := flag.Int("admin-port", 7996, "Port for the Admin API (binds to 127.0.0.1)")
+	adminPort := flag.Int("admin-port", 7996, "Port for the Admin API (0 uses config or default 7996, binds to 127.0.0.1)")
 	proxyPort := flag.Int("proxy-port", 7999, "Port for the Reverse Proxy (binds to 0.0.0.0)")
 	flag.Parse()
 
@@ -57,12 +57,21 @@ func main() {
 	if err != nil {
 		log.Fatalf("Failed to load config: %v", err)
 	}
-	proxyHandler := proxy.NewHandler(*adminPort, cfgManager, initialCfg)
+
+	resolvedAdminPort := *adminPort
+	if resolvedAdminPort <= 0 {
+		resolvedAdminPort = initialCfg.AdminPort
+		if resolvedAdminPort <= 0 {
+			resolvedAdminPort = 7996
+		}
+	}
+
+	proxyHandler := proxy.NewHandler(resolvedAdminPort, cfgManager, initialCfg)
 
 	currentConfig := proxyHandler.GetAuthConfig()
 	proxyHandler.SetAuthConfig(currentConfig)
 
-	adminServer := admin.NewServer(proxyHandler, *adminPort, cfgManager, initialCfg)
+	adminServer := admin.NewServer(proxyHandler, resolvedAdminPort, cfgManager, initialCfg)
 	go func() {
 		if err := adminServer.Start(); err != nil {
 			log.Fatalf("Admin server failed: %v", err)
@@ -78,7 +87,10 @@ func main() {
 	proxyListener := &proxyproto.Listener{
 		Listener: tcpListener,
 		Policy: func(upstream net.Addr) (proxyproto.Policy, error) {
-			return proxyproto.REQUIRE, nil
+			if proxyHandler.GetProxyProtocolForce() {
+				return proxyproto.REQUIRE, nil
+			}
+			return proxyproto.USE, nil
 		},
 	}
 
@@ -148,6 +160,11 @@ func main() {
 	}
 
 	proxyHandler.SetSSLChangeHook(func() {
+		closeIdle(httpsConns)
+		closeIdle(httpConns)
+	})
+
+	proxyHandler.SetProxyProtocolForceChangeHook(func() {
 		closeIdle(httpsConns)
 		closeIdle(httpConns)
 	})

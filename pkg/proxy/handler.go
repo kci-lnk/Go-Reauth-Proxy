@@ -40,8 +40,29 @@ type Handler struct {
 	keyPEM        string
 }
 
-func (h *Handler) getClientIP(r *http.Request) string {
-	if !h.ProxyProtocolForce {
+type requestSnapshot struct {
+	rules              []models.Rule
+	defaultRoute       string
+	authConfig         models.AuthConfig
+	proxyProtocolForce bool
+}
+
+func (h *Handler) snapshotForRequest() requestSnapshot {
+	h.mu.RLock()
+	rules := make([]models.Rule, len(h.Rules))
+	copy(rules, h.Rules)
+	s := requestSnapshot{
+		rules:              rules,
+		defaultRoute:       h.DefaultRoute,
+		authConfig:         h.AuthConfig,
+		proxyProtocolForce: h.ProxyProtocolForce,
+	}
+	h.mu.RUnlock()
+	return s
+}
+
+func resolveClientIP(r *http.Request, proxyProtocolForce bool) string {
+	if !proxyProtocolForce {
 		remoteIP, _, _ := net.SplitHostPort(r.RemoteAddr)
 		return remoteIP
 	}
@@ -61,7 +82,46 @@ func (h *Handler) getClientIP(r *http.Request) string {
 	return remoteIP
 }
 
-func (h *Handler) shouldDenyByPreflight(r *http.Request, authConfig models.AuthConfig, isMatch bool) bool {
+func copyRule(rule models.Rule) *models.Rule {
+	r := rule
+	return &r
+}
+
+func newInternalTransport() *http.Transport {
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.MaxIdleConns = 100
+	transport.MaxIdleConnsPerHost = 100
+	transport.IdleConnTimeout = 90 * time.Second
+	transport.ForceAttemptHTTP2 = true
+	return transport
+}
+
+func newProxyTransport() *http.Transport {
+	transport := newInternalTransport()
+	transport.DialContext = (&net.Dialer{
+		Timeout:   6 * time.Second,
+		KeepAlive: 30 * time.Second,
+	}).DialContext
+	transport.TLSHandshakeTimeout = 10 * time.Second
+	transport.ResponseHeaderTimeout = 10 * time.Second
+	return transport
+}
+
+func ensureLeadingSlash(p string) string {
+	if p == "" {
+		return "/"
+	}
+	if strings.HasPrefix(p, "/") {
+		return p
+	}
+	return "/" + p
+}
+
+func localServiceURL(port int, urlPath string) string {
+	return fmt.Sprintf("http://127.0.0.1:%d%s", port, ensureLeadingSlash(urlPath))
+}
+
+func (h *Handler) shouldDenyByPreflight(r *http.Request, authConfig models.AuthConfig, clientIP string, isMatch bool) bool {
 	if authConfig.AuthPort <= 0 {
 		return false
 	}
@@ -70,11 +130,7 @@ func (h *Handler) shouldDenyByPreflight(r *http.Request, authConfig models.AuthC
 	if preflightURLPath == "" {
 		preflightURLPath = "/api/auth/preflight"
 	}
-	if !strings.HasPrefix(preflightURLPath, "/") {
-		preflightURLPath = "/" + preflightURLPath
-	}
-
-	preflightURL := fmt.Sprintf("http://127.0.0.1:%d%s", authConfig.AuthPort, preflightURLPath)
+	preflightURL := localServiceURL(authConfig.AuthPort, preflightURLPath)
 
 	preflightReq, err := http.NewRequest(http.MethodHead, preflightURL, nil)
 	if err != nil {
@@ -82,9 +138,8 @@ func (h *Handler) shouldDenyByPreflight(r *http.Request, authConfig models.AuthC
 		return false
 	}
 
-	remoteIP := h.getClientIP(r)
-	preflightReq.Header.Set("X-Real-IP", remoteIP)
-	preflightReq.Header.Set("X-Forwarded-For", remoteIP)
+	preflightReq.Header.Set("X-Real-IP", clientIP)
+	preflightReq.Header.Set("X-Forwarded-For", clientIP)
 	preflightReq.Header.Set("X-Forwarded-Path", r.URL.RequestURI())
 	preflightReq.Header.Set("X-Match", strconv.FormatBool(isMatch))
 
@@ -95,15 +150,9 @@ func (h *Handler) shouldDenyByPreflight(r *http.Request, authConfig models.AuthC
 		preflightReq.Header.Set("Authorization", auth)
 	}
 
-	preflightTransport := http.DefaultTransport.(*http.Transport).Clone()
-	preflightTransport.MaxIdleConns = 100
-	preflightTransport.MaxIdleConnsPerHost = 100
-	preflightTransport.IdleConnTimeout = 90 * time.Second
-	preflightTransport.ForceAttemptHTTP2 = true
-
 	client := &http.Client{
 		Timeout:   5 * time.Second,
-		Transport: preflightTransport,
+		Transport: newInternalTransport(),
 	}
 
 	resp, err := client.Do(preflightReq)
@@ -424,6 +473,8 @@ func (h *Handler) SetAuthConfig(config models.AuthConfig) error {
 }
 
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	snapshot := h.snapshotForRequest()
+
 	cleanedPath := path.Clean(r.URL.Path)
 	if strings.HasSuffix(r.URL.Path, "/") && cleanedPath != "/" {
 		cleanedPath += "/"
@@ -434,108 +485,135 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if r.URL.Path == "/__select__" {
-		h.mu.RLock()
-		authConfig := h.AuthConfig
-		rules := h.GetRules()
-		h.mu.RUnlock()
+	clientIP := resolveClientIP(r, snapshot.proxyProtocolForce)
 
-		if h.shouldDenyByPreflight(r, authConfig, true) {
-			h.abortConnection(w)
-			return
-		}
-
-		if authConfig.AuthURL != "" {
-			if !h.checkAuth(w, r, authConfig) {
-				return
-			}
-		}
-
-		response.SelectPage(w, rules)
+	if h.handleSelectRoute(w, r, snapshot, clientIP) {
+		return
+	}
+	if h.handleAuthProxyRoute(w, r, snapshot, clientIP) {
 		return
 	}
 
-	if strings.HasPrefix(r.URL.Path, "/__auth__/") {
-		h.mu.RLock()
-		authConfig := h.AuthConfig
-		h.mu.RUnlock()
-
-		if authConfig.AuthPort <= 0 {
-			response.HTML(w, errors.CodeInternal, "Authentication service is not configured", nil)
-			return
+	matchedRule, needsSlashRedirect := matchRule(r, snapshot.rules)
+	if needsSlashRedirect != "" {
+		newPath := needsSlashRedirect
+		if r.URL.RawQuery != "" {
+			newPath += "?" + r.URL.RawQuery
 		}
-
-		if h.shouldDenyByPreflight(r, authConfig, true) {
-			h.abortConnection(w)
-			return
-		}
-
-		targetURL, _ := url.Parse(fmt.Sprintf("http://127.0.0.1:%d", authConfig.AuthPort))
-
-		proxyPath := r.URL.Path
-		switch r.URL.Path {
-		case "/__auth__/login":
-			proxyPath = authConfig.LoginURL
-			if proxyPath == "" {
-				proxyPath = "/login"
-			}
-		case "/__auth__/api/auth/logout":
-			proxyPath = authConfig.LogoutURL
-			if proxyPath == "" {
-				proxyPath = "/api/auth/logout"
-			}
-		default:
-			rawProxyPath := strings.TrimPrefix(r.URL.Path, "/__auth__")
-			if !strings.HasPrefix(rawProxyPath, "/") {
-				rawProxyPath = "/" + rawProxyPath
-			}
-			proxyPath = path.Clean(rawProxyPath)
-		}
-
-		targetURL.Path = singleJoiningSlash(targetURL.Path, proxyPath)
-
-		proxy := httputil.NewSingleHostReverseProxy(targetURL)
-
-		transport := http.DefaultTransport.(*http.Transport).Clone()
-		transport.DialContext = (&net.Dialer{
-			Timeout:   6 * time.Second,
-			KeepAlive: 30 * time.Second,
-		}).DialContext
-		transport.TLSHandshakeTimeout = 10 * time.Second
-		transport.ResponseHeaderTimeout = 10 * time.Second
-		transport.MaxIdleConns = 100
-		transport.MaxIdleConnsPerHost = 100
-		transport.IdleConnTimeout = 90 * time.Second
-		transport.ForceAttemptHTTP2 = true
-		proxy.Transport = transport
-
-		originalDirector := proxy.Director
-		proxy.Director = func(req *http.Request) {
-			originalDirector(req)
-			req.Host = targetURL.Host
-			req.URL.Path = targetURL.Path
-
-			remoteIP := h.getClientIP(r)
-			req.Header.Set("X-Real-IP", remoteIP)
-			req.Header.Set("X-Forwarded-For", remoteIP)
-			// Prevent X-Forwarded-Path and X-Match from being passed to the backend
-			req.Header.Del("X-Forwarded-Path")
-			req.Header.Del("X-Match")
-		}
-
-		proxy.ServeHTTP(w, r)
+		http.Redirect(w, r, newPath, http.StatusMovedPermanently)
 		return
 	}
 
-	h.mu.RLock()
+	if matchedRule == nil {
+		h.handleNoMatchRoute(w, r, snapshot, clientIP)
+		return
+	}
+
+	if matchedRule.UseRootMode && matchedRule.Path != "/" && strings.HasPrefix(r.URL.Path, matchedRule.Path) {
+		http.SetCookie(w, &http.Cookie{
+			Name:  "__proxy_path",
+			Value: matchedRule.Path,
+			Path:  "/",
+		})
+		http.Redirect(w, r, "/", http.StatusFound)
+		return
+	}
+
+	if matchedRule.UseAuth && snapshot.authConfig.AuthURL != "" {
+		if !h.checkAuth(w, r, snapshot.authConfig, clientIP) {
+			return
+		}
+	}
+
+	if h.shouldDenyByPreflight(r, snapshot.authConfig, clientIP, true) {
+		h.abortConnection(w)
+		return
+	}
+
+	h.proxyToRuleTarget(w, r, snapshot, *matchedRule, clientIP)
+}
+
+func (h *Handler) handleSelectRoute(w http.ResponseWriter, r *http.Request, snapshot requestSnapshot, clientIP string) bool {
+	if r.URL.Path != "/__select__" {
+		return false
+	}
+
+	if h.shouldDenyByPreflight(r, snapshot.authConfig, clientIP, true) {
+		h.abortConnection(w)
+		return true
+	}
+	if snapshot.authConfig.AuthURL != "" {
+		if !h.checkAuth(w, r, snapshot.authConfig, clientIP) {
+			return true
+		}
+	}
+	response.SelectPage(w, snapshot.rules)
+	return true
+}
+
+func (h *Handler) handleAuthProxyRoute(w http.ResponseWriter, r *http.Request, snapshot requestSnapshot, clientIP string) bool {
+	if !strings.HasPrefix(r.URL.Path, "/__auth__/") {
+		return false
+	}
+
+	if snapshot.authConfig.AuthPort <= 0 {
+		response.HTML(w, errors.CodeInternal, "Authentication service is not configured", nil)
+		return true
+	}
+	if h.shouldDenyByPreflight(r, snapshot.authConfig, clientIP, true) {
+		h.abortConnection(w)
+		return true
+	}
+
+	targetURL, _ := url.Parse(fmt.Sprintf("http://127.0.0.1:%d", snapshot.authConfig.AuthPort))
+
+	proxyPath := r.URL.Path
+	switch r.URL.Path {
+	case "/__auth__/login":
+		proxyPath = snapshot.authConfig.LoginURL
+		if proxyPath == "" {
+			proxyPath = "/login"
+		}
+	case "/__auth__/api/auth/logout":
+		proxyPath = snapshot.authConfig.LogoutURL
+		if proxyPath == "" {
+			proxyPath = "/api/auth/logout"
+		}
+	default:
+		rawProxyPath := strings.TrimPrefix(r.URL.Path, "/__auth__")
+		proxyPath = path.Clean(ensureLeadingSlash(rawProxyPath))
+	}
+
+	targetURL.Path = singleJoiningSlash(targetURL.Path, proxyPath)
+
+	proxy := httputil.NewSingleHostReverseProxy(targetURL)
+	proxy.Transport = newProxyTransport()
+
+	originalDirector := proxy.Director
+	proxy.Director = func(req *http.Request) {
+		originalDirector(req)
+		req.Host = targetURL.Host
+		req.URL.Path = targetURL.Path
+
+		req.Header.Set("X-Real-IP", clientIP)
+		req.Header.Set("X-Forwarded-For", clientIP)
+		// Prevent X-Forwarded-Path and X-Match from being passed to the backend
+		req.Header.Del("X-Forwarded-Path")
+		req.Header.Del("X-Match")
+	}
+
+	proxy.ServeHTTP(w, r)
+	return true
+}
+
+func matchRule(r *http.Request, rules []models.Rule) (*models.Rule, string) {
 	var matchedRule *models.Rule
 	var longestMatch int
 	var needsSlashRedirect string
 
-	for _, rule := range h.Rules {
+	for _, rule := range rules {
 		if strings.HasPrefix(r.URL.Path, rule.Path) && len(rule.Path) > longestMatch {
-			rCopy := rule
-			matchedRule = &rCopy
+			matchedRule = copyRule(rule)
 			longestMatch = len(rule.Path)
 		}
 		if r.URL.Path+"/" == rule.Path {
@@ -559,10 +637,9 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		canUseCookie := r.URL.Path == "/" || r.Header.Get("Referer") != "" || r.Header.Get("Origin") != "" || isWebSocket
 		if canUseCookie {
 			if cookie, err := r.Cookie("__proxy_path"); err == nil && cookie.Value != "" {
-				for _, rule := range h.Rules {
+				for _, rule := range rules {
 					if cookie.Value == rule.Path {
-						rCopy := rule
-						matchedRule = &rCopy
+						matchedRule = copyRule(rule)
 						break
 					}
 				}
@@ -575,10 +652,9 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				refURL, err := url.Parse(referer)
 				if err == nil {
 					var longestRefMatch int
-					for _, rule := range h.Rules {
+					for _, rule := range rules {
 						if strings.HasPrefix(refURL.Path, rule.Path) && len(rule.Path) > longestRefMatch {
-							rCopy := rule
-							matchedRule = &rCopy
+							matchedRule = copyRule(rule)
 							longestRefMatch = len(rule.Path)
 						}
 					}
@@ -586,77 +662,35 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	h.mu.RUnlock()
 
-	if needsSlashRedirect != "" {
-		newPath := needsSlashRedirect
-		if r.URL.RawQuery != "" {
-			newPath += "?" + r.URL.RawQuery
-		}
-		http.Redirect(w, r, newPath, http.StatusMovedPermanently)
-		return
-	}
+	return matchedRule, needsSlashRedirect
+}
 
-	if matchedRule == nil {
-		h.mu.RLock()
-		authConfig := h.AuthConfig
-		h.mu.RUnlock()
-
-		if r.URL.Path == "/" {
-			h.mu.RLock()
-			count := len(h.Rules)
-			h.mu.RUnlock()
-
-			if h.shouldDenyByPreflight(r, authConfig, true) {
-				h.abortConnection(w)
-				return
-			}
-			if count == 0 {
-				response.Welcome(w, nil)
-				return
-			}
-			http.Redirect(w, r, h.GetDefaultRoute(), http.StatusFound)
-			return
-		}
-		if h.shouldDenyByPreflight(r, authConfig, false) {
+func (h *Handler) handleNoMatchRoute(w http.ResponseWriter, r *http.Request, snapshot requestSnapshot, clientIP string) {
+	if r.URL.Path == "/" {
+		if h.shouldDenyByPreflight(r, snapshot.authConfig, clientIP, true) {
 			h.abortConnection(w)
 			return
 		}
-		response.HTML(w, errors.CodeNotFound, "Not Found", h.GetRules())
-		return
-	}
-
-	if matchedRule.UseRootMode && matchedRule.Path != "/" && strings.HasPrefix(r.URL.Path, matchedRule.Path) {
-		http.SetCookie(w, &http.Cookie{
-			Name:  "__proxy_path",
-			Value: matchedRule.Path,
-			Path:  "/",
-		})
-		http.Redirect(w, r, "/", http.StatusFound)
-		return
-	}
-	if matchedRule.UseAuth {
-		h.mu.RLock()
-		authConfig := h.AuthConfig
-		h.mu.RUnlock()
-		if authConfig.AuthURL != "" {
-			if !h.checkAuth(w, r, authConfig) {
-				return
-			}
+		if len(snapshot.rules) == 0 {
+			response.Welcome(w, nil)
+			return
 		}
+		http.Redirect(w, r, snapshot.defaultRoute, http.StatusFound)
+		return
 	}
 
-	h.mu.RLock()
-	authConfig := h.AuthConfig
-	h.mu.RUnlock()
-	if h.shouldDenyByPreflight(r, authConfig, true) {
+	if h.shouldDenyByPreflight(r, snapshot.authConfig, clientIP, false) {
 		h.abortConnection(w)
 		return
 	}
+	response.HTML(w, errors.CodeNotFound, "Not Found", snapshot.rules)
+}
 
+func (h *Handler) proxyToRuleTarget(w http.ResponseWriter, r *http.Request, snapshot requestSnapshot, matchedRule models.Rule, clientIP string) {
 	targetURL, err := url.Parse(matchedRule.Target)
 	if err != nil {
-		response.HTML(w, errors.CodeProxyTargetInvalid, "Invalid target URL configuration", h.GetRules())
+		response.HTML(w, errors.CodeProxyTargetInvalid, "Invalid target URL configuration", snapshot.rules)
 		return
 	}
 
@@ -667,26 +701,13 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		targetURL.Scheme = "https"
 	}
 
-	transport := http.DefaultTransport.(*http.Transport).Clone()
-	transport.DialContext = (&net.Dialer{
-		Timeout:   6 * time.Second,
-		KeepAlive: 30 * time.Second,
-	}).DialContext
-	transport.TLSHandshakeTimeout = 10 * time.Second
-	transport.ResponseHeaderTimeout = 10 * time.Second
-	transport.MaxIdleConns = 100
-	transport.MaxIdleConnsPerHost = 100
-	transport.IdleConnTimeout = 90 * time.Second
-	transport.ForceAttemptHTTP2 = true
-
+	transport := newProxyTransport()
 	proxy := &httputil.ReverseProxy{
 		Transport: transport,
 		Rewrite: func(pr *httputil.ProxyRequest) {
-			remoteIP := h.getClientIP(pr.In)
-
 			pr.SetXForwarded()
-			pr.Out.Header.Set("X-Forwarded-For", remoteIP)
-			pr.Out.Header.Set("X-Real-IP", remoteIP)
+			pr.Out.Header.Set("X-Forwarded-For", clientIP)
+			pr.Out.Header.Set("X-Real-IP", clientIP)
 			pr.SetURL(targetURL)
 			pr.Out.Host = targetURL.Host
 
@@ -740,7 +761,6 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 		needsRewrite := matchedRule.RewriteHTML && !matchedRule.UseRootMode
 		needsToolbar := matchedRule.UseAuth
-
 		if !needsRewrite && !needsToolbar {
 			return nil
 		}
@@ -757,6 +777,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if !strings.Contains(strings.ToLower(contentType), "text/html") {
 			return nil
 		}
+
 		bodyBytes, err := io.ReadAll(resp.Body)
 		if err != nil {
 			return err
@@ -783,11 +804,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 
 		if needsToolbar {
-			h.mu.RLock()
-			rules := h.GetRules()
-			h.mu.RUnlock()
-			toolbarHTML := response.GenerateToolbar(rules, matchedRule.Path)
-
+			toolbarHTML := response.GenerateToolbar(snapshot.rules, matchedRule.Path)
 			lowerBody := strings.ToLower(bodyStr)
 			if idx := strings.LastIndex(lowerBody, "</body>"); idx != -1 {
 				bodyStr = bodyStr[:idx] + toolbarHTML + bodyStr[idx:]
@@ -800,23 +817,16 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		resp.Body = io.NopCloser(bytes.NewReader(newBody))
 		resp.ContentLength = int64(len(newBody))
 		resp.Header.Set("Content-Length", strconv.Itoa(len(newBody)))
-
 		return nil
 	}
 
 	proxy.ServeHTTP(w, r)
 }
 
-func (h *Handler) checkAuth(w http.ResponseWriter, r *http.Request, authConfig models.AuthConfig) bool {
-	authTransport := http.DefaultTransport.(*http.Transport).Clone()
-	authTransport.MaxIdleConns = 100
-	authTransport.MaxIdleConnsPerHost = 100
-	authTransport.IdleConnTimeout = 90 * time.Second
-	authTransport.ForceAttemptHTTP2 = true
-
+func (h *Handler) checkAuth(w http.ResponseWriter, r *http.Request, authConfig models.AuthConfig, clientIP string) bool {
 	client := &http.Client{
 		Timeout:   5 * time.Second,
-		Transport: authTransport,
+		Transport: newInternalTransport(),
 	}
 
 	if authConfig.AuthPort <= 0 {
@@ -829,11 +839,7 @@ func (h *Handler) checkAuth(w http.ResponseWriter, r *http.Request, authConfig m
 	if authURLPath == "" {
 		authURLPath = "/api/auth/verify"
 	}
-	if !strings.HasPrefix(authURLPath, "/") {
-		authURLPath = "/" + authURLPath
-	}
-
-	authURL := fmt.Sprintf("http://127.0.0.1:%d%s", authConfig.AuthPort, authURLPath)
+	authURL := localServiceURL(authConfig.AuthPort, authURLPath)
 
 	authReq, err := http.NewRequest("GET", authURL, nil)
 	if err != nil {
@@ -842,10 +848,8 @@ func (h *Handler) checkAuth(w http.ResponseWriter, r *http.Request, authConfig m
 		return false
 	}
 
-	remoteIP := h.getClientIP(r)
-
-	authReq.Header.Set("X-Real-IP", remoteIP)
-	authReq.Header.Set("X-Forwarded-For", remoteIP)
+	authReq.Header.Set("X-Real-IP", clientIP)
+	authReq.Header.Set("X-Forwarded-For", clientIP)
 
 	if cookie := r.Header.Get("Cookie"); cookie != "" {
 		authReq.Header.Set("Cookie", cookie)

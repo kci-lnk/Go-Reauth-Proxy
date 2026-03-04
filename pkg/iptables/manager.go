@@ -3,6 +3,7 @@ package iptables
 import (
 	"fmt"
 	"go-reauth-proxy/pkg/errors"
+	"net"
 	"os/exec"
 	"regexp"
 	"strconv"
@@ -13,6 +14,18 @@ type Options struct {
 	ChainName   string
 	ParentChain interface{} // string or []string
 	ExemptPorts []string
+	Tables      []string
+}
+
+type commandRunner interface {
+	CombinedOutput(command string, args ...string) ([]byte, error)
+}
+
+type sudoExecRunner struct{}
+
+func (sudoExecRunner) CombinedOutput(command string, args ...string) ([]byte, error) {
+	cmd := exec.Command("sudo", append([]string{command}, args...)...)
+	return cmd.CombinedOutput()
 }
 
 type Manager struct {
@@ -20,6 +33,8 @@ type Manager struct {
 	ParentChains  []string
 	ExemptPorts   []string
 	BaseRuleCount int
+	tables        []string
+	runner        commandRunner
 }
 
 func parseParentChains(value interface{}) []string {
@@ -72,53 +87,114 @@ func NewManager(opts Options) *Manager {
 		parents = []string{"INPUT"}
 	}
 
+	tables := normalizeTables(opts.Tables)
+	if len(tables) == 0 {
+		tables = []string{"iptables", "ip6tables"}
+	}
+
 	return &Manager{
 		Chain:        chain,
 		ParentChains: parents,
 		ExemptPorts:  opts.ExemptPorts,
+		tables:       tables,
+		runner:       sudoExecRunner{},
 	}
 }
 
-func (m *Manager) runIptables(args ...string) error {
-	cmd := exec.Command("sudo", append([]string{"iptables"}, args...)...)
-	if output, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("iptables command failed: %s, output: %s", strings.Join(args, " "), string(output))
+func normalizeTables(tables []string) []string {
+	out := make([]string, 0, len(tables))
+	seen := map[string]struct{}{}
+	for _, t := range tables {
+		t = strings.TrimSpace(t)
+		if t == "" {
+			continue
+		}
+		if _, ok := seen[t]; ok {
+			continue
+		}
+		seen[t] = struct{}{}
+		out = append(out, t)
+	}
+	return out
+}
+
+func (m *Manager) hasTable(table string) bool {
+	for _, t := range m.tables {
+		if t == table {
+			return true
+		}
+	}
+	return false
+}
+
+func (m *Manager) runTable(table string, args ...string) error {
+	output, err := m.runner.CombinedOutput(table, args...)
+	if err != nil {
+		return fmt.Errorf("%s command failed: %s, output: %s", table, strings.Join(args, " "), string(output))
 	}
 	return nil
 }
 
-func (m *Manager) runIptablesOutput(args ...string) (string, error) {
-	cmd := exec.Command("sudo", append([]string{"iptables"}, args...)...)
-	output, err := cmd.CombinedOutput()
+func (m *Manager) runTableOutput(table string, args ...string) (string, error) {
+	output, err := m.runner.CombinedOutput(table, args...)
 	if err != nil {
-		return "", fmt.Errorf("iptables command failed: %s, output: %s", strings.Join(args, " "), string(output))
+		return "", fmt.Errorf("%s command failed: %s, output: %s", table, strings.Join(args, " "), string(output))
 	}
 	return string(output), nil
 }
 
+func (m *Manager) tableForAddress(address string) (string, error) {
+	address = strings.TrimSpace(address)
+	if address == "" {
+		return "", errors.New(errors.CodeBadRequest, "IP is required")
+	}
+
+	ip := net.ParseIP(address)
+	if ip == nil {
+		if cidrIP, _, err := net.ParseCIDR(address); err == nil {
+			ip = cidrIP
+		}
+	}
+	if ip == nil {
+		return "", errors.New(errors.CodeBadRequest, "Invalid IP")
+	}
+	if ip.To4() != nil {
+		if !m.hasTable("iptables") {
+			return "", errors.New(errors.CodeIptablesCommandError, "iptables is not enabled")
+		}
+		return "iptables", nil
+	}
+	if !m.hasTable("ip6tables") {
+		return "", errors.New(errors.CodeIptablesCommandError, "ip6tables is not enabled")
+	}
+	return "ip6tables", nil
+}
+
 func (m *Manager) Init() error {
-	isNewChain := false
-
-	if err := m.runIptables("-L", m.Chain, "-n"); err != nil {
-		if err := m.runIptables("-N", m.Chain); err != nil {
-			return errors.New(errors.CodeIptablesInitError, fmt.Sprintf("Failed to create chain: %v", err))
-		}
-		isNewChain = true
-	}
-
-	for _, parent := range m.ParentChains {
-		if err := m.runIptables("-C", parent, "-j", m.Chain); err != nil {
-			if err := m.runIptables("-I", parent, "1", "-j", m.Chain); err != nil {
-				return errors.New(errors.CodeIptablesInitError, fmt.Sprintf("Failed to link chain to %s: %v", parent, err))
-			}
-		}
-	}
-
 	m.calculateBaseRuleCount()
 
-	if isNewChain {
-		if err := m.applyBaseRules(); err != nil {
-			return errors.New(errors.CodeIptablesInitError, fmt.Sprintf("Failed to apply base rules: %v", err))
+	for _, table := range m.tables {
+		isNewChain := false
+
+		if err := m.runTable(table, "-L", m.Chain, "-n"); err != nil {
+			if err := m.runTable(table, "-N", m.Chain); err != nil {
+				return errors.New(errors.CodeIptablesInitError, fmt.Sprintf("Failed to create chain (%s): %v", table, err))
+			}
+			isNewChain = true
+		}
+
+		for _, parent := range m.ParentChains {
+			if err := m.runTable(table, "-C", parent, "-j", m.Chain); err != nil {
+				if err := m.runTable(table, "-I", parent, "1", "-j", m.Chain); err != nil {
+					return errors.New(errors.CodeIptablesInitError, fmt.Sprintf("Failed to link chain to %s (%s): %v", parent, table, err))
+				}
+			}
+		}
+
+		if isNewChain {
+			if err := m.applyBaseRules(table); err != nil {
+				return errors.New(errors.CodeIptablesInitError, fmt.Sprintf("Failed to apply base rules (%s): %v", table, err))
+			}
 		}
 	}
 
@@ -126,11 +202,13 @@ func (m *Manager) Init() error {
 }
 
 func (m *Manager) Flush() error {
-	if err := m.runIptables("-F", m.Chain); err != nil {
-		return errors.New(errors.CodeIptablesCommandError, fmt.Sprintf("Failed to flush chain: %v", err))
-	}
-	if err := m.applyBaseRules(); err != nil {
-		return errors.New(errors.CodeIptablesCommandError, fmt.Sprintf("Failed to reapply base rules: %v", err))
+	for _, table := range m.tables {
+		if err := m.runTable(table, "-F", m.Chain); err != nil {
+			return errors.New(errors.CodeIptablesCommandError, fmt.Sprintf("Failed to flush chain (%s): %v", table, err))
+		}
+		if err := m.applyBaseRules(table); err != nil {
+			return errors.New(errors.CodeIptablesCommandError, fmt.Sprintf("Failed to reapply base rules (%s): %v", table, err))
+		}
 	}
 	return nil
 }
@@ -144,11 +222,11 @@ func (m *Manager) calculateBaseRuleCount() {
 	m.BaseRuleCount = count
 }
 
-func (m *Manager) applyBaseRules() error {
-	if err := m.runIptables("-A", m.Chain, "-i", "lo", "-j", "ACCEPT"); err != nil {
+func (m *Manager) applyBaseRules(table string) error {
+	if err := m.runTable(table, "-A", m.Chain, "-i", "lo", "-j", "ACCEPT"); err != nil {
 		return err
 	}
-	if err := m.runIptables("-A", m.Chain, "-m", "state", "--state", "ESTABLISHED,RELATED", "-j", "ACCEPT"); err != nil {
+	if err := m.runTable(table, "-A", m.Chain, "-m", "state", "--state", "ESTABLISHED,RELATED", "-j", "ACCEPT"); err != nil {
 		return err
 	}
 
@@ -162,10 +240,10 @@ func (m *Manager) applyBaseRules() error {
 			chunk := m.ExemptPorts[i:end]
 			portsStr := strings.Join(chunk, ",")
 
-			if err := m.runIptables("-A", m.Chain, "-p", "tcp", "-m", "multiport", "--dports", portsStr, "-j", "ACCEPT"); err != nil {
+			if err := m.runTable(table, "-A", m.Chain, "-p", "tcp", "-m", "multiport", "--dports", portsStr, "-j", "ACCEPT"); err != nil {
 				return err
 			}
-			if err := m.runIptables("-A", m.Chain, "-p", "udp", "-m", "multiport", "--dports", portsStr, "-j", "ACCEPT"); err != nil {
+			if err := m.runTable(table, "-A", m.Chain, "-p", "udp", "-m", "multiport", "--dports", portsStr, "-j", "ACCEPT"); err != nil {
 				return err
 			}
 		}
@@ -176,23 +254,27 @@ func (m *Manager) applyBaseRules() error {
 }
 
 func (m *Manager) Destroy() error {
-	for _, parent := range m.ParentChains {
-		for {
-			if err := m.runIptables("-D", parent, "-j", m.Chain); err != nil {
-				break
+	for _, table := range m.tables {
+		for _, parent := range m.ParentChains {
+			for {
+				if err := m.runTable(table, "-D", parent, "-j", m.Chain); err != nil {
+					break
+				}
 			}
 		}
-	}
 
-	_ = m.runIptables("-F", m.Chain)
-	_ = m.runIptables("-X", m.Chain)
+		_ = m.runTable(table, "-F", m.Chain)
+		_ = m.runTable(table, "-X", m.Chain)
+	}
 	return nil
 }
 
 func (m *Manager) BlockAll() error {
 	_ = m.RemoveBlockAll()
-	if err := m.runIptables("-A", m.Chain, "-j", "DROP"); err != nil {
-		return errors.New(errors.CodeIptablesCommandError, fmt.Sprintf("Failed to block all: %v", err))
+	for _, table := range m.tables {
+		if err := m.runTable(table, "-A", m.Chain, "-j", "DROP"); err != nil {
+			return errors.New(errors.CodeIptablesCommandError, fmt.Sprintf("Failed to block all (%s): %v", table, err))
+		}
 	}
 	return nil
 }
@@ -202,9 +284,11 @@ func (m *Manager) AllowAll() error {
 }
 
 func (m *Manager) RemoveBlockAll() error {
-	for {
-		if err := m.runIptables("-D", m.Chain, "-j", "DROP"); err != nil {
-			break
+	for _, table := range m.tables {
+		for {
+			if err := m.runTable(table, "-D", m.Chain, "-j", "DROP"); err != nil {
+				break
+			}
 		}
 	}
 	return nil
@@ -213,8 +297,12 @@ func (m *Manager) RemoveBlockAll() error {
 func (m *Manager) AllowIP(ip string) error {
 	_ = m.RemoveIPRule(ip)
 	insertPos := strconv.Itoa(m.BaseRuleCount + 1)
-	if err := m.runIptables("-I", m.Chain, insertPos, "-s", ip, "-j", "ACCEPT"); err != nil {
-		return errors.New(errors.CodeIptablesCommandError, fmt.Sprintf("Failed to allow IP %s: %v", ip, err))
+	table, err := m.tableForAddress(ip)
+	if err != nil {
+		return err
+	}
+	if err := m.runTable(table, "-I", m.Chain, insertPos, "-s", ip, "-j", "ACCEPT"); err != nil {
+		return errors.New(errors.CodeIptablesCommandError, fmt.Sprintf("Failed to allow IP %s (%s): %v", ip, table, err))
 	}
 	return nil
 }
@@ -222,15 +310,23 @@ func (m *Manager) AllowIP(ip string) error {
 func (m *Manager) BlockIP(ip string) error {
 	_ = m.RemoveIPRule(ip)
 	insertPos := strconv.Itoa(m.BaseRuleCount + 1)
-	if err := m.runIptables("-I", m.Chain, insertPos, "-s", ip, "-j", "DROP"); err != nil {
-		return errors.New(errors.CodeIptablesCommandError, fmt.Sprintf("Failed to block IP %s: %v", ip, err))
+	table, err := m.tableForAddress(ip)
+	if err != nil {
+		return err
+	}
+	if err := m.runTable(table, "-I", m.Chain, insertPos, "-s", ip, "-j", "DROP"); err != nil {
+		return errors.New(errors.CodeIptablesCommandError, fmt.Sprintf("Failed to block IP %s (%s): %v", ip, table, err))
 	}
 	return nil
 }
 
 func (m *Manager) RemoveIPRule(ip string) error {
-	_ = m.runIptables("-D", m.Chain, "-s", ip, "-j", "ACCEPT")
-	_ = m.runIptables("-D", m.Chain, "-s", ip, "-j", "DROP")
+	table, err := m.tableForAddress(ip)
+	if err != nil {
+		return err
+	}
+	_ = m.runTable(table, "-D", m.Chain, "-s", ip, "-j", "ACCEPT")
+	_ = m.runTable(table, "-D", m.Chain, "-s", ip, "-j", "DROP")
 	return nil
 }
 
@@ -240,24 +336,31 @@ type Rule struct {
 }
 
 func (m *Manager) ParseRules() ([]Rule, error) {
-	output, err := m.runIptablesOutput("-S", m.Chain)
-	if err != nil {
-		return nil, errors.New(errors.CodeIptablesParseError, fmt.Sprintf("Failed to list rules: %v", err))
-	}
-
 	var rules []Rule
-	lines := strings.Split(output, "\n")
-	re := regexp.MustCompile(`-[AI]\s+\S+\s+-s\s+([0-9\.\/]+)\s+-j\s+(ACCEPT|DROP)`)
+	re := regexp.MustCompile(`-[AI]\s+\S+\s+-s\s+(\S+)\s+-j\s+(ACCEPT|DROP)`)
 
-	for _, line := range lines {
-		matches := re.FindStringSubmatch(line)
-		if len(matches) == 3 {
+	for _, table := range m.tables {
+		output, err := m.runTableOutput(table, "-S", m.Chain)
+		if err != nil {
+			return nil, errors.New(errors.CodeIptablesParseError, fmt.Sprintf("Failed to list rules (%s): %v", table, err))
+		}
+
+		lines := strings.Split(output, "\n")
+		for _, line := range lines {
+			matches := re.FindStringSubmatch(line)
+			if len(matches) != 3 {
+				continue
+			}
+
 			ip := matches[1]
 			ip = strings.TrimSuffix(ip, "/32")
+			ip = strings.TrimSuffix(ip, "/128")
 			action := matches[2]
-			if ip != "0.0.0.0/0" {
-				rules = append(rules, Rule{IP: ip, Action: action})
+
+			if ip == "0.0.0.0/0" || ip == "::/0" {
+				continue
 			}
+			rules = append(rules, Rule{IP: ip, Action: action})
 		}
 	}
 	return rules, nil

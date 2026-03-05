@@ -593,6 +593,7 @@ type requestTrafficMetrics struct {
 
 type trafficReadCloser struct {
 	io.ReadCloser
+	handler *Handler
 	metrics *requestTrafficMetrics
 }
 
@@ -600,12 +601,14 @@ func (trc *trafficReadCloser) Read(p []byte) (int, error) {
 	n, err := trc.ReadCloser.Read(p)
 	if n > 0 {
 		trc.metrics.inBytes += uint64(n)
+		atomic.AddUint64(&trc.handler.trafficTotalIn, uint64(n))
 	}
 	return n, err
 }
 
 type trafficResponseWriter struct {
 	http.ResponseWriter
+	handler *Handler
 	metrics *requestTrafficMetrics
 }
 
@@ -624,6 +627,7 @@ func (tw *trafficResponseWriter) Write(p []byte) (int, error) {
 	n, err := tw.ResponseWriter.Write(p)
 	if n > 0 {
 		tw.metrics.outBytes += uint64(n)
+		atomic.AddUint64(&tw.handler.trafficTotalOut, uint64(n))
 	}
 	return n, err
 }
@@ -659,23 +663,19 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.Body != nil {
 		r.Body = &trafficReadCloser{
 			ReadCloser: r.Body,
+			handler:    h,
 			metrics:    metrics,
 		}
 	}
 	w = &trafficResponseWriter{
 		ResponseWriter: w,
+		handler:        h,
 		metrics:        metrics,
 	}
 
 	defer func() {
 		atomic.AddInt64(&h.trafficActive, -1)
 
-		if metrics.inBytes != 0 {
-			atomic.AddUint64(&h.trafficTotalIn, metrics.inBytes)
-		}
-		if metrics.outBytes != 0 {
-			atomic.AddUint64(&h.trafficTotalOut, metrics.outBytes)
-		}
 		if metrics.statusCode >= 500 {
 			atomic.AddUint64(&h.trafficError5xx, 1)
 		}

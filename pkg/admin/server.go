@@ -14,6 +14,7 @@ import (
 	"go-reauth-proxy/pkg/version"
 	"io"
 	"net/http"
+	"time"
 
 	"github.com/gorilla/mux"
 	httpSwagger "github.com/swaggo/http-swagger"
@@ -57,6 +58,7 @@ func (s *Server) Start() error {
 	r.HandleFunc("/api/rules", s.handleAddRule).Methods("POST")
 	r.HandleFunc("/api/rules", s.handleFlushRules).Methods("DELETE")
 	r.HandleFunc("/api/info", s.handleInfo).Methods("GET")
+	r.HandleFunc("/api/traffic", s.handleTraffic).Methods("GET")
 	r.HandleFunc("/api/config/default-route", s.handleGetDefaultRoute).Methods("GET")
 	r.HandleFunc("/api/config/default-route", s.handleSetDefaultRoute).Methods("POST")
 	r.HandleFunc("/api/config/proxy-protocol", s.handleGetProxyProtocolForce).Methods("GET")
@@ -203,6 +205,17 @@ func (s *Server) handleInfo(w http.ResponseWriter, r *http.Request) {
 	response.Success(w, ServerInfo{
 		Version: version.Version,
 	})
+}
+
+// handleTraffic returns proxy traffic stats
+// @Summary Get traffic stats
+// @Description Get proxy traffic stats (bytes in/out, active logged-in users in last 2 minutes, and 5xx count)
+// @Tags traffic
+// @Produce  json
+// @Success 200 {object} response.Response{data=proxy.TrafficStats}
+// @Router /api/traffic [get]
+func (s *Server) handleTraffic(w http.ResponseWriter, r *http.Request) {
+	response.Success(w, s.ProxyHandler.GetTrafficStats(time.Now()))
 }
 
 // handleGetDefaultRoute gets the default route

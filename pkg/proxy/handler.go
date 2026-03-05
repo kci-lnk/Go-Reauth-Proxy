@@ -1,8 +1,11 @@
 package proxy
 
 import (
+	"bufio"
 	"bytes"
+	"crypto/sha256"
 	"crypto/tls"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"go-reauth-proxy/pkg/config"
@@ -17,6 +20,7 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"path"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -38,6 +42,13 @@ type Handler struct {
 	configManager *config.Manager
 	certPEM       string
 	keyPEM        string
+
+	trafficTotalIn  uint64
+	trafficTotalOut uint64
+	trafficActive   int64
+	trafficError5xx uint64
+
+	loggedInActive sync.Map
 }
 
 type requestSnapshot struct {
@@ -472,7 +483,208 @@ func (h *Handler) SetAuthConfig(config models.AuthConfig) error {
 	return nil
 }
 
+type TrafficStats struct {
+	TotalIn     uint64 `json:"total_in"`
+	TotalOut    uint64 `json:"total_out"`
+	ActiveConns int64  `json:"active_conns"`
+	Error5xx    uint64 `json:"error_5xx"`
+}
+
+func (h *Handler) GetTrafficStats(timestamp time.Time) TrafficStats {
+	return TrafficStats{
+		TotalIn:     atomic.LoadUint64(&h.trafficTotalIn),
+		TotalOut:    atomic.LoadUint64(&h.trafficTotalOut),
+		ActiveConns: h.activeLoggedInCount(timestamp),
+		Error5xx:    atomic.LoadUint64(&h.trafficError5xx),
+	}
+}
+
+const loggedInActiveWindow = 2 * time.Minute
+
+func canonicalCookieIdentity(r *http.Request) string {
+	cookies := r.Cookies()
+	if len(cookies) == 0 {
+		return ""
+	}
+
+	filtered := make([]*http.Cookie, 0, len(cookies))
+	for _, c := range cookies {
+		if c == nil {
+			continue
+		}
+		if c.Name == "__proxy_path" {
+			continue
+		}
+		if c.Name == "" || c.Value == "" {
+			continue
+		}
+		filtered = append(filtered, c)
+	}
+	if len(filtered) == 0 {
+		return ""
+	}
+
+	sort.Slice(filtered, func(i, j int) bool {
+		if filtered[i].Name == filtered[j].Name {
+			return filtered[i].Value < filtered[j].Value
+		}
+		return filtered[i].Name < filtered[j].Name
+	})
+
+	var b strings.Builder
+	for i, c := range filtered {
+		if i > 0 {
+			b.WriteByte(';')
+		}
+		b.WriteString(c.Name)
+		b.WriteByte('=')
+		b.WriteString(c.Value)
+	}
+	return b.String()
+}
+
+func activeIdentityKey(r *http.Request, clientIP string) string {
+	var src string
+	if cookieID := canonicalCookieIdentity(r); cookieID != "" {
+		src = "cookie:" + cookieID
+	} else if auth := r.Header.Get("Authorization"); auth != "" {
+		src = "auth:" + auth
+	} else if clientIP != "" {
+		src = "ip:" + clientIP
+	} else {
+		return ""
+	}
+
+	sum := sha256.Sum256([]byte(src))
+	return hex.EncodeToString(sum[:])
+}
+
+func (h *Handler) markLoggedInActive(r *http.Request, clientIP string, now time.Time) {
+	key := activeIdentityKey(r, clientIP)
+	if key == "" {
+		return
+	}
+	h.loggedInActive.Store(key, now.UnixNano())
+}
+
+func (h *Handler) activeLoggedInCount(now time.Time) int64 {
+	cutoff := now.Add(-loggedInActiveWindow).UnixNano()
+	var count int64
+
+	h.loggedInActive.Range(func(key, value any) bool {
+		ts, ok := value.(int64)
+		if !ok || ts < cutoff {
+			h.loggedInActive.Delete(key)
+			return true
+		}
+		count++
+		return true
+	})
+
+	return count
+}
+
+type requestTrafficMetrics struct {
+	inBytes     uint64
+	outBytes    uint64
+	statusCode  int
+	wroteHeader bool
+}
+
+type trafficReadCloser struct {
+	io.ReadCloser
+	metrics *requestTrafficMetrics
+}
+
+func (trc *trafficReadCloser) Read(p []byte) (int, error) {
+	n, err := trc.ReadCloser.Read(p)
+	if n > 0 {
+		trc.metrics.inBytes += uint64(n)
+	}
+	return n, err
+}
+
+type trafficResponseWriter struct {
+	http.ResponseWriter
+	metrics *requestTrafficMetrics
+}
+
+func (tw *trafficResponseWriter) WriteHeader(statusCode int) {
+	if !tw.metrics.wroteHeader {
+		tw.metrics.wroteHeader = true
+		tw.metrics.statusCode = statusCode
+	}
+	tw.ResponseWriter.WriteHeader(statusCode)
+}
+
+func (tw *trafficResponseWriter) Write(p []byte) (int, error) {
+	if !tw.metrics.wroteHeader {
+		tw.WriteHeader(http.StatusOK)
+	}
+	n, err := tw.ResponseWriter.Write(p)
+	if n > 0 {
+		tw.metrics.outBytes += uint64(n)
+	}
+	return n, err
+}
+
+func (tw *trafficResponseWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	hj, ok := tw.ResponseWriter.(http.Hijacker)
+	if !ok {
+		return nil, nil, http.ErrNotSupported
+	}
+	return hj.Hijack()
+}
+
+func (tw *trafficResponseWriter) Flush() {
+	if fl, ok := tw.ResponseWriter.(http.Flusher); ok {
+		fl.Flush()
+	}
+}
+
+func (tw *trafficResponseWriter) Push(target string, opts *http.PushOptions) error {
+	ps, ok := tw.ResponseWriter.(http.Pusher)
+	if !ok {
+		return http.ErrNotSupported
+	}
+	return ps.Push(target, opts)
+}
+
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	atomic.AddInt64(&h.trafficActive, 1)
+
+	metrics := &requestTrafficMetrics{
+		statusCode: http.StatusOK,
+	}
+	if r.Body != nil {
+		r.Body = &trafficReadCloser{
+			ReadCloser: r.Body,
+			metrics:    metrics,
+		}
+	}
+	w = &trafficResponseWriter{
+		ResponseWriter: w,
+		metrics:        metrics,
+	}
+
+	defer func() {
+		atomic.AddInt64(&h.trafficActive, -1)
+
+		if metrics.inBytes != 0 {
+			atomic.AddUint64(&h.trafficTotalIn, metrics.inBytes)
+		}
+		if metrics.outBytes != 0 {
+			atomic.AddUint64(&h.trafficTotalOut, metrics.outBytes)
+		}
+		if metrics.statusCode >= 500 {
+			atomic.AddUint64(&h.trafficError5xx, 1)
+		}
+
+		if rec := recover(); rec != nil {
+			panic(rec)
+		}
+	}()
+
 	snapshot := h.snapshotForRequest()
 
 	cleanedPath := path.Clean(r.URL.Path)
@@ -879,6 +1091,7 @@ func (h *Handler) checkAuth(w http.ResponseWriter, r *http.Request, authConfig m
 		return false
 	}
 	if authResponse.Success {
+		h.markLoggedInActive(r, clientIP, time.Now())
 		return true
 	}
 	log.Printf("Auth failed: %s", authResponse.Message)

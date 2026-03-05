@@ -63,6 +63,10 @@ definitions:
         description: Relative Logout URL (default /api/auth/logout)
         example: /api/auth/logout
         type: string
+      preflight_url:
+        description: Relative Preflight URL (default /api/auth/preflight)
+        example: /api/auth/preflight
+        type: string
     type: object
   models.Rule:
     properties:
@@ -109,6 +113,17 @@ definitions:
           -----BEGIN RSA PRIVATE KEY-----
           ...
         type: string
+    type: object
+  proxy.TrafficStats:
+    properties:
+      active_conns:
+        type: integer
+      error_5xx:
+        type: integer
+      total_in:
+        type: integer
+      total_out:
+        type: integer
     type: object
   response.Response:
     properties:
@@ -615,4 +630,23 @@ paths:
       summary: Set SSL certificate
       tags:
       - ssl
+  /api/traffic:
+    get:
+      description: Get proxy traffic stats (bytes in/out, active logged-in users in
+        last 2 minutes, and 5xx count)
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/response.Response'
+            - properties:
+                data:
+                  $ref: '#/definitions/proxy.TrafficStats'
+              type: object
+      summary: Get traffic stats
+      tags:
+      - traffic
 swagger: "2.0"

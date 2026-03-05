@@ -791,6 +791,38 @@ const docTemplate = `{
                     }
                 }
             }
+        },
+        "/api/traffic": {
+            "get": {
+                "description": "Get proxy traffic stats (bytes in/out, active logged-in users in last 2 minutes, and 5xx count)",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "traffic"
+                ],
+                "summary": "Get traffic stats",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "allOf": [
+                                {
+                                    "$ref": "#/definitions/response.Response"
+                                },
+                                {
+                                    "type": "object",
+                                    "properties": {
+                                        "data": {
+                                            "$ref": "#/definitions/proxy.TrafficStats"
+                                        }
+                                    }
+                                }
+                            ]
+                        }
+                    }
+                }
+            }
         }
     },
     "definitions": {
@@ -882,6 +914,11 @@ const docTemplate = `{
                     "description": "Relative Logout URL (default /api/auth/logout)",
                     "type": "string",
                     "example": "/api/auth/logout"
+                },
+                "preflight_url": {
+                    "description": "Relative Preflight URL (default /api/auth/preflight)",
+                    "type": "string",
+                    "example": "/api/auth/preflight"
                 }
             }
         },
@@ -938,6 +975,23 @@ const docTemplate = `{
                 "key": {
                     "type": "string",
                     "example": "-----BEGIN RSA PRIVATE KEY-----\n..."
+                }
+            }
+        },
+        "proxy.TrafficStats": {
+            "type": "object",
+            "properties": {
+                "active_conns": {
+                    "type": "integer"
+                },
+                "error_5xx": {
+                    "type": "integer"
+                },
+                "total_in": {
+                    "type": "integer"
+                },
+                "total_out": {
+                    "type": "integer"
                 }
             }
         },

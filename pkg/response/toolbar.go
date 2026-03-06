@@ -53,6 +53,13 @@ const toolbarTemplate = `
 
     var style = document.createElement('style');
     style.textContent = ` + "`" + `
+        .dot {
+            width: 8px;
+            height: 8px;
+            background-color: #10b981;
+            border-radius: 50%;
+            display: inline-block;
+        }
         #fab {
             width: 44px;
             height: 44px;
@@ -109,8 +116,9 @@ const toolbarTemplate = `
             font-size: 14px;
             border-bottom: 1px solid #f3f4f6;
             transition: background-color 0.15s, color 0.15s;
-            display: block;
-            text-overflow: ellipsis;
+            display: flex; /* 关键修改：使 menu-item 成为 Flex 容器 */
+            align-items: center; /* 关键：垂直居中所有内容 */
+            justify-content: space-between; /* 关键：路径居左，圆点/Go居右 */
             white-space: nowrap;
             overflow: hidden;
             position: relative;
@@ -129,9 +137,26 @@ const toolbarTemplate = `
         .menu-item.active:hover {
             background-color: #f9fafb;
         }
-        .menu-item.active span
-        {
-            color: #10b981;
+        /* 新的路径部分样式 */
+        .menu-item-path {
+            flex-grow: 1; /* 路径占满剩余空间 */
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        /* 新的右侧内容样式 */
+        .menu-item-right-content {
+            display: flex; /* 为内部圆点/文字提供 Flex 环境 */
+            align-items: center; /* 垂直居中圆点和文字 */
+            gap: 6px; /* 激活时圆点和 Go 之间的间距（如果有的话） */
+            font-size: 12px; /* 设置右侧内容的大小 */
+            color: #6b7280; /* 默认颜色 */
+            margin-left: 12px; /* 路径和右侧内容之间的间距 */
+        }
+        .menu-item.active .menu-item-right-content {
+            color: #18181b; /* 激活时的文字颜色 */
+        }
+        .menu-item.active .menu-item-right-content .dot {
+            background-color: #10b981; /* 激活时的圆点颜色 */
         }
         .logout-btn {
             color: #ef4444;
@@ -159,13 +184,7 @@ const toolbarTemplate = `
             align-items: center;
             gap: 6px;
         }
-        .dot {
-            width: 8px;
-            height: 8px;
-            background-color: #10b981;
-            border-radius: 50%;
-            display: inline-block;
-        }
+        /* dot 样式在文件开头定义了 */
         .toolbar-alert-overlay {
             position: fixed;
             top: 0; left: 0; right: 0; bottom: 0;
@@ -249,7 +268,16 @@ const toolbarTemplate = `
                     <span><i class="dot"></i> Go Reauth Proxy</span>
                 </div>
                 {{range .Rules}}
-                <a href="{{ensureSlash .Path}}" class="menu-item{{if isActive .Path $.CurrentPath}} active{{end}}">{{.Path}} <span style="float: right; font-size: 12px;">{{if isActive .Path $.CurrentPath}}●{{else}}Go{{end}}</span></a>
+                <a href="{{ensureSlash .Path}}" class="menu-item{{if isActive .Path $.CurrentPath}} active{{end}}">
+                    <span class="menu-item-path">{{.Path}}</span>
+                    <span class="menu-item-right-content">
+                        {{if isActive .Path $.CurrentPath}}
+                            <i class="dot"></i>
+                        {{else}}
+                            <span class="menu-item-go-text">Go</span>
+                        {{end}}
+                    </span>
+                </a>
                 {{end}}
                 <div style="height: 4px; background: #f9fafb;"></div>
                 <a href="/__auth__/api/auth/logout" class="menu-item logout-btn">Logout</a>

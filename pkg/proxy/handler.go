@@ -656,42 +656,29 @@ func (tw *trafficResponseWriter) Push(target string, opts *http.PushOptions) err
 
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	atomic.AddInt64(&h.trafficActive, 1)
-
-	metrics := &requestTrafficMetrics{
-		statusCode: http.StatusOK,
-	}
+	metrics := &requestTrafficMetrics{statusCode: http.StatusOK}
 	if r.Body != nil {
-		r.Body = &trafficReadCloser{
-			ReadCloser: r.Body,
-			handler:    h,
-			metrics:    metrics,
-		}
+		r.Body = &trafficReadCloser{ReadCloser: r.Body, handler: h, metrics: metrics}
 	}
-	w = &trafficResponseWriter{
-		ResponseWriter: w,
-		handler:        h,
-		metrics:        metrics,
-	}
+	w = &trafficResponseWriter{ResponseWriter: w, handler: h, metrics: metrics}
 
 	defer func() {
 		atomic.AddInt64(&h.trafficActive, -1)
-
 		if metrics.statusCode >= 500 {
 			atomic.AddUint64(&h.trafficError5xx, 1)
 		}
-
 		if rec := recover(); rec != nil {
 			panic(rec)
 		}
 	}()
 
 	snapshot := h.snapshotForRequest()
-
 	cleanedPath := path.Clean(r.URL.Path)
 	if strings.HasSuffix(r.URL.Path, "/") && cleanedPath != "/" {
 		cleanedPath += "/"
 	}
 	r.URL.Path = cleanedPath
+
 	if response.IsFaviconPath(r.URL.Path) {
 		response.ServeFavicon(w, r)
 		return
@@ -699,14 +686,24 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	clientIP := resolveClientIP(r, snapshot.proxyProtocolForce)
 
-	if h.handleSelectRoute(w, r, snapshot, clientIP) {
-		return
-	}
-	if h.handleAuthProxyRoute(w, r, snapshot, clientIP) {
-		return
-	}
+	isSelectRoute := r.URL.Path == "/__select__"
+	isAuthRoute := strings.HasPrefix(r.URL.Path, "/__auth__/")
 
 	matchedRule, needsSlashRedirect := matchRule(r, snapshot.rules)
+
+	if matchedRule == nil && snapshot.defaultRoute != "" && snapshot.defaultRoute != "/__select__" {
+		for _, rule := range snapshot.rules {
+			if rule.Path == snapshot.defaultRoute {
+				matchedRule = copyRule(rule)
+				break
+			}
+		}
+	}
+	isMatch := isSelectRoute || isAuthRoute || matchedRule != nil || r.URL.Path == "/"
+	if h.shouldDenyByPreflight(r, snapshot.authConfig, clientIP, isMatch) {
+		h.abortConnection(w)
+		return
+	}
 	if needsSlashRedirect != "" {
 		newPath := needsSlashRedirect
 		if r.URL.RawQuery != "" {
@@ -715,23 +712,18 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, newPath, http.StatusMovedPermanently)
 		return
 	}
-
-	if matchedRule == nil {
-		if snapshot.defaultRoute != "" && snapshot.defaultRoute != "/__select__" {
-			for _, rule := range snapshot.rules {
-				if rule.Path == snapshot.defaultRoute {
-					matchedRule = copyRule(rule)
-					break
-				}
-			}
-		}
+	if isSelectRoute {
+		h.handleSelectRoute(w, r, snapshot, clientIP)
+		return
 	}
-
+	if isAuthRoute {
+		h.handleAuthProxyRoute(w, r, snapshot, clientIP)
+		return
+	}
 	if matchedRule == nil {
 		h.handleNoMatchRoute(w, r, snapshot, clientIP)
 		return
 	}
-
 	if matchedRule.UseRootMode && matchedRule.Path != "/" && strings.HasPrefix(r.URL.Path, matchedRule.Path) {
 		http.SetCookie(w, &http.Cookie{
 			Name:  "__proxy_path",
@@ -741,29 +733,17 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/", http.StatusFound)
 		return
 	}
-
 	if matchedRule.UseAuth && snapshot.authConfig.AuthURL != "" {
 		if !h.checkAuth(w, r, snapshot.authConfig, clientIP) {
 			return
 		}
 	}
-
-	if h.shouldDenyByPreflight(r, snapshot.authConfig, clientIP, true) {
-		h.abortConnection(w)
-		return
-	}
-
 	h.proxyToRuleTarget(w, r, snapshot, *matchedRule, clientIP)
 }
 
 func (h *Handler) handleSelectRoute(w http.ResponseWriter, r *http.Request, snapshot requestSnapshot, clientIP string) bool {
 	if r.URL.Path != "/__select__" {
 		return false
-	}
-
-	if h.shouldDenyByPreflight(r, snapshot.authConfig, clientIP, true) {
-		h.abortConnection(w)
-		return true
 	}
 	if snapshot.authConfig.AuthURL != "" {
 		if !h.checkAuth(w, r, snapshot.authConfig, clientIP) {
@@ -783,11 +763,6 @@ func (h *Handler) handleAuthProxyRoute(w http.ResponseWriter, r *http.Request, s
 		response.HTML(w, errors.CodeInternal, "Authentication service is not configured", nil)
 		return true
 	}
-	if h.shouldDenyByPreflight(r, snapshot.authConfig, clientIP, true) {
-		h.abortConnection(w)
-		return true
-	}
-
 	targetURL, _ := url.Parse(fmt.Sprintf("http://127.0.0.1:%d", snapshot.authConfig.AuthPort))
 
 	proxyPath := r.URL.Path
@@ -891,20 +866,11 @@ func matchRule(r *http.Request, rules []models.Rule) (*models.Rule, string) {
 
 func (h *Handler) handleNoMatchRoute(w http.ResponseWriter, r *http.Request, snapshot requestSnapshot, clientIP string) {
 	if r.URL.Path == "/" {
-		if h.shouldDenyByPreflight(r, snapshot.authConfig, clientIP, true) {
-			h.abortConnection(w)
-			return
-		}
 		if len(snapshot.rules) == 0 {
 			response.Welcome(w, nil)
 			return
 		}
 		http.Redirect(w, r, "/__select__", http.StatusFound)
-		return
-	}
-
-	if h.shouldDenyByPreflight(r, snapshot.authConfig, clientIP, false) {
-		h.abortConnection(w)
 		return
 	}
 	response.HTML(w, errors.CodeNotFound, "Not Found", snapshot.rules)

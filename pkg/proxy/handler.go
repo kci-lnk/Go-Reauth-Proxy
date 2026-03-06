@@ -717,6 +717,17 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if matchedRule == nil {
+		if snapshot.defaultRoute != "" && snapshot.defaultRoute != "/__select__" {
+			for _, rule := range snapshot.rules {
+				if rule.Path == snapshot.defaultRoute {
+					matchedRule = copyRule(rule)
+					break
+				}
+			}
+		}
+	}
+
+	if matchedRule == nil {
 		h.handleNoMatchRoute(w, r, snapshot, clientIP)
 		return
 	}
@@ -888,7 +899,7 @@ func (h *Handler) handleNoMatchRoute(w http.ResponseWriter, r *http.Request, sna
 			response.Welcome(w, nil)
 			return
 		}
-		http.Redirect(w, r, snapshot.defaultRoute, http.StatusFound)
+		http.Redirect(w, r, "/__select__", http.StatusFound)
 		return
 	}
 

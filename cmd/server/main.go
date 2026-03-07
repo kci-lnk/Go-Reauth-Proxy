@@ -193,6 +193,7 @@ func startProxyServers(host string, proxyPort int, proxyHandler *proxy.Handler, 
 func main() {
 	adminPort := flag.Int("admin-port", 7996, "Port for the Admin API (0 uses config or default 7996, binds to 127.0.0.1)")
 	proxyPort := flag.Int("proxy-port", 7999, "Port for the Reverse Proxy (binds to 0.0.0.0 or 127.0.0.1 based on proxy_protocol_force)")
+	configFlag := flag.String("c", "", "Path to config file (default: config.json in executable directory)")
 	flag.Parse()
 
 	log.Printf("Starting Go Reauth Proxy Service...")
@@ -207,7 +208,31 @@ func main() {
 		pwd, _ := os.Getwd()
 		execDir = pwd
 	}
-	configPath := filepath.Join(execDir, "config.json")
+
+	var configPath string
+	if *configFlag != "" {
+		configPath = *configFlag
+		if !filepath.IsAbs(configPath) {
+			pwd, err := os.Getwd()
+			if err == nil {
+				configPath = filepath.Join(pwd, configPath)
+			}
+		}
+
+		info, err := os.Stat(configPath)
+		if err == nil && info.IsDir() {
+			configPath = filepath.Join(configPath, "config.json")
+		} else if err != nil && os.IsNotExist(err) && strings.HasSuffix(*configFlag, string(os.PathSeparator)) {
+			configPath = filepath.Join(configPath, "config.json")
+		}
+	} else {
+		configPath = filepath.Join(execDir, "config.json")
+	}
+
+	configDir := filepath.Dir(configPath)
+	if err := os.MkdirAll(configDir, 0755); err != nil {
+		log.Fatalf("Failed to create config directory %s: %v", configDir, err)
+	}
 
 	cfgManager := config.NewManager(configPath)
 	initialCfg, err := cfgManager.Load()

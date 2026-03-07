@@ -146,12 +146,6 @@ func startProxyServers(host string, proxyPort int, proxyHandler *proxy.Handler, 
 
 	proxyListener := &proxyproto.Listener{
 		Listener: tcpListener,
-		Policy: func(upstream net.Addr) (proxyproto.Policy, error) {
-			if proxyHandler.GetProxyProtocolForce() {
-				return proxyproto.REQUIRE, nil
-			}
-			return proxyproto.USE, nil
-		},
 	}
 
 	m := cmux.New(proxyListener)

@@ -51,6 +51,7 @@ type Handler struct {
 	GatewayVisibility     models.GatewayVisibilityConfig
 	ForwardedHeaders      models.ForwardedHeadersConfig
 	PreserveHost          models.PreserveHostConfig
+	CrawlerBlocker        models.CrawlerBlockerConfig
 	GatewayPortal         models.GatewayPortalConfig
 	FnosPortIconHijack    models.FnosPortIconHijackConfig
 	GeneralBlacklist      models.GeneralBlacklistConfig
@@ -922,6 +923,7 @@ func NewHandler(adminPort int, proxyPort int, cfgManager *config.Manager, initia
 		GatewayVisibility:    initialCfg.Visibility,
 		ForwardedHeaders:     normalizedForwardedHeaders,
 		PreserveHost:         normalizedPreserveHost,
+		CrawlerBlocker:       normalizeCrawlerBlockerConfig(initialCfg.CrawlerBlocker),
 		GatewayPortal:        models.NormalizeGatewayPortalConfig(initialCfg.Portal),
 		FnosPortIconHijack:   initialCfg.FnosPortIconHijack,
 		GeneralBlacklist:     models.GeneralBlacklistConfig{Items: []models.GeneralBlacklistRecord{}},
@@ -955,6 +957,7 @@ func NewHandler(adminPort int, proxyPort int, cfgManager *config.Manager, initia
 			Int("stream_rule_count", len(h.StreamRules)).
 			Bool("proxy_protocol_force", h.ProxyProtocolForce).
 			Bool("gateway_logging_enabled", h.LoggingConfig.Enabled).
+			Bool("crawler_blocker_enabled", h.CrawlerBlocker.Enabled).
 			Bool("waf_enabled", h.WAFConfig.Enabled).
 			Str("gateway_logs_dir", logger.SanitizeLogString(logsDir)).
 			Send()
@@ -1067,6 +1070,7 @@ func (h *Handler) saveConfigLocked() {
 		conf.Visibility = h.GatewayVisibility
 		conf.ForwardedHeaders = h.ForwardedHeaders
 		conf.PreserveHost = h.PreserveHost
+		conf.CrawlerBlocker = h.CrawlerBlocker
 		conf.Portal = h.GatewayPortal
 		conf.FnosPortIconHijack = h.FnosPortIconHijack
 		conf.GeneralBlacklist = h.GeneralBlacklist
@@ -2462,6 +2466,13 @@ func (h *Handler) GetPreserveHostConfig() models.PreserveHostConfig {
 	}
 }
 
+func (h *Handler) GetCrawlerBlockerConfig() models.CrawlerBlockerConfig {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+
+	return h.CrawlerBlocker
+}
+
 func (h *Handler) GetFnosPortIconHijackConfig() models.FnosPortIconHijackConfig {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
@@ -2611,6 +2622,22 @@ func (h *Handler) SetPreserveHostConfig(cfg models.PreserveHostConfig) {
 			Str("updated_at", logger.SanitizeLogString(normalized.UpdatedAt)).
 			Send()
 	}
+}
+
+func (h *Handler) SetCrawlerBlockerConfig(cfg models.CrawlerBlockerConfig) models.CrawlerBlockerConfig {
+	normalized := normalizeCrawlerBlockerConfig(cfg)
+
+	h.mu.Lock()
+	h.CrawlerBlocker = normalized
+	h.saveConfigLocked()
+	h.mu.Unlock()
+
+	if event := debugProxyEvent("crawler_blocker_config_set", ""); event != nil {
+		event.Bool("enabled", normalized.Enabled).
+			Str("updated_at", logger.SanitizeLogString(normalized.UpdatedAt)).
+			Send()
+	}
+	return normalized
 }
 
 func (h *Handler) GetGatewayPortalConfig() models.GatewayPortalConfig {
@@ -3547,6 +3574,36 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			Str("ali_real_client_ip", logger.SanitizeLogString(r.Header.Get("Ali-Real-Client-IP"))).
 			Str("eo_connecting_ip", logger.SanitizeLogString(r.Header.Get("EO-Connecting-IP"))).
 			Send()
+	}
+
+	crawlerBlocker := h.GetCrawlerBlockerConfig()
+	if crawlerBlocker.Enabled {
+		if isCrawlerBlockerRobotsPath(r.URL.Path) {
+			accessEntry.RouteType = "crawler_blocker"
+			accessEntry.RouteKey = crawlerBlockerRobotsPath
+			accessEntry.AuthDecision = "robots_txt_served"
+			accessEntry.Matched = true
+			if event := debugProxyEvent("crawler_blocker_robots_served", requestID); event != nil {
+				event.Str("path", logger.SanitizeLogString(r.URL.Path)).Send()
+			}
+			serveCrawlerBlockerRobots(w)
+			return
+		}
+
+		if isCrawlerBlockerUserAgent(r.UserAgent()) {
+			accessEntry.RouteType = "crawler_blocker"
+			accessEntry.RouteKey = "user_agent"
+			accessEntry.AuthDecision = "crawler_blocked"
+			accessEntry.Matched = true
+			loggedStatusCode = http.StatusForbidden
+			if event := debugProxyEvent("crawler_blocker_blocked", requestID); event != nil {
+				event.Str("client_ip", logger.SanitizeLogString(clientIP)).
+					Str("user_agent", logger.SanitizeLogString(r.UserAgent())).
+					Send()
+			}
+			serveCrawlerBlockerForbidden(w)
+			return
+		}
 	}
 
 	if blacklistRecord, blocked := h.GetGeneralBlacklistRecordForClientIP(clientIP); blocked {

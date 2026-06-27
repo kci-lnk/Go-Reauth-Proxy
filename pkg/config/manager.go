@@ -32,6 +32,7 @@ type AppConfig struct {
 	Visibility           models.GatewayVisibilityConfig    `json:"visibility,omitempty"`
 	ForwardedHeaders     models.ForwardedHeadersConfig     `json:"forwarded_headers,omitempty"`
 	PreserveHost         models.PreserveHostConfig         `json:"preserve_host,omitempty"`
+	CrawlerBlocker       models.CrawlerBlockerConfig       `json:"crawler_blocker,omitempty"`
 	Portal               models.GatewayPortalConfig        `json:"portal,omitempty"`
 	FnosPortIconHijack   models.FnosPortIconHijackConfig   `json:"fnos_port_icon_hijack,omitempty"`
 	IptablesChainName    string                            `json:"iptables_chain_name,omitempty"`
@@ -106,6 +107,10 @@ func defaultConfig() *AppConfig {
 			Enabled:     true,
 			OmitTargets: []string{},
 			UpdatedAt:   "",
+		},
+		CrawlerBlocker: models.CrawlerBlockerConfig{
+			Enabled:   false,
+			UpdatedAt: "",
 		},
 		Portal: models.GatewayPortalConfig{
 			Enabled:      true,
@@ -279,6 +284,9 @@ func applyDefaults(cfg *AppConfig) bool {
 	}
 	if cfg.PreserveHost.UpdatedAt == "" {
 		cfg.PreserveHost.UpdatedAt = ""
+	}
+	if cfg.CrawlerBlocker.UpdatedAt == "" {
+		cfg.CrawlerBlocker.UpdatedAt = ""
 	}
 	if cfg.Logging.MaxDays <= 0 {
 		cfg.Logging.MaxDays = gatewaylog.DefaultMaxDays

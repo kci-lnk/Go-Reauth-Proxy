@@ -89,6 +89,88 @@ const docTemplate = `{
                 }
             }
         },
+        "/api/config/crawler-blocker": {
+            "get": {
+                "description": "Get the current crawler-blocker runtime configuration",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "config"
+                ],
+                "summary": "Get crawler blocker config",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "allOf": [
+                                {
+                                    "$ref": "#/definitions/response.Response"
+                                },
+                                {
+                                    "type": "object",
+                                    "properties": {
+                                        "data": {
+                                            "$ref": "#/definitions/models.CrawlerBlockerConfig"
+                                        }
+                                    }
+                                }
+                            ]
+                        }
+                    }
+                }
+            },
+            "post": {
+                "description": "Replace the crawler-blocker runtime configuration",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "config"
+                ],
+                "summary": "Set crawler blocker config",
+                "parameters": [
+                    {
+                        "description": "Crawler blocker config",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/models.CrawlerBlockerConfig"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "allOf": [
+                                {
+                                    "$ref": "#/definitions/response.Response"
+                                },
+                                {
+                                    "type": "object",
+                                    "properties": {
+                                        "data": {
+                                            "$ref": "#/definitions/models.CrawlerBlockerConfig"
+                                        }
+                                    }
+                                }
+                            ]
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/response.Response"
+                        }
+                    }
+                }
+            }
+        },
         "/api/config/default-route": {
             "get": {
                 "description": "Get the configured default route when root route is requested",
@@ -1512,6 +1594,17 @@ const docTemplate = `{
                 }
             }
         },
+        "models.CrawlerBlockerConfig": {
+            "type": "object",
+            "properties": {
+                "enabled": {
+                    "type": "boolean"
+                },
+                "updated_at": {
+                    "type": "string"
+                }
+            }
+        },
         "models.ForwardedHeadersConfig": {
             "type": "object",
             "properties": {
@@ -1557,7 +1650,7 @@ const docTemplate = `{
                 },
                 "target": {
                     "type": "string",
-                    "example": "http://127.0.0.1:8080"
+                    "example": "wss://127.0.0.1:8080"
                 }
             }
         },
@@ -1666,9 +1759,9 @@ const docTemplate = `{
                     "example": true
                 },
                 "target": {
-                    "description": "Target URL (e.g., \"http://localhost:7996\")",
+                    "description": "Target URL (e.g., \"http://localhost:7996\" or \"ws://localhost:7996\")",
                     "type": "string",
-                    "example": "http://localhost:8080"
+                    "example": "ws://localhost:8080"
                 },
                 "use_auth": {
                     "description": "If true, invokes global authentication check before proxying.",

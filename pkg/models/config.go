@@ -208,6 +208,11 @@ type PreserveHostConfig struct {
 	UpdatedAt   string   `json:"updated_at,omitempty"`
 }
 
+type CrawlerBlockerConfig struct {
+	Enabled   bool   `json:"enabled,omitempty"`
+	UpdatedAt string `json:"updated_at,omitempty"`
+}
+
 const (
 	GatewayPortalDisplayStyleDomain = "domain"
 	GatewayPortalDisplayStyleTitle  = "title"

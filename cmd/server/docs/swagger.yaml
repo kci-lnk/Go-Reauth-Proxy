@@ -134,6 +134,13 @@ definitions:
         example: admin
         type: string
     type: object
+  models.CrawlerBlockerConfig:
+    properties:
+      enabled:
+        type: boolean
+      updated_at:
+        type: string
+    type: object
   models.ForwardedHeadersConfig:
     properties:
       enabled:
@@ -165,7 +172,7 @@ definitions:
         example: true
         type: boolean
       target:
-        example: http://127.0.0.1:8080
+        example: wss://127.0.0.1:8080
         type: string
     type: object
   models.HostLocationResponse:
@@ -244,8 +251,8 @@ definitions:
         example: true
         type: boolean
       target:
-        description: Target URL (e.g., "http://localhost:7996")
-        example: http://localhost:8080
+        description: Target URL (e.g., "http://localhost:7996" or "ws://localhost:7996")
+        example: ws://localhost:8080
         type: string
       use_auth:
         description: If true, invokes global authentication check before proxying.
@@ -439,6 +446,54 @@ paths:
           schema:
             $ref: '#/definitions/response.Response'
       summary: Set global auth config
+      tags:
+      - config
+  /api/config/crawler-blocker:
+    get:
+      description: Get the current crawler-blocker runtime configuration
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/response.Response'
+            - properties:
+                data:
+                  $ref: '#/definitions/models.CrawlerBlockerConfig'
+              type: object
+      summary: Get crawler blocker config
+      tags:
+      - config
+    post:
+      consumes:
+      - application/json
+      description: Replace the crawler-blocker runtime configuration
+      parameters:
+      - description: Crawler blocker config
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/models.CrawlerBlockerConfig'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/response.Response'
+            - properties:
+                data:
+                  $ref: '#/definitions/models.CrawlerBlockerConfig'
+              type: object
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/response.Response'
+      summary: Set crawler blocker config
       tags:
       - config
   /api/config/default-route:

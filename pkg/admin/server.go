@@ -114,6 +114,8 @@ func (s *Server) Start() error {
 	r.HandleFunc("/api/config/forwarded-headers", s.handleSetForwardedHeadersConfig).Methods("POST")
 	r.HandleFunc("/api/config/preserve-host", s.handleGetPreserveHostConfig).Methods("GET")
 	r.HandleFunc("/api/config/preserve-host", s.handleSetPreserveHostConfig).Methods("POST")
+	r.HandleFunc("/api/config/crawler-blocker", s.handleGetCrawlerBlockerConfig).Methods("GET")
+	r.HandleFunc("/api/config/crawler-blocker", s.handleSetCrawlerBlockerConfig).Methods("POST")
 	r.HandleFunc("/api/config/portal", s.handleGetGatewayPortalConfig).Methods("GET")
 	r.HandleFunc("/api/config/portal", s.handleSetGatewayPortalConfig).Methods("POST")
 	r.HandleFunc("/api/config/fnos-port-icon-hijack", s.handleGetFnosPortIconHijackConfig).Methods("GET")
@@ -856,6 +858,37 @@ func (s *Server) handleSetPreserveHostConfig(w http.ResponseWriter, r *http.Requ
 
 	s.ProxyHandler.SetPreserveHostConfig(req)
 	response.Success(w, s.ProxyHandler.GetPreserveHostConfig())
+}
+
+// handleGetCrawlerBlockerConfig gets the current crawler-blocker runtime config
+// @Summary Get crawler blocker config
+// @Description Get the current crawler-blocker runtime configuration
+// @Tags config
+// @Produce  json
+// @Success 200 {object} response.Response{data=models.CrawlerBlockerConfig}
+// @Router /api/config/crawler-blocker [get]
+func (s *Server) handleGetCrawlerBlockerConfig(w http.ResponseWriter, r *http.Request) {
+	response.Success(w, s.ProxyHandler.GetCrawlerBlockerConfig())
+}
+
+// handleSetCrawlerBlockerConfig sets the crawler-blocker runtime config
+// @Summary Set crawler blocker config
+// @Description Replace the crawler-blocker runtime configuration
+// @Tags config
+// @Accept  json
+// @Produce  json
+// @Param request body models.CrawlerBlockerConfig true "Crawler blocker config"
+// @Success 200 {object} response.Response{data=models.CrawlerBlockerConfig}
+// @Failure 400 {object} response.Response
+// @Router /api/config/crawler-blocker [post]
+func (s *Server) handleSetCrawlerBlockerConfig(w http.ResponseWriter, r *http.Request) {
+	var req models.CrawlerBlockerConfig
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		response.Error(w, errors.CodeInvalidJSON, "Invalid JSON object")
+		return
+	}
+
+	response.Success(w, s.ProxyHandler.SetCrawlerBlockerConfig(req))
 }
 
 func (s *Server) handleGetGatewayPortalConfig(w http.ResponseWriter, r *http.Request) {

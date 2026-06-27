@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+	"sync"
 )
 
 const DefaultSSHFirewallChain = "FN-KNOCK-SSH"
@@ -64,11 +65,13 @@ func (r execRunner) CombinedOutputWithInput(input string, command string, args .
 }
 
 type Manager struct {
-	Chain        string
-	ParentChains []string
-	ExemptPorts  []string
-	tables       []string
-	runner       commandRunner
+	Chain                      string
+	ParentChains               []string
+	ExemptPorts                []string
+	tables                     []string
+	runner                     commandRunner
+	baseRulesMu                sync.RWMutex
+	baseFirewallEnabledByTable map[string]bool
 }
 
 type TCPPortAccessPolicy struct {
@@ -755,6 +758,9 @@ func (m *Manager) ClearTCPPortAccessPolicy(chain string, parents []string) error
 }
 
 func (m *Manager) baseRuleCountForTable(table string) int {
+	if !m.baseFirewallEnabledForTable(table) {
+		return 1
+	}
 	count := 2
 	count += len(m.localCIDRsForTable(table))
 	count++
@@ -765,12 +771,37 @@ func (m *Manager) baseRuleCountForTable(table string) int {
 	return count
 }
 
+func (m *Manager) baseFirewallEnabledForTable(table string) bool {
+	m.baseRulesMu.RLock()
+	enabled, ok := m.baseFirewallEnabledByTable[table]
+	m.baseRulesMu.RUnlock()
+	if !ok {
+		return true
+	}
+	return enabled
+}
+
+func (m *Manager) setBaseFirewallEnabledForTable(table string, enabled bool) {
+	m.baseRulesMu.Lock()
+	if m.baseFirewallEnabledByTable == nil {
+		m.baseFirewallEnabledByTable = make(map[string]bool)
+	}
+	m.baseFirewallEnabledByTable[table] = enabled
+	m.baseRulesMu.Unlock()
+}
+
 func (m *Manager) applyBaseRules(table string) error {
+	m.setBaseFirewallEnabledForTable(table, false)
+
 	if err := m.runTable(table, "-A", m.Chain, "-i", "lo", "-j", "ACCEPT"); err != nil {
 		return err
 	}
-	if err := m.appendEstablishedRelatedRule(table); err != nil {
+	establishedRuleAdded, err := m.appendEstablishedRelatedRule(table)
+	if err != nil {
 		return err
+	}
+	if !establishedRuleAdded {
+		return nil
 	}
 
 	for _, cidr := range m.localCIDRsForTable(table) {
@@ -809,26 +840,47 @@ func (m *Manager) applyBaseRules(table string) error {
 	if err := m.runTable(table, "-A", m.Chain, "-j", "DROP"); err != nil {
 		return err
 	}
+	m.setBaseFirewallEnabledForTable(table, true)
 	return nil
 }
 
-func (m *Manager) appendEstablishedRelatedRule(table string) error {
+func (m *Manager) appendEstablishedRelatedRule(table string) (bool, error) {
 	err := m.runTable(table, "-A", m.Chain, "-m", "state", "--state", "ESTABLISHED,RELATED", "-j", "ACCEPT")
 	if err == nil {
-		return nil
+		return true, nil
 	}
-	if !isStateMatchUnavailableError(err) {
-		return err
+	if !isMatchUnavailableError(err, "state") {
+		return false, err
 	}
-	return m.runTable(table, "-A", m.Chain, "-m", "conntrack", "--ctstate", "ESTABLISHED,RELATED", "-j", "ACCEPT")
+
+	conntrackErr := m.runTable(table, "-A", m.Chain, "-m", "conntrack", "--ctstate", "ESTABLISHED,RELATED", "-j", "ACCEPT")
+	if conntrackErr == nil {
+		return true, nil
+	}
+	if !isMatchUnavailableError(conntrackErr, "conntrack") {
+		return false, conntrackErr
+	}
+
+	if event := logger.DebugEvent("iptables", "established_related_rule_skipped"); event != nil {
+		event.Str("table", logger.SanitizeLogString(table)).
+			Str("chain", logger.SanitizeLogString(m.Chain)).
+			Str("state_error", logger.SanitizeLogString(err.Error())).
+			Str("conntrack_error", logger.SanitizeLogString(conntrackErr.Error())).
+			Send()
+	}
+	return false, nil
 }
 
-func isStateMatchUnavailableError(err error) bool {
+func isMatchUnavailableError(err error, matchName string) bool {
 	if err == nil {
 		return false
 	}
+	matchName = strings.ToLower(strings.TrimSpace(matchName))
+	if matchName == "" {
+		return false
+	}
 	message := strings.ToLower(err.Error())
-	if !strings.Contains(message, "state") {
+	if !strings.Contains(message, matchName) {
 		return false
 	}
 	if strings.Contains(message, "couldn't load match") ||
@@ -837,7 +889,8 @@ func isStateMatchUnavailableError(err error) bool {
 		strings.Contains(message, "cannot load match") {
 		return strings.Contains(message, "no such file or directory")
 	}
-	return false
+	return strings.Contains(message, "extension "+matchName+" is not supported") ||
+		strings.Contains(message, "missing kernel module")
 }
 
 func (m *Manager) Destroy() error {

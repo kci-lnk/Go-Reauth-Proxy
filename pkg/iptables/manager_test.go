@@ -29,9 +29,11 @@ func (r parseRulesRunner) CombinedOutputWithInput(input string, command string, 
 }
 
 type baseRuleRunner struct {
-	stateOutput string
-	stateErr    error
-	calls       [][]string
+	stateOutput     string
+	stateErr        error
+	conntrackOutput string
+	conntrackErr    error
+	calls           [][]string
 }
 
 func (r *baseRuleRunner) CombinedOutput(command string, args ...string) ([]byte, error) {
@@ -39,6 +41,9 @@ func (r *baseRuleRunner) CombinedOutput(command string, args ...string) ([]byte,
 	r.calls = append(r.calls, call)
 	if isStateEstablishedRelatedCall(args) && r.stateErr != nil {
 		return []byte(r.stateOutput), r.stateErr
+	}
+	if isConntrackEstablishedRelatedCall(args) && r.conntrackErr != nil {
+		return []byte(r.conntrackOutput), r.conntrackErr
 	}
 	return []byte("ok"), nil
 }
@@ -49,6 +54,11 @@ func (r *baseRuleRunner) CombinedOutputWithInput(input string, command string, a
 
 func isStateEstablishedRelatedCall(args []string) bool {
 	want := []string{"-A", "REAUTH_FW", "-m", "state", "--state", "ESTABLISHED,RELATED", "-j", "ACCEPT"}
+	return reflect.DeepEqual(args, want)
+}
+
+func isConntrackEstablishedRelatedCall(args []string) bool {
+	want := []string{"-A", "REAUTH_FW", "-m", "conntrack", "--ctstate", "ESTABLISHED,RELATED", "-j", "ACCEPT"}
 	return reflect.DeepEqual(args, want)
 }
 
@@ -66,8 +76,12 @@ func TestAppendEstablishedRelatedRuleUsesStateFirst(t *testing.T) {
 	manager := NewManager(Options{ChainName: "REAUTH_FW", Tables: []string{"iptables"}})
 	manager.runner = runner
 
-	if err := manager.appendEstablishedRelatedRule("iptables"); err != nil {
+	ruleAdded, err := manager.appendEstablishedRelatedRule("iptables")
+	if err != nil {
 		t.Fatalf("appendEstablishedRelatedRule returned error: %v", err)
+	}
+	if !ruleAdded {
+		t.Fatal("appendEstablishedRelatedRule reported rule not added")
 	}
 	if len(runner.calls) != 1 {
 		t.Fatalf("got %d calls, want 1: %#v", len(runner.calls), runner.calls)
@@ -100,6 +114,33 @@ func TestApplyBaseRulesFallsBackToConntrackWhenStateMatchIsUnavailable(t *testin
 	}
 }
 
+func TestApplyBaseRulesSkipsFirewallWhenStateAndConntrackAreUnavailable(t *testing.T) {
+	runner := &baseRuleRunner{
+		stateOutput:     "iptables v1.8.10 (nf_tables): Couldn't load match `state': No such file or directory\n",
+		stateErr:        errors.New("exit status 2"),
+		conntrackOutput: "Warning: Extension conntrack is not supported, missing kernel module?\niptables v1.8.10 (nf_tables): Couldn't load match `conntrack': No such file or directory\n",
+		conntrackErr:    errors.New("exit status 2"),
+	}
+	manager := NewManager(Options{ChainName: "REAUTH_FW", Tables: []string{"iptables"}})
+	manager.runner = runner
+
+	if err := manager.applyBaseRules("iptables"); err != nil {
+		t.Fatalf("applyBaseRules returned error: %v", err)
+	}
+	if !callContains(runner.calls, "-A", "REAUTH_FW", "-m", "state", "--state", "ESTABLISHED,RELATED", "-j", "ACCEPT") {
+		t.Fatalf("state rule was not attempted: %#v", runner.calls)
+	}
+	if !callContains(runner.calls, "-A", "REAUTH_FW", "-m", "conntrack", "--ctstate", "ESTABLISHED,RELATED", "-j", "ACCEPT") {
+		t.Fatalf("conntrack fallback was not attempted: %#v", runner.calls)
+	}
+	if callContains(runner.calls, "-A", "REAUTH_FW", "-j", "DROP") {
+		t.Fatalf("default DROP should not be added when firewall is skipped: %#v", runner.calls)
+	}
+	if got := manager.baseRuleCountForTable("iptables"); got != 1 {
+		t.Fatalf("baseRuleCountForTable after skip = %d, want 1", got)
+	}
+}
+
 func TestAppendEstablishedRelatedRuleDoesNotFallbackForOtherStateErrors(t *testing.T) {
 	runner := &baseRuleRunner{
 		stateOutput: "iptables: Permission denied (you must be root)\n",
@@ -108,15 +149,43 @@ func TestAppendEstablishedRelatedRuleDoesNotFallbackForOtherStateErrors(t *testi
 	manager := NewManager(Options{ChainName: "REAUTH_FW", Tables: []string{"iptables"}})
 	manager.runner = runner
 
-	err := manager.appendEstablishedRelatedRule("iptables")
+	ruleAdded, err := manager.appendEstablishedRelatedRule("iptables")
 	if err == nil {
 		t.Fatal("appendEstablishedRelatedRule returned nil, want error")
+	}
+	if ruleAdded {
+		t.Fatal("appendEstablishedRelatedRule reported rule added on error")
 	}
 	if !strings.Contains(err.Error(), "Permission denied") {
 		t.Fatalf("error = %q, want original permission failure", err.Error())
 	}
 	if len(runner.calls) != 1 {
 		t.Fatalf("got %d calls, want no fallback after first failure: %#v", len(runner.calls), runner.calls)
+	}
+}
+
+func TestAppendEstablishedRelatedRuleDoesNotSkipForOtherConntrackErrors(t *testing.T) {
+	runner := &baseRuleRunner{
+		stateOutput:     "iptables v1.8.10 (nf_tables): Couldn't load match `state': No such file or directory\n",
+		stateErr:        errors.New("exit status 2"),
+		conntrackOutput: "iptables: Permission denied (you must be root)\n",
+		conntrackErr:    errors.New("exit status 4"),
+	}
+	manager := NewManager(Options{ChainName: "REAUTH_FW", Tables: []string{"iptables"}})
+	manager.runner = runner
+
+	ruleAdded, err := manager.appendEstablishedRelatedRule("iptables")
+	if err == nil {
+		t.Fatal("appendEstablishedRelatedRule returned nil, want error")
+	}
+	if ruleAdded {
+		t.Fatal("appendEstablishedRelatedRule reported rule added on error")
+	}
+	if !strings.Contains(err.Error(), "Permission denied") {
+		t.Fatalf("error = %q, want original permission failure", err.Error())
+	}
+	if len(runner.calls) != 2 {
+		t.Fatalf("got %d calls, want state plus conntrack: %#v", len(runner.calls), runner.calls)
 	}
 }
 

@@ -1695,6 +1695,10 @@ const docTemplate = `{
                     "type": "string",
                     "example": "redis.example.com"
                 },
+                "is_default": {
+                    "type": "boolean",
+                    "example": false
+                },
                 "locations": {
                     "type": "array",
                     "items": {

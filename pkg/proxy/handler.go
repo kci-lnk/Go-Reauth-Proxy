@@ -96,6 +96,7 @@ type requestSnapshot struct {
 	rulesByPath        map[string]*models.Rule
 	hostRules          []models.HostRule
 	hostRulesByHost    map[string]*models.HostRule
+	defaultHostRule    *models.HostRule
 	targets            map[string]reverseProxyTargetRuntime
 	toolbarRules       []models.Rule
 	toolbarHostRules   []models.HostRule
@@ -179,6 +180,7 @@ func debugHostRuleSummaries(rules []models.HostRule) []map[string]any {
 			"access_mode":        logger.SanitizeLogString(rule.AccessMode),
 			"suppress_toolbar":   rule.SuppressToolbar,
 			"preserve_host":      rule.PreserveHost,
+			"is_default":         rule.IsDefault,
 			"favicon_present":    strings.TrimSpace(rule.Favicon) != "",
 			"basic_auth_enabled": rule.BasicAuth.Enabled,
 			"location_count":     len(rule.Locations),
@@ -256,11 +258,15 @@ func (h *Handler) buildRequestSnapshotLocked() *requestSnapshot {
 
 	hostRules := copyHostRules(h.HostRules)
 	hostRulesByHost := make(map[string]*models.HostRule, len(hostRules))
+	var defaultHostRule *models.HostRule
 	for i := range hostRules {
 		rule := &hostRules[i]
 		host := normalizeRequestHost(rule.Host)
 		if host == "" {
 			continue
+		}
+		if rule.IsDefault && defaultHostRule == nil {
+			defaultHostRule = rule
 		}
 		if _, exists := hostRulesByHost[host]; exists {
 			continue
@@ -282,6 +288,7 @@ func (h *Handler) buildRequestSnapshotLocked() *requestSnapshot {
 		rulesByPath:        rulesByPath,
 		hostRules:          hostRules,
 		hostRulesByHost:    hostRulesByHost,
+		defaultHostRule:    defaultHostRule,
 		targets:            targets,
 		toolbarRules:       toolbarRules,
 		toolbarHostRules:   toolbarHostRules,
@@ -351,6 +358,20 @@ func copyHostRules(rules []models.HostRule) []models.HostRule {
 		copied[i].Locations = copyHostLocations(rule.Locations)
 	}
 	return copied
+}
+
+func keepFirstDefaultHostRule(rules []models.HostRule) {
+	hasDefault := false
+	for i := range rules {
+		if !rules[i].IsDefault {
+			continue
+		}
+		if !hasDefault {
+			hasDefault = true
+			continue
+		}
+		rules[i].IsDefault = false
+	}
 }
 
 func copyStringMap(values map[string]string) map[string]string {
@@ -1975,6 +1996,13 @@ func (h *Handler) AddHostRule(newRule models.HostRule) error {
 	if !updated {
 		nextRules = append(nextRules, newRule)
 	}
+	if newRule.IsDefault {
+		for i := range nextRules {
+			nextRules[i].IsDefault = normalizeRequestHost(nextRules[i].Host) == newRule.Host
+		}
+	} else {
+		keepFirstDefaultHostRule(nextRules)
+	}
 	h.HostRules = nextRules
 	h.publishRequestSnapshotLocked()
 	h.saveConfigLocked()
@@ -2009,6 +2037,7 @@ func (h *Handler) SetHostRules(rules []models.HostRule) error {
 		indexByHost[normalizedRule.Host] = len(normalizedRules)
 		normalizedRules = append(normalizedRules, normalizedRule)
 	}
+	keepFirstDefaultHostRule(normalizedRules)
 
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -3667,6 +3696,27 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		needsSlashRedirect = ""
 	}
 
+	if matchedRule == nil && needsSlashRedirect == "" && matchedHostRule == nil && !isSelectRoute && !isAuthRoute {
+		if redirectURL := buildDefaultHostRuleRedirectURL(r, snapshot.defaultHostRule); redirectURL != "" {
+			accessEntry.RouteType = "default_host_redirect"
+			accessEntry.RouteKey = snapshot.defaultHostRule.Host
+			accessEntry.Upstream = snapshot.defaultHostRule.Target
+			accessEntry.Matched = true
+			accessEntry.AuthDecision = "redirected"
+			if event := debugProxyEvent("default_host_redirect", requestID); event != nil {
+				event.Str("host", logger.SanitizeLogString(snapshot.defaultHostRule.Host)).
+					Str("target", logger.SanitizeURL(redirectURL)).
+					Send()
+			}
+			status := http.StatusFound
+			if r.Method != http.MethodGet && r.Method != http.MethodHead {
+				status = http.StatusTemporaryRedirect
+			}
+			http.Redirect(w, r, redirectURL, status)
+			return
+		}
+	}
+
 	if matchedRule == nil && snapshot.defaultRule != nil {
 		matchedRule = snapshot.defaultRule
 	}
@@ -4190,15 +4240,52 @@ func isProxyPathSetCookie(value string) bool {
 	return ok && strings.TrimSpace(name) == proxyPathCookieName
 }
 
+func requestHostForRouting(r *http.Request) string {
+	host := normalizeRequestHost(r.Host)
+	if forwardedHost := normalizeRequestHost(r.Header.Get("X-Forwarded-Host")); forwardedHost != "" {
+		host = forwardedHost
+	}
+	return host
+}
+
+func buildDefaultHostRuleRedirectURL(r *http.Request, defaultHostRule *models.HostRule) string {
+	if r == nil || r.URL == nil || defaultHostRule == nil {
+		return ""
+	}
+	defaultHost := normalizeRequestHost(defaultHostRule.Host)
+	if defaultHost == "" || requestHostForRouting(r) == defaultHost {
+		return ""
+	}
+
+	scheme := requestScheme(r)
+	rawHost := firstForwardedValue(r.Header.Get("X-Forwarded-Host"))
+	if rawHost == "" {
+		rawHost = r.Host
+	}
+	_, port := splitRequestHostPort(rawHost)
+	path := r.URL.Path
+	if path == "" {
+		path = "/"
+	}
+
+	redirectURL := url.URL{
+		Scheme:   scheme,
+		Host:     formatURLHost(defaultHost, port, scheme),
+		Path:     path,
+		RawQuery: r.URL.RawQuery,
+	}
+	if redirectURL.Host == "" {
+		return ""
+	}
+	return redirectURL.String()
+}
+
 func matchHostRule(r *http.Request, snapshot requestSnapshot) *models.HostRule {
 	if len(snapshot.hostRules) == 0 && len(snapshot.hostRulesByHost) == 0 {
 		return nil
 	}
 
-	host := normalizeRequestHost(r.Host)
-	if forwardedHost := normalizeRequestHost(r.Header.Get("X-Forwarded-Host")); forwardedHost != "" {
-		host = forwardedHost
-	}
+	host := requestHostForRouting(r)
 	if host == "" {
 		return nil
 	}

@@ -204,6 +204,9 @@ definitions:
       host:
         example: redis.example.com
         type: string
+      is_default:
+        example: false
+        type: boolean
       locations:
         items:
           $ref: '#/definitions/models.HostLocation'

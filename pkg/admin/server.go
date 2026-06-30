@@ -356,6 +356,7 @@ func (s *Server) handleAddHostRule(w http.ResponseWriter, r *http.Request) {
 		AccessMode      string                 `json:"access_mode"`
 		SuppressToolbar *bool                  `json:"suppress_toolbar"`
 		PreserveHost    *bool                  `json:"preserve_host"`
+		IsDefault       bool                   `json:"is_default"`
 		Title           string                 `json:"title"`
 		Favicon         *string                `json:"favicon"`
 		BasicAuth       models.BasicAuthConfig `json:"basic_auth"`
@@ -398,6 +399,7 @@ func (s *Server) handleAddHostRule(w http.ResponseWriter, r *http.Request) {
 			AccessMode:      req.AccessMode,
 			SuppressToolbar: req.SuppressToolbar != nil && *req.SuppressToolbar,
 			PreserveHost:    req.PreserveHost == nil || *req.PreserveHost,
+			IsDefault:       req.IsDefault,
 			Title:           req.Title,
 			Favicon: func() string {
 				if req.Favicon == nil {

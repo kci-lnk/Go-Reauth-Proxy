@@ -144,6 +144,89 @@ func TestMatchHostRuleUsesPublishedHostMap(t *testing.T) {
 	}
 }
 
+func TestDefaultHostRuleRedirectsUnmatchedHost(t *testing.T) {
+	handler := &Handler{
+		HostRules: []models.HostRule{
+			{
+				Host:      "app.example.com",
+				Target:    "http://127.0.0.1:8080",
+				IsDefault: true,
+			},
+		},
+		DefaultRoute: "/__select__",
+	}
+	handler.publishRequestSnapshotLocked()
+
+	req := httptest.NewRequest(http.MethodGet, "http://root.example.com:7999/path?q=1", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusFound {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if got, want := rec.Header().Get("Location"), "http://app.example.com:7999/path?q=1"; got != want {
+		t.Fatalf("Location = %q, want %q", got, want)
+	}
+}
+
+func TestDefaultHostRuleRedirectPreservesMethodForNonGet(t *testing.T) {
+	handler := &Handler{
+		HostRules: []models.HostRule{
+			{
+				Host:      "app.example.com",
+				Target:    "http://127.0.0.1:8080",
+				IsDefault: true,
+			},
+		},
+		DefaultRoute: "/__select__",
+	}
+	handler.publishRequestSnapshotLocked()
+
+	req := httptest.NewRequest(http.MethodPost, "https://root.example.com/form", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusTemporaryRedirect {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if got, want := rec.Header().Get("Location"), "https://app.example.com/form"; got != want {
+		t.Fatalf("Location = %q, want %q", got, want)
+	}
+}
+
+func TestDefaultHostRuleDoesNotRedirectSpecialRoutesOrDefaultHost(t *testing.T) {
+	handler := &Handler{
+		HostRules: []models.HostRule{
+			{
+				Host:      "app.example.com",
+				Target:    "http://127.0.0.1:8080",
+				IsDefault: true,
+			},
+		},
+		DefaultRoute: "/__select__",
+	}
+	handler.publishRequestSnapshotLocked()
+
+	for _, tc := range []struct {
+		name string
+		url  string
+	}{
+		{name: "select", url: "http://root.example.com/__select__"},
+		{name: "auth", url: "http://root.example.com/__auth__/login"},
+		{name: "default-host", url: "http://app.example.com/missing"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, tc.url, nil)
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+
+			if got := rec.Header().Get("Location"); strings.Contains(got, "app.example.com") {
+				t.Fatalf("Location = %q, should not redirect to default host", got)
+			}
+		})
+	}
+}
+
 func TestMatchRuleUsesCompiledLongestPrefix(t *testing.T) {
 	handler := &Handler{
 		Rules: []models.Rule{

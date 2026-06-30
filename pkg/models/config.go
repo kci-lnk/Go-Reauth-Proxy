@@ -18,6 +18,7 @@ type HostRule struct {
 	AccessMode      string          `json:"access_mode,omitempty" example:"login_first"`
 	SuppressToolbar bool            `json:"suppress_toolbar,omitempty" example:"false"`
 	PreserveHost    bool            `json:"preserve_host,omitempty" example:"true"`
+	IsDefault       bool            `json:"is_default,omitempty" example:"false"`
 	Title           string          `json:"title,omitempty" example:"Redis"`
 	Favicon         string          `json:"favicon,omitempty" example:"data:image/png;base64,..."`
 	BasicAuth       BasicAuthConfig `json:"basic_auth,omitempty"`

@@ -34,6 +34,7 @@ func TestTrafficStatsIncludesHostBreakdown(t *testing.T) {
 	if _, err := writer.Write([]byte("response")); err != nil {
 		t.Fatalf("write response body: %v", err)
 	}
+	metrics.flush(handler)
 	metrics.add5xx()
 
 	stats := handler.GetTrafficStats(time.Now())
@@ -59,6 +60,54 @@ func TestTrafficStatsIncludesHostBreakdown(t *testing.T) {
 	}
 	if hostStats.Error5xx != 1 {
 		t.Fatalf("host Error5xx = %d, want 1", hostStats.Error5xx)
+	}
+}
+
+func TestTrafficStatsBatchFlushesCounters(t *testing.T) {
+	handler := &Handler{
+		HostRules: []models.HostRule{{Host: "app.example.com"}},
+	}
+	metrics := &requestTrafficMetrics{statusCode: http.StatusOK}
+	metrics.bindHost(handler, "app.example.com")
+
+	writer := &trafficResponseWriter{
+		ResponseWriter: httptest.NewRecorder(),
+		handler:        handler,
+		metrics:        metrics,
+	}
+	chunk := strings.Repeat("x", trafficCounterFlushBytes/2)
+	if _, err := writer.Write([]byte(chunk)); err != nil {
+		t.Fatalf("write first chunk: %v", err)
+	}
+	if got := handler.trafficTotalOut.Load(); got != 0 {
+		t.Fatalf("trafficTotalOut after first partial chunk = %d, want 0", got)
+	}
+	if _, err := writer.Write([]byte(chunk)); err != nil {
+		t.Fatalf("write second chunk: %v", err)
+	}
+	if got := handler.trafficTotalOut.Load(); got != trafficCounterFlushBytes {
+		t.Fatalf("trafficTotalOut after flush threshold = %d, want %d", got, trafficCounterFlushBytes)
+	}
+	if _, err := writer.Write([]byte("tail")); err != nil {
+		t.Fatalf("write tail: %v", err)
+	}
+	if got := handler.trafficTotalOut.Load(); got != trafficCounterFlushBytes {
+		t.Fatalf("trafficTotalOut before final flush = %d, want %d", got, trafficCounterFlushBytes)
+	}
+	metrics.flush(handler)
+	if got := handler.trafficTotalOut.Load(); got != trafficCounterFlushBytes+4 {
+		t.Fatalf("trafficTotalOut after final flush = %d, want %d", got, trafficCounterFlushBytes+4)
+	}
+
+	stats := handler.GetTrafficStats(time.Now())
+	if stats.TotalOut != trafficCounterFlushBytes+4 {
+		t.Fatalf("TotalOut = %d, want %d", stats.TotalOut, trafficCounterFlushBytes+4)
+	}
+	if len(stats.ByHost) != 1 || stats.ByHost[0].TotalOut != trafficCounterFlushBytes+4 {
+		t.Fatalf("ByHost = %#v, want total out %d", stats.ByHost, trafficCounterFlushBytes+4)
+	}
+	if metrics.outBytes != trafficCounterFlushBytes+4 {
+		t.Fatalf("metrics.outBytes = %d, want %d", metrics.outBytes, trafficCounterFlushBytes+4)
 	}
 }
 

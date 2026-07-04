@@ -36,6 +36,53 @@ import (
 	"github.com/rs/zerolog"
 )
 
+const (
+	proxyCopyBufferSize      = 256 * 1024
+	trafficCounterFlushBytes = 1024 * 1024
+)
+
+type proxyBufferPool struct {
+	pool sync.Pool
+}
+
+func newProxyBufferPool(size int) *proxyBufferPool {
+	if size <= 0 {
+		size = proxyCopyBufferSize
+	}
+	return &proxyBufferPool{
+		pool: sync.Pool{
+			New: func() any {
+				buf := make([]byte, size)
+				return &buf
+			},
+		},
+	}
+}
+
+func (p *proxyBufferPool) Get() []byte {
+	if p == nil {
+		return make([]byte, proxyCopyBufferSize)
+	}
+	bufp, ok := p.pool.Get().(*[]byte)
+	if !ok || bufp == nil || len(*bufp) == 0 {
+		return make([]byte, proxyCopyBufferSize)
+	}
+	return *bufp
+}
+
+func (p *proxyBufferPool) Put(buf []byte) {
+	if p == nil || cap(buf) == 0 {
+		return
+	}
+	if cap(buf) > proxyCopyBufferSize*4 {
+		return
+	}
+	buf = buf[:cap(buf)]
+	p.pool.Put(&buf)
+}
+
+var sharedProxyBufferPool = newProxyBufferPool(proxyCopyBufferSize)
+
 type Handler struct {
 	mu                    sync.RWMutex
 	Rules                 []models.Rule
@@ -3344,12 +3391,14 @@ func (h *Handler) activeLoggedInCount(now time.Time) int64 {
 }
 
 type requestTrafficMetrics struct {
-	inBytes     uint64
-	outBytes    uint64
-	statusCode  int
-	wroteHeader bool
-	host        string
-	hostTraffic *hostTrafficCounters
+	inBytes         uint64
+	outBytes        uint64
+	pendingInBytes  uint64
+	pendingOutBytes uint64
+	statusCode      int
+	wroteHeader     bool
+	host            string
+	hostTraffic     *hostTrafficCounters
 }
 
 func (m *requestTrafficMetrics) bindHost(handler *Handler, host string) {
@@ -3371,18 +3420,59 @@ func (m *requestTrafficMetrics) markActiveIP(clientIP string, now time.Time) fun
 	return m.hostTraffic.markActiveIP(clientIP, now)
 }
 
-func (m *requestTrafficMetrics) addIn(bytes uint64) {
-	if m == nil || bytes == 0 || m.hostTraffic == nil {
+func (m *requestTrafficMetrics) flushIn(handler *Handler) {
+	if m == nil || m.pendingInBytes == 0 {
 		return
 	}
-	m.hostTraffic.totalIn.Add(bytes)
+	bytes := m.pendingInBytes
+	m.pendingInBytes = 0
+	if handler != nil {
+		handler.trafficTotalIn.Add(bytes)
+	}
+	if m.hostTraffic != nil {
+		m.hostTraffic.totalIn.Add(bytes)
+	}
 }
 
-func (m *requestTrafficMetrics) addOut(bytes uint64) {
-	if m == nil || bytes == 0 || m.hostTraffic == nil {
+func (m *requestTrafficMetrics) flushOut(handler *Handler) {
+	if m == nil || m.pendingOutBytes == 0 {
 		return
 	}
-	m.hostTraffic.totalOut.Add(bytes)
+	bytes := m.pendingOutBytes
+	m.pendingOutBytes = 0
+	if handler != nil {
+		handler.trafficTotalOut.Add(bytes)
+	}
+	if m.hostTraffic != nil {
+		m.hostTraffic.totalOut.Add(bytes)
+	}
+}
+
+func (m *requestTrafficMetrics) flush(handler *Handler) {
+	m.flushIn(handler)
+	m.flushOut(handler)
+}
+
+func (m *requestTrafficMetrics) addIn(handler *Handler, bytes uint64) {
+	if m == nil || bytes == 0 {
+		return
+	}
+	m.inBytes += bytes
+	m.pendingInBytes += bytes
+	if m.pendingInBytes >= trafficCounterFlushBytes {
+		m.flushIn(handler)
+	}
+}
+
+func (m *requestTrafficMetrics) addOut(handler *Handler, bytes uint64) {
+	if m == nil || bytes == 0 {
+		return
+	}
+	m.outBytes += bytes
+	m.pendingOutBytes += bytes
+	if m.pendingOutBytes >= trafficCounterFlushBytes {
+		m.flushOut(handler)
+	}
 }
 
 func (m *requestTrafficMetrics) add5xx() {
@@ -3401,9 +3491,7 @@ type trafficReadCloser struct {
 func (trc *trafficReadCloser) Read(p []byte) (int, error) {
 	n, err := trc.ReadCloser.Read(p)
 	if n > 0 {
-		trc.metrics.inBytes += uint64(n)
-		trc.handler.trafficTotalIn.Add(uint64(n))
-		trc.metrics.addIn(uint64(n))
+		trc.metrics.addIn(trc.handler, uint64(n))
 	}
 	return n, err
 }
@@ -3429,9 +3517,7 @@ func (tw *trafficResponseWriter) Write(p []byte) (int, error) {
 	}
 	n, err := tw.ResponseWriter.Write(p)
 	if n > 0 {
-		tw.metrics.outBytes += uint64(n)
-		tw.handler.trafficTotalOut.Add(uint64(n))
-		tw.metrics.addOut(uint64(n))
+		tw.metrics.addOut(tw.handler, uint64(n))
 	}
 	return n, err
 }
@@ -3531,6 +3617,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	defer func() {
 		rec := recover()
+		metrics.flush(h)
 		h.trafficActive.Add(-1)
 		if metrics.statusCode >= 500 {
 			h.trafficError5xx.Add(1)
@@ -4151,6 +4238,7 @@ func (h *Handler) handleAuthProxyRoute(w http.ResponseWriter, r *http.Request, s
 	targetURL.Path = singleJoiningSlash(targetURL.Path, proxyPath)
 
 	proxy := httputil.NewSingleHostReverseProxy(targetURL)
+	proxy.BufferPool = sharedProxyBufferPool
 	transport := h.proxyTransport
 	if transport == nil {
 		transport = newProxyTransport()
@@ -4503,7 +4591,8 @@ func (h *Handler) proxyToHostLocationTarget(w http.ResponseWriter, r *http.Reque
 	}
 
 	proxy := &httputil.ReverseProxy{
-		Transport: transport,
+		Transport:  transport,
+		BufferPool: sharedProxyBufferPool,
 		Rewrite: func(pr *httputil.ProxyRequest) {
 			applyForwardedHeaderPolicy(pr.Out, pr.In, clientIP, omitForwardedHeaders)
 			copyUserAgentHeader(pr.Out, pr.In)
@@ -4601,25 +4690,12 @@ func (h *Handler) proxyToHostLocationTarget(w http.ResponseWriter, r *http.Reque
 			}
 		}
 
-		if !isHTMLContentType(resp.Header.Get("Content-Type")) {
-			return nil
-		}
-
-		bodyBytes, err := io.ReadAll(resp.Body)
-		if err != nil {
-			return err
-		}
-		resp.Body.Close()
-
-		if needsRewrite {
-			prefix := strings.TrimSuffix(location.Path, "/")
-			bodyBytes = rewriteHTMLAbsolutePaths(bodyBytes, prefix)
-		}
-
-		if needsToolbar {
-			bodyBytes = injectToolbarIntoHTMLBytes(
-				bodyBytes,
-				response.GenerateToolbarWithPrefilteredHostsForRequest(
+		return maybeMutateHTMLProxyResponse(resp, htmlResponseMutationOptions{
+			rewrite:       needsRewrite,
+			rewritePrefix: strings.TrimSuffix(location.Path, "/"),
+			toolbar:       needsToolbar,
+			toolbarHTML: func() string {
+				return response.GenerateToolbarWithPrefilteredHostsForRequest(
 					r,
 					snapshot.toolbarRules,
 					snapshot.toolbarHostRules,
@@ -4627,14 +4703,12 @@ func (h *Handler) proxyToHostLocationTarget(w http.ResponseWriter, r *http.Reque
 					matchedRule.Host,
 					snapshot.authConfig.AuthHost,
 					snapshot.gatewayPortal,
-				),
-			)
-		}
-
-		resp.Body = io.NopCloser(bytes.NewReader(bodyBytes))
-		resp.ContentLength = int64(len(bodyBytes))
-		resp.Header.Set("Content-Length", strconv.Itoa(len(bodyBytes)))
-		return nil
+				)
+			},
+			requestID: requestID,
+			routeType: "host_location",
+			routeKey:  hostLocationRouteKey(&matchedRule, &location),
+		})
 	}
 
 	if h.maybeProxyFnosPortIconHijackWebSocket(w, r, fnosPortIconHijackWebSocketOptions{
@@ -4693,7 +4767,8 @@ func (h *Handler) proxyToHostTarget(w http.ResponseWriter, r *http.Request, snap
 	}
 
 	proxy := &httputil.ReverseProxy{
-		Transport: transport,
+		Transport:  transport,
+		BufferPool: sharedProxyBufferPool,
 		Rewrite: func(pr *httputil.ProxyRequest) {
 			applyForwardedHeaderPolicy(pr.Out, pr.In, clientIP, omitForwardedHeaders)
 			copyUserAgentHeader(pr.Out, pr.In)
@@ -4765,33 +4840,23 @@ func (h *Handler) proxyToHostTarget(w http.ResponseWriter, r *http.Request, snap
 			return nil
 		}
 
-		if !isHTMLContentType(resp.Header.Get("Content-Type")) {
-			return nil
-		}
-
-		bodyBytes, err := io.ReadAll(resp.Body)
-		if err != nil {
-			return err
-		}
-		resp.Body.Close()
-
-		bodyBytes = injectToolbarIntoHTMLBytes(
-			bodyBytes,
-			response.GenerateToolbarWithPrefilteredHostsForRequest(
-				r,
-				snapshot.toolbarRules,
-				snapshot.toolbarHostRules,
-				r.URL.Path,
-				matchedRule.Host,
-				snapshot.authConfig.AuthHost,
-				snapshot.gatewayPortal,
-			),
-		)
-
-		resp.Body = io.NopCloser(bytes.NewReader(bodyBytes))
-		resp.ContentLength = int64(len(bodyBytes))
-		resp.Header.Set("Content-Length", strconv.Itoa(len(bodyBytes)))
-		return nil
+		return maybeMutateHTMLProxyResponse(resp, htmlResponseMutationOptions{
+			toolbar: needsToolbar,
+			toolbarHTML: func() string {
+				return response.GenerateToolbarWithPrefilteredHostsForRequest(
+					r,
+					snapshot.toolbarRules,
+					snapshot.toolbarHostRules,
+					r.URL.Path,
+					matchedRule.Host,
+					snapshot.authConfig.AuthHost,
+					snapshot.gatewayPortal,
+				)
+			},
+			requestID: requestID,
+			routeType: "host_rule",
+			routeKey:  matchedRule.Host,
+		})
 	}
 
 	if h.maybeProxyFnosPortIconHijackWebSocket(w, r, fnosPortIconHijackWebSocketOptions{
@@ -4848,7 +4913,8 @@ func (h *Handler) proxyToRuleTarget(w http.ResponseWriter, r *http.Request, snap
 			Send()
 	}
 	proxy := &httputil.ReverseProxy{
-		Transport: transport,
+		Transport:  transport,
+		BufferPool: sharedProxyBufferPool,
 		Rewrite: func(pr *httputil.ProxyRequest) {
 			applyForwardedHeaderPolicy(pr.Out, pr.In, clientIP, false)
 			copyUserAgentHeader(pr.Out, pr.In)
@@ -4942,32 +5008,17 @@ func (h *Handler) proxyToRuleTarget(w http.ResponseWriter, r *http.Request, snap
 			}
 		}
 
-		if !isHTMLContentType(resp.Header.Get("Content-Type")) {
-			return nil
-		}
-
-		bodyBytes, err := io.ReadAll(resp.Body)
-		if err != nil {
-			return err
-		}
-		resp.Body.Close()
-
-		if needsRewrite {
-			prefix := strings.TrimSuffix(matchedRule.Path, "/")
-			bodyBytes = rewriteHTMLAbsolutePaths(bodyBytes, prefix)
-		}
-
-		if needsToolbar {
-			bodyBytes = injectToolbarIntoHTMLBytes(
-				bodyBytes,
-				response.GenerateToolbarWithPrefilteredHostsForRequest(r, snapshot.toolbarRules, nil, matchedRule.Path, "", "", snapshot.gatewayPortal),
-			)
-		}
-
-		resp.Body = io.NopCloser(bytes.NewReader(bodyBytes))
-		resp.ContentLength = int64(len(bodyBytes))
-		resp.Header.Set("Content-Length", strconv.Itoa(len(bodyBytes)))
-		return nil
+		return maybeMutateHTMLProxyResponse(resp, htmlResponseMutationOptions{
+			rewrite:       needsRewrite,
+			rewritePrefix: strings.TrimSuffix(matchedRule.Path, "/"),
+			toolbar:       needsToolbar,
+			toolbarHTML: func() string {
+				return response.GenerateToolbarWithPrefilteredHostsForRequest(r, snapshot.toolbarRules, nil, matchedRule.Path, "", "", snapshot.gatewayPortal)
+			},
+			requestID: requestID,
+			routeType: "path_rule",
+			routeKey:  matchedRule.Path,
+		})
 	}
 
 	if h.maybeProxyFnosPortIconHijackWebSocket(w, r, fnosPortIconHijackWebSocketOptions{
@@ -4999,6 +5050,122 @@ var (
 	htmlBodyStartMarker      = []byte(`<body`)
 	htmlDoctypeMarker        = []byte(`<!doctype`)
 )
+
+const htmlProxyMutationBodyLimitBytes int64 = 2 * 1024 * 1024
+
+type htmlResponseMutationOptions struct {
+	rewrite       bool
+	rewritePrefix string
+	toolbar       bool
+	toolbarHTML   func() string
+	requestID     string
+	routeType     string
+	routeKey      string
+}
+
+type prependReadCloser struct {
+	reader io.Reader
+	closer io.Closer
+}
+
+func (rc *prependReadCloser) Read(p []byte) (int, error) {
+	return rc.reader.Read(p)
+}
+
+func (rc *prependReadCloser) Close() error {
+	if rc.closer == nil {
+		return nil
+	}
+	return rc.closer.Close()
+}
+
+func maybeMutateHTMLProxyResponse(resp *http.Response, opts htmlResponseMutationOptions) error {
+	if !opts.rewrite && !opts.toolbar {
+		return nil
+	}
+	if resp == nil {
+		logHTMLProxyMutation(opts, nil, "skipped", "no_response", 0, 0)
+		return nil
+	}
+	if !isHTMLContentType(resp.Header.Get("Content-Type")) {
+		logHTMLProxyMutation(opts, resp, "skipped", "not_html", 0, 0)
+		return nil
+	}
+
+	bodyBytes, skipReason, err := readHTMLProxyMutationBody(resp, htmlProxyMutationBodyLimitBytes)
+	if err != nil {
+		return err
+	}
+	if skipReason != "" {
+		logHTMLProxyMutation(opts, resp, "skipped", skipReason, 0, 0)
+		return nil
+	}
+
+	originalLen := len(bodyBytes)
+	if opts.rewrite {
+		bodyBytes = rewriteHTMLAbsolutePaths(bodyBytes, opts.rewritePrefix)
+	}
+	if opts.toolbar {
+		toolbarHTML := ""
+		if opts.toolbarHTML != nil {
+			toolbarHTML = opts.toolbarHTML()
+		}
+		bodyBytes = injectToolbarIntoHTMLBytes(bodyBytes, toolbarHTML)
+	}
+
+	resp.Body = io.NopCloser(bytes.NewReader(bodyBytes))
+	resp.ContentLength = int64(len(bodyBytes))
+	resp.Header.Set("Content-Length", strconv.Itoa(len(bodyBytes)))
+	logHTMLProxyMutation(opts, resp, "applied", "", originalLen, len(bodyBytes))
+	return nil
+}
+
+func readHTMLProxyMutationBody(resp *http.Response, limit int64) ([]byte, string, error) {
+	if resp == nil || resp.Body == nil {
+		return nil, "no_body", nil
+	}
+	if resp.ContentLength > limit {
+		return nil, "content_length_exceeds_limit", nil
+	}
+
+	bodyBytes, err := io.ReadAll(io.LimitReader(resp.Body, limit+1))
+	if err != nil {
+		return nil, "", err
+	}
+	if int64(len(bodyBytes)) > limit {
+		resp.Body = &prependReadCloser{
+			reader: io.MultiReader(bytes.NewReader(bodyBytes), resp.Body),
+			closer: resp.Body,
+		}
+		return nil, "stream_exceeds_limit", nil
+	}
+
+	_ = resp.Body.Close()
+	return bodyBytes, "", nil
+}
+
+func logHTMLProxyMutation(opts htmlResponseMutationOptions, resp *http.Response, outcome string, reason string, originalBytes int, mutatedBytes int) {
+	if event := debugProxyEvent("html_response_mutation", opts.requestID); event != nil {
+		contentLength := int64(-1)
+		contentType := ""
+		if resp != nil {
+			contentLength = resp.ContentLength
+			contentType = resp.Header.Get("Content-Type")
+		}
+		event.Str("route_type", opts.routeType).
+			Str("route_key", logger.SanitizeLogString(opts.routeKey)).
+			Str("outcome", outcome).
+			Str("reason", reason).
+			Bool("rewrite_html", opts.rewrite).
+			Bool("toolbar", opts.toolbar).
+			Str("content_type", logger.SanitizeLogString(contentType)).
+			Int64("content_length", contentLength).
+			Int64("limit_bytes", htmlProxyMutationBodyLimitBytes).
+			Int("original_bytes", originalBytes).
+			Int("mutated_bytes", mutatedBytes).
+			Send()
+	}
+}
 
 func rewriteHTMLAbsolutePaths(body []byte, prefix string) []byte {
 	if len(body) == 0 || prefix == "" {

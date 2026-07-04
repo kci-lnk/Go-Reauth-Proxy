@@ -217,12 +217,16 @@ type CrawlerBlockerConfig struct {
 const (
 	GatewayPortalDisplayStyleDomain = "domain"
 	GatewayPortalDisplayStyleTitle  = "title"
+
+	GatewayPortalIconDragModeCorners = "corners"
+	GatewayPortalIconDragModeFree    = "free"
 )
 
 type GatewayPortalConfig struct {
 	Enabled      bool   `json:"enabled" example:"true"`
 	DisplayStyle string `json:"display_style,omitempty" example:"domain"`
 	ShowAppIcon  bool   `json:"show_app_icon,omitempty" example:"false"`
+	IconDragMode string `json:"icon_drag_mode,omitempty" example:"corners"`
 	enabledSet   bool
 }
 
@@ -231,6 +235,7 @@ func (cfg *GatewayPortalConfig) UnmarshalJSON(data []byte) error {
 		Enabled      *bool  `json:"enabled"`
 		DisplayStyle string `json:"display_style"`
 		ShowAppIcon  bool   `json:"show_app_icon"`
+		IconDragMode string `json:"icon_drag_mode"`
 	}
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return err
@@ -244,6 +249,7 @@ func (cfg *GatewayPortalConfig) UnmarshalJSON(data []byte) error {
 	}
 	cfg.DisplayStyle = raw.DisplayStyle
 	cfg.ShowAppIcon = raw.ShowAppIcon
+	cfg.IconDragMode = raw.IconDragMode
 	return nil
 }
 
@@ -256,13 +262,19 @@ func NormalizeGatewayPortalConfig(cfg GatewayPortalConfig) GatewayPortalConfig {
 	normalized := GatewayPortalConfig{
 		Enabled:     enabled,
 		ShowAppIcon: cfg.ShowAppIcon,
-		enabledSet:  true,
+		IconDragMode: func() string {
+			if cfg.IconDragMode == GatewayPortalIconDragModeFree {
+				return GatewayPortalIconDragModeFree
+			}
+			return GatewayPortalIconDragModeCorners
+		}(),
+		enabledSet: true,
 	}
 	if cfg.DisplayStyle == GatewayPortalDisplayStyleTitle {
 		normalized.DisplayStyle = GatewayPortalDisplayStyleTitle
-		return normalized
+	} else {
+		normalized.DisplayStyle = GatewayPortalDisplayStyleDomain
 	}
-	normalized.DisplayStyle = GatewayPortalDisplayStyleDomain
 	return normalized
 }
 

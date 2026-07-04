@@ -2686,6 +2686,7 @@ func (h *Handler) SetGatewayPortalConfig(cfg models.GatewayPortalConfig) models.
 	if event := debugProxyEvent("gateway_portal_config_set", ""); event != nil {
 		event.Bool("enabled", normalized.Enabled).
 			Str("display_style", logger.SanitizeLogString(normalized.DisplayStyle)).
+			Str("icon_drag_mode", logger.SanitizeLogString(normalized.IconDragMode)).
 			Bool("show_app_icon", normalized.ShowAppIcon).
 			Send()
 	}

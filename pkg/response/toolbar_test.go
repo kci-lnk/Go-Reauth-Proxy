@@ -85,10 +85,11 @@ func TestGenerateToolbarPayloadIsValidJSON(t *testing.T) {
 			Label   string `json:"label"`
 			Favicon string `json:"favicon"`
 		} `json:"host_rules"`
-		CurrentPath string        `json:"current_path"`
-		CurrentHost string        `json:"current_host"`
-		ShowAppIcon bool          `json:"show_app_icon"`
-		Labels      toolbarLabels `json:"labels"`
+		CurrentPath  string        `json:"current_path"`
+		CurrentHost  string        `json:"current_host"`
+		IconDragMode string        `json:"icon_drag_mode"`
+		ShowAppIcon  bool          `json:"show_app_icon"`
+		Labels       toolbarLabels `json:"labels"`
 	}
 	if err := json.Unmarshal([]byte(extractToolbarPayloadForTest(t, toolbar)), &payload); err != nil {
 		t.Fatalf("toolbar payload is not valid JSON: %v\n%s", err, toolbar)
@@ -104,6 +105,36 @@ func TestGenerateToolbarPayloadIsValidJSON(t *testing.T) {
 	}
 	if payload.CurrentPath != `/app "quoted"` || payload.CurrentHost != "app.example.com" || !payload.ShowAppIcon {
 		t.Fatalf("unexpected current payload fields: %#v", payload)
+	}
+	if payload.IconDragMode != models.GatewayPortalIconDragModeCorners {
+		t.Fatalf("icon drag mode = %q, want corners", payload.IconDragMode)
+	}
+}
+
+func TestGenerateToolbarPayloadIncludesFreeIconDragMode(t *testing.T) {
+	toolbar := GenerateToolbarWithHosts(
+		[]models.Rule{{Path: `/app</script>`}},
+		nil,
+		`/app</script>`,
+		"",
+		"",
+		models.GatewayPortalConfig{IconDragMode: models.GatewayPortalIconDragModeFree},
+	)
+
+	var payload struct {
+		IconDragMode string `json:"icon_drag_mode"`
+		Rules        []struct {
+			Path string `json:"path"`
+		} `json:"rules"`
+	}
+	if err := json.Unmarshal([]byte(extractToolbarPayloadForTest(t, toolbar)), &payload); err != nil {
+		t.Fatalf("toolbar payload is not valid JSON: %v\n%s", err, toolbar)
+	}
+	if payload.IconDragMode != models.GatewayPortalIconDragModeFree {
+		t.Fatalf("icon drag mode = %q, want free", payload.IconDragMode)
+	}
+	if len(payload.Rules) != 1 || payload.Rules[0].Path != `/app</script>` {
+		t.Fatalf("unexpected escaped rule payload: %#v", payload.Rules)
 	}
 }
 

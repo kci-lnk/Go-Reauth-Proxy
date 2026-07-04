@@ -20,36 +20,134 @@ const toolbarTemplate = `
     container.style.zIndex = '2147483647';
     container.style.fontFamily = 'ui-sans-serif, system-ui, sans-serif';
 
-    function applyPosition(pos) {
-        var margin = 20;
+	var toolbarData = __REAUTH_TOOLBAR_DATA__;
+	var toolbarLabels = toolbarData.labels || {};
+    var iconDragMode = toolbarData.icon_drag_mode === 'free' ? 'free' : 'corners';
+    var cornerPositionStorageKey = 'reauth_proxy_toolbar_pos';
+    var freePositionStorageKey = 'reauth_proxy_toolbar_free_pos';
+    var toolbarMargin = 20;
+    var fabSize = 44;
 
-        container.style.bottom = 'auto';
-        container.style.right = 'auto';
-
-        var vv = window.visualViewport;
-        var vvLeft = vv ? vv.offsetLeft : 0;
-        var vvTop = vv ? vv.offsetTop : 0;
-        var vvWidth = vv ? vv.width : window.innerWidth;
-        var vvHeight = vv ? vv.height : window.innerHeight;
-
-        var fabSize = 44;
-
-        if (pos === 'tl') {
-            container.style.top = (vvTop + margin) + 'px';
-            container.style.left = (vvLeft + margin) + 'px';
-        } else if (pos === 'tr') {
-            container.style.top = (vvTop + margin) + 'px';
-            container.style.left = (vvLeft + vvWidth - margin - fabSize) + 'px';
-        } else if (pos === 'bl') {
-            container.style.top = (vvTop + vvHeight - margin - fabSize) + 'px';
-            container.style.left = (vvLeft + margin) + 'px';
-        } else {
-            container.style.top = (vvTop + vvHeight - margin - fabSize) + 'px';
-            container.style.left = (vvLeft + vvWidth - margin - fabSize) + 'px';
+    function safeGetStoredItem(key) {
+        try {
+            return window.localStorage ? window.localStorage.getItem(key) : null;
+        } catch (err) {
+            return null;
         }
     }
 
-    applyPosition(localStorage.getItem('reauth_proxy_toolbar_pos') || 'br');
+    function safeSetStoredItem(key, value) {
+        try {
+            if (window.localStorage) {
+                window.localStorage.setItem(key, value);
+            }
+        } catch (err) {}
+    }
+
+    function isFiniteNumber(value) {
+        return typeof value === 'number' && isFinite(value);
+    }
+
+    function getViewport() {
+        var vv = window.visualViewport;
+        var width = vv ? vv.width : window.innerWidth;
+        var height = vv ? vv.height : window.innerHeight;
+        return {
+            left: vv ? vv.offsetLeft : 0,
+            top: vv ? vv.offsetTop : 0,
+            width: isFiniteNumber(width) && width > 0 ? width : fabSize,
+            height: isFiniteNumber(height) && height > 0 ? height : fabSize
+        };
+    }
+
+    function clampNumber(value, min, max) {
+        return Math.min(Math.max(value, min), max);
+    }
+
+    function clampToolbarPosition(left, top) {
+        var viewport = getViewport();
+        var minLeft = viewport.left;
+        var minTop = viewport.top;
+        var maxLeft = viewport.left + Math.max(0, viewport.width - fabSize);
+        var maxTop = viewport.top + Math.max(0, viewport.height - fabSize);
+        return {
+            left: clampNumber(left, minLeft, maxLeft),
+            top: clampNumber(top, minTop, maxTop)
+        };
+    }
+
+    function applyCoordinates(left, top) {
+        var pos = clampToolbarPosition(left, top);
+        container.style.bottom = 'auto';
+        container.style.right = 'auto';
+        container.style.left = pos.left + 'px';
+        container.style.top = pos.top + 'px';
+        return pos;
+    }
+
+    function normalizeCornerPosition(pos) {
+        return pos === 'tl' || pos === 'tr' || pos === 'bl' || pos === 'br' ? pos : 'br';
+    }
+
+    function getCornerCoordinates(pos) {
+        var viewport = getViewport();
+        pos = normalizeCornerPosition(pos);
+
+        if (pos === 'tl') {
+            return clampToolbarPosition(viewport.left + toolbarMargin, viewport.top + toolbarMargin);
+        } else if (pos === 'tr') {
+            return clampToolbarPosition(viewport.left + viewport.width - toolbarMargin - fabSize, viewport.top + toolbarMargin);
+        } else if (pos === 'bl') {
+            return clampToolbarPosition(viewport.left + toolbarMargin, viewport.top + viewport.height - toolbarMargin - fabSize);
+        }
+        return clampToolbarPosition(viewport.left + viewport.width - toolbarMargin - fabSize, viewport.top + viewport.height - toolbarMargin - fabSize);
+    }
+
+    function applyCornerPosition(pos) {
+        pos = getCornerCoordinates(pos);
+        applyCoordinates(pos.left, pos.top);
+    }
+
+    function readFreePosition() {
+        var raw = safeGetStoredItem(freePositionStorageKey);
+        if (!raw) return null;
+        try {
+            var parsed = JSON.parse(raw);
+            if (!parsed || !isFiniteNumber(parsed.left) || !isFiniteNumber(parsed.top)) {
+                return null;
+            }
+            return clampToolbarPosition(parsed.left, parsed.top);
+        } catch (err) {
+            return null;
+        }
+    }
+
+    function writeFreePosition(left, top) {
+        var pos = applyCoordinates(left, top);
+        safeSetStoredItem(freePositionStorageKey, JSON.stringify({
+            left: pos.left,
+            top: pos.top
+        }));
+        return pos;
+    }
+
+    function applyFreePosition() {
+        var pos = readFreePosition();
+        if (!pos) {
+            pos = getCornerCoordinates(safeGetStoredItem(cornerPositionStorageKey) || 'br');
+        }
+        applyCoordinates(pos.left, pos.top);
+    }
+
+    function applySavedToolbarPosition() {
+        if (iconDragMode === 'free') {
+            applyFreePosition();
+            return;
+        }
+        applyCornerPosition(safeGetStoredItem(cornerPositionStorageKey) || 'br');
+    }
+
+    applySavedToolbarPosition();
 
     var shadow = container.attachShadow({mode: 'open'});
 
@@ -293,8 +391,6 @@ const toolbarTemplate = `
         }
     ` + "`" + `;
 
-	var toolbarData = __REAUTH_TOOLBAR_DATA__;
-	var toolbarLabels = toolbarData.labels || {};
 	function label(key, fallback) {
 	    return typeof toolbarLabels[key] === 'string' && toolbarLabels[key] ? toolbarLabels[key] : fallback;
 	}
@@ -521,7 +617,13 @@ const toolbarTemplate = `
         
         var newLeft = initialLeft + dx;
         var newTop = initialTop + dy;
-        
+
+        if (iconDragMode === 'free') {
+            var clamped = clampToolbarPosition(newLeft, newTop);
+            newLeft = clamped.left;
+            newTop = clamped.top;
+        }
+
         container.style.left = newLeft + 'px';
         container.style.top = newTop + 'px';
         
@@ -548,11 +650,21 @@ const toolbarTemplate = `
         }
         
         if (dragged) {
-            snapToEdge();
+            if (iconDragMode === 'free') {
+                saveFreePosition();
+            } else {
+                snapToEdge();
+            }
         } else {
             // Because toggleMenu might cause reflows, defer it slightly
             setTimeout(toggleMenu, 10);
         }
+    }
+
+    function saveFreePosition() {
+        var rect = container.getBoundingClientRect();
+        writeFreePosition(rect.left, rect.top);
+        updateMenuPosition();
     }
     
     function snapToEdge() {
@@ -577,9 +689,9 @@ const toolbarTemplate = `
         else if (!isTop && isLeft) pos = 'bl';
         else pos = 'br';
         
-        localStorage.setItem('reauth_proxy_toolbar_pos', pos);
+        safeSetStoredItem(cornerPositionStorageKey, pos);
         
-        applyPosition(pos);
+        applyCornerPosition(pos);
         
         setTimeout(() => {
             container.style.transition = '';
@@ -748,8 +860,7 @@ const toolbarTemplate = `
 
     function updateToolbarPosition() {
         if (isDragging) return;
-        var pos = localStorage.getItem('reauth_proxy_toolbar_pos') || 'br';
-        applyPosition(pos);
+        applySavedToolbarPosition();
         if (menu.classList.contains('open')) {
             updateMenuPosition();
         }
@@ -1036,6 +1147,8 @@ func writeToolbarPayloadJSON(b *strings.Builder, rules []models.Rule, hostRules 
 	writeJSONString(b, currentPath)
 	b.WriteString(`,"current_host":`)
 	writeJSONString(b, currentHost)
+	b.WriteString(`,"icon_drag_mode":`)
+	writeJSONString(b, portalConfig.IconDragMode)
 	if portalConfig.ShowAppIcon {
 		b.WriteString(`,"show_app_icon":true`)
 	}
@@ -1058,6 +1171,7 @@ func writeToolbarPayloadJSON(b *strings.Builder, rules []models.Rule, hostRules 
 
 func estimateToolbarPayloadSize(rules []models.Rule, hostRules []models.HostRule, currentPath string, currentHost string, normalizedExcludedHost string, portalConfig models.GatewayPortalConfig, labels toolbarLabels) int {
 	size := 192 + len(currentPath) + len(currentHost) +
+		len(portalConfig.IconDragMode) +
 		len(labels.Logout) + len(labels.LogoutTitle) + len(labels.LogoutMessage) +
 		len(labels.Cancel) + len(labels.Confirm) + len(labels.Go) + len(labels.NoRoutesConfigured)
 	for _, rule := range rules {

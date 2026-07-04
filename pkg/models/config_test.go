@@ -22,6 +22,9 @@ func TestGatewayPortalConfigDefaultsLegacyValuesToEnabled(t *testing.T) {
 	if !normalized.ShowAppIcon {
 		t.Fatalf("show app icon = false, want true")
 	}
+	if normalized.IconDragMode != GatewayPortalIconDragModeCorners {
+		t.Fatalf("icon drag mode = %q, want corners", normalized.IconDragMode)
+	}
 }
 
 func TestGatewayPortalConfigPreservesExplicitDisabledValue(t *testing.T) {
@@ -41,5 +44,29 @@ func TestGatewayPortalConfigPreservesExplicitDisabledValue(t *testing.T) {
 	}
 	if !strings.Contains(string(payload), `"enabled":false`) {
 		t.Fatalf("disabled gateway portal config did not marshal explicit false: %s", payload)
+	}
+}
+
+func TestGatewayPortalConfigPreservesFreeIconDragMode(t *testing.T) {
+	var cfg GatewayPortalConfig
+	if err := json.Unmarshal([]byte(`{"icon_drag_mode":"free"}`), &cfg); err != nil {
+		t.Fatalf("unmarshal gateway portal config: %v", err)
+	}
+
+	normalized := NormalizeGatewayPortalConfig(cfg)
+	if normalized.IconDragMode != GatewayPortalIconDragModeFree {
+		t.Fatalf("icon drag mode = %q, want free", normalized.IconDragMode)
+	}
+}
+
+func TestGatewayPortalConfigNormalizesInvalidIconDragModeToCorners(t *testing.T) {
+	var cfg GatewayPortalConfig
+	if err := json.Unmarshal([]byte(`{"icon_drag_mode":"<script>"}`), &cfg); err != nil {
+		t.Fatalf("unmarshal gateway portal config: %v", err)
+	}
+
+	normalized := NormalizeGatewayPortalConfig(cfg)
+	if normalized.IconDragMode != GatewayPortalIconDragModeCorners {
+		t.Fatalf("icon drag mode = %q, want corners", normalized.IconDragMode)
 	}
 }

@@ -293,6 +293,35 @@ func TestFnosPortIconHijackHTTPResponseRewritesServiceListIgnoringQuery(t *testi
 	}
 }
 
+func TestFnosPortIconHijackHTTPResponseSkipsLargeServiceList(t *testing.T) {
+	handler := &Handler{
+		FnosPortIconHijack: models.FnosPortIconHijackConfig{Enabled: true},
+	}
+	body := `{"data":{"list":[{"uri":{"host":"","port":"8096","path":"/web/index.html"}}]}}` +
+		strings.Repeat(" ", int(fnosPortIconHijackHTTPBodyLimitBytes)+1)
+	resp := &http.Response{
+		Header:        http.Header{},
+		Body:          io.NopCloser(strings.NewReader(body)),
+		ContentLength: int64(len(body)),
+		Request:       httptest.NewRequest(http.MethodGet, "/app-center/v1/service/list", nil),
+	}
+
+	err := handler.maybeRewriteFnosPortIconHijackHTTPResponse(resp, []models.HostRule{
+		{Host: "emby.example.com", Target: "http://127.0.0.1:8096"},
+	})
+	if err != nil {
+		t.Fatalf("rewrite HTTP response returned error: %v", err)
+	}
+
+	got, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read skipped body: %v", err)
+	}
+	if string(got) != body {
+		t.Fatal("large service list body changed despite exceeding rewrite limit")
+	}
+}
+
 func TestFnosPortIconHijackWebSocketRewritesUpstreamMessages(t *testing.T) {
 	upgrader := websocket.Upgrader{
 		CheckOrigin: func(_ *http.Request) bool {

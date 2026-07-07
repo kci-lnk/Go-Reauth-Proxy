@@ -38,7 +38,7 @@ import (
 )
 
 const (
-	proxyCopyBufferSize      = 256 * 1024
+	proxyCopyBufferSize      = 32 * 1024
 	trafficCounterFlushBytes = 1024 * 1024
 )
 

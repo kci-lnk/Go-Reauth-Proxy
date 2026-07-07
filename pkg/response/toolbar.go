@@ -879,6 +879,7 @@ const toolbarTemplate = `
 	`
 
 const toolbarDataMarker = "__REAUTH_TOOLBAR_DATA__"
+const toolbarFaviconMaxBytes = 32 * 1024
 
 var (
 	toolbarTemplatePrefix string
@@ -945,6 +946,9 @@ func gatewayPortalHostFavicon(rule models.HostRule, normalizedPortal models.Gate
 	}
 	favicon := strings.TrimSpace(rule.Favicon)
 	if !hasFoldASCIIPrefix(favicon, "data:image/") {
+		return ""
+	}
+	if len(favicon) > toolbarFaviconMaxBytes {
 		return ""
 	}
 	return favicon
@@ -1181,7 +1185,7 @@ func estimateToolbarPayloadSize(rules []models.Rule, hostRules []models.HostRule
 		if toolbarHostMatchesExcludedNormalized(rule.Host, normalizedExcludedHost) {
 			continue
 		}
-		size += len(rule.Host) + len(rule.Title) + len(rule.Favicon) + 36
+		size += len(rule.Host) + len(rule.Title) + len(gatewayPortalHostFavicon(rule, portalConfig)) + 36
 	}
 	return size
 }

@@ -246,6 +246,22 @@ func TestGenerateToolbarWithHostsIncludesFaviconOnlyWhenEnabled(t *testing.T) {
 	}
 }
 
+func TestGenerateToolbarWithHostsOmitsOversizedFavicon(t *testing.T) {
+	icon := "data:image/png;base64," + strings.Repeat("A", toolbarFaviconMaxBytes)
+	toolbar := GenerateToolbarWithHosts(
+		nil,
+		[]models.HostRule{{Host: "app.example.com", Title: "App Portal", Favicon: icon}},
+		"",
+		"",
+		"",
+		models.GatewayPortalConfig{DisplayStyle: models.GatewayPortalDisplayStyleTitle, ShowAppIcon: true},
+	)
+
+	if strings.Contains(toolbar, `"favicon":`) {
+		t.Fatalf("toolbar included oversized favicon field: %s", toolbar)
+	}
+}
+
 func TestShouldSuppressToolbarForUserAgentCaseInsensitive(t *testing.T) {
 	if !ShouldSuppressToolbarForUserAgent("Mozilla COM.TRIM.APP") {
 		t.Fatal("ShouldSuppressToolbarForUserAgent() = false, want true for FN App user agent")

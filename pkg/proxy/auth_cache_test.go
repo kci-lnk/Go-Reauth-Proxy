@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"reflect"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -311,6 +312,60 @@ func TestAuthCacheInvalidationClearsAllClientIPVariantsForIdentity(t *testing.T)
 	}
 	if _, ok := handler.preflightCacheGet(secondPreflight.cacheKey, now); ok {
 		t.Fatal("second preflight cache entry was not invalidated")
+	}
+}
+
+func TestAuthCacheStoreEnforcesMaxEntriesAndIdentityIndex(t *testing.T) {
+	handler := &Handler{authCache: newAuthStateCache()}
+	now := time.Now()
+
+	for i := 0; i <= authCacheMaxEntries; i++ {
+		suffix := strconv.Itoa(i)
+		handler.authCacheStore("key-"+suffix, authCacheEntry{
+			result:      authCheckResult{allowed: true, authenticated: true},
+			expiresAt:   now.Add(time.Duration(i+1) * time.Second),
+			identityKey: "identity-" + suffix,
+		}, now)
+	}
+
+	if got := len(handler.authCache.entries); got != authCacheMaxEntries {
+		t.Fatalf("auth cache entries = %d, want %d", got, authCacheMaxEntries)
+	}
+	if _, ok := handler.authCache.entries["key-0"]; ok {
+		t.Fatal("oldest auth cache entry was not evicted")
+	}
+	if _, ok := handler.authCache.keysByIdentity["identity-0"]; ok {
+		t.Fatal("oldest auth cache identity index was not removed")
+	}
+	if _, ok := handler.authCache.entries["key-"+strconv.Itoa(authCacheMaxEntries)]; !ok {
+		t.Fatal("newest auth cache entry was evicted unexpectedly")
+	}
+}
+
+func TestPreflightCacheStoreEnforcesMaxEntriesAndIdentityIndex(t *testing.T) {
+	handler := &Handler{preflightCache: newPreflightStateCache()}
+	now := time.Now()
+
+	for i := 0; i <= authCacheMaxEntries; i++ {
+		suffix := strconv.Itoa(i)
+		handler.preflightCacheStore("key-"+suffix, preflightCacheEntry{
+			decision:    preflightDecision{},
+			expiresAt:   now.Add(time.Duration(i+1) * time.Second),
+			identityKey: "identity-" + suffix,
+		}, now)
+	}
+
+	if got := len(handler.preflightCache.entries); got != authCacheMaxEntries {
+		t.Fatalf("preflight cache entries = %d, want %d", got, authCacheMaxEntries)
+	}
+	if _, ok := handler.preflightCache.entries["key-0"]; ok {
+		t.Fatal("oldest preflight cache entry was not evicted")
+	}
+	if _, ok := handler.preflightCache.keysByIdentity["identity-0"]; ok {
+		t.Fatal("oldest preflight cache identity index was not removed")
+	}
+	if _, ok := handler.preflightCache.entries["key-"+strconv.Itoa(authCacheMaxEntries)]; !ok {
+		t.Fatal("newest preflight cache entry was evicted unexpectedly")
 	}
 }
 

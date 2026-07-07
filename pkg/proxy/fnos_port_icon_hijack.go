@@ -23,6 +23,7 @@ const defaultFnosPortIconHijackWebSocketMaxLifetime = 55 * time.Minute
 const fnosPortIconHijackWebSocketCloseTimeout = 2 * time.Second
 const fnosPortIconHijackWebSocketPath = "/websocket"
 const fnosPortIconHijackServiceListPath = "/app-center/v1/service/list"
+const fnosPortIconHijackHTTPBodyLimitBytes int64 = 2 * 1024 * 1024
 
 type fnosPortIconHijackPublicEndpoint struct {
 	protocol string
@@ -306,11 +307,13 @@ func (h *Handler) maybeRewriteFnosPortIconHijackHTTPResponse(resp *http.Response
 		return nil
 	}
 
-	bodyBytes, err := io.ReadAll(resp.Body)
+	bodyBytes, ok, err := readFnosPortIconHijackHTTPBody(resp, fnosPortIconHijackHTTPBodyLimitBytes)
 	if err != nil {
 		return err
 	}
-	resp.Body.Close()
+	if !ok {
+		return nil
+	}
 
 	rewritten, changed, err := rewriteFnosPortIconHijackMessage(bodyBytes, targets, h.fnosPortIconHijackPublicEndpoint())
 	if err != nil {
@@ -328,6 +331,33 @@ func (h *Handler) maybeRewriteFnosPortIconHijackHTTPResponse(resp *http.Response
 	resp.Header.Del("Content-MD5")
 	resp.Header.Del("ETag")
 	return nil
+}
+
+func readFnosPortIconHijackHTTPBody(resp *http.Response, limit int64) ([]byte, bool, error) {
+	if resp == nil || resp.Body == nil {
+		return nil, false, nil
+	}
+	if limit <= 0 {
+		return nil, false, nil
+	}
+	if resp.ContentLength > limit {
+		return nil, false, nil
+	}
+
+	bodyBytes, err := io.ReadAll(io.LimitReader(resp.Body, limit+1))
+	if err != nil {
+		return nil, false, err
+	}
+	if int64(len(bodyBytes)) > limit {
+		resp.Body = &prependReadCloser{
+			reader: io.MultiReader(bytes.NewReader(bodyBytes), resp.Body),
+			closer: resp.Body,
+		}
+		return nil, false, nil
+	}
+
+	_ = resp.Body.Close()
+	return bodyBytes, true, nil
 }
 
 func resetFnosPortIconHijackResponseBody(resp *http.Response, body []byte) {

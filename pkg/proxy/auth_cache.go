@@ -21,6 +21,7 @@ const (
 	authSessionCookieName      = "x-go-reauth-proxy-session-id"
 	authShareSessionCookieName = "fn-knock-fnos-share-session"
 	authCacheCleanupInterval   = 30 * time.Second
+	authCacheMaxEntries        = 4096
 	authCacheHashBufferSize    = 512
 	identitySourceCookiePrefix = "cookie:"
 	identitySourceAuthPrefix   = "auth:"
@@ -386,6 +387,7 @@ func (h *Handler) authCacheStore(cacheKey string, entry authCacheEntry, now time
 	cache := &h.authCache
 
 	cache.mu.Lock()
+	cache.deleteEntryLocked(cacheKey)
 	cache.entries[cacheKey] = entry
 	if entry.identityKey != "" {
 		keys := cache.keysByIdentity[entry.identityKey]
@@ -396,6 +398,7 @@ func (h *Handler) authCacheStore(cacheKey string, entry authCacheEntry, now time
 		keys[cacheKey] = struct{}{}
 	}
 	cache.cleanupExpiredLocked(now)
+	cache.enforceMaxEntriesLocked(authCacheMaxEntries)
 	cache.mu.Unlock()
 }
 
@@ -403,6 +406,7 @@ func (h *Handler) preflightCacheStore(cacheKey string, entry preflightCacheEntry
 	cache := &h.preflightCache
 
 	cache.mu.Lock()
+	cache.deleteEntryLocked(cacheKey)
 	cache.entries[cacheKey] = entry
 	if entry.identityKey != "" {
 		keys := cache.keysByIdentity[entry.identityKey]
@@ -413,6 +417,7 @@ func (h *Handler) preflightCacheStore(cacheKey string, entry preflightCacheEntry
 		keys[cacheKey] = struct{}{}
 	}
 	cache.cleanupExpiredLocked(now)
+	cache.enforceMaxEntriesLocked(authCacheMaxEntries)
 	cache.mu.Unlock()
 }
 
@@ -490,6 +495,26 @@ func (c *authStateCache) cleanupExpiredLocked(now time.Time) {
 	c.lastCleanup = now
 }
 
+func (c *authStateCache) enforceMaxEntriesLocked(limit int) {
+	if limit <= 0 {
+		return
+	}
+	for len(c.entries) > limit {
+		oldestKey := ""
+		var oldestExpiresAt time.Time
+		for cacheKey, entry := range c.entries {
+			if oldestKey == "" || entry.expiresAt.Before(oldestExpiresAt) {
+				oldestKey = cacheKey
+				oldestExpiresAt = entry.expiresAt
+			}
+		}
+		if oldestKey == "" {
+			return
+		}
+		c.deleteEntryLocked(oldestKey)
+	}
+}
+
 func (c *preflightStateCache) deleteEntryLocked(cacheKey string) {
 	entry, ok := c.entries[cacheKey]
 	if !ok {
@@ -516,6 +541,26 @@ func (c *preflightStateCache) cleanupExpiredLocked(now time.Time) {
 		}
 	}
 	c.lastCleanup = now
+}
+
+func (c *preflightStateCache) enforceMaxEntriesLocked(limit int) {
+	if limit <= 0 {
+		return
+	}
+	for len(c.entries) > limit {
+		oldestKey := ""
+		var oldestExpiresAt time.Time
+		for cacheKey, entry := range c.entries {
+			if oldestKey == "" || entry.expiresAt.Before(oldestExpiresAt) {
+				oldestKey = cacheKey
+				oldestExpiresAt = entry.expiresAt
+			}
+		}
+		if oldestKey == "" {
+			return
+		}
+		c.deleteEntryLocked(oldestKey)
+	}
 }
 
 func requestCookieMap(r *http.Request) map[string]string {

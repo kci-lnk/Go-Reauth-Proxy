@@ -1,17 +1,16 @@
 package proxy
 
 import (
+	"context"
 	"encoding/json"
 	"io"
-	"net"
 	"net/http"
 	"net/http/httptest"
-	"net/url"
-	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
 
+	"go-reauth-proxy/pkg/grpc/pb"
 	"go-reauth-proxy/pkg/models"
 )
 
@@ -25,24 +24,6 @@ func disabledGatewayPortalConfigForProxyTest(t *testing.T) models.GatewayPortalC
 	return cfg
 }
 
-func testServerPort(t *testing.T, rawURL string) int {
-	t.Helper()
-
-	parsed, err := url.Parse(rawURL)
-	if err != nil {
-		t.Fatalf("parse server URL: %v", err)
-	}
-	_, port, err := net.SplitHostPort(parsed.Host)
-	if err != nil {
-		t.Fatalf("split server host %q: %v", parsed.Host, err)
-	}
-	n, err := strconv.Atoi(port)
-	if err != nil {
-		t.Fatalf("parse server port %q: %v", port, err)
-	}
-	return n
-}
-
 func newToolbarHTMLTarget(t *testing.T) *httptest.Server {
 	t.Helper()
 
@@ -52,7 +33,7 @@ func newToolbarHTMLTarget(t *testing.T) *httptest.Server {
 	}))
 }
 
-func newPublicHostToolbarHandler(targetURL string, authPort int) *Handler {
+func newPublicHostToolbarHandler(targetURL string, bridge authBridgeClient) *Handler {
 	h := &Handler{
 		HostRules: []models.HostRule{
 			{
@@ -62,9 +43,9 @@ func newPublicHostToolbarHandler(targetURL string, authPort int) *Handler {
 			},
 		},
 		AuthConfig: models.AuthConfig{
-			AuthPort: authPort,
-			AuthURL:  "/api/auth/verify",
+			AuthURL: "/api/auth/verify",
 		},
+		authBridge:     bridge,
 		authCache:      newAuthStateCache(),
 		preflightCache: newPreflightStateCache(),
 	}
@@ -74,27 +55,23 @@ func newPublicHostToolbarHandler(targetURL string, authPort int) *Handler {
 
 func TestPublicHostRuleInjectsToolbarWhenAuthCookieIsAuthenticated(t *testing.T) {
 	var verifyCalls int32
-	authServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodHead && r.URL.Path == "/api/auth/preflight" {
-			w.WriteHeader(http.StatusOK)
-			return
-		}
-		if r.Method != http.MethodGet || r.URL.Path != "/api/auth/verify" {
-			t.Fatalf("unexpected auth request %s %s", r.Method, r.URL.Path)
-		}
-		atomic.AddInt32(&verifyCalls, 1)
-		if !strings.Contains(r.Header.Get("Cookie"), authSessionCookieName+"=ok") {
-			t.Fatalf("auth request Cookie = %q, want %s=ok", r.Header.Get("Cookie"), authSessionCookieName)
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = io.WriteString(w, `{"success":true}`)
-	}))
-	defer authServer.Close()
+	bridge := testAuthBridge{
+		verify: func(_ context.Context, in *pb.VerifyAuthRequest) (*pb.VerifyAuthResponse, error) {
+			t.Helper()
+
+			ctx := in.GetContext()
+			atomic.AddInt32(&verifyCalls, 1)
+			if !strings.Contains(ctx.GetCookie(), authSessionCookieName+"=ok") {
+				t.Fatalf("auth request Cookie = %q, want %s=ok", ctx.GetCookie(), authSessionCookieName)
+			}
+			return &pb.VerifyAuthResponse{Success: true, Status: http.StatusOK}, nil
+		},
+	}
 
 	target := newToolbarHTMLTarget(t)
 	defer target.Close()
 
-	handler := newPublicHostToolbarHandler(target.URL, testServerPort(t, authServer.URL))
+	handler := newPublicHostToolbarHandler(target.URL, bridge)
 	req := httptest.NewRequest(http.MethodGet, "http://public.example.com/", nil)
 	req.AddCookie(&http.Cookie{Name: authSessionCookieName, Value: "ok"})
 	rec := httptest.NewRecorder()
@@ -114,20 +91,18 @@ func TestPublicHostRuleInjectsToolbarWhenAuthCookieIsAuthenticated(t *testing.T)
 
 func TestPublicHostRuleDoesNotProbeOrInjectToolbarForWebSocketTarget(t *testing.T) {
 	var verifyCalls int32
-	authServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodGet && r.URL.Path == "/api/auth/verify" {
+	bridge := testAuthBridge{
+		verify: func(context.Context, *pb.VerifyAuthRequest) (*pb.VerifyAuthResponse, error) {
 			atomic.AddInt32(&verifyCalls, 1)
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = io.WriteString(w, `{"success":true}`)
-	}))
-	defer authServer.Close()
+			return &pb.VerifyAuthResponse{Success: true, Status: http.StatusOK}, nil
+		},
+	}
 
 	target := newToolbarHTMLTarget(t)
 	defer target.Close()
 
 	webSocketTargetURL := strings.Replace(target.URL, "http://", "ws://", 1)
-	handler := newPublicHostToolbarHandler(webSocketTargetURL, testServerPort(t, authServer.URL))
+	handler := newPublicHostToolbarHandler(webSocketTargetURL, bridge)
 	req := httptest.NewRequest(http.MethodGet, "http://public.example.com/", nil)
 	req.AddCookie(&http.Cookie{Name: authSessionCookieName, Value: "ok"})
 	rec := httptest.NewRecorder()
@@ -151,23 +126,17 @@ func TestPublicHostRuleDoesNotProbeOrInjectToolbarForWebSocketTarget(t *testing.
 
 func TestPublicHostRuleDoesNotProbeOrInjectToolbarWhenPortalDisabled(t *testing.T) {
 	var verifyCalls int32
-	authServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodHead && r.URL.Path == "/api/auth/preflight" {
-			w.WriteHeader(http.StatusOK)
-			return
-		}
-		if r.Method == http.MethodGet && r.URL.Path == "/api/auth/verify" {
+	bridge := testAuthBridge{
+		verify: func(context.Context, *pb.VerifyAuthRequest) (*pb.VerifyAuthResponse, error) {
 			atomic.AddInt32(&verifyCalls, 1)
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = io.WriteString(w, `{"success":true}`)
-	}))
-	defer authServer.Close()
+			return &pb.VerifyAuthResponse{Success: true, Status: http.StatusOK}, nil
+		},
+	}
 
 	target := newToolbarHTMLTarget(t)
 	defer target.Close()
 
-	handler := newPublicHostToolbarHandler(target.URL, testServerPort(t, authServer.URL))
+	handler := newPublicHostToolbarHandler(target.URL, bridge)
 	handler.mu.Lock()
 	handler.GatewayPortal = disabledGatewayPortalConfigForProxyTest(t)
 	handler.publishRequestSnapshotLocked()
@@ -192,23 +161,17 @@ func TestPublicHostRuleDoesNotProbeOrInjectToolbarWhenPortalDisabled(t *testing.
 
 func TestPublicHostRuleDoesNotInjectToolbarWithoutAuthIdentity(t *testing.T) {
 	var verifyCalls int32
-	authServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodHead && r.URL.Path == "/api/auth/preflight" {
-			w.WriteHeader(http.StatusOK)
-			return
-		}
-		if r.Method == http.MethodGet && r.URL.Path == "/api/auth/verify" {
+	bridge := testAuthBridge{
+		verify: func(context.Context, *pb.VerifyAuthRequest) (*pb.VerifyAuthResponse, error) {
 			atomic.AddInt32(&verifyCalls, 1)
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = io.WriteString(w, `{"success":true}`)
-	}))
-	defer authServer.Close()
+			return &pb.VerifyAuthResponse{Success: true, Status: http.StatusOK}, nil
+		},
+	}
 
 	target := newToolbarHTMLTarget(t)
 	defer target.Close()
 
-	handler := newPublicHostToolbarHandler(target.URL, testServerPort(t, authServer.URL))
+	handler := newPublicHostToolbarHandler(target.URL, bridge)
 	req := httptest.NewRequest(http.MethodGet, "http://public.example.com/", nil)
 	rec := httptest.NewRecorder()
 
@@ -227,23 +190,17 @@ func TestPublicHostRuleDoesNotInjectToolbarWithoutAuthIdentity(t *testing.T) {
 
 func TestPublicHostRuleDoesNotProbeToolbarAuthForOrdinaryCookie(t *testing.T) {
 	var verifyCalls int32
-	authServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodHead && r.URL.Path == "/api/auth/preflight" {
-			w.WriteHeader(http.StatusOK)
-			return
-		}
-		if r.Method == http.MethodGet && r.URL.Path == "/api/auth/verify" {
+	bridge := testAuthBridge{
+		verify: func(context.Context, *pb.VerifyAuthRequest) (*pb.VerifyAuthResponse, error) {
 			atomic.AddInt32(&verifyCalls, 1)
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = io.WriteString(w, `{"success":true}`)
-	}))
-	defer authServer.Close()
+			return &pb.VerifyAuthResponse{Success: true, Status: http.StatusOK}, nil
+		},
+	}
 
 	target := newToolbarHTMLTarget(t)
 	defer target.Close()
 
-	handler := newPublicHostToolbarHandler(target.URL, testServerPort(t, authServer.URL))
+	handler := newPublicHostToolbarHandler(target.URL, bridge)
 	req := httptest.NewRequest(http.MethodGet, "http://public.example.com/", nil)
 	req.AddCookie(&http.Cookie{Name: "session", Value: "business-app"})
 	rec := httptest.NewRecorder()
@@ -262,23 +219,16 @@ func TestPublicHostRuleDoesNotProbeToolbarAuthForOrdinaryCookie(t *testing.T) {
 }
 
 func TestPublicHostRuleDoesNotInjectToolbarWhenAuthCookieIsRejected(t *testing.T) {
-	authServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodHead && r.URL.Path == "/api/auth/preflight" {
-			w.WriteHeader(http.StatusOK)
-			return
-		}
-		if r.Method != http.MethodGet || r.URL.Path != "/api/auth/verify" {
-			t.Fatalf("unexpected auth request %s %s", r.Method, r.URL.Path)
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = io.WriteString(w, `{"success":false,"message":"expired"}`)
-	}))
-	defer authServer.Close()
+	bridge := testAuthBridge{
+		verify: func(context.Context, *pb.VerifyAuthRequest) (*pb.VerifyAuthResponse, error) {
+			return &pb.VerifyAuthResponse{Success: false, Message: "expired", Status: http.StatusOK}, nil
+		},
+	}
 
 	target := newToolbarHTMLTarget(t)
 	defer target.Close()
 
-	handler := newPublicHostToolbarHandler(target.URL, testServerPort(t, authServer.URL))
+	handler := newPublicHostToolbarHandler(target.URL, bridge)
 	req := httptest.NewRequest(http.MethodGet, "http://public.example.com/", nil)
 	req.AddCookie(&http.Cookie{Name: authSessionCookieName, Value: "expired"})
 	rec := httptest.NewRecorder()

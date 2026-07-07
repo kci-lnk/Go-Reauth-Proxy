@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"encoding/json"
+	"errors"
 	"go-reauth-proxy/pkg/models"
 	"io"
 	"net/http"
@@ -10,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gorilla/websocket"
 )
@@ -204,6 +206,19 @@ func TestShouldProxyFnosPortIconHijackWebSocketAcceptsMissingType(t *testing.T) 
 	}
 }
 
+func TestShouldProxyFnosPortIconHijackWebSocketAcceptsTimerType(t *testing.T) {
+	handler := &Handler{
+		FnosPortIconHijack: models.FnosPortIconHijackConfig{Enabled: true},
+	}
+	req := httptest.NewRequest(http.MethodGet, "/websocket?type=timer", nil)
+	req.Header.Set("Connection", "Upgrade")
+	req.Header.Set("Upgrade", "websocket")
+
+	if !handler.shouldProxyFnosPortIconHijackWebSocket(req) {
+		t.Fatal("expected websocket timer request to be hijacked")
+	}
+}
+
 func TestFnosPortIconHijackHTTPResponseRewritesServiceListIgnoringQuery(t *testing.T) {
 	handler := &Handler{
 		ProxyPort: 18080,
@@ -353,6 +368,132 @@ func TestFnosPortIconHijackWebSocketRewritesUpstreamMessages(t *testing.T) {
 	}
 	if got := decoded.Data.List[0].URI.Path; got != "" {
 		t.Fatalf("path = %q, want empty string", got)
+	}
+}
+
+func TestFnosPortIconHijackWebSocketRelaysTimerMessagesWithoutRewrite(t *testing.T) {
+	upgrader := websocket.Upgrader{
+		CheckOrigin: func(_ *http.Request) bool {
+			return true
+		},
+	}
+
+	upstreamPayload := []byte(`{"data":{"list":[{"uri":{"host":"","port":"8096","path":"/web/index.html"}}]}}`)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Errorf("upstream upgrade failed: %v", err)
+			return
+		}
+		defer conn.Close()
+
+		if err := conn.WriteMessage(websocket.TextMessage, upstreamPayload); err != nil {
+			t.Errorf("upstream write failed: %v", err)
+		}
+	}))
+	defer upstream.Close()
+
+	targetURL, err := url.Parse(upstream.URL)
+	if err != nil {
+		t.Fatalf("parse upstream URL: %v", err)
+	}
+
+	handler := &Handler{ProxyPort: 18080}
+	proxyServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		err := handler.proxyFnosPortIconHijackWebSocket(
+			w,
+			r,
+			fnosPortIconHijackWebSocketOptions{targetURL: targetURL},
+			map[int]string{8096: "emby.example.com"},
+		)
+		if err != nil && !isFNAppConnectionTermination(err) {
+			t.Errorf("proxy websocket failed: %v", err)
+		}
+	}))
+	defer proxyServer.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(proxyServer.URL, "http") + "/websocket?type=timer"
+	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatalf("dial proxy websocket: %v", err)
+	}
+	defer conn.Close()
+
+	_, message, err := conn.ReadMessage()
+	if err != nil {
+		t.Fatalf("read proxied websocket message: %v", err)
+	}
+	if string(message) != string(upstreamPayload) {
+		t.Fatalf("proxied timer message = %s, want %s", message, upstreamPayload)
+	}
+}
+
+func TestFnosPortIconHijackWebSocketMaxLifetimeClosesClientAndUpstream(t *testing.T) {
+	upgrader := websocket.Upgrader{
+		CheckOrigin: func(_ *http.Request) bool {
+			return true
+		},
+	}
+	upstreamClosed := make(chan error, 1)
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Errorf("upstream upgrade failed: %v", err)
+			return
+		}
+		defer conn.Close()
+
+		_, _, err = conn.ReadMessage()
+		upstreamClosed <- err
+	}))
+	defer upstream.Close()
+
+	targetURL, err := url.Parse(upstream.URL)
+	if err != nil {
+		t.Fatalf("parse upstream URL: %v", err)
+	}
+
+	handler := &Handler{}
+	proxyServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		err := handler.proxyFnosPortIconHijackWebSocket(
+			w,
+			r,
+			fnosPortIconHijackWebSocketOptions{
+				targetURL:            targetURL,
+				webSocketMaxLifetime: 25 * time.Millisecond,
+			},
+			nil,
+		)
+		if err != nil && !isFNAppConnectionTermination(err) {
+			t.Errorf("proxy websocket failed: %v", err)
+		}
+	}))
+	defer proxyServer.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(proxyServer.URL, "http") + "/websocket?type=main"
+	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatalf("dial proxy websocket: %v", err)
+	}
+	defer conn.Close()
+
+	if err := conn.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
+		t.Fatalf("set client read deadline: %v", err)
+	}
+	_, _, err = conn.ReadMessage()
+	var closeErr *websocket.CloseError
+	if !errors.As(err, &closeErr) || closeErr.Code != websocket.CloseNormalClosure {
+		t.Fatalf("client read error = %v, want normal websocket close", err)
+	}
+
+	select {
+	case err := <-upstreamClosed:
+		if !websocket.IsCloseError(err, websocket.CloseNormalClosure) {
+			t.Fatalf("upstream read error = %v, want normal websocket close", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for upstream websocket to close")
 	}
 }
 

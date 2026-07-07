@@ -2,7 +2,6 @@ package stream
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"go-reauth-proxy/pkg/gatewaylog"
@@ -26,17 +25,15 @@ const (
 	streamDialTimeout     = 5 * time.Second
 	streamAcceptBackoff   = 150 * time.Millisecond
 	udpSessionIdleTimeout = 2 * time.Minute
-	maxAuthBodyBytes      = 1 << 20
 	udpPacketBufferSize   = 64 * 1024
 )
 
 type Manager struct {
-	mu         sync.RWMutex
-	handler    *proxy.Handler
-	listeners  map[streamRuleKey]managedListener
-	rules      map[streamRuleKey]models.StreamRule
-	authClient *http.Client
-	closed     bool
+	mu        sync.RWMutex
+	handler   *proxy.Handler
+	listeners map[streamRuleKey]managedListener
+	rules     map[streamRuleKey]models.StreamRule
+	closed    bool
 }
 
 type streamRuleKey struct {
@@ -117,11 +114,6 @@ type udpSession struct {
 	entry     gatewaylog.Entry
 }
 
-type authVerifyPayload struct {
-	Success bool   `json:"success"`
-	Message string `json:"message"`
-}
-
 type relayResult struct {
 	direction string
 	bytes     uint64
@@ -129,20 +121,10 @@ type relayResult struct {
 }
 
 func NewManager(handler *proxy.Handler) *Manager {
-	transport := http.DefaultTransport.(*http.Transport).Clone()
-	transport.MaxIdleConns = 32
-	transport.MaxIdleConnsPerHost = 32
-	transport.IdleConnTimeout = 30 * time.Second
-	transport.ForceAttemptHTTP2 = false
-
 	return &Manager{
 		handler:   handler,
 		listeners: make(map[streamRuleKey]managedListener),
 		rules:     make(map[streamRuleKey]models.StreamRule),
-		authClient: &http.Client{
-			Timeout:   streamAuthTimeout,
-			Transport: transport,
-		},
 	}
 }
 
@@ -1210,24 +1192,19 @@ func (m *Manager) runUDPSession(listener *udpListenerState, session *udpSession)
 
 func (m *Manager) verify(rule models.StreamRule, clientIP string) (bool, int, string, error) {
 	authConfig := m.handler.GetAuthConfig()
-	if authConfig.AuthPort <= 0 {
-		if event := logger.DebugEvent("stream", "auth_verify_skipped_missing_port"); event != nil {
+	if strings.TrimSpace(authConfig.AuthURL) == "" {
+		if event := logger.DebugEvent("stream", "auth_verify_skipped_missing_auth_url"); event != nil {
 			event.Str("protocol", logger.SanitizeLogString(rule.Protocol)).
 				Interface("listen_port", logger.SanitizePort(rule.ListenPort)).
 				Str("client_ip", logger.SanitizeLogString(clientIP)).
 				Send()
 		}
-		return false, http.StatusBadGateway, "auth_unconfigured", fmt.Errorf("auth_port is not configured")
+		return false, http.StatusBadGateway, "auth_unconfigured", fmt.Errorf("auth_url is not configured")
 	}
 
-	authPath := ensureLeadingSlash(strings.TrimSpace(authConfig.AuthURL))
-	if authPath == "/" {
-		authPath = "/api/auth/verify"
-	}
-	verifyURL := localServiceURL(authConfig.AuthPort, authPath)
 	start := time.Now()
 	if event := logger.DebugEvent("stream", "auth_verify_start"); event != nil {
-		event.Str("url", logger.SanitizeURL(verifyURL)).
+		event.Str("transport", "auth_bridge").
 			Str("protocol", logger.SanitizeLogString(rule.Protocol)).
 			Interface("listen_port", logger.SanitizePort(rule.ListenPort)).
 			Str("target", logger.SanitizeLogString(rule.Target)).
@@ -1238,26 +1215,9 @@ func (m *Manager) verify(rule models.StreamRule, clientIP string) (bool, int, st
 	ctx, cancel := context.WithTimeout(context.Background(), streamAuthTimeout)
 	defer cancel()
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, verifyURL, nil)
+	resp, err := m.handler.VerifyStreamAuth(ctx, rule, clientIP)
 	if err != nil {
-		if event := logger.DebugEvent("stream", "auth_verify_create_failed"); event != nil {
-			event.Str("url", logger.SanitizeURL(verifyURL)).
-				Str("error", logger.SanitizeLogString(err.Error())).
-				Send()
-		}
-		return false, http.StatusBadGateway, "auth_error", err
-	}
-
-	req.Header.Set("User-Agent", "")
-	req.Header.Set("X-Real-IP", clientIP)
-	req.Header.Set("X-Forwarded-For", clientIP)
-	req.Header.Set("X-Reauth-Protocol", rule.Protocol)
-	req.Header.Set("X-Reauth-Listen-Port", strconv.Itoa(rule.ListenPort))
-	req.Header.Set("X-Reauth-Target", rule.Target)
-
-	resp, err := m.authClient.Do(req)
-	if err != nil {
-		if isTimeoutErr(err) {
+		if errors.Is(err, context.DeadlineExceeded) || isTimeoutErr(err) {
 			if event := logger.DebugEvent("stream", "auth_verify_failed"); event != nil {
 				event.Str("decision", "timeout").
 					Str("error", logger.SanitizeLogString(err.Error())).
@@ -1274,96 +1234,68 @@ func (m *Manager) verify(rule models.StreamRule, clientIP string) (bool, int, st
 		}
 		return false, http.StatusBadGateway, "auth_error", err
 	}
-	defer resp.Body.Close()
-
-	body, readErr := io.ReadAll(io.LimitReader(resp.Body, maxAuthBodyBytes))
-	if readErr != nil {
-		if event := logger.DebugEvent("stream", "auth_verify_failed"); event != nil {
-			event.Int("status", resp.StatusCode).
-				Str("decision", "auth_error").
-				Str("error", logger.SanitizeLogString(readErr.Error())).
-				Int64("duration_ms", time.Since(start).Milliseconds()).
-				Send()
-		}
-		return false, http.StatusBadGateway, "auth_error", readErr
-	}
-
-	var payload authVerifyPayload
-	if len(body) > 0 {
-		if err := json.Unmarshal(body, &payload); err != nil {
-			if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
-				if event := logger.DebugEvent("stream", "auth_verify_end"); event != nil {
-					event.Int("status", resp.StatusCode).
-						Bool("allowed", false).
-						Str("decision", "denied").
-						Int64("duration_ms", time.Since(start).Milliseconds()).
-						Send()
-				}
-				return false, http.StatusForbidden, "denied", nil
-			}
-			if event := logger.DebugEvent("stream", "auth_verify_failed"); event != nil {
-				event.Int("status", resp.StatusCode).
-					Str("decision", "invalid_response").
-					Str("error", logger.SanitizeLogString(err.Error())).
-					Int64("duration_ms", time.Since(start).Milliseconds()).
-					Send()
-			}
-			return false, http.StatusBadGateway, "invalid_response", err
+	statusCode := int(resp.GetStatus())
+	if statusCode <= 0 {
+		if resp.GetAllowed() {
+			statusCode = http.StatusOK
+		} else {
+			statusCode = http.StatusForbidden
 		}
 	}
+	decision := strings.TrimSpace(resp.GetDecision())
 
-	if resp.StatusCode >= 200 && resp.StatusCode < 300 && payload.Success {
+	if statusCode >= 200 && statusCode < 300 && resp.GetAllowed() {
+		if decision == "" {
+			decision = "passed"
+		}
 		if event := logger.DebugEvent("stream", "auth_verify_end"); event != nil {
-			event.Int("status", resp.StatusCode).
+			event.Int("status", statusCode).
 				Bool("allowed", true).
-				Str("decision", "passed").
+				Str("decision", logger.SanitizeLogString(decision)).
 				Int64("duration_ms", time.Since(start).Milliseconds()).
 				Send()
 		}
-		return true, http.StatusOK, "passed", nil
+		return true, http.StatusOK, decision, nil
 	}
-	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+	if statusCode == http.StatusUnauthorized || statusCode == http.StatusForbidden {
+		if decision == "" {
+			decision = "denied"
+		}
 		if event := logger.DebugEvent("stream", "auth_verify_end"); event != nil {
-			event.Int("status", resp.StatusCode).
+			event.Int("status", statusCode).
 				Bool("allowed", false).
-				Str("decision", "denied").
+				Str("decision", logger.SanitizeLogString(decision)).
 				Int64("duration_ms", time.Since(start).Milliseconds()).
 				Send()
 		}
-		return false, http.StatusForbidden, "denied", nil
+		return false, http.StatusForbidden, decision, nil
 	}
-	if resp.StatusCode >= 500 {
+	if statusCode >= 500 {
 		if event := logger.DebugEvent("stream", "auth_verify_failed"); event != nil {
-			event.Int("status", resp.StatusCode).
+			event.Int("status", statusCode).
 				Str("decision", "auth_error").
 				Int64("duration_ms", time.Since(start).Milliseconds()).
 				Send()
 		}
-		return false, http.StatusBadGateway, "auth_error", fmt.Errorf("auth service returned %d", resp.StatusCode)
+		return false, http.StatusBadGateway, "auth_error", fmt.Errorf("auth bridge returned %d", statusCode)
 	}
-	if !payload.Success {
-		message := strings.TrimSpace(payload.Message)
-		if message == "" {
-			message = fmt.Sprintf("auth service denied access with status %d", resp.StatusCode)
-		}
-		if event := logger.DebugEvent("stream", "auth_verify_end"); event != nil {
-			event.Int("status", resp.StatusCode).
-				Bool("allowed", false).
-				Str("decision", "denied").
-				Str("message", logger.SanitizeLogString(message)).
-				Int64("duration_ms", time.Since(start).Milliseconds()).
-				Send()
-		}
-		return false, http.StatusForbidden, "denied", errors.New(message)
+	message := strings.TrimSpace(resp.GetMessage())
+	if message == "" {
+		message = fmt.Sprintf("auth bridge denied access with status %d", statusCode)
 	}
-
-	if event := logger.DebugEvent("stream", "auth_verify_failed"); event != nil {
-		event.Int("status", resp.StatusCode).
-			Str("decision", "auth_error").
+	if decision == "" {
+		decision = "denied"
+	}
+	if event := logger.DebugEvent("stream", "auth_verify_end"); event != nil {
+		event.Int("status", statusCode).
+			Bool("allowed", false).
+			Str("decision", logger.SanitizeLogString(decision)).
+			Str("message", logger.SanitizeLogString(message)).
 			Int64("duration_ms", time.Since(start).Milliseconds()).
 			Send()
 	}
-	return false, http.StatusBadGateway, "auth_error", fmt.Errorf("unexpected auth response status %d", resp.StatusCode)
+	return false, http.StatusForbidden, decision, errors.New(message)
+
 }
 
 func relayBidirectional(client net.Conn, upstream net.Conn) (uint64, uint64, error) {

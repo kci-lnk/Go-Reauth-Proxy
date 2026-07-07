@@ -2,12 +2,12 @@ version: '3'
 
 tasks:
   default:
-    desc: "Build all binaries"
+    desc: "Build gateway binaries"
     cmds:
       - task: build
 
   build:
-    desc: "Build binaries for all platforms (macOS ARM64 & Linux AMD64/ARM64/ARM32)"
+    desc: "Build gateway binaries for all platforms (macOS ARM64 & Linux AMD64/ARM64/ARM32)"
     cmds:
       - task: build:mac
       - task: build:linux
@@ -21,7 +21,7 @@ tasks:
       GOARCH: arm64
     cmds:
       - mkdir -p build
-      - go build -ldflags="-s -w" -trimpath -o build/go-reauth-proxy-darwin-arm64 cmd/server/main.go
+      - go build -ldflags="-s -w" -trimpath -o build/go-reauth-proxy-darwin-arm64 ./cmd/server
       - echo "Built macOS ARM64 binary at build/go-reauth-proxy-darwin-arm64"
 
   build:linux:
@@ -31,7 +31,7 @@ tasks:
       GOARCH: amd64
     cmds:
       - mkdir -p build
-      - go build -ldflags="-s -w" -trimpath -o build/go-reauth-proxy-linux-amd64 cmd/server/main.go
+      - go build -ldflags="-s -w" -trimpath -o build/go-reauth-proxy-linux-amd64 ./cmd/server
       - task: maybe:upx
         vars:
           BIN: build/go-reauth-proxy-linux-amd64
@@ -45,7 +45,7 @@ tasks:
       GOARCH: arm64
     cmds:
       - mkdir -p build
-      - go build -ldflags="-s -w" -trimpath -o build/go-reauth-proxy-linux-arm64 cmd/server/main.go
+      - go build -ldflags="-s -w" -trimpath -o build/go-reauth-proxy-linux-arm64 ./cmd/server
       - task: maybe:upx
         vars:
           BIN: build/go-reauth-proxy-linux-arm64
@@ -60,7 +60,7 @@ tasks:
       GOARM: "7"
     cmds:
       - mkdir -p build
-      - go build -ldflags="-s -w" -trimpath -o build/go-reauth-proxy-linux-arm cmd/server/main.go
+      - go build -ldflags="-s -w" -trimpath -o build/go-reauth-proxy-linux-arm ./cmd/server
       - task: maybe:upx
         vars:
           BIN: build/go-reauth-proxy-linux-arm
@@ -107,12 +107,7 @@ tasks:
   run:
     desc: "Run the go-reauth-proxy server (usage: task run -- -proxy-port 8090 -admin-port 8091)"
     cmds:
-      - go run cmd/server/main.go {{.CLI_ARGS}}
-
-  run:auth-server:
-    desc: "Run the auth-server server (usage: task run:auth-server -- -port 7997)"
-    cmds:
-      - cd example/auth-server && bun run index.ts --watch {{.CLI_ARGS}}
+      - go run ./cmd/server {{.CLI_ARGS}}
 
   test:
     desc: "Run all tests"
@@ -129,16 +124,6 @@ tasks:
     cmds:
       - sh -c 'PID=$(lsof -ti:7999); if [ -n "$PID" ]; then kill -9 $PID; echo "Server stopped."; else echo "Server is not running."; fi'
   docs:
-    desc: "Generate swagger docs"
+    desc: "Show internal gRPC contract location"
     cmds:
-      - sh -c 'swag init -d ./cmd/server,./pkg -g main.go -o ./cmd/server/docs && echo "Swagger docs generated at cmd/server/docs"'
-  build:auth-server:
-    desc: "Build the auth-server binary for Linux (AMD64)"
-    env:
-      GOOS: linux
-      GOARCH: amd64
-    cmds:
-      - mkdir -p build
-      - sh -c 'cd example/auth-server && bun build ./index.ts --compile --target bun-linux-x64 --outfile ../../build/auth-server'
-      - echo "Built Linux AMD64 binary at build/auth-server"
-    
+      - echo "Go internal control-plane contracts are generated in pkg/grpc/pb from the shared fnknock gRPC proto."

@@ -2,28 +2,23 @@ package admin
 
 import (
 	"encoding/json"
-	stderrors "errors"
 	"fmt"
 	"go-reauth-proxy/pkg/config"
 	"go-reauth-proxy/pkg/errors"
 	"go-reauth-proxy/pkg/i18n"
 	"go-reauth-proxy/pkg/iptables"
-	"go-reauth-proxy/pkg/middleware"
 	"go-reauth-proxy/pkg/models"
 	"go-reauth-proxy/pkg/proxy"
 	"go-reauth-proxy/pkg/response"
 	"go-reauth-proxy/pkg/stream"
 	"go-reauth-proxy/pkg/version"
 	"io"
-	"log"
-	"net"
 	"net/http"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/gorilla/mux"
-	httpSwagger "github.com/swaggo/http-swagger"
 )
 
 type Server struct {
@@ -80,146 +75,6 @@ func NewServer(handler *proxy.Handler, port int, cfgManager *config.Manager, ini
 	}
 }
 
-func (s *Server) Start() error {
-	r := mux.NewRouter()
-
-	r.HandleFunc("/api/rules", s.handleGetRules).Methods("GET")
-	r.HandleFunc("/api/rules", s.handleAddRule).Methods("POST")
-	r.HandleFunc("/api/rules", s.handleFlushRules).Methods("DELETE")
-	r.HandleFunc("/api/host-rules", s.handleGetHostRules).Methods("GET")
-	r.HandleFunc("/api/host-rules", s.handleAddHostRule).Methods("POST")
-	r.HandleFunc("/api/host-rules", s.handleFlushHostRules).Methods("DELETE")
-	r.HandleFunc("/api/stream-rules", s.handleGetStreamRules).Methods("GET")
-	r.HandleFunc("/api/stream-rules", s.handleSetStreamRules).Methods("POST")
-	r.HandleFunc("/api/stream-rules", s.handleFlushStreamRules).Methods("DELETE")
-	r.HandleFunc("/api/info", s.handleInfo).Methods("GET")
-	r.HandleFunc("/api/traffic", s.handleTraffic).Methods("GET")
-	r.HandleFunc("/api/traffic/active-ips", s.handleTrafficActiveIPs).Methods("GET")
-	r.HandleFunc("/api/general-blacklist", s.handleListGeneralBlacklist).Methods("GET")
-	r.HandleFunc("/api/general-blacklist/status", s.handleGeneralBlacklistStatus).Methods("POST")
-	r.HandleFunc("/api/general-blacklist", s.handleAddGeneralBlacklist).Methods("POST")
-	r.HandleFunc("/api/general-blacklist", s.handleDeleteGeneralBlacklist).Methods("DELETE")
-	r.HandleFunc("/api/general-blacklist/{ip}", s.handleDeleteGeneralBlacklistIP).Methods("DELETE")
-	r.HandleFunc("/api/config/default-route", s.handleGetDefaultRoute).Methods("GET")
-	r.HandleFunc("/api/config/default-route", s.handleSetDefaultRoute).Methods("POST")
-	r.HandleFunc("/api/config/proxy-protocol", s.handleGetProxyProtocolForce).Methods("GET")
-	r.HandleFunc("/api/config/proxy-protocol", s.handleSetProxyProtocolForce).Methods("POST")
-	r.HandleFunc("/api/config/locale", s.handleGetLocaleConfig).Methods("GET")
-	r.HandleFunc("/api/config/locale", s.handleSetLocaleConfig).Methods("POST")
-	r.HandleFunc("/api/config/reverse-proxy-throttle", s.handleGetReverseProxyThrottle).Methods("GET")
-	r.HandleFunc("/api/config/reverse-proxy-throttle", s.handleSetReverseProxyThrottle).Methods("POST")
-	r.HandleFunc("/api/config/visibility", s.handleGetGatewayVisibility).Methods("GET")
-	r.HandleFunc("/api/config/visibility", s.handleSetGatewayVisibility).Methods("POST")
-	r.HandleFunc("/api/config/forwarded-headers", s.handleGetForwardedHeadersConfig).Methods("GET")
-	r.HandleFunc("/api/config/forwarded-headers", s.handleSetForwardedHeadersConfig).Methods("POST")
-	r.HandleFunc("/api/config/preserve-host", s.handleGetPreserveHostConfig).Methods("GET")
-	r.HandleFunc("/api/config/preserve-host", s.handleSetPreserveHostConfig).Methods("POST")
-	r.HandleFunc("/api/config/crawler-blocker", s.handleGetCrawlerBlockerConfig).Methods("GET")
-	r.HandleFunc("/api/config/crawler-blocker", s.handleSetCrawlerBlockerConfig).Methods("POST")
-	r.HandleFunc("/api/config/portal", s.handleGetGatewayPortalConfig).Methods("GET")
-	r.HandleFunc("/api/config/portal", s.handleSetGatewayPortalConfig).Methods("POST")
-	r.HandleFunc("/api/config/fnos-port-icon-hijack", s.handleGetFnosPortIconHijackConfig).Methods("GET")
-	r.HandleFunc("/api/config/fnos-port-icon-hijack", s.handleSetFnosPortIconHijackConfig).Methods("POST")
-	r.HandleFunc("/api/runtime/reverse-proxy-throttle-exempt-ips", s.handleGetReverseProxyThrottleExemptIPs).Methods("GET")
-	r.HandleFunc("/api/runtime/reverse-proxy-throttle-exempt-ips", s.handleSetReverseProxyThrottleExemptIPs).Methods("POST")
-	r.HandleFunc("/api/runtime/common-location-exemptions", s.handleGetCommonLocationExemptions).Methods("GET")
-	r.HandleFunc("/api/runtime/common-location-exemptions", s.handleSetCommonLocationExemptions).Methods("POST")
-	r.HandleFunc("/api/auth", s.handleGetAuth).Methods("GET")
-	r.HandleFunc("/api/auth", s.handleSetAuth).Methods("POST")
-	r.HandleFunc("/api/logging", s.handleGetLoggingConfig).Methods("GET")
-	r.HandleFunc("/api/logging", s.handleSetLoggingConfig).Methods("POST")
-	r.HandleFunc("/api/logging/directory", s.handleGetLoggingDirectory).Methods("GET")
-	r.HandleFunc("/api/logging/dates", s.handleGetLoggingDates).Methods("GET")
-	r.HandleFunc("/api/logging/entries", s.handleGetLoggingEntries).Methods("GET")
-	r.HandleFunc("/api/logging/entries", s.handleDeleteLoggingEntries).Methods("DELETE")
-	r.HandleFunc("/api/waf/status", s.handleGetWAFStatus).Methods("GET")
-	r.HandleFunc("/api/waf/config", s.handleSetWAFConfig).Methods("POST")
-	r.HandleFunc("/api/waf/validate", s.handleValidateWAFBundle).Methods("POST")
-	r.HandleFunc("/api/waf/reload", s.handleReloadWAFBundle).Methods("POST")
-	r.HandleFunc("/api/waf/events/drain", s.handleDrainWAFEvents).Methods("POST")
-	r.HandleFunc("/api/ssl", s.handleGetSSL).Methods("GET")
-	r.HandleFunc("/api/ssl", s.handleSetSSL).Methods("POST")
-	r.HandleFunc("/api/ssl", s.handleClearSSL).Methods("DELETE")
-
-	r.HandleFunc("/docs", func(w http.ResponseWriter, r *http.Request) {
-		http.Redirect(w, r, "/docs/index.html", http.StatusMovedPermanently)
-	})
-	r.PathPrefix("/docs/").Handler(httpSwagger.Handler(
-		httpSwagger.URL("/docs/doc.json"), // The url pointing to API definition
-		httpSwagger.DeepLinking(true),
-		httpSwagger.DocExpansion("none"),
-		httpSwagger.DomID("swagger-ui"),
-	)).Methods("GET")
-
-	r.HandleFunc("/api/iptables/init", s.IptablesHandler.HandleInit).Methods("POST")
-	r.HandleFunc("/api/iptables/clean", s.IptablesHandler.HandleClean).Methods("POST")
-	r.HandleFunc("/api/iptables/flush", s.IptablesHandler.HandleFlush).Methods("POST")
-	r.HandleFunc("/api/iptables/allow", s.IptablesHandler.HandleAllowIP).Methods("POST")
-	r.HandleFunc("/api/iptables/block", s.IptablesHandler.HandleBlockIP).Methods("POST")
-	r.HandleFunc("/api/iptables/remove", s.IptablesHandler.HandleRemoveIP).Methods("POST")
-	r.HandleFunc("/api/iptables/tcp-port/block", s.IptablesHandler.HandleBlockTCPPortForIP).Methods("POST")
-	r.HandleFunc("/api/iptables/tcp-port/remove", s.IptablesHandler.HandleRemoveTCPPortRule).Methods("POST")
-	r.HandleFunc("/api/iptables/ssh/sync", s.IptablesHandler.HandleSyncSSHFirewall).Methods("POST")
-	r.HandleFunc("/api/iptables/ssh/clear", s.IptablesHandler.HandleClearSSHFirewall).Methods("POST")
-	r.HandleFunc("/api/iptables/block-all", s.IptablesHandler.HandleBlockAll).Methods("POST")
-	r.HandleFunc("/api/iptables/allow-all", s.IptablesHandler.HandleAllowAll).Methods("POST")
-	r.HandleFunc("/api/iptables/tcp-redirect", s.IptablesHandler.HandleEnsureTCPRedirect).Methods("POST")
-	r.HandleFunc("/api/iptables/tcp-redirect", s.IptablesHandler.HandleClearTCPRedirect).Methods("DELETE")
-	r.HandleFunc("/api/iptables/list", s.IptablesHandler.HandleList).Methods("GET")
-
-	loggedRouter := middleware.Logger(middleware.CORS(r))
-
-	r.NotFoundHandler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		response.Error(w, errors.CodeNotFound, "Resource Not Found")
-	})
-	r.MethodNotAllowedHandler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		response.Error(w, errors.CodeBadRequest, "Method Not Allowed")
-	})
-
-	server := &http.Server{Handler: loggedRouter}
-
-	listenTargets := []struct {
-		network string
-		host    string
-	}{
-		{network: "tcp4", host: "127.0.0.1"},
-		{network: "tcp6", host: "::1"},
-	}
-
-	var listeners []net.Listener
-	for _, target := range listenTargets {
-		addr := net.JoinHostPort(target.host, strconv.Itoa(s.Port))
-		listener, err := net.Listen(target.network, addr)
-		if err != nil {
-			if target.network == "tcp6" {
-				log.Printf("Admin IPv6 listener unavailable on %s: %v", addr, err)
-				continue
-			}
-			for _, openListener := range listeners {
-				_ = openListener.Close()
-			}
-			return err
-		}
-		listeners = append(listeners, listener)
-		log.Printf("Admin server listening on %s", listener.Addr().String())
-	}
-	if len(listeners) == 0 {
-		return fmt.Errorf("no admin listeners started on port %d", s.Port)
-	}
-
-	errCh := make(chan error, len(listeners))
-	for _, listener := range listeners {
-		go func(l net.Listener) {
-			err := server.Serve(l)
-			if err != nil && err != http.ErrServerClosed && !stderrors.Is(err, net.ErrClosed) {
-				errCh <- err
-			}
-		}(listener)
-	}
-
-	return <-errCh
-}
-
 // handleGetRules returns all proxy rules
 // @Summary Get all rules
 // @Description Get all configured proxy rules
@@ -265,9 +120,7 @@ func (s *Server) handleAddRule(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.ProxyHandler.FlushRules()
-
-	var addedRules []models.Rule
+	nextRules := make([]models.Rule, 0, len(reqs))
 	for _, req := range reqs {
 		stripPath := true
 		if req.StripPath != nil {
@@ -279,23 +132,21 @@ func (s *Server) handleAddRule(w http.ResponseWriter, r *http.Request) {
 			rewriteHTML = *req.RewriteHTML
 		}
 
-		rule := models.Rule{
+		nextRules = append(nextRules, models.Rule{
 			Path:        req.Path,
 			Target:      req.Target,
 			UseAuth:     req.UseAuth != nil && *req.UseAuth,
 			StripPath:   stripPath,
 			RewriteHTML: rewriteHTML,
 			UseRootMode: req.UseRootMode != nil && *req.UseRootMode,
-		}
-
-		if err := s.ProxyHandler.AddRule(rule); err != nil {
-			response.Error(w, errors.CodeInvalidRule, fmt.Sprintf("Failed to add rule: %v", err))
-			return
-		}
-		addedRules = append(addedRules, rule)
+		})
+	}
+	if err := s.ProxyHandler.SetRules(nextRules); err != nil {
+		response.Error(w, errors.CodeInvalidRule, fmt.Sprintf("Failed to set rules: %v", err))
+		return
 	}
 
-	response.Success(w, addedRules)
+	response.Success(w, s.ProxyHandler.GetRules())
 }
 
 // handleFlushRules clears all proxy rules
@@ -306,7 +157,10 @@ func (s *Server) handleAddRule(w http.ResponseWriter, r *http.Request) {
 // @Success 200 {object} response.Response
 // @Router /api/rules [delete]
 func (s *Server) handleFlushRules(w http.ResponseWriter, r *http.Request) {
-	s.ProxyHandler.FlushRules()
+	if err := s.ProxyHandler.FlushRules(); err != nil {
+		response.Error(w, errors.CodeInternal, "Failed to flush rules: "+err.Error())
+		return
+	}
 	response.Success(w, nil)
 }
 
@@ -428,7 +282,10 @@ func (s *Server) handleAddHostRule(w http.ResponseWriter, r *http.Request) {
 // @Success 200 {object} response.Response
 // @Router /api/host-rules [delete]
 func (s *Server) handleFlushHostRules(w http.ResponseWriter, r *http.Request) {
-	s.ProxyHandler.FlushHostRules()
+	if err := s.ProxyHandler.FlushHostRules(); err != nil {
+		response.Error(w, errors.CodeInternal, "Failed to flush host rules: "+err.Error())
+		return
+	}
 	response.Success(w, nil)
 }
 
@@ -490,7 +347,10 @@ func (s *Server) handleSetStreamRules(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleFlushStreamRules(w http.ResponseWriter, r *http.Request) {
-	s.ProxyHandler.FlushStreamRules()
+	if err := s.ProxyHandler.FlushStreamRules(); err != nil {
+		response.Error(w, errors.CodeInternal, "Failed to flush stream rules: "+err.Error())
+		return
+	}
 	if s.StreamManager != nil {
 		if err := s.StreamManager.Reconcile(nil); err != nil {
 			response.Error(w, errors.CodeInvalidRule, fmt.Sprintf("Failed to flush stream listeners: %v", err))
@@ -663,7 +523,10 @@ func (s *Server) handleSetDefaultRoute(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.ProxyHandler.SetDefaultRoute(req.DefaultRoute)
+	if err := s.ProxyHandler.SetDefaultRoute(req.DefaultRoute); err != nil {
+		response.Error(w, errors.CodeInternal, "Failed to set default route: "+err.Error())
+		return
+	}
 	response.Success(w, nil)
 }
 
@@ -720,7 +583,10 @@ func (s *Server) handleSetProxyProtocolForce(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	s.ProxyHandler.SetProxyProtocolForce(*req.ProxyProtocolForce)
+	if err := s.ProxyHandler.SetProxyProtocolForce(*req.ProxyProtocolForce); err != nil {
+		response.Error(w, errors.CodeInternal, "Failed to set proxy protocol force: "+err.Error())
+		return
+	}
 	response.Success(w, proxyProtocolForceResponse{ProxyProtocolForce: *req.ProxyProtocolForce})
 }
 
@@ -775,7 +641,10 @@ func (s *Server) handleSetReverseProxyThrottle(w http.ResponseWriter, r *http.Re
 		response.Error(w, errors.CodeInvalidJSON, "Invalid JSON object")
 		return
 	}
-	s.ProxyHandler.SetReverseProxyThrottle(req)
+	if err := s.ProxyHandler.SetReverseProxyThrottle(req); err != nil {
+		response.Error(w, errors.CodeInternal, "Failed to set reverse proxy throttle: "+err.Error())
+		return
+	}
 	response.Success(w, s.ProxyHandler.GetReverseProxyThrottle())
 }
 
@@ -826,7 +695,10 @@ func (s *Server) handleSetForwardedHeadersConfig(w http.ResponseWriter, r *http.
 		return
 	}
 
-	s.ProxyHandler.SetForwardedHeadersConfig(req)
+	if err := s.ProxyHandler.SetForwardedHeadersConfig(req); err != nil {
+		response.Error(w, errors.CodeInternal, "Failed to set forwarded headers config: "+err.Error())
+		return
+	}
 	response.Success(w, s.ProxyHandler.GetForwardedHeadersConfig())
 }
 
@@ -858,7 +730,10 @@ func (s *Server) handleSetPreserveHostConfig(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	s.ProxyHandler.SetPreserveHostConfig(req)
+	if err := s.ProxyHandler.SetPreserveHostConfig(req); err != nil {
+		response.Error(w, errors.CodeInternal, "Failed to set preserve host config: "+err.Error())
+		return
+	}
 	response.Success(w, s.ProxyHandler.GetPreserveHostConfig())
 }
 
@@ -890,7 +765,12 @@ func (s *Server) handleSetCrawlerBlockerConfig(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	response.Success(w, s.ProxyHandler.SetCrawlerBlockerConfig(req))
+	cfg, err := s.ProxyHandler.SetCrawlerBlockerConfig(req)
+	if err != nil {
+		response.Error(w, errors.CodeInternal, "Failed to set crawler blocker config: "+err.Error())
+		return
+	}
+	response.Success(w, cfg)
 }
 
 func (s *Server) handleGetGatewayPortalConfig(w http.ResponseWriter, r *http.Request) {
@@ -904,7 +784,12 @@ func (s *Server) handleSetGatewayPortalConfig(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	response.Success(w, s.ProxyHandler.SetGatewayPortalConfig(req))
+	cfg, err := s.ProxyHandler.SetGatewayPortalConfig(req)
+	if err != nil {
+		response.Error(w, errors.CodeInternal, "Failed to set gateway portal config: "+err.Error())
+		return
+	}
+	response.Success(w, cfg)
 }
 
 func (s *Server) handleGetFnosPortIconHijackConfig(w http.ResponseWriter, r *http.Request) {
@@ -918,7 +803,12 @@ func (s *Server) handleSetFnosPortIconHijackConfig(w http.ResponseWriter, r *htt
 		return
 	}
 
-	response.Success(w, s.ProxyHandler.SetFnosPortIconHijackConfig(req))
+	cfg, err := s.ProxyHandler.SetFnosPortIconHijackConfig(req)
+	if err != nil {
+		response.Error(w, errors.CodeInternal, "Failed to set FNOS port icon hijack config: "+err.Error())
+		return
+	}
+	response.Success(w, cfg)
 }
 
 func (s *Server) handleGetReverseProxyThrottleExemptIPs(w http.ResponseWriter, r *http.Request) {
@@ -1084,7 +974,12 @@ func (s *Server) handleSetLoggingConfig(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	response.Success(w, s.ProxyHandler.SetLoggingConfig(req))
+	cfg, err := s.ProxyHandler.SetLoggingConfig(req)
+	if err != nil {
+		response.Error(w, errors.CodeInternal, "Failed to set logging config: "+err.Error())
+		return
+	}
+	response.Success(w, cfg)
 }
 
 func (s *Server) handleGetLoggingDirectory(w http.ResponseWriter, r *http.Request) {
@@ -1307,6 +1202,9 @@ func (s *Server) handleSetSSL(w http.ResponseWriter, r *http.Request) {
 // @Success 200 {object} response.Response
 // @Router /api/ssl [delete]
 func (s *Server) handleClearSSL(w http.ResponseWriter, r *http.Request) {
-	s.ProxyHandler.ClearSSLCertificate()
+	if err := s.ProxyHandler.ClearSSLCertificate(); err != nil {
+		response.Error(w, errors.CodeInternal, "Failed to clear SSL certificate: "+err.Error())
+		return
+	}
 	response.Success(w, nil)
 }

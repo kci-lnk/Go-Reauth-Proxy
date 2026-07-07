@@ -2,9 +2,9 @@
 
 一个基于 Go 的本地优先反向代理，支持：
 - 路由规则热更新
-- 全局认证接入（登录跳转 + 预检）
+- 全局认证接入（登录跳转 + Rust AuthBridge 鉴权/预检）
 - 同端口 HTTP/HTTPS（动态证书切换）
-- 内置管理 API（含 Swagger）
+- 内部 gRPC 控制面（`GO_BACKEND_PORT`，仅绑定 loopback）
 - iptables/ip6tables 白黑名单与默认拒绝策略
 
 ## 目录
@@ -15,8 +15,8 @@
 - [快速开始](#快速开始)
 - [配置文件说明](#配置文件说明)
 - [规则匹配与转发行为](#规则匹配与转发行为)
-- [认证服务接入契约](#认证服务接入契约)
-- [管理 API](#管理-api)
+- [认证与内部通信](#认证与内部通信)
+- [内部 gRPC 控制面](#内部-grpc-控制面)
 - [iptables 说明](#iptables-说明)
 - [日志与可观测性](#日志与可观测性)
 - [项目结构](#项目结构)
@@ -29,7 +29,8 @@
 `go-reauth-proxy` 适合部署在内网或本机网关位置，把多个本地服务统一收口到一个代理端口，并通过独立认证服务做访问控制。
 
 它的设计重点是：
-- 管理接口只监听 `127.0.0.1`
+- 内部 gRPC 控制面只监听 `127.0.0.1` / `::1`
+- Go-Rust 内部通信使用 gRPC，不保留 HTTP fallback
 - 代理目标限制为内网/回环地址
 - 配置改动自动持久化到 `config.json`
 
@@ -39,7 +40,7 @@
 - 路径前缀匹配 + `StripPath` + HTML 绝对路径重写
 - `UseAuth` 场景下自动插入悬浮切换工具栏
 - `UseRootMode` 支持：将命中路径写入 cookie 后重定向到根路径
-- 认证前置预检（`HEAD preflight`，返回 `X-Option: deny` 可拒绝请求）
+- 认证前置预检（通过 AuthBridge 返回 deny/redirect 决策）
 - 认证失败自动跳转到 `/__auth__/login?redirect_uri=...`
 - 动态 SSL 证书上传/清除（同一代理端口自动启停 HTTPS）
 - 代理流量统计（入/出字节、活跃登录用户、5xx 计数）
@@ -48,14 +49,16 @@
 ## 运行架构
 
 - 代理服务端口：默认 `7999`
-- 管理服务端口：默认 `7996`（固定绑定 `127.0.0.1`）
-- 认证服务端口：默认 `7997`（由 `auth_config.auth_port` 指定）
+- 内部 gRPC 端口：默认 `7996`（`GO_BACKEND_PORT` / `-admin-port`，固定绑定 loopback）
+- 认证服务端口：默认 `7997`（Rust HTTP 认证页面与登录 API，由 `auth_config.auth_port` 指定）
 
 代理端口通过 `cmux` 同时处理：
 - 明文 HTTP
 - TLS(HTTPS)
 
 当配置了证书后，明文 HTTP 请求会被 `307` 重定向到 HTTPS。
+
+Rust 后端作为客户端连接 `127.0.0.1:${GO_BACKEND_PORT}`，建立长生命周期 AuthBridge stream。Go 通过该 stream 发送 `VerifyAuth`、`PreflightAuth`、`VerifyStreamAuth` 请求，不再直接通过 HTTP 请求 Rust 鉴权接口。
 
 `proxy_protocol_force=true` 时，代理监听地址会从 `0.0.0.0/::` 切换为 `127.0.0.1/::1`，并优先从 `X-Forwarded-For` / `X-Real-IP` 获取客户端 IP。
 
@@ -65,8 +68,6 @@
 
 - Go `1.25+`（见 `go.mod`）
 - 可选：`task`（推荐）
-- 可选：`bun`（运行 `example/auth-server`）
-- 可选：`swag`（生成 Swagger）
 - 若使用防火墙 API：Linux + `iptables/ip6tables` + `sudo` 权限
 
 ### 2. 启动
@@ -74,13 +75,14 @@
 使用 Task：
 
 ```bash
+export FN_KNOCK_INTERNAL_RPC_TOKEN=dev-local-token
 task run -- -proxy-port 7999 -admin-port 7996 -c ./config.json
 ```
 
 或直接运行：
 
 ```bash
-go run ./cmd/server/main.go -proxy-port 7999 -admin-port 7996 -c ./config.json
+FN_KNOCK_INTERNAL_RPC_TOKEN=dev-local-token go run ./cmd/server -proxy-port 7999 -admin-port 7996 -c ./config.json
 ```
 
 可用启动参数：
@@ -88,9 +90,11 @@ go run ./cmd/server/main.go -proxy-port 7999 -admin-port 7996 -c ./config.json
 - `-admin-port`：管理端口，默认 `7996`。传 `0` 时回退到配置文件 `admin_port`
 - `-c`：配置文件路径（可传目录，自动补 `config.json`）
 
-### 3. 打开文档
+### 3. 内部契约
 
-- Swagger UI：`http://127.0.0.1:7996/docs/index.html`
+`7996` 默认是内部 gRPC 端口，不提供 HTTP Admin API 或浏览器文档页面。控制面由 Rust 后端通过共享 proto 调用，浏览器管理后台继续访问 Rust 后端暴露的 HTTP 管理接口。
+
+内部 gRPC 必须配置独立 metadata token：`FN_KNOCK_INTERNAL_RPC_TOKEN`。部署脚本会生成并持久化该 token；手动启动时未设置则拒绝启动。
 
 ## 配置文件说明
 
@@ -138,7 +142,7 @@ go run ./cmd/server/main.go -proxy-port 7999 -admin-port 7996 -c ./config.json
 - `auth_config.tencent_edgeone_enabled`: 启用腾讯 EdgeOne 模式；与 `aliyun_esa_enabled` 互斥；来源 IP 优先读取 `EO-Connecting-IP`，缺失时回退到 `X-Forwarded-For`
 - `auth_config.public_http_port`: 可选，显式指定对外暴露的 HTTP 端口
 - `auth_config.public_https_port`: 可选，显式指定对外暴露的 HTTPS 端口
-- `admin_port`: 管理端口（仅在 `-admin-port=0` 时作为回退）
+- `admin_port`: 内部 gRPC 端口（仅在 `-admin-port=0` 时作为回退）
 - `proxy_protocol_force`: 是否强制按 PROXY protocol 场景处理来源 IP
 - `reverse_proxy_throttle`: 反代数据面节流配置，作用于命中 host/path 规则的请求以及 `__auth__` 认证代理路径，不影响 `admin-port`、`/__select__`
 - `reverse_proxy_throttle.enabled`: 是否启用节流
@@ -146,7 +150,7 @@ go run ./cmd/server/main.go -proxy-port 7999 -admin-port 7996 -c ./config.json
 - `reverse_proxy_throttle.burst`: 单个客户端 IP 可瞬时突发的令牌数
 - `reverse_proxy_throttle.block_seconds`: 超限后直接断开连接的封禁时长；被中断的请求不会写 access log
 - `iptables_chain_name`: iptables 链名（默认 `REAUTH_FW`）
-- `ssl_cert` / `ssl_key`: PEM 证书与私钥（由 API 写入）
+- `ssl_cert` / `ssl_key`: PEM 证书与私钥（由控制面写入）
 
 一个常见配置示例：
 
@@ -196,7 +200,7 @@ go run ./cmd/server/main.go -proxy-port 7999 -admin-port 7996 -c ./config.json
 - `GET /app` 会 301 到 `/app/`（规则非 `/` 时）
 - `strip_path=true`：转发时去掉匹配前缀
 - `rewrite_html=true`：重写 HTML 中 `href/src/action/<base href>` 的绝对路径
-- `use_auth=true`：转发前调用认证服务，并在 HTML 注入悬浮工具栏
+- `use_auth=true`：转发前通过 AuthBridge 请求 Rust 后端完成鉴权，并在 HTML 注入悬浮工具栏
 - `use_root_mode=true`：命中后写入 `__proxy_path` cookie 并 302 到 `/`
 
 未命中时：
@@ -207,14 +211,16 @@ go run ./cmd/server/main.go -proxy-port 7999 -admin-port 7996 -c ./config.json
   - 否则跳转到 `/__select__`
 - 其他未命中场景（包括 host 未命中，或仅配置 host 规则时访问 `/`）：返回 No Matching Route 页面（404）
 
-## 认证服务接入契约
+## 认证与内部通信
 
-代理会请求本地认证服务：
+Go 数据面不再直接通过 HTTP 请求 `auth_config.auth_url` 或 `auth_config.preflight_url`。鉴权由 Rust 后端建立的 AuthBridge gRPC stream 承载：
 
-- 鉴权：`GET http://127.0.0.1:{auth_port}{auth_url}`
-- 预检：`HEAD http://127.0.0.1:{auth_port}{preflight_url}`
+- HTTP 数据面鉴权：Go 发送 `VerifyAuth`
+- HTTP 预检：Go 发送 `PreflightAuth`；bridge 短暂失败时进入 cooldown 并跳过预检，不阻断主请求
+- TCP/UDP Stream 鉴权：Go 发送 `VerifyStreamAuth`
 
-会透传/注入的关键头：
+Go 会把以下请求上下文放入 typed `AuthContext`：
+
 - `Cookie`
 - `Authorization`
 - `Ali-Real-Client-IP`（启用 `auth_config.edge_client_ip_enabled=true` 且 `auth_config.aliyun_esa_enabled=true` 时）
@@ -223,110 +229,28 @@ go run ./cmd/server/main.go -proxy-port 7999 -admin-port 7996 -c ./config.json
 - `X-Forwarded-For`
 - `X-Forwarded-Path`
 
-### 鉴权响应格式（必须 JSON）
-
-`/api/auth/verify`（或自定义 `auth_url`）响应体需要能被解析为：
-
-```json
-{
-  "success": true,
-  "message": "ok"
-}
-```
-
-- `success=true`：放行
-- `success=false`：代理重定向到 `/__auth__/login?redirect_uri=原地址`
-
 ### 内置认证代理路径
 
 - `/__auth__/login` -> `auth_config.login_url`
 - `/__auth__/api/auth/logout` -> `auth_config.logout_url`
-- `/__auth__/*` -> 透传到认证服务对应路径
+- `/__auth__/*` -> 透传到 Rust HTTP 认证服务对应路径
 
-## 管理 API
+## 内部 gRPC 控制面
 
-统一响应结构：
+`GO_BACKEND_PORT` 上启动的是纯 gRPC server，只服务本机 Rust 后端，不提供 Go Admin HTTP 兼容层。内部调用使用独立 metadata token `FN_KNOCK_INTERNAL_RPC_TOKEN` 校验；该 token 不应复用会暴露给浏览器认证页的 `HMAC_SECRET`。
 
-```json
-{
-  "success": true,
-  "code": 200,
-  "message": "Success",
-  "data": {},
-  "timestamp": 1700000000000
-}
-```
+当前 Go 侧实现的服务包括：
 
-### 路由与配置
+- `GatewayControlService`
+- `GatewayLogsService`
+- `SecurityService`
+- `TrafficService`
+- `WafService`
+- `SslService`
+- `FirewallService`
+- `AuthBridgeService`
 
-- `GET /api/info`
-- `GET /api/traffic`
-- `GET /api/traffic/active-ips?host=app.example.com`
-- `GET /api/rules`
-- `POST /api/rules`（全量替换）
-- `DELETE /api/rules`
-- `GET /api/config/default-route`
-- `POST /api/config/default-route`
-- `GET /api/config/proxy-protocol`
-- `POST /api/config/proxy-protocol`
-- `GET /api/auth`
-- `POST /api/auth`
-- `GET /api/ssl`
-- `POST /api/ssl`
-- `DELETE /api/ssl`
-
-### iptables
-
-- `POST /api/iptables/init`
-- `POST /api/iptables/clean`
-- `POST /api/iptables/flush`
-- `POST /api/iptables/allow`
-- `POST /api/iptables/block`
-- `POST /api/iptables/remove`
-- `POST /api/iptables/block-all`
-- `POST /api/iptables/allow-all`
-- `GET /api/iptables/list`
-
-### 常用示例
-
-设置认证配置：
-
-```bash
-curl -X POST http://127.0.0.1:7996/api/auth \
-  -H "Content-Type: application/json" \
-  -d '{
-    "auth_port": 7997,
-    "auth_url": "/api/auth/verify",
-    "login_url": "/login",
-    "logout_url": "/api/auth/logout",
-    "preflight_url": "/api/auth/preflight"
-  }'
-```
-
-设置路由规则：
-
-```bash
-curl -X POST http://127.0.0.1:7996/api/rules \
-  -H "Content-Type: application/json" \
-  -d '[
-    {
-      "path": "/app",
-      "target": "http://127.0.0.1:8080",
-      "use_auth": true,
-      "strip_path": true,
-      "rewrite_html": true,
-      "use_root_mode": false
-    }
-  ]'
-```
-
-上传 SSL：
-
-```bash
-curl -X POST http://127.0.0.1:7996/api/ssl \
-  -H "Content-Type: application/json" \
-  -d '{"cert":"-----BEGIN CERTIFICATE-----\\n...","key":"-----BEGIN PRIVATE KEY-----\\n..."}'
-```
+浏览器管理后台应访问 Rust 后端 HTTP 管理接口，由 Rust 负责把前端 JSON envelope 映射到 Go gRPC 控制面。
 
 ## iptables 说明
 
@@ -346,27 +270,27 @@ curl -X POST http://127.0.0.1:7996/api/ssl \
 
 ## 日志与可观测性
 
-- 控制台常规日志默认不输出，避免管理 API 轮询和反代运行日志刷屏；需要排查时可设置 `GO_REPROXY_LOG=1` 开启
-- 管理 API 访问日志也可单独设置 `GO_REPROXY_ADMIN_HTTP_LOG=1` 开启 JSON 行日志（method/path/status/duration/user_agent/remote_ip）
+- 控制台常规日志默认不输出，避免内部控制面轮询和反代运行日志刷屏；需要排查时可设置 `GO_REPROXY_LOG=1` 开启
 - 反代访问明细写入日志文件，由配置项 `logging.enabled` 控制，默认关闭
-- `GET /api/traffic` 返回：
+- `TrafficService` 返回：
   - `total_in` / `total_out`
   - `active_conns`（最近 2 分钟活跃已登录身份）
   - `error_5xx`
   - `by_host[].active_ip_count`（子域名最近 2 分钟活跃 IP 数）
-- `GET /api/traffic/active-ips?host=...` 返回单个子域名最近 2 分钟活跃 IP 列表，包含 IP、最近活跃时间和当前未结束请求数
+- 活跃 IP 查询返回单个子域名最近 2 分钟活跃 IP 列表，包含 IP、最近活跃时间和当前未结束请求数
 
 ## 项目结构
 
 ```text
-cmd/server/           # 入口与 swagger 文档
-pkg/admin/            # 管理 API
+cmd/server/           # 网关入口与内部 gRPC server
+pkg/admin/            # gRPC 控制面服务实现
+pkg/grpc/pb/          # 生成的 Go gRPC/protobuf 代码
+pkg/rpcbridge/        # AuthBridge 管理器与内部 token 校验
 pkg/proxy/            # 反向代理核心逻辑
 pkg/config/           # 配置加载与持久化
 pkg/iptables/         # iptables 管理
 pkg/response/         # 内置页面与响应封装
 pkg/middleware/       # 日志/CORS 中间件
-example/auth-server/  # Bun 示例认证服务
 ```
 
 ## 开发命令
@@ -378,18 +302,17 @@ task build:linux
 task build:linux-arm64
 task build:linux-arm
 task run
-task run:auth-server
 task test
 task docs
 ```
 
 ## 注意事项
 
-- 管理 API 仅监听本地回环地址，不会对外暴露
+- 内部 gRPC 控制面仅监听本地回环地址，不会对外暴露
 - 代理目标不再限制为内网地址；仅阻止把目标直接指向本机管理端口
 - `POST /api/rules` 是全量覆盖，不是增量追加
 - SSL 证书与私钥会写入 `config.json` 明文保存，请注意文件权限
-- 仓库中的 `example/auth-server` 当前实现返回的是纯文本鉴权结果；若直接联调，请将鉴权接口改为返回 JSON `{"success":...}` 以满足代理解析逻辑
+- `GO_BACKEND_PORT` 是 gRPC 协议，不能再用 `curl http://127.0.0.1:7996/api/...` 访问 Go 控制面
 
 ## License
 

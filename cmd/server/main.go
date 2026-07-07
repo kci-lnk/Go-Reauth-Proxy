@@ -11,6 +11,7 @@ import (
 	"go-reauth-proxy/pkg/gatewaylog"
 	"go-reauth-proxy/pkg/logger"
 	"go-reauth-proxy/pkg/proxy"
+	"go-reauth-proxy/pkg/rpcbridge"
 	"go-reauth-proxy/pkg/stream"
 	"log"
 	"net"
@@ -27,8 +28,6 @@ import (
 
 	"github.com/pires/go-proxyproto"
 	"github.com/soheilhy/cmux"
-
-	_ "go-reauth-proxy/cmd/server/docs"
 )
 
 // @title Go-Reauth-Proxy
@@ -330,8 +329,15 @@ func main() {
 			Send()
 	}
 
+	internalRPCToken, err := rpcbridge.ResolveInternalToken(os.Getenv("FN_KNOCK_INTERNAL_RPC_TOKEN"))
+	if err != nil {
+		logger.Fatalf("Internal gRPC token is required: %v", err)
+	}
+
 	systemEventClient := events.NewClient(nil)
+	authBridgeManager := rpcbridge.NewAuthBridgeManager(internalRPCToken)
 	proxyHandler := proxy.NewHandler(resolvedAdminPort, *proxyPort, cfgManager, initialCfg, logsDir, systemEventClient)
+	proxyHandler.SetAuthBridgeManager(authBridgeManager)
 	configuredStreamRules := proxyHandler.GetStreamRules()
 	normalizedStreamRules := configuredStreamRules
 	if validatedStreamRules, err := proxyHandler.ValidateStreamRules(configuredStreamRules); err != nil {
@@ -379,11 +385,15 @@ func main() {
 	}
 
 	adminServer := admin.NewServer(proxyHandler, resolvedAdminPort, cfgManager, initialCfg, streamManager)
-	go func() {
-		if err := adminServer.Start(); err != nil {
-			logger.Fatalf("Admin server failed: %v", err)
-		}
-	}()
+	stopInternalGRPC, err := startInternalGRPCServer(
+		resolvedAdminPort,
+		internalRPCToken,
+		admin.NewGRPCServer(adminServer, internalRPCToken),
+		authBridgeManager,
+	)
+	if err != nil {
+		logger.Fatalf("Internal gRPC server failed: %v", err)
+	}
 
 	httpsServer := &http.Server{
 		Handler:           proxyHandler,
@@ -484,4 +494,5 @@ func main() {
 	}
 	streamManager.Stop()
 	proxyStack.Stop()
+	stopInternalGRPC()
 }

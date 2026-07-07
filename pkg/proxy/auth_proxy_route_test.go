@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"context"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -8,6 +9,7 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"go-reauth-proxy/pkg/grpc/pb"
 	"go-reauth-proxy/pkg/models"
 )
 
@@ -82,13 +84,6 @@ func TestAuthLogoutRouteIgnoresScopeDeniedPreflight(t *testing.T) {
 
 	authServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
-		case r.Method == http.MethodHead && r.URL.Path == "/api/auth/preflight":
-			atomic.AddInt32(&preflightHits, 1)
-			if r.Header.Get("X-Forwarded-Path") != "/__auth__/api/auth/logout" {
-				t.Fatalf("X-Forwarded-Path = %q, want /__auth__/api/auth/logout", r.Header.Get("X-Forwarded-Path"))
-			}
-			w.Header().Set(reauthAccessDeniedHeader, reauthScopeDeniedReason)
-			w.WriteHeader(http.StatusNoContent)
 		case r.Method == http.MethodGet && r.URL.Path == "/api/auth/logout":
 			atomic.AddInt32(&logoutHits, 1)
 			_, _ = io.WriteString(w, "logged-out")
@@ -97,6 +92,15 @@ func TestAuthLogoutRouteIgnoresScopeDeniedPreflight(t *testing.T) {
 		}
 	}))
 	defer authServer.Close()
+	bridge := testAuthBridge{
+		preflight: func(_ context.Context, in *pb.PreflightAuthRequest) (*pb.PreflightAuthResponse, error) {
+			atomic.AddInt32(&preflightHits, 1)
+			if got := in.GetContext().GetForwardedPath(); got != "/__auth__/api/auth/logout" {
+				t.Fatalf("X-Forwarded-Path = %q, want /__auth__/api/auth/logout", got)
+			}
+			return &pb.PreflightAuthResponse{AccessDeniedReason: reauthScopeDeniedReason}, nil
+		},
+	}
 
 	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "host target should not be reached", http.StatusTeapot)
@@ -117,6 +121,7 @@ func TestAuthLogoutRouteIgnoresScopeDeniedPreflight(t *testing.T) {
 			AuthURL:   "/api/auth/verify",
 			LogoutURL: "/api/auth/logout",
 		},
+		authBridge:     bridge,
 		authCache:      newAuthStateCache(),
 		preflightCache: newPreflightStateCache(),
 	}
@@ -146,22 +151,15 @@ func TestHostRuleAuthVerifyReceivesSessionCookie(t *testing.T) {
 	var verifyHits int32
 	var targetHits int32
 
-	authServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch {
-		case r.Method == http.MethodHead && r.URL.Path == "/api/auth/preflight":
-			w.WriteHeader(http.StatusNoContent)
-		case r.Method == http.MethodGet && r.URL.Path == "/api/auth/verify":
+	bridge := testAuthBridge{
+		verify: func(_ context.Context, in *pb.VerifyAuthRequest) (*pb.VerifyAuthResponse, error) {
 			atomic.AddInt32(&verifyHits, 1)
-			if !strings.Contains(r.Header.Get("Cookie"), authSessionCookieName+"=ok") {
-				t.Fatalf("auth verify Cookie = %q, want %s=ok", r.Header.Get("Cookie"), authSessionCookieName)
+			if !strings.Contains(in.GetContext().GetCookie(), authSessionCookieName+"=ok") {
+				t.Fatalf("auth verify Cookie = %q, want %s=ok", in.GetContext().GetCookie(), authSessionCookieName)
 			}
-			w.Header().Set("Content-Type", "application/json")
-			_, _ = io.WriteString(w, `{"success":true}`)
-		default:
-			t.Fatalf("unexpected auth request %s %s", r.Method, r.URL.Path)
-		}
-	}))
-	defer authServer.Close()
+			return &pb.VerifyAuthResponse{Success: true, Status: http.StatusOK}, nil
+		},
+	}
 
 	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		atomic.AddInt32(&targetHits, 1)
@@ -182,10 +180,10 @@ func TestHostRuleAuthVerifyReceivesSessionCookie(t *testing.T) {
 			},
 		},
 		AuthConfig: models.AuthConfig{
-			AuthPort:     testServerPort(t, authServer.URL),
 			AuthURL:      "/api/auth/verify",
 			PreflightURL: "/api/auth/preflight",
 		},
+		authBridge:     bridge,
 		authCache:      newAuthStateCache(),
 		preflightCache: newPreflightStateCache(),
 	}
@@ -215,19 +213,15 @@ func TestHostRulePreflightScopeDeniedReturnsAccessDeniedPage(t *testing.T) {
 	var targetHits int32
 	var verifyHits int32
 
-	authServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch {
-		case r.Method == http.MethodHead && r.URL.Path == "/api/auth/preflight":
-			w.Header().Set(reauthAccessDeniedHeader, reauthScopeDeniedReason)
-			w.WriteHeader(http.StatusNoContent)
-		case r.Method == http.MethodGet && r.URL.Path == "/api/auth/verify":
+	bridge := testAuthBridge{
+		preflight: func(context.Context, *pb.PreflightAuthRequest) (*pb.PreflightAuthResponse, error) {
+			return &pb.PreflightAuthResponse{AccessDeniedReason: reauthScopeDeniedReason}, nil
+		},
+		verify: func(context.Context, *pb.VerifyAuthRequest) (*pb.VerifyAuthResponse, error) {
 			atomic.AddInt32(&verifyHits, 1)
-			http.Error(w, "verify should not be reached", http.StatusTeapot)
-		default:
-			t.Fatalf("unexpected auth request %s %s", r.Method, r.URL.Path)
-		}
-	}))
-	defer authServer.Close()
+			return &pb.VerifyAuthResponse{Success: true, Status: http.StatusTeapot}, nil
+		},
+	}
 
 	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		atomic.AddInt32(&targetHits, 1)
@@ -245,10 +239,10 @@ func TestHostRulePreflightScopeDeniedReturnsAccessDeniedPage(t *testing.T) {
 			},
 		},
 		AuthConfig: models.AuthConfig{
-			AuthPort:     testServerPort(t, authServer.URL),
 			AuthURL:      "/api/auth/verify",
 			PreflightURL: "/api/auth/preflight",
 		},
+		authBridge:     bridge,
 		authCache:      newAuthStateCache(),
 		preflightCache: newPreflightStateCache(),
 	}
@@ -279,24 +273,23 @@ func TestHostRulePreflightScopeDeniedReturnsAccessDeniedPage(t *testing.T) {
 func TestSelectRouteFiltersHostRulesByCredentialScope(t *testing.T) {
 	var verifyHits int32
 
-	authServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch {
-		case r.Method == http.MethodHead && r.URL.Path == "/api/auth/preflight":
-			w.WriteHeader(http.StatusNoContent)
-		case r.Method == http.MethodGet && r.URL.Path == "/api/auth/verify":
+	bridge := testAuthBridge{
+		verify: func(_ context.Context, in *pb.VerifyAuthRequest) (*pb.VerifyAuthResponse, error) {
 			atomic.AddInt32(&verifyHits, 1)
-			if r.Header.Get("X-Forwarded-Path") != "/__select__" {
-				t.Fatalf("X-Forwarded-Path = %q, want /__select__", r.Header.Get("X-Forwarded-Path"))
+			if got := in.GetContext().GetForwardedPath(); got != "/__select__" {
+				t.Fatalf("X-Forwarded-Path = %q, want /__select__", got)
 			}
-			w.Header().Set("Content-Type", "application/json")
-			w.Header().Set(reauthSubdomainAccessHeader, reauthSubdomainAccessCustom)
-			w.Header().Set(reauthAllowedSubdomainHostsHeader, "app.example.com")
-			_, _ = io.WriteString(w, `{"success":true,"message":"ok"}`)
-		default:
-			t.Fatalf("unexpected auth request %s %s", r.Method, r.URL.Path)
-		}
-	}))
-	defer authServer.Close()
+			return &pb.VerifyAuthResponse{
+				Success: true,
+				Message: "ok",
+				Status:  http.StatusOK,
+				ResponseHeaders: headersToProto(http.Header{
+					reauthSubdomainAccessHeader:       []string{reauthSubdomainAccessCustom},
+					reauthAllowedSubdomainHostsHeader: []string{"app.example.com"},
+				}),
+			}, nil
+		},
+	}
 
 	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = io.WriteString(w, "target")
@@ -319,10 +312,10 @@ func TestSelectRouteFiltersHostRulesByCredentialScope(t *testing.T) {
 			},
 		},
 		AuthConfig: models.AuthConfig{
-			AuthPort:     testServerPort(t, authServer.URL),
 			AuthURL:      "/api/auth/verify",
 			PreflightURL: "/api/auth/preflight",
 		},
+		authBridge:     bridge,
 		authCache:      newAuthStateCache(),
 		preflightCache: newPreflightStateCache(),
 	}
@@ -352,21 +345,20 @@ func TestSelectRouteFiltersHostRulesByCredentialScope(t *testing.T) {
 func TestSelectRouteCachedCredentialScopeStillFiltersHostRules(t *testing.T) {
 	var verifyHits int32
 
-	authServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch {
-		case r.Method == http.MethodHead && r.URL.Path == "/api/auth/preflight":
-			w.WriteHeader(http.StatusNoContent)
-		case r.Method == http.MethodGet && r.URL.Path == "/api/auth/verify":
+	bridge := testAuthBridge{
+		verify: func(context.Context, *pb.VerifyAuthRequest) (*pb.VerifyAuthResponse, error) {
 			atomic.AddInt32(&verifyHits, 1)
-			w.Header().Set("Content-Type", "application/json")
-			w.Header().Set(reauthSubdomainAccessHeader, reauthSubdomainAccessCustom)
-			w.Header().Set(reauthAllowedSubdomainHostsHeader, "app.example.com")
-			_, _ = io.WriteString(w, `{"success":true,"message":"ok"}`)
-		default:
-			t.Fatalf("unexpected auth request %s %s", r.Method, r.URL.Path)
-		}
-	}))
-	defer authServer.Close()
+			return &pb.VerifyAuthResponse{
+				Success: true,
+				Message: "ok",
+				Status:  http.StatusOK,
+				ResponseHeaders: headersToProto(http.Header{
+					reauthSubdomainAccessHeader:       []string{reauthSubdomainAccessCustom},
+					reauthAllowedSubdomainHostsHeader: []string{"app.example.com"},
+				}),
+			}, nil
+		},
+	}
 
 	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = io.WriteString(w, "target")
@@ -379,11 +371,11 @@ func TestSelectRouteCachedCredentialScopeStillFiltersHostRules(t *testing.T) {
 			{Host: "admin.example.com", Target: target.URL, UseAuth: true, Title: "Hidden Admin"},
 		},
 		AuthConfig: models.AuthConfig{
-			AuthPort:     testServerPort(t, authServer.URL),
 			AuthURL:      "/api/auth/verify",
 			PreflightURL: "/api/auth/preflight",
 			AuthCacheTTL: 60,
 		},
+		authBridge:     bridge,
 		authCache:      newAuthStateCache(),
 		preflightCache: newPreflightStateCache(),
 	}
@@ -414,21 +406,17 @@ func TestHostRuleVerifyScopeDeniedReturnsJSONWithoutRedirect(t *testing.T) {
 	var verifyHits int32
 	var targetHits int32
 
-	authServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch {
-		case r.Method == http.MethodHead && r.URL.Path == "/api/auth/preflight":
-			w.WriteHeader(http.StatusNoContent)
-		case r.Method == http.MethodGet && r.URL.Path == "/api/auth/verify":
+	bridge := testAuthBridge{
+		verify: func(context.Context, *pb.VerifyAuthRequest) (*pb.VerifyAuthResponse, error) {
 			atomic.AddInt32(&verifyHits, 1)
-			w.Header().Set("Content-Type", "application/json")
-			w.Header().Set(reauthAccessDeniedHeader, reauthScopeDeniedReason)
-			w.WriteHeader(http.StatusForbidden)
-			_, _ = io.WriteString(w, `{"success":false,"message":"scope denied"}`)
-		default:
-			t.Fatalf("unexpected auth request %s %s", r.Method, r.URL.Path)
-		}
-	}))
-	defer authServer.Close()
+			return &pb.VerifyAuthResponse{
+				Success:            false,
+				Message:            "scope denied",
+				Status:             http.StatusForbidden,
+				AccessDeniedReason: reauthScopeDeniedReason,
+			}, nil
+		},
+	}
 
 	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		atomic.AddInt32(&targetHits, 1)
@@ -446,10 +434,10 @@ func TestHostRuleVerifyScopeDeniedReturnsJSONWithoutRedirect(t *testing.T) {
 			},
 		},
 		AuthConfig: models.AuthConfig{
-			AuthPort:     testServerPort(t, authServer.URL),
 			AuthURL:      "/api/auth/verify",
 			PreflightURL: "/api/auth/preflight",
 		},
+		authBridge:     bridge,
 		authCache:      newAuthStateCache(),
 		preflightCache: newPreflightStateCache(),
 	}
@@ -481,21 +469,17 @@ func TestHostRuleVerifyScopeDeniedReturnsJSONWithoutRedirect(t *testing.T) {
 func TestHostRuleVerifyScopeDeniedCacheServesAccessDenied(t *testing.T) {
 	var verifyHits int32
 
-	authServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch {
-		case r.Method == http.MethodHead && r.URL.Path == "/api/auth/preflight":
-			w.WriteHeader(http.StatusNoContent)
-		case r.Method == http.MethodGet && r.URL.Path == "/api/auth/verify":
+	bridge := testAuthBridge{
+		verify: func(context.Context, *pb.VerifyAuthRequest) (*pb.VerifyAuthResponse, error) {
 			atomic.AddInt32(&verifyHits, 1)
-			w.Header().Set("Content-Type", "application/json")
-			w.Header().Set(reauthAccessDeniedHeader, reauthScopeDeniedReason)
-			w.WriteHeader(http.StatusForbidden)
-			_, _ = io.WriteString(w, `{"success":false,"message":"scope denied"}`)
-		default:
-			t.Fatalf("unexpected auth request %s %s", r.Method, r.URL.Path)
-		}
-	}))
-	defer authServer.Close()
+			return &pb.VerifyAuthResponse{
+				Success:            false,
+				Message:            "scope denied",
+				Status:             http.StatusForbidden,
+				AccessDeniedReason: reauthScopeDeniedReason,
+			}, nil
+		},
+	}
 
 	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "target should not be reached", http.StatusTeapot)
@@ -512,11 +496,11 @@ func TestHostRuleVerifyScopeDeniedCacheServesAccessDenied(t *testing.T) {
 			},
 		},
 		AuthConfig: models.AuthConfig{
-			AuthPort:         testServerPort(t, authServer.URL),
 			AuthURL:          "/api/auth/verify",
 			PreflightURL:     "/api/auth/preflight",
 			AuthCacheFailTTL: 60,
 		},
+		authBridge:     bridge,
 		authCache:      newAuthStateCache(),
 		preflightCache: newPreflightStateCache(),
 	}

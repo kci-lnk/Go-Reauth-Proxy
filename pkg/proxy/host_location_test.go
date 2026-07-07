@@ -1,14 +1,14 @@
 package proxy
 
 import (
-	"fmt"
+	"context"
 	"io"
-	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 
+	"go-reauth-proxy/pkg/grpc/pb"
 	"go-reauth-proxy/pkg/models"
 )
 
@@ -181,23 +181,15 @@ func TestHostLocationFixedResponseWritesCustomHeaders(t *testing.T) {
 
 func TestHostLocationFixedResponseRequiresHostAuth(t *testing.T) {
 	var verifyCalled bool
-	authServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch {
-		case r.Method == http.MethodHead && r.URL.Path == "/api/auth/preflight":
-			w.WriteHeader(http.StatusNoContent)
-		case r.URL.Path == "/api/auth/verify":
+	bridge := testAuthBridge{
+		verify: func(context.Context, *pb.VerifyAuthRequest) (*pb.VerifyAuthResponse, error) {
 			verifyCalled = true
-			w.Header().Set("Content-Type", "application/json")
-			_, _ = io.WriteString(w, `{"success":false,"message":"login required"}`)
-		default:
-			http.NotFound(w, r)
-		}
-	}))
-	defer authServer.Close()
-
-	_, port, err := net.SplitHostPort(strings.TrimPrefix(authServer.URL, "http://"))
-	if err != nil {
-		t.Fatalf("failed to parse auth server port: %v", err)
+			return &pb.VerifyAuthResponse{
+				Success: false,
+				Message: "login required",
+				Status:  http.StatusOK,
+			}, nil
+		},
 	}
 
 	handler := newHostLocationTestHandler(models.HostRule{
@@ -220,9 +212,7 @@ func TestHostLocationFixedResponseRequiresHostAuth(t *testing.T) {
 	handler.AuthConfig = models.AuthConfig{
 		AuthURL: "/api/auth/verify",
 	}
-	if _, err := fmt.Sscanf(port, "%d", &handler.AuthConfig.AuthPort); err != nil {
-		t.Fatalf("failed to parse auth server port %q: %v", port, err)
-	}
+	setTestAuthBridge(t, handler, bridge)
 	handler.publishRequestSnapshotLocked()
 
 	req := httptest.NewRequest(http.MethodGet, "http://app.example.com/private", nil)

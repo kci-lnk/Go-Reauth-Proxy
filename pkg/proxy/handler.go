@@ -6,16 +6,17 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/base64"
-	"encoding/json"
 	"fmt"
 	"go-reauth-proxy/pkg/config"
 	"go-reauth-proxy/pkg/errors"
 	"go-reauth-proxy/pkg/events"
 	"go-reauth-proxy/pkg/gatewaylog"
+	"go-reauth-proxy/pkg/grpc/pb"
 	"go-reauth-proxy/pkg/logger"
 
 	"go-reauth-proxy/pkg/models"
 	"go-reauth-proxy/pkg/response"
+	"go-reauth-proxy/pkg/rpcbridge"
 	proxywaf "go-reauth-proxy/pkg/waf"
 	"io"
 	"log"
@@ -120,8 +121,7 @@ type Handler struct {
 
 	fnAppMockService           *fnAppMockService
 	loggedInActive             sync.Map
-	preflightClient            *http.Client
-	authClient                 *http.Client
+	authBridge                 authBridgeClient
 	proxyTransport             *http.Transport
 	preflightSkipUntilUnixNano atomic.Int64
 	authCache                  authStateCache
@@ -135,6 +135,32 @@ type Handler struct {
 	preserveHost               *preserveHostConfig
 	wafRuntime                 *proxywaf.Runtime
 	systemEventClient          *events.Client
+}
+
+func (h *Handler) SetAuthBridgeManager(manager *rpcbridge.AuthBridgeManager) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.authBridge = manager
+}
+
+func (h *Handler) authBridgeManager() authBridgeClient {
+	h.mu.RLock()
+	bridge := h.authBridge
+	h.mu.RUnlock()
+	return bridge
+}
+
+func (h *Handler) VerifyStreamAuth(ctx context.Context, rule models.StreamRule, clientIP string) (*pb.VerifyStreamAuthResponse, error) {
+	bridge := h.authBridgeManager()
+	if bridge == nil {
+		return nil, rpcbridge.ErrAuthBridgeUnavailable
+	}
+	return bridge.VerifyStreamAuth(ctx, &pb.VerifyStreamAuthRequest{
+		ClientIp:   clientIP,
+		Protocol:   rule.Protocol,
+		ListenPort: int32(rule.ListenPort),
+		Target:     rule.Target,
+	})
 }
 
 type requestSnapshot struct {
@@ -189,6 +215,12 @@ type authCheckResult struct {
 	subdomainAccessCustom bool
 	allowedSubdomainHosts map[string]struct{}
 	credentialIdentity    authCredentialIdentity
+}
+
+type authBridgeClient interface {
+	VerifyAuth(context.Context, *pb.VerifyAuthRequest) (*pb.VerifyAuthResponse, error)
+	PreflightAuth(context.Context, *pb.PreflightAuthRequest) (*pb.PreflightAuthResponse, error)
+	VerifyStreamAuth(context.Context, *pb.VerifyStreamAuthRequest) (*pb.VerifyStreamAuthResponse, error)
 }
 
 func debugProxyEvent(eventName string, requestID string) *zerolog.Event {
@@ -648,6 +680,57 @@ func copyUserAgentHeader(dst, src *http.Request) {
 	dst.Header.Set("User-Agent", "")
 }
 
+func authContextFromRequest(r *http.Request, clientIP string, accessMode string) *pb.AuthContext {
+	if r == nil {
+		return &pb.AuthContext{ClientIp: clientIP, AccessMode: accessMode}
+	}
+	scheme := requestScheme(r)
+	ctx := &pb.AuthContext{
+		ClientIp:       clientIP,
+		ForwardedFor:   clientIP,
+		ForwardedHost:  r.Host,
+		ForwardedProto: scheme,
+		ForwardedPath:  r.URL.RequestURI(),
+		Host:           r.Host,
+		Scheme:         scheme,
+		Path:           r.URL.Path,
+		RawQuery:       r.URL.RawQuery,
+		RequestUri:     r.URL.RequestURI(),
+		Cookie:         r.Header.Get("Cookie"),
+		Authorization:  r.Header.Get("Authorization"),
+		UserAgent:      r.Header.Get("User-Agent"),
+		AccessMode:     accessMode,
+		ExtraHeaders:   headersToProto(r.Header),
+	}
+	return ctx
+}
+
+func headersToProto(headers http.Header) []*pb.Header {
+	if len(headers) == 0 {
+		return nil
+	}
+	out := make([]*pb.Header, 0, len(headers))
+	for name, values := range headers {
+		copied := append([]string(nil), values...)
+		out = append(out, &pb.Header{Name: name, Values: copied})
+	}
+	return out
+}
+
+func protoHeadersToHTTP(headers []*pb.Header) http.Header {
+	out := make(http.Header, len(headers))
+	for _, header := range headers {
+		name := strings.TrimSpace(header.GetName())
+		if name == "" {
+			continue
+		}
+		for _, value := range header.GetValues() {
+			out.Add(name, value)
+		}
+	}
+	return out
+}
+
 func applyNoStoreCacheHeaders(headers http.Header) {
 	if headers == nil {
 		return
@@ -758,8 +841,8 @@ func (h *Handler) runPreflight(r *http.Request, authConfig models.AuthConfig, cl
 		return preflightDecision{}
 	}
 
-	if authConfig.AuthPort <= 0 {
-		if event := debugProxyEvent("preflight_skipped_no_auth_port", requestID); event != nil {
+	if strings.TrimSpace(authConfig.AuthURL) == "" {
+		if event := debugProxyEvent("preflight_skipped_no_auth_url", requestID); event != nil {
 			event.Send()
 		}
 		return preflightDecision{}
@@ -863,14 +946,9 @@ func (h *Handler) runPreflight(r *http.Request, authConfig models.AuthConfig, cl
 }
 
 func (h *Handler) performPreflight(r *http.Request, authConfig models.AuthConfig, clientIP string, isMatch bool, accessMode string, requestID string) (preflightDecision, error) {
-	preflightURLPath := authConfig.PreflightURL
-	if preflightURLPath == "" {
-		preflightURLPath = "/api/auth/preflight"
-	}
-	preflightURL := localServiceURL(authConfig.AuthPort, preflightURLPath)
 	start := time.Now()
 	if event := debugProxyEvent("preflight_request_start", requestID); event != nil {
-		event.Str("url", logger.SanitizeURL(preflightURL)).
+		event.Str("transport", "auth_bridge").
 			Str("client_ip", logger.SanitizeLogString(clientIP)).
 			Bool("matched", isMatch).
 			Str("access_mode", logger.SanitizeLogString(accessMode)).
@@ -883,67 +961,46 @@ func (h *Handler) performPreflight(r *http.Request, authConfig models.AuthConfig
 			Send()
 	}
 
-	preflightReq, err := http.NewRequest(http.MethodHead, preflightURL, nil)
-	if err != nil {
-		if event := debugProxyEvent("preflight_request_create_failed", requestID); event != nil {
-			event.Str("error", logger.SanitizeLogString(err.Error())).
-				Str("url", logger.SanitizeURL(preflightURL)).
-				Send()
-		}
-		log.Printf("Failed to create preflight request: %v", err)
-		return preflightDecision{}, err
+	bridge := h.authBridgeManager()
+	if bridge == nil {
+		return preflightDecision{}, rpcbridge.ErrAuthBridgeUnavailable
 	}
-
-	preflightReq.Header.Set("X-Real-IP", clientIP)
-	preflightReq.Header.Set("X-Forwarded-For", clientIP)
-	preflightReq.Header.Set("X-Forwarded-Path", r.URL.RequestURI())
-	preflightReq.Header.Set("X-Forwarded-Host", r.Host)
-	preflightReq.Header.Set("X-Forwarded-Proto", requestScheme(r))
-	preflightReq.Header.Set("X-Match", strconv.FormatBool(isMatch))
-	preflightReq.Header.Set(internalPreflightHeader, "1")
-	if accessMode != "" {
-		preflightReq.Header.Set("X-Reauth-Access-Mode", accessMode)
-	}
-
-	if cookie := r.Header.Get("Cookie"); cookie != "" {
-		preflightReq.Header.Set("Cookie", cookie)
-	}
-	if auth := r.Header.Get("Authorization"); auth != "" {
-		preflightReq.Header.Set("Authorization", auth)
-	}
-	copyUserAgentHeader(preflightReq, r)
-
-	client := h.preflightClient
-	if client == nil {
-		client = &http.Client{
-			Timeout:   preflightTimeout,
-			Transport: newInternalTransport(),
-		}
-	}
-
-	resp, err := client.Do(preflightReq)
+	ctx, cancel := context.WithTimeout(context.Background(), preflightTimeout)
+	defer cancel()
+	resp, err := bridge.PreflightAuth(ctx, &pb.PreflightAuthRequest{
+		Context: authContextFromRequest(r, clientIP, accessMode),
+		Matched: isMatch,
+	})
 	if err != nil {
 		return preflightDecision{}, err
 	}
-	defer resp.Body.Close()
+	responseHeaders := protoHeadersToHTTP(resp.GetResponseHeaders())
 
 	decision := preflightDecision{
-		deny:               strings.EqualFold(resp.Header.Get("X-Option"), "deny"),
-		credentialIdentity: parseAuthCredentialIdentity(resp.Header),
+		deny:               resp.GetDeny() || strings.EqualFold(responseHeaders.Get("X-Option"), "deny"),
+		credentialIdentity: parseAuthCredentialIdentity(responseHeaders),
 	}
-	decision.accessDeniedReason = normalizeReauthAccessDeniedReason(resp.Header.Get(reauthAccessDeniedHeader))
-	if location := strings.TrimSpace(resp.Header.Get("X-Reauth-Redirect-Location")); location != "" {
+	decision.accessDeniedReason = normalizeReauthAccessDeniedReason(resp.GetAccessDeniedReason())
+	if decision.accessDeniedReason == "" {
+		decision.accessDeniedReason = normalizeReauthAccessDeniedReason(responseHeaders.Get(reauthAccessDeniedHeader))
+	}
+	if location := strings.TrimSpace(resp.GetRedirectLocation()); location == "" {
+		location = strings.TrimSpace(responseHeaders.Get("X-Reauth-Redirect-Location"))
+		if strings.HasPrefix(location, "/") || strings.HasPrefix(location, "http://") || strings.HasPrefix(location, "https://") {
+			decision.redirectLocation = location
+		}
+	} else {
 		if strings.HasPrefix(location, "/") || strings.HasPrefix(location, "http://") || strings.HasPrefix(location, "https://") {
 			decision.redirectLocation = location
 		}
 	}
 	if event := debugProxyEvent("preflight_request_end", requestID); event != nil {
-		event.Int("status", resp.StatusCode).
+		event.Int("status", http.StatusNoContent).
 			Bool("deny", decision.deny).
 			Str("access_denied_reason", logger.SanitizeLogString(decision.accessDeniedReason)).
 			Str("redirect_location", logger.SanitizeURL(decision.redirectLocation)).
 			Int64("duration_ms", time.Since(start).Milliseconds()).
-			Interface("response_headers", logger.SanitizeHeader(resp.Header)).
+			Interface("response_headers", logger.SanitizeHeader(responseHeaders)).
 			Send()
 	}
 	return decision, nil
@@ -1000,22 +1057,14 @@ func NewHandler(adminPort int, proxyPort int, cfgManager *config.Manager, initia
 		sslConfig:            copySSLConfig(initialCfg.SSL),
 		gatewayLogManager:    gatewaylog.NewManager(logsDir, logConfig),
 		fnAppMockService:     newFNAppMockServiceFromEnv(),
-		preflightClient: &http.Client{
-			Timeout:   preflightTimeout,
-			Transport: newInternalTransport(),
-		},
-		authClient: &http.Client{
-			Timeout:   5 * time.Second,
-			Transport: newInternalTransport(),
-		},
-		proxyTransport:    newProxyTransport(),
-		authCache:         newAuthStateCache(),
-		preflightCache:    newPreflightStateCache(),
-		generalBlacklist:  newGeneralBlacklistRuntime(initialCfg.GeneralBlacklist),
-		forwardedHeaders:  newForwardedHeadersConfig(normalizedForwardedHeaders),
-		preserveHost:      newPreserveHostConfig(normalizedPreserveHost),
-		wafRuntime:        wafRuntime,
-		systemEventClient: systemEventClient,
+		proxyTransport:       newProxyTransport(),
+		authCache:            newAuthStateCache(),
+		preflightCache:       newPreflightStateCache(),
+		generalBlacklist:     newGeneralBlacklistRuntime(initialCfg.GeneralBlacklist),
+		forwardedHeaders:     newForwardedHeadersConfig(normalizedForwardedHeaders),
+		preserveHost:         newPreserveHostConfig(normalizedPreserveHost),
+		wafRuntime:           wafRuntime,
+		systemEventClient:    systemEventClient,
 	}
 	h.GeneralBlacklist = h.generalBlacklist.getConfig()
 	if event := debugProxyEvent("handler_initialized", ""); event != nil {
@@ -1115,9 +1164,9 @@ func (h *Handler) getProxyProtocolForceChangeHook() func() {
 	return hook
 }
 
-func (h *Handler) saveConfigLocked() {
+func (h *Handler) saveConfigLocked() error {
 	if h.configManager == nil {
-		return
+		return nil
 	}
 
 	rulesCopy := make([]models.Rule, len(h.Rules))
@@ -1151,7 +1200,7 @@ func (h *Handler) saveConfigLocked() {
 			event.Str("error", logger.SanitizeLogString(err.Error())).Send()
 		}
 		log.Printf("Failed to save config: %v", err)
-		return
+		return err
 	}
 	if event := debugProxyEvent("config_saved", ""); event != nil {
 		event.Int("path_rule_count", len(rulesCopy)).
@@ -1161,6 +1210,7 @@ func (h *Handler) saveConfigLocked() {
 			Bool("waf_enabled", h.WAFConfig.Enabled).
 			Send()
 	}
+	return nil
 }
 
 func (h *Handler) GetProxyProtocolForce() bool {
@@ -1169,12 +1219,12 @@ func (h *Handler) GetProxyProtocolForce() bool {
 	return h.ProxyProtocolForce
 }
 
-func (h *Handler) SetProxyProtocolForce(force bool) {
+func (h *Handler) SetProxyProtocolForce(force bool) error {
 	h.mu.Lock()
 	changed := h.ProxyProtocolForce != force
 	h.ProxyProtocolForce = force
 	h.publishRequestSnapshotLocked()
-	h.saveConfigLocked()
+	saveErr := h.saveConfigLocked()
 	hook := h.getProxyProtocolForceChangeHook()
 	h.mu.Unlock()
 	if event := debugProxyEvent("proxy_protocol_force_set", ""); event != nil {
@@ -1183,6 +1233,7 @@ func (h *Handler) SetProxyProtocolForce(force bool) {
 	if changed && hook != nil {
 		hook()
 	}
+	return saveErr
 }
 
 func (h *Handler) evaluateReverseProxyThrottleRequest(isAuthRoute bool, matchedHostRule *models.HostRule, matchedHostLocation *models.HostLocation, matchedRule *models.Rule, clientIP string, now time.Time) reverseProxyThrottleDecision {
@@ -1352,11 +1403,14 @@ func (h *Handler) SetSSLDeployment(config models.SSLConfig) error {
 	h.mu.Lock()
 	h.sslBundle.Store(bundle)
 	h.sslConfig = normalized
-	h.saveConfigLocked()
+	saveErr := h.saveConfigLocked()
 	hook := h.getSSLChangeHook()
 	h.mu.Unlock()
 	if hook != nil {
 		hook()
+	}
+	if saveErr != nil {
+		return saveErr
 	}
 	if event := debugProxyEvent("ssl_deployment_set", ""); event != nil {
 		event.Str("deployment_mode", string(normalized.DeploymentMode)).
@@ -1432,11 +1486,11 @@ func (h *Handler) GetSSLInfo() models.SSLInfo {
 	})
 }
 
-func (h *Handler) ClearSSLCertificate() {
-	_ = h.SetSSLDeployment(models.SSLConfig{})
+func (h *Handler) ClearSSLCertificate() error {
+	return h.SetSSLDeployment(models.SSLConfig{})
 }
 
-func (h *Handler) AddRule(newRule models.Rule) error {
+func (h *Handler) validateRule(newRule models.Rule) error {
 	if newRule.Path == "/" || newRule.Path == "" {
 		return fmt.Errorf("cannot add rule for root path '/' or empty path")
 	}
@@ -1454,6 +1508,30 @@ func (h *Handler) AddRule(newRule models.Rule) error {
 	}
 	if err := h.checkSafeTarget(newRule.Target); err != nil {
 		return fmt.Errorf("invalid target: %v", err)
+	}
+	return nil
+}
+
+func (h *Handler) normalizeRules(rules []models.Rule) ([]models.Rule, error) {
+	normalized := make([]models.Rule, 0, len(rules))
+	indexByPath := make(map[string]int, len(rules))
+	for _, rule := range rules {
+		if err := h.validateRule(rule); err != nil {
+			return nil, err
+		}
+		if idx, exists := indexByPath[rule.Path]; exists {
+			normalized[idx] = rule
+			continue
+		}
+		indexByPath[rule.Path] = len(normalized)
+		normalized = append(normalized, rule)
+	}
+	return normalized, nil
+}
+
+func (h *Handler) AddRule(newRule models.Rule) error {
+	if err := h.validateRule(newRule); err != nil {
+		return err
 	}
 
 	h.mu.Lock()
@@ -1474,13 +1552,37 @@ func (h *Handler) AddRule(newRule models.Rule) error {
 	}
 	h.Rules = nextRules
 	h.publishRequestSnapshotLocked()
-	h.saveConfigLocked()
+	if err := h.saveConfigLocked(); err != nil {
+		return err
+	}
 	if event := debugProxyEvent("path_rule_upserted", ""); event != nil {
 		event.Str("path", logger.SanitizeLogString(newRule.Path)).
 			Str("target", logger.SanitizeURL(newRule.Target)).
 			Bool("updated", updated).
 			Bool("use_auth", newRule.UseAuth).
 			Int("path_rule_count", len(h.Rules)).
+			Send()
+	}
+	return nil
+}
+
+func (h *Handler) SetRules(rules []models.Rule) error {
+	normalized, err := h.normalizeRules(rules)
+	if err != nil {
+		return err
+	}
+
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	h.Rules = normalized
+	h.publishRequestSnapshotLocked()
+	if err := h.saveConfigLocked(); err != nil {
+		return err
+	}
+	if event := debugProxyEvent("path_rules_set", ""); event != nil {
+		event.Int("path_rule_count", len(normalized)).
+			Interface("path_rules", debugRuleSummaries(normalized)).
 			Send()
 	}
 	return nil
@@ -1792,16 +1894,19 @@ func (h *Handler) RemoveRule(path string) {
 	}
 }
 
-func (h *Handler) FlushRules() {
+func (h *Handler) FlushRules() error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
 	h.Rules = make([]models.Rule, 0)
 	h.publishRequestSnapshotLocked()
-	h.saveConfigLocked()
+	if err := h.saveConfigLocked(); err != nil {
+		return err
+	}
 	if event := debugProxyEvent("path_rules_flushed", ""); event != nil {
 		event.Send()
 	}
+	return nil
 }
 
 func (h *Handler) GetRules() []models.Rule {
@@ -2052,7 +2157,9 @@ func (h *Handler) AddHostRule(newRule models.HostRule) error {
 	}
 	h.HostRules = nextRules
 	h.publishRequestSnapshotLocked()
-	h.saveConfigLocked()
+	if err := h.saveConfigLocked(); err != nil {
+		return err
+	}
 	if event := debugProxyEvent("host_rule_upserted", ""); event != nil {
 		event.Str("host", logger.SanitizeLogString(newRule.Host)).
 			Str("target", logger.SanitizeURL(newRule.Target)).
@@ -2091,7 +2198,9 @@ func (h *Handler) SetHostRules(rules []models.HostRule) error {
 
 	h.HostRules = normalizedRules
 	h.publishRequestSnapshotLocked()
-	h.saveConfigLocked()
+	if err := h.saveConfigLocked(); err != nil {
+		return err
+	}
 	if event := debugProxyEvent("host_rules_set", ""); event != nil {
 		event.Int("host_rule_count", len(normalizedRules)).
 			Interface("host_rules", debugHostRuleSummaries(normalizedRules)).
@@ -2100,16 +2209,19 @@ func (h *Handler) SetHostRules(rules []models.HostRule) error {
 	return nil
 }
 
-func (h *Handler) FlushHostRules() {
+func (h *Handler) FlushHostRules() error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
 	h.HostRules = make([]models.HostRule, 0)
 	h.publishRequestSnapshotLocked()
-	h.saveConfigLocked()
+	if err := h.saveConfigLocked(); err != nil {
+		return err
+	}
 	if event := debugProxyEvent("host_rules_flushed", ""); event != nil {
 		event.Send()
 	}
+	return nil
 }
 
 func (h *Handler) GetHostRules() []models.HostRule {
@@ -2149,7 +2261,9 @@ func (h *Handler) SetStreamRules(rules []models.StreamRule) error {
 	defer h.mu.Unlock()
 
 	h.StreamRules = normalized
-	h.saveConfigLocked()
+	if err := h.saveConfigLocked(); err != nil {
+		return err
+	}
 	if event := debugProxyEvent("stream_rules_set", ""); event != nil {
 		event.Int("stream_rule_count", len(normalized)).
 			Interface("stream_rules", debugStreamRuleSummaries(normalized)).
@@ -2158,15 +2272,18 @@ func (h *Handler) SetStreamRules(rules []models.StreamRule) error {
 	return nil
 }
 
-func (h *Handler) FlushStreamRules() {
+func (h *Handler) FlushStreamRules() error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
 	h.StreamRules = make([]models.StreamRule, 0)
-	h.saveConfigLocked()
+	if err := h.saveConfigLocked(); err != nil {
+		return err
+	}
 	if event := debugProxyEvent("stream_rules_flushed", ""); event != nil {
 		event.Send()
 	}
+	return nil
 }
 
 func (h *Handler) GetStreamRules() []models.StreamRule {
@@ -2184,7 +2301,7 @@ func (h *Handler) GetDefaultRoute() string {
 	return h.DefaultRoute
 }
 
-func (h *Handler) SetDefaultRoute(route string) {
+func (h *Handler) SetDefaultRoute(route string) error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	if route == "" {
@@ -2193,10 +2310,13 @@ func (h *Handler) SetDefaultRoute(route string) {
 		h.DefaultRoute = route
 	}
 	h.publishRequestSnapshotLocked()
-	h.saveConfigLocked()
+	if err := h.saveConfigLocked(); err != nil {
+		return err
+	}
 	if event := debugProxyEvent("default_route_set", ""); event != nil {
 		event.Str("route", logger.SanitizeLogString(h.DefaultRoute)).Send()
 	}
+	return nil
 }
 
 func (h *Handler) GetAuthConfig() models.AuthConfig {
@@ -2215,12 +2335,12 @@ func (h *Handler) GetLoggingConfig() gatewaylog.ConfigInfo {
 	return h.gatewayLogManager.GetConfigInfo()
 }
 
-func (h *Handler) SetLoggingConfig(cfg models.LoggingConfig) gatewaylog.ConfigInfo {
+func (h *Handler) SetLoggingConfig(cfg models.LoggingConfig) (gatewaylog.ConfigInfo, error) {
 	normalized := gatewaylog.NormalizeConfig(cfg)
 
 	h.mu.Lock()
 	h.LoggingConfig = normalized
-	h.saveConfigLocked()
+	saveErr := h.saveConfigLocked()
 	h.mu.Unlock()
 	if event := debugProxyEvent("gateway_logging_config_set", ""); event != nil {
 		event.Bool("enabled", normalized.Enabled).
@@ -2232,9 +2352,9 @@ func (h *Handler) SetLoggingConfig(cfg models.LoggingConfig) gatewaylog.ConfigIn
 		return gatewaylog.ConfigInfo{
 			Enabled: normalized.Enabled,
 			MaxDays: normalized.MaxDays,
-		}
+		}, saveErr
 	}
-	return h.gatewayLogManager.UpdateConfig(normalized)
+	return h.gatewayLogManager.UpdateConfig(normalized), saveErr
 }
 
 func (h *Handler) GetLoggingDirectory() gatewaylog.DirectoryInfo {
@@ -2294,8 +2414,11 @@ func (h *Handler) SetWAFConfig(cfg models.WAFConfig) (proxywaf.Status, error) {
 	}
 	h.mu.Lock()
 	h.WAFConfig = normalized
-	h.saveConfigLocked()
+	saveErr := h.saveConfigLocked()
 	h.mu.Unlock()
+	if saveErr != nil {
+		return h.wafRuntime.Status(), saveErr
+	}
 	if event := debugProxyEvent("waf_config_set", ""); event != nil {
 		event.Bool("enabled", normalized.Enabled).
 			Str("mode", logger.SanitizeLogString(normalized.Mode)).
@@ -2340,8 +2463,11 @@ func (h *Handler) ReloadWAFBundle(cfg models.WAFConfig, bundleID string, bundleP
 	normalized := h.wafRuntime.Config()
 	h.mu.Lock()
 	h.WAFConfig = normalized
-	h.saveConfigLocked()
+	saveErr := h.saveConfigLocked()
 	h.mu.Unlock()
+	if saveErr != nil {
+		return status, saveErr
+	}
 	if event := debugProxyEvent("waf_bundle_reloaded", ""); event != nil {
 		event.Bool("enabled", status.Enabled).
 			Bool("loaded", status.Loaded).
@@ -2396,7 +2522,9 @@ func (h *Handler) SetAuthConfig(config models.AuthConfig) error {
 	defer h.mu.Unlock()
 	h.AuthConfig = config
 	h.publishRequestSnapshotLocked()
-	h.saveConfigLocked()
+	if err := h.saveConfigLocked(); err != nil {
+		return err
+	}
 	h.clearAuthCache()
 	if event := debugProxyEvent("auth_config_set", ""); event != nil {
 		event.Interface("auth_config", debugAuthConfigSummary(config)).
@@ -2474,7 +2602,10 @@ func (h *Handler) AddGeneralBlacklist(ips []string, source string, comment strin
 
 	h.mu.Lock()
 	h.GeneralBlacklist = normalized
-	h.saveConfigLocked()
+	if err := h.saveConfigLocked(); err != nil {
+		h.mu.Unlock()
+		return models.GeneralBlacklistMutationResult{}, err
+	}
 	h.mu.Unlock()
 
 	if event := debugProxyEvent("general_blacklist_added", ""); event != nil {
@@ -2503,7 +2634,10 @@ func (h *Handler) RemoveGeneralBlacklist(ips []string) (models.GeneralBlacklistM
 
 	h.mu.Lock()
 	h.GeneralBlacklist = normalized
-	h.saveConfigLocked()
+	if err := h.saveConfigLocked(); err != nil {
+		h.mu.Unlock()
+		return models.GeneralBlacklistMutationResult{}, err
+	}
 	h.mu.Unlock()
 
 	if event := debugProxyEvent("general_blacklist_removed", ""); event != nil {
@@ -2595,12 +2729,12 @@ func (h *Handler) GetGeneralBlacklistRecordForClientIP(clientIP string) (models.
 	return runtime.contains(clientIP)
 }
 
-func (h *Handler) SetReverseProxyThrottle(cfg models.ReverseProxyThrottleConfig) {
+func (h *Handler) SetReverseProxyThrottle(cfg models.ReverseProxyThrottleConfig) error {
 	normalized := normalizeReverseProxyThrottleConfig(cfg)
 
 	h.mu.Lock()
 	h.ReverseProxyThrottle = normalized
-	h.saveConfigLocked()
+	saveErr := h.saveConfigLocked()
 	throttle := h.reverseProxyThrottle
 	h.mu.Unlock()
 
@@ -2624,6 +2758,7 @@ func (h *Handler) SetReverseProxyThrottle(cfg models.ReverseProxyThrottleConfig)
 			Int("block_seconds", normalized.BlockSeconds).
 			Send()
 	}
+	return saveErr
 }
 
 func (h *Handler) SetGatewayVisibility(cfg models.GatewayVisibilityConfig) error {
@@ -2634,13 +2769,16 @@ func (h *Handler) SetGatewayVisibility(cfg models.GatewayVisibilityConfig) error
 
 	h.mu.Lock()
 	h.GatewayVisibility = normalized
-	h.saveConfigLocked()
+	saveErr := h.saveConfigLocked()
 	visibility := h.gatewayVisibility
 	if visibility == nil {
 		visibility = &gatewayVisibility{}
 		h.gatewayVisibility = visibility
 	}
 	h.mu.Unlock()
+	if saveErr != nil {
+		return saveErr
+	}
 
 	visibility.mu.Lock()
 	visibility.config = normalized
@@ -2656,18 +2794,21 @@ func (h *Handler) SetGatewayVisibility(cfg models.GatewayVisibilityConfig) error
 	return nil
 }
 
-func (h *Handler) SetForwardedHeadersConfig(cfg models.ForwardedHeadersConfig) {
+func (h *Handler) SetForwardedHeadersConfig(cfg models.ForwardedHeadersConfig) error {
 	normalized, _ := normalizeForwardedHeadersConfig(cfg)
 
 	h.mu.Lock()
 	h.ForwardedHeaders = normalized
-	h.saveConfigLocked()
+	saveErr := h.saveConfigLocked()
 	forwardedHeaders := h.forwardedHeaders
 	if forwardedHeaders == nil {
 		forwardedHeaders = newForwardedHeadersConfig(normalized)
 		h.forwardedHeaders = forwardedHeaders
 	}
 	h.mu.Unlock()
+	if saveErr != nil {
+		return saveErr
+	}
 
 	forwardedHeaders.updateConfig(normalized)
 	if event := debugProxyEvent("forwarded_headers_config_set", ""); event != nil {
@@ -2676,20 +2817,24 @@ func (h *Handler) SetForwardedHeadersConfig(cfg models.ForwardedHeadersConfig) {
 			Str("updated_at", logger.SanitizeLogString(normalized.UpdatedAt)).
 			Send()
 	}
+	return nil
 }
 
-func (h *Handler) SetPreserveHostConfig(cfg models.PreserveHostConfig) {
+func (h *Handler) SetPreserveHostConfig(cfg models.PreserveHostConfig) error {
 	normalized, _ := normalizePreserveHostConfig(cfg)
 
 	h.mu.Lock()
 	h.PreserveHost = normalized
-	h.saveConfigLocked()
+	saveErr := h.saveConfigLocked()
 	preserveHost := h.preserveHost
 	if preserveHost == nil {
 		preserveHost = newPreserveHostConfig(normalized)
 		h.preserveHost = preserveHost
 	}
 	h.mu.Unlock()
+	if saveErr != nil {
+		return saveErr
+	}
 
 	preserveHost.updateConfig(normalized)
 	if event := debugProxyEvent("preserve_host_config_set", ""); event != nil {
@@ -2698,22 +2843,26 @@ func (h *Handler) SetPreserveHostConfig(cfg models.PreserveHostConfig) {
 			Str("updated_at", logger.SanitizeLogString(normalized.UpdatedAt)).
 			Send()
 	}
+	return nil
 }
 
-func (h *Handler) SetCrawlerBlockerConfig(cfg models.CrawlerBlockerConfig) models.CrawlerBlockerConfig {
+func (h *Handler) SetCrawlerBlockerConfig(cfg models.CrawlerBlockerConfig) (models.CrawlerBlockerConfig, error) {
 	normalized := normalizeCrawlerBlockerConfig(cfg)
 
 	h.mu.Lock()
 	h.CrawlerBlocker = normalized
-	h.saveConfigLocked()
+	saveErr := h.saveConfigLocked()
 	h.mu.Unlock()
+	if saveErr != nil {
+		return normalized, saveErr
+	}
 
 	if event := debugProxyEvent("crawler_blocker_config_set", ""); event != nil {
 		event.Bool("enabled", normalized.Enabled).
 			Str("updated_at", logger.SanitizeLogString(normalized.UpdatedAt)).
 			Send()
 	}
-	return normalized
+	return normalized, nil
 }
 
 func (h *Handler) GetGatewayPortalConfig() models.GatewayPortalConfig {
@@ -2722,14 +2871,17 @@ func (h *Handler) GetGatewayPortalConfig() models.GatewayPortalConfig {
 	return models.NormalizeGatewayPortalConfig(h.GatewayPortal)
 }
 
-func (h *Handler) SetGatewayPortalConfig(cfg models.GatewayPortalConfig) models.GatewayPortalConfig {
+func (h *Handler) SetGatewayPortalConfig(cfg models.GatewayPortalConfig) (models.GatewayPortalConfig, error) {
 	normalized := models.NormalizeGatewayPortalConfig(cfg)
 
 	h.mu.Lock()
 	h.GatewayPortal = normalized
 	h.publishRequestSnapshotLocked()
-	h.saveConfigLocked()
+	saveErr := h.saveConfigLocked()
 	h.mu.Unlock()
+	if saveErr != nil {
+		return normalized, saveErr
+	}
 	if event := debugProxyEvent("gateway_portal_config_set", ""); event != nil {
 		event.Bool("enabled", normalized.Enabled).
 			Str("display_style", logger.SanitizeLogString(normalized.DisplayStyle)).
@@ -2738,10 +2890,10 @@ func (h *Handler) SetGatewayPortalConfig(cfg models.GatewayPortalConfig) models.
 			Send()
 	}
 
-	return normalized
+	return normalized, nil
 }
 
-func (h *Handler) SetFnosPortIconHijackConfig(cfg models.FnosPortIconHijackConfig) models.FnosPortIconHijackConfig {
+func (h *Handler) SetFnosPortIconHijackConfig(cfg models.FnosPortIconHijackConfig) (models.FnosPortIconHijackConfig, error) {
 	normalized := models.FnosPortIconHijackConfig{
 		Enabled:   cfg.Enabled,
 		UpdatedAt: strings.TrimSpace(cfg.UpdatedAt),
@@ -2749,15 +2901,18 @@ func (h *Handler) SetFnosPortIconHijackConfig(cfg models.FnosPortIconHijackConfi
 
 	h.mu.Lock()
 	h.FnosPortIconHijack = normalized
-	h.saveConfigLocked()
+	saveErr := h.saveConfigLocked()
 	h.mu.Unlock()
+	if saveErr != nil {
+		return normalized, saveErr
+	}
 	if event := debugProxyEvent("fnos_port_icon_hijack_config_set", ""); event != nil {
 		event.Bool("enabled", normalized.Enabled).
 			Str("updated_at", logger.SanitizeLogString(normalized.UpdatedAt)).
 			Send()
 	}
 
-	return normalized
+	return normalized, nil
 }
 
 func (h *Handler) SetReverseProxyThrottleExemptIPs(cfg models.ReverseProxyThrottleExemptIPsRuntime) {
@@ -5327,19 +5482,11 @@ type authCheckExecution struct {
 }
 
 func (h *Handler) performAuthCheck(r *http.Request, authConfig models.AuthConfig, clientIP string, accessMode string, requestID string) authCheckPlan {
-	client := h.authClient
-	if client == nil {
-		client = &http.Client{
-			Timeout:   5 * time.Second,
-			Transport: newInternalTransport(),
-		}
-	}
-
-	if authConfig.AuthPort <= 0 {
-		if event := debugProxyEvent("auth_check_missing_port", requestID); event != nil {
+	if strings.TrimSpace(authConfig.AuthURL) == "" {
+		if event := debugProxyEvent("auth_check_missing_auth_url", requestID); event != nil {
 			event.Send()
 		}
-		log.Printf("Auth check requested but AuthPort is not configured")
+		log.Printf("Auth check requested but AuthURL is not configured")
 		return authCheckPlan{
 			result: authCheckResult{decision: "error"},
 			errorPage: &authCheckErrorPage{
@@ -5350,14 +5497,9 @@ func (h *Handler) performAuthCheck(r *http.Request, authConfig models.AuthConfig
 		}
 	}
 
-	authURLPath := authConfig.AuthURL
-	if authURLPath == "" {
-		authURLPath = "/api/auth/verify"
-	}
-	authURL := localServiceURL(authConfig.AuthPort, authURLPath)
 	start := time.Now()
 	if event := debugProxyEvent("auth_check_start", requestID); event != nil {
-		event.Str("url", logger.SanitizeURL(authURL)).
+		event.Str("transport", "auth_bridge").
 			Str("client_ip", logger.SanitizeLogString(clientIP)).
 			Str("access_mode", logger.SanitizeLogString(accessMode)).
 			Interface("forwarded_headers", logger.SanitizeHeader(http.Header{
@@ -5370,46 +5512,26 @@ func (h *Handler) performAuthCheck(r *http.Request, authConfig models.AuthConfig
 			Send()
 	}
 
-	authReq, err := http.NewRequest("GET", authURL, nil)
-	if err != nil {
-		if event := debugProxyEvent("auth_check_create_failed", requestID); event != nil {
-			event.Str("url", logger.SanitizeURL(authURL)).
-				Str("error", logger.SanitizeLogString(err.Error())).
-				Send()
-		}
-		log.Printf("Failed to create auth request: %v", err)
+	bridge := h.authBridgeManager()
+	if bridge == nil {
+		log.Printf("Auth request failed: %v", rpcbridge.ErrAuthBridgeUnavailable)
 		return authCheckPlan{
 			result: authCheckResult{decision: "error"},
 			errorPage: &authCheckErrorPage{
-				code:    errors.CodeInternal,
-				title:   "Internal Server Error during Auth",
-				message: "Internal Server Error during Auth",
+				code:    errors.CodeProxyAuthFailed,
+				title:   "Authentication Service Unavailable",
+				message: "Authentication Service Unavailable",
 			},
 		}
 	}
-
-	authReq.Header.Set("X-Real-IP", clientIP)
-	authReq.Header.Set("X-Forwarded-For", clientIP)
-	authReq.Header.Set("X-Forwarded-Host", r.Host)
-	authReq.Header.Set("X-Forwarded-Proto", requestScheme(r))
-	if accessMode != "" {
-		authReq.Header.Set("X-Reauth-Access-Mode", accessMode)
-	}
-
-	if cookie := r.Header.Get("Cookie"); cookie != "" {
-		authReq.Header.Set("Cookie", cookie)
-	}
-	if auth := r.Header.Get("Authorization"); auth != "" {
-		authReq.Header.Set("Authorization", auth)
-	}
-
-	authReq.Header.Set("X-Forwarded-Path", r.URL.RequestURI())
-	copyUserAgentHeader(authReq, r)
-
-	resp, err := client.Do(authReq)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	resp, err := bridge.VerifyAuth(ctx, &pb.VerifyAuthRequest{
+		Context: authContextFromRequest(r, clientIP, accessMode),
+	})
 	if err != nil {
 		if event := debugProxyEvent("auth_check_request_failed", requestID); event != nil {
-			event.Str("url", logger.SanitizeURL(authURL)).
+			event.Str("transport", "auth_bridge").
 				Str("error", logger.SanitizeLogString(err.Error())).
 				Int64("duration_ms", time.Since(start).Milliseconds()).
 				Send()
@@ -5424,55 +5546,40 @@ func (h *Handler) performAuthCheck(r *http.Request, authConfig models.AuthConfig
 			},
 		}
 	}
-	defer resp.Body.Close()
-	setCookies := copySetCookieHeaders(resp.Header.Values("Set-Cookie"))
-
-	var authResponse struct {
-		Success bool   `json:"success"`
-		Message string `json:"message"`
-	}
-
-	if err := json.NewDecoder(resp.Body).Decode(&authResponse); err != nil {
-		if event := debugProxyEvent("auth_check_decode_failed", requestID); event != nil {
-			event.Int("status", resp.StatusCode).
-				Str("error", logger.SanitizeLogString(err.Error())).
-				Int64("duration_ms", time.Since(start).Milliseconds()).
-				Interface("response_headers", logger.SanitizeHeader(resp.Header)).
-				Send()
-		}
-		log.Printf("Failed to decode auth response: %v", err)
-		return authCheckPlan{
-			result: authCheckResult{decision: "error"},
-			errorPage: &authCheckErrorPage{
-				code:    errors.CodeInternal,
-				title:   "Invalid Auth Response Format",
-				message: "Invalid Auth Response Format",
-			},
+	responseHeaders := protoHeadersToHTTP(resp.GetResponseHeaders())
+	setCookies := copySetCookieHeaders(append(copySetCookieHeaders(resp.GetSetCookies()), responseHeaders.Values("Set-Cookie")...))
+	statusCode := int(resp.GetStatus())
+	if statusCode <= 0 {
+		if resp.GetSuccess() {
+			statusCode = http.StatusOK
+		} else {
+			statusCode = http.StatusUnauthorized
 		}
 	}
-	if authResponse.Success {
-		subdomainAccessCustom, allowedSubdomainHosts := parseAllowedSubdomainHosts(resp.Header)
-		credentialIdentity := parseAuthCredentialIdentity(resp.Header)
+
+	if resp.GetSuccess() {
+		subdomainAccessCustom, allowedSubdomainHosts := parseAllowedSubdomainHosts(responseHeaders)
+		credentialIdentity := parseAuthCredentialIdentity(responseHeaders)
 		if event := debugProxyEvent("auth_check_end", requestID); event != nil {
-			event.Int("status", resp.StatusCode).
+			event.Int("status", statusCode).
 				Bool("success", true).
 				Str("decision", "passed").
 				Str("credential_method", logger.SanitizeLogString(credentialIdentity.credentialMethod)).
 				Str("credential_id", logger.SanitizeLogString(credentialIdentity.credentialID)).
 				Str("linked_totp_id", logger.SanitizeLogString(credentialIdentity.linkedTOTPID)).
-				Bool("suppress_toolbar", strings.EqualFold(resp.Header.Get("X-Reauth-Access-Mode"), "fnos-share")).
+				Bool("suppress_toolbar", resp.GetSuppressToolbar() || strings.EqualFold(responseHeaders.Get("X-Reauth-Access-Mode"), "fnos-share")).
 				Bool("subdomain_access_custom", subdomainAccessCustom).
 				Int("allowed_subdomain_hosts", len(allowedSubdomainHosts)).
 				Int("set_cookie_count", len(setCookies)).
 				Int64("duration_ms", time.Since(start).Milliseconds()).
-				Interface("response_headers", logger.SanitizeHeader(resp.Header)).
+				Interface("response_headers", logger.SanitizeHeader(responseHeaders)).
 				Send()
 		}
 		return authCheckPlan{
 			result: authCheckResult{
 				allowed:               true,
 				authenticated:         true,
-				suppressToolbar:       strings.EqualFold(resp.Header.Get("X-Reauth-Access-Mode"), "fnos-share"),
+				suppressToolbar:       resp.GetSuppressToolbar() || strings.EqualFold(responseHeaders.Get("X-Reauth-Access-Mode"), "fnos-share"),
 				decision:              "passed",
 				subdomainAccessCustom: subdomainAccessCustom,
 				allowedSubdomainHosts: allowedSubdomainHosts,
@@ -5481,17 +5588,22 @@ func (h *Handler) performAuthCheck(r *http.Request, authConfig models.AuthConfig
 			setCookies: setCookies,
 		}
 	}
-	log.Printf("Auth failed: %s", authResponse.Message)
-	if accessDeniedReason := normalizeReauthAccessDeniedReason(resp.Header.Get(reauthAccessDeniedHeader)); accessDeniedReason != "" {
-		credentialIdentity := parseAuthCredentialIdentity(resp.Header)
+	authMessage := strings.TrimSpace(resp.GetMessage())
+	log.Printf("Auth failed: %s", authMessage)
+	accessDeniedReason := normalizeReauthAccessDeniedReason(resp.GetAccessDeniedReason())
+	if accessDeniedReason == "" {
+		accessDeniedReason = normalizeReauthAccessDeniedReason(responseHeaders.Get(reauthAccessDeniedHeader))
+	}
+	if accessDeniedReason != "" {
+		credentialIdentity := parseAuthCredentialIdentity(responseHeaders)
 		if event := debugProxyEvent("auth_check_end", requestID); event != nil {
-			event.Int("status", resp.StatusCode).
+			event.Int("status", statusCode).
 				Bool("success", false).
 				Str("decision", "access_denied").
 				Str("reason", logger.SanitizeLogString(accessDeniedReason)).
 				Str("credential_id", logger.SanitizeLogString(credentialIdentity.credentialID)).
 				Str("linked_totp_id", logger.SanitizeLogString(credentialIdentity.linkedTOTPID)).
-				Str("message", logger.SanitizeLogString(authResponse.Message)).
+				Str("message", logger.SanitizeLogString(authMessage)).
 				Int("set_cookie_count", len(setCookies)).
 				Int64("duration_ms", time.Since(start).Milliseconds()).
 				Send()
@@ -5504,10 +5616,10 @@ func (h *Handler) performAuthCheck(r *http.Request, authConfig models.AuthConfig
 	}
 	if accessMode == "strict_whitelist" {
 		if event := debugProxyEvent("auth_check_end", requestID); event != nil {
-			event.Int("status", resp.StatusCode).
+			event.Int("status", statusCode).
 				Bool("success", false).
 				Str("decision", "denied").
-				Str("message", logger.SanitizeLogString(authResponse.Message)).
+				Str("message", logger.SanitizeLogString(authMessage)).
 				Int("set_cookie_count", len(setCookies)).
 				Int64("duration_ms", time.Since(start).Milliseconds()).
 				Send()
@@ -5518,14 +5630,18 @@ func (h *Handler) performAuthCheck(r *http.Request, authConfig models.AuthConfig
 			abortConnection: true,
 		}
 	}
-	if redirectLocation := strings.TrimSpace(resp.Header.Get("X-Reauth-Redirect-Location")); redirectLocation != "" {
+	redirectLocation := strings.TrimSpace(resp.GetRedirectLocation())
+	if redirectLocation == "" {
+		redirectLocation = strings.TrimSpace(responseHeaders.Get("X-Reauth-Redirect-Location"))
+	}
+	if redirectLocation != "" {
 		if strings.HasPrefix(redirectLocation, "/") || strings.HasPrefix(redirectLocation, "http://") || strings.HasPrefix(redirectLocation, "https://") {
 			if event := debugProxyEvent("auth_check_end", requestID); event != nil {
-				event.Int("status", resp.StatusCode).
+				event.Int("status", statusCode).
 					Bool("success", false).
 					Str("decision", "redirected").
 					Str("redirect_location", logger.SanitizeURL(redirectLocation)).
-					Str("message", logger.SanitizeLogString(authResponse.Message)).
+					Str("message", logger.SanitizeLogString(authMessage)).
 					Int("set_cookie_count", len(setCookies)).
 					Int64("duration_ms", time.Since(start).Milliseconds()).
 					Send()
@@ -5557,11 +5673,11 @@ func (h *Handler) performAuthCheck(r *http.Request, authConfig models.AuthConfig
 	}
 
 	if event := debugProxyEvent("auth_check_end", requestID); event != nil {
-		event.Int("status", resp.StatusCode).
+		event.Int("status", statusCode).
 			Bool("success", false).
 			Str("decision", "redirected").
 			Str("redirect_location", logger.SanitizeURL(loginURL.String())).
-			Str("message", logger.SanitizeLogString(authResponse.Message)).
+			Str("message", logger.SanitizeLogString(authMessage)).
 			Int("set_cookie_count", len(setCookies)).
 			Int64("duration_ms", time.Since(start).Milliseconds()).
 			Send()
@@ -5660,8 +5776,7 @@ func cookiePartHasExplicitAuthIdentity(part string) bool {
 }
 
 func shouldProbeAuthForToolbar(r *http.Request, authConfig models.AuthConfig, portalConfig models.GatewayPortalConfig) bool {
-	return authConfig.AuthPort > 0 &&
-		authConfig.AuthURL != "" &&
+	return strings.TrimSpace(authConfig.AuthURL) != "" &&
 		models.NormalizeGatewayPortalConfig(portalConfig).Enabled &&
 		requestHasExplicitAuthIdentity(r) &&
 		!response.ShouldSuppressToolbarForUserAgent(r.UserAgent())

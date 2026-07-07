@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"bytes"
+	"context"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -10,6 +11,7 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"go-reauth-proxy/pkg/grpc/pb"
 	"go-reauth-proxy/pkg/models"
 )
 
@@ -209,19 +211,12 @@ func TestPathRuleRewriteHTMLSkipsLargeHTMLBody(t *testing.T) {
 
 func TestPublicHostRuleToolbarSkipsLargeHTMLBody(t *testing.T) {
 	var verifyCalls int32
-	authServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodHead && r.URL.Path == "/api/auth/preflight" {
-			w.WriteHeader(http.StatusOK)
-			return
-		}
-		if r.Method != http.MethodGet || r.URL.Path != "/api/auth/verify" {
-			t.Fatalf("unexpected auth request %s %s", r.Method, r.URL.Path)
-		}
-		atomic.AddInt32(&verifyCalls, 1)
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = io.WriteString(w, `{"success":true}`)
-	}))
-	defer authServer.Close()
+	bridge := testAuthBridge{
+		verify: func(context.Context, *pb.VerifyAuthRequest) (*pb.VerifyAuthResponse, error) {
+			atomic.AddInt32(&verifyCalls, 1)
+			return &pb.VerifyAuthResponse{Success: true, Status: http.StatusOK}, nil
+		},
+	}
 
 	body := append([]byte(`<!doctype html><html><body><main>public app</main>`), bytes.Repeat([]byte("x"), int(htmlProxyMutationBodyLimitBytes)+16)...)
 	body = append(body, []byte(`</body></html>`)...)
@@ -232,7 +227,7 @@ func TestPublicHostRuleToolbarSkipsLargeHTMLBody(t *testing.T) {
 	}))
 	defer target.Close()
 
-	handler := newPublicHostToolbarHandler(target.URL, testServerPort(t, authServer.URL))
+	handler := newPublicHostToolbarHandler(target.URL, bridge)
 	req := httptest.NewRequest(http.MethodGet, "http://public.example.com/", nil)
 	req.AddCookie(&http.Cookie{Name: authSessionCookieName, Value: "ok"})
 	rec := httptest.NewRecorder()

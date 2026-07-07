@@ -190,17 +190,11 @@ func buildFnosPortIconHijackWebSocketURL(targetURL *url.URL, incomingURL *url.UR
 	upstreamPath := "/"
 	if incomingURL != nil {
 		upstreamPath = incomingURL.Path
-		if stripPath {
-			upstreamPath = strings.TrimPrefix(upstreamPath, pathPrefix)
-			if !strings.HasPrefix(upstreamPath, "/") {
-				upstreamPath = "/" + upstreamPath
-			}
-		}
 		upstreamURL.RawQuery = incomingURL.RawQuery
 	} else {
 		upstreamURL.RawQuery = ""
 	}
-	upstreamURL.Path = singleJoiningSlash(targetURL.Path, upstreamPath)
+	upstreamURL.Path = buildReverseProxyRoutePath(targetURL.Path, upstreamPath, stripPath, pathPrefix)
 	upstreamURL.RawPath = ""
 	upstreamURL.Fragment = ""
 	return &upstreamURL
@@ -239,13 +233,12 @@ func buildFnosPortIconHijackWebSocketHeader(r *http.Request, options fnosPortIco
 				ref.Scheme = options.targetURL.Scheme
 				ref.Host = options.targetURL.Host
 				ref.Path = path.Clean(ref.Path)
-				if options.stripPath {
-					ref.Path = strings.TrimPrefix(ref.Path, options.pathPrefix)
-					if !strings.HasPrefix(ref.Path, "/") {
-						ref.Path = "/" + ref.Path
-					}
-				}
-				ref.RawPath = ""
+				applyReverseProxyRoutePath(ref, reverseProxyRoutePathOptions{
+					targetURL:  options.targetURL,
+					incoming:   ref,
+					stripPath:  options.stripPath,
+					pathPrefix: options.pathPrefix,
+				})
 				headers.Set("Referer", ref.String())
 			}
 		}

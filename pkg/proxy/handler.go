@@ -4601,14 +4601,12 @@ func (h *Handler) proxyToHostLocationTarget(w http.ResponseWriter, r *http.Reque
 			applyUpstreamPrivateIPv4HintHeader(pr.Out, transportTargetURL)
 			applyPreserveHostPolicy(pr.Out, pr.In, transportTargetURL, preserveHost)
 			h.maybePrepareFnosPortIconHijackHTTPProxyRequest(pr.Out)
-
-			if location.StripPath {
-				pr.Out.URL.Path = strings.TrimPrefix(pr.Out.URL.Path, location.Path)
-				if !strings.HasPrefix(pr.Out.URL.Path, "/") {
-					pr.Out.URL.Path = "/" + pr.Out.URL.Path
-				}
-				pr.Out.URL.RawPath = ""
-			}
+			applyReverseProxyRoutePath(pr.Out.URL, reverseProxyRoutePathOptions{
+				targetURL:  transportTargetURL,
+				incoming:   pr.In.URL,
+				stripPath:  location.StripPath,
+				pathPrefix: location.Path,
+			})
 
 			if !preserveHost {
 				if origin := pr.In.Header.Get("Origin"); origin != "" {
@@ -4620,13 +4618,12 @@ func (h *Handler) proxyToHostLocationTarget(w http.ResponseWriter, r *http.Reque
 						ref.Scheme = transportTargetURL.Scheme
 						ref.Host = transportTargetURL.Host
 						ref.Path = path.Clean(ref.Path)
-						if location.StripPath {
-							ref.Path = strings.TrimPrefix(ref.Path, location.Path)
-							if !strings.HasPrefix(ref.Path, "/") {
-								ref.Path = "/" + ref.Path
-							}
-						}
-						ref.RawPath = ""
+						applyReverseProxyRoutePath(ref, reverseProxyRoutePathOptions{
+							targetURL:  transportTargetURL,
+							incoming:   ref,
+							stripPath:  location.StripPath,
+							pathPrefix: location.Path,
+						})
 						pr.Out.Header.Set("Referer", ref.String())
 					}
 				}
@@ -4921,14 +4918,12 @@ func (h *Handler) proxyToRuleTarget(w http.ResponseWriter, r *http.Request, snap
 			pr.SetURL(transportTargetURL)
 			applyUpstreamPrivateIPv4HintHeader(pr.Out, transportTargetURL)
 			applyPreserveHostPolicy(pr.Out, pr.In, transportTargetURL, preserveHost)
-
-			if matchedRule.StripPath {
-				pr.Out.URL.Path = strings.TrimPrefix(pr.Out.URL.Path, matchedRule.Path)
-				if !strings.HasPrefix(pr.Out.URL.Path, "/") {
-					pr.Out.URL.Path = "/" + pr.Out.URL.Path
-				}
-				pr.Out.URL.RawPath = ""
-			}
+			applyReverseProxyRoutePath(pr.Out.URL, reverseProxyRoutePathOptions{
+				targetURL:  transportTargetURL,
+				incoming:   pr.In.URL,
+				stripPath:  matchedRule.StripPath,
+				pathPrefix: matchedRule.Path,
+			})
 
 			if !preserveHost {
 				if origin := pr.In.Header.Get("Origin"); origin != "" {
@@ -4940,14 +4935,12 @@ func (h *Handler) proxyToRuleTarget(w http.ResponseWriter, r *http.Request, snap
 						ref.Scheme = transportTargetURL.Scheme
 						ref.Host = transportTargetURL.Host
 						ref.Path = path.Clean(ref.Path)
-
-						if matchedRule.StripPath {
-							ref.Path = strings.TrimPrefix(ref.Path, matchedRule.Path)
-							if !strings.HasPrefix(ref.Path, "/") {
-								ref.Path = "/" + ref.Path
-							}
-						}
-						ref.RawPath = ""
+						applyReverseProxyRoutePath(ref, reverseProxyRoutePathOptions{
+							targetURL:  transportTargetURL,
+							incoming:   ref,
+							stripPath:  matchedRule.StripPath,
+							pathPrefix: matchedRule.Path,
+						})
 
 						pr.Out.Header.Set("Referer", ref.String())
 					}

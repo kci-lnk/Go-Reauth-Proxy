@@ -32,7 +32,10 @@ tasks:
     cmds:
       - mkdir -p build
       - go build -ldflags="-s -w" -trimpath -o build/go-reauth-proxy-linux-amd64 cmd/server/main.go
-      - upx --best --lzma build/go-reauth-proxy-linux-amd64 || echo "UPX compression skipped"
+      - task: maybe:upx
+        vars:
+          BIN: build/go-reauth-proxy-linux-amd64
+          LABEL: Linux AMD64
       - echo "Built Linux AMD64 binary at build/go-reauth-proxy-linux-amd64"
 
   build:linux-arm64:
@@ -43,7 +46,10 @@ tasks:
     cmds:
       - mkdir -p build
       - go build -ldflags="-s -w" -trimpath -o build/go-reauth-proxy-linux-arm64 cmd/server/main.go
-      - upx --best --lzma build/go-reauth-proxy-linux-arm64 || echo "UPX compression skipped"
+      - task: maybe:upx
+        vars:
+          BIN: build/go-reauth-proxy-linux-arm64
+          LABEL: Linux ARM64
       - echo "Built Linux ARM64 binary at build/go-reauth-proxy-linux-arm64"
 
   build:linux-arm:
@@ -55,8 +61,48 @@ tasks:
     cmds:
       - mkdir -p build
       - go build -ldflags="-s -w" -trimpath -o build/go-reauth-proxy-linux-arm cmd/server/main.go
-      - upx --best --lzma build/go-reauth-proxy-linux-arm || echo "UPX compression skipped"
+      - task: maybe:upx
+        vars:
+          BIN: build/go-reauth-proxy-linux-arm
+          LABEL: Linux ARM32
       - echo "Built Linux ARM32 binary at build/go-reauth-proxy-linux-arm"
+
+  maybe:upx:
+    internal: true
+    cmds:
+      - |
+        bin="{{.BIN}}"
+        label="{{.LABEL}}"
+        mode="${FN_KNOCK_GO_UPX:-0}"
+        case "${mode}" in
+          0|false|False|FALSE|no|No|NO|off|Off|OFF)
+            echo "Skipping UPX compression for ${label} (FN_KNOCK_GO_UPX=${mode})"
+            exit 0
+            ;;
+          auto|1|true|True|TRUE|yes|Yes|YES|on|On|ON|required)
+            ;;
+          *)
+            echo "Unsupported FN_KNOCK_GO_UPX=${mode}; expected auto, 0, 1, or required" >&2
+            exit 1
+            ;;
+        esac
+        upx_bin="${FN_KNOCK_UPX_BIN:-$(command -v upx || true)}"
+        if [ -z "${upx_bin}" ]; then
+          if [ "${mode}" = "required" ]; then
+            echo "UPX is required but was not found; install upx or set FN_KNOCK_GO_UPX=0" >&2
+            exit 1
+          fi
+          echo "UPX not found; leaving ${label} binary uncompressed"
+          exit 0
+        fi
+        set -- ${FN_KNOCK_GO_UPX_ARGS:---best --lzma}
+        if ! "${upx_bin}" "$@" "${bin}"; then
+          if [ "${mode}" = "required" ]; then
+            echo "UPX compression failed for ${bin}; set FN_KNOCK_GO_UPX=0 to disable compression" >&2
+            exit 1
+          fi
+          echo "UPX compression skipped for ${label}"
+        fi
 
   run:
     desc: "Run the go-reauth-proxy server (usage: task run -- -proxy-port 8090 -admin-port 8091)"

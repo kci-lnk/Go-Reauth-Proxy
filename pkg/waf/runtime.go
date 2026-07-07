@@ -10,6 +10,8 @@ import (
 	"net"
 	"net/http"
 	"path/filepath"
+	goruntime "runtime"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -21,7 +23,10 @@ import (
 	"go-reauth-proxy/pkg/models"
 )
 
-var traceFallbackCounter atomic.Uint64
+var (
+	traceFallbackCounter        atomic.Uint64
+	runtimeMemoryReleasePending atomic.Bool
+)
 
 type Runtime struct {
 	current         atomic.Value
@@ -101,6 +106,13 @@ func (rt *Runtime) Status() Status {
 	return status
 }
 
+func (rt *Runtime) Active() bool {
+	if rt == nil {
+		return false
+	}
+	return IsActive(rt.Config())
+}
+
 func (rt *Runtime) SetConfig(cfg models.WAFConfig) (models.WAFConfig, error) {
 	if rt == nil {
 		return cfg, nil
@@ -115,9 +127,13 @@ func (rt *Runtime) SetConfig(cfg models.WAFConfig) (models.WAFConfig, error) {
 			Send()
 	}
 	if !IsActive(cfg) {
+		hadCompiled := rt.compiled() != nil
 		rt.current.Store((*CompiledRuntime)(nil))
 		rt.storeConfig(cfg)
 		rt.lastError.Store("")
+		if hadCompiled {
+			releaseRuntimeMemorySoon()
+		}
 		if event := logger.DebugEvent("waf", "config_set_end"); event != nil {
 			event.Bool("active", false).Send()
 		}
@@ -136,6 +152,7 @@ func (rt *Runtime) SetConfig(cfg models.WAFConfig) (models.WAFConfig, error) {
 			return cfg, err
 		}
 		rt.current.Store(compiled)
+		releaseRuntimeMemorySoon()
 	}
 	rt.storeConfig(cfg)
 	rt.lastError.Store("")
@@ -159,6 +176,7 @@ func (rt *Runtime) Validate(cfg models.WAFConfig, bundleID string, bundlePath st
 			Send()
 	}
 	compiled, err := buildCompiledRuntime(cfg, rt.defaultRulesDir, bundleID, bundlePath)
+	releaseRuntimeMemorySoon()
 	if err != nil {
 		result := ValidationResult{
 			OK:         false,
@@ -208,9 +226,13 @@ func (rt *Runtime) Reload(cfg models.WAFConfig, bundleID string, bundlePath stri
 			Send()
 	}
 	if !IsActive(cfg) {
+		hadCompiled := rt.compiled() != nil
 		rt.current.Store((*CompiledRuntime)(nil))
 		rt.storeConfig(cfg)
 		rt.lastError.Store("")
+		if hadCompiled {
+			releaseRuntimeMemorySoon()
+		}
 		if event := logger.DebugEvent("waf", "reload_end"); event != nil {
 			status := rt.Status()
 			event.Bool("enabled", status.Enabled).
@@ -235,6 +257,7 @@ func (rt *Runtime) Reload(cfg models.WAFConfig, bundleID string, bundlePath stri
 	rt.current.Store(compiled)
 	rt.storeConfig(compiled.Config)
 	rt.lastError.Store("")
+	releaseRuntimeMemorySoon()
 	if event := logger.DebugEvent("waf", "reload_end"); event != nil {
 		status := rt.Status()
 		event.Bool("enabled", status.Enabled).
@@ -429,6 +452,17 @@ func (rt *Runtime) compiled() *CompiledRuntime {
 	}
 	compiled, _ := value.(*CompiledRuntime)
 	return compiled
+}
+
+func releaseRuntimeMemorySoon() {
+	if !runtimeMemoryReleasePending.CompareAndSwap(false, true) {
+		return
+	}
+	time.AfterFunc(500*time.Millisecond, func() {
+		defer runtimeMemoryReleasePending.Store(false)
+		goruntime.GC()
+		debug.FreeOSMemory()
+	})
 }
 
 func (rt *Runtime) isExcluded(r *http.Request) bool {

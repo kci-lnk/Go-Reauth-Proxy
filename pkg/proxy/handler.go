@@ -3877,52 +3877,55 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			Send()
 	}
 	wafRouteType, wafRouteKey, wafUpstream := wafRouteContext(r, snapshot, isAuthRoute, matchedHostRule, matchedHostLocation, matchedRule)
-	h.mu.RLock()
-	commonLocationExemptions := h.commonLocationExemptions
-	h.mu.RUnlock()
-	wafBypassedByCommonLocation := commonLocationExemptions != nil && commonLocationExemptions.shouldBypassWAF(clientIP)
-	if h.wafRuntime != nil && !wafBypassedByCommonLocation {
-		decision := h.wafRuntime.Evaluate(r, proxywaf.EvaluateContext{
-			ClientIP:   clientIP,
-			RouteType:  wafRouteType,
-			RouteKey:   wafRouteKey,
-			Upstream:   wafUpstream,
-			Scheme:     requestScheme(r),
-			RemoteAddr: r.RemoteAddr,
-		})
-		if event := debugProxyEvent("waf_evaluated", requestID); event != nil {
-			event.Bool("enabled", decision.Enabled).
-				Bool("allowed", decision.Allowed).
-				Str("mode", decision.Mode).
-				Str("action", decision.Action).
-				Int("status", decision.Status).
-				Str("trace_id", decision.TraceID).
-				Ints("rule_ids", decision.RuleIDs).
-				Str("route_type", wafRouteType).
-				Str("route_key", logger.SanitizeLogString(wafRouteKey)).
-				Str("upstream", logger.SanitizeURL(wafUpstream)).
-				Send()
-		}
-		if decision.Enabled && decision.TraceID != "" {
-			accessEntry.WAFTraceID = decision.TraceID
-			accessEntry.WAFMode = decision.Mode
-			accessEntry.WAFRuleIDs = decision.RuleIDs
-			accessEntry.WAFAction = decision.Action
-			accessEntry.WAFBundle = decision.BundleID
-		}
-		if !decision.Allowed {
-			accessEntry.Matched = true
-			accessEntry.RouteType = wafRouteType
-			accessEntry.RouteKey = wafRouteKey
-			accessEntry.Upstream = wafUpstream
-			accessEntry.AuthDecision = "waf_blocked"
-			accessEntry.WAFBlocked = true
-			loggedStatusCode = decision.Status
-			response.WAFBlocked(w, r, response.WAFBlockPageOptions{
-				Status:  decision.Status,
-				TraceID: decision.TraceID,
+	wafRuntime := h.wafRuntime
+	if wafRuntime != nil && wafRuntime.Active() {
+		h.mu.RLock()
+		commonLocationExemptions := h.commonLocationExemptions
+		h.mu.RUnlock()
+		wafBypassedByCommonLocation := commonLocationExemptions != nil && commonLocationExemptions.shouldBypassWAF(clientIP)
+		if !wafBypassedByCommonLocation {
+			decision := wafRuntime.Evaluate(r, proxywaf.EvaluateContext{
+				ClientIP:   clientIP,
+				RouteType:  wafRouteType,
+				RouteKey:   wafRouteKey,
+				Upstream:   wafUpstream,
+				Scheme:     requestScheme(r),
+				RemoteAddr: r.RemoteAddr,
 			})
-			return
+			if event := debugProxyEvent("waf_evaluated", requestID); event != nil {
+				event.Bool("enabled", decision.Enabled).
+					Bool("allowed", decision.Allowed).
+					Str("mode", decision.Mode).
+					Str("action", decision.Action).
+					Int("status", decision.Status).
+					Str("trace_id", decision.TraceID).
+					Ints("rule_ids", decision.RuleIDs).
+					Str("route_type", wafRouteType).
+					Str("route_key", logger.SanitizeLogString(wafRouteKey)).
+					Str("upstream", logger.SanitizeURL(wafUpstream)).
+					Send()
+			}
+			if decision.Enabled && decision.TraceID != "" {
+				accessEntry.WAFTraceID = decision.TraceID
+				accessEntry.WAFMode = decision.Mode
+				accessEntry.WAFRuleIDs = decision.RuleIDs
+				accessEntry.WAFAction = decision.Action
+				accessEntry.WAFBundle = decision.BundleID
+			}
+			if !decision.Allowed {
+				accessEntry.Matched = true
+				accessEntry.RouteType = wafRouteType
+				accessEntry.RouteKey = wafRouteKey
+				accessEntry.Upstream = wafUpstream
+				accessEntry.AuthDecision = "waf_blocked"
+				accessEntry.WAFBlocked = true
+				loggedStatusCode = decision.Status
+				response.WAFBlocked(w, r, response.WAFBlockPageOptions{
+					Status:  decision.Status,
+					TraceID: decision.TraceID,
+				})
+				return
+			}
 		}
 	}
 	wrapRequestBodyForTraffic(r, h, metrics)

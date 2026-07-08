@@ -54,6 +54,7 @@ type proxyStack struct {
 const (
 	cmuxReadTimeout             = 2 * time.Second
 	proxyProtoReadHeaderTimeout = 2 * time.Second
+	targetNoFileLimit           = 1_048_576
 )
 
 func newProxyStack(proxyPort int, handler *proxy.Handler, httpServer *http.Server, httpsServer *http.Server) *proxyStack {
@@ -277,8 +278,39 @@ func newProxyTLSConfig(provider proxyTLSCertificateProvider) *tls.Config {
 	}
 }
 
+func raiseNoFileLimit() {
+	target := syscall.Rlimit{
+		Cur: targetNoFileLimit,
+		Max: targetNoFileLimit,
+	}
+	if err := syscall.Setrlimit(syscall.RLIMIT_NOFILE, &target); err == nil {
+		log.Printf("Raised RLIMIT_NOFILE to soft=%d hard=%d", targetNoFileLimit, targetNoFileLimit)
+		return
+	} else {
+		targetErr := err
+		var inherited syscall.Rlimit
+		if getErr := syscall.Getrlimit(syscall.RLIMIT_NOFILE, &inherited); getErr == nil && inherited.Cur < inherited.Max {
+			fallback := syscall.Rlimit{
+				Cur: inherited.Max,
+				Max: inherited.Max,
+			}
+			if setErr := syscall.Setrlimit(syscall.RLIMIT_NOFILE, &fallback); setErr == nil {
+				log.Printf(
+					"Failed to set RLIMIT_NOFILE to %d; raised soft limit to inherited hard limit %d instead: %v",
+					targetNoFileLimit,
+					inherited.Max,
+					targetErr,
+				)
+				return
+			}
+		}
+		log.Printf("Failed to set RLIMIT_NOFILE to %d: %v", targetNoFileLimit, targetErr)
+	}
+}
+
 func main() {
 	logger.Setup()
+	raiseNoFileLimit()
 
 	adminPort := flag.Int("admin-port", 7996, "Port for the Admin API (0 uses config or default 7996, binds to localhost on 127.0.0.1 and ::1)")
 	proxyPort := flag.Int("proxy-port", envPortDefault("GO_REPROXY_PORT", 7999), "Port for the Reverse Proxy (defaults to GO_REPROXY_PORT or 7999; binds to 0.0.0.0/:: or 127.0.0.1/::1 based on proxy_protocol_force)")

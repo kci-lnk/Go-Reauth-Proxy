@@ -1,6 +1,7 @@
 package main
 
 import (
+	"crypto/tls"
 	"errors"
 	"net"
 	"net/http"
@@ -87,6 +88,30 @@ func TestStartProxyServersBindsEphemeralLoopbackPort(t *testing.T) {
 	defer stop()
 	if !strings.Contains(addr, "127.0.0.1:") && !strings.Contains(addr, "[::1]:") {
 		t.Fatalf("listen addr = %q", addr)
+	}
+}
+
+type serverTestCertificateProvider struct {
+	cert *tls.Certificate
+}
+
+func (p serverTestCertificateProvider) GetCertificate(*tls.ClientHelloInfo) *tls.Certificate {
+	return p.cert
+}
+
+func TestProxyTLSConfigEnablesSessionResumption(t *testing.T) {
+	cfg := newProxyTLSConfig(serverTestCertificateProvider{})
+	if cfg.SessionTicketsDisabled {
+		t.Fatal("SessionTicketsDisabled = true, want TLS session tickets enabled")
+	}
+	if cfg.MinVersion != tls.VersionTLS12 {
+		t.Fatalf("MinVersion = %x, want TLS 1.2", cfg.MinVersion)
+	}
+	if len(cfg.NextProtos) != 2 || cfg.NextProtos[0] != "h2" || cfg.NextProtos[1] != "http/1.1" {
+		t.Fatalf("NextProtos = %#v, want h2/http1", cfg.NextProtos)
+	}
+	if _, err := cfg.GetCertificate(&tls.ClientHelloInfo{}); err == nil {
+		t.Fatal("GetCertificate returned nil error for missing certificate")
 	}
 }
 

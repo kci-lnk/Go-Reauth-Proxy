@@ -256,6 +256,27 @@ func envPortDefault(name string, fallback int) int {
 	return value
 }
 
+type proxyTLSCertificateProvider interface {
+	GetCertificate(*tls.ClientHelloInfo) *tls.Certificate
+}
+
+func newProxyTLSConfig(provider proxyTLSCertificateProvider) *tls.Config {
+	return &tls.Config{
+		MinVersion: tls.VersionTLS12,
+		NextProtos: []string{"h2", "http/1.1"},
+		GetCertificate: func(info *tls.ClientHelloInfo) (*tls.Certificate, error) {
+			if provider == nil {
+				return nil, fmt.Errorf("SSL not enabled")
+			}
+			cert := provider.GetCertificate(info)
+			if cert == nil {
+				return nil, fmt.Errorf("SSL not enabled")
+			}
+			return cert, nil
+		},
+	}
+}
+
 func main() {
 	logger.Setup()
 
@@ -400,17 +421,7 @@ func main() {
 		Handler:           proxyHandler,
 		ReadHeaderTimeout: 10 * time.Second,
 		IdleTimeout:       120 * time.Second,
-		TLSConfig: &tls.Config{
-			NextProtos:             []string{"h2", "http/1.1"},
-			SessionTicketsDisabled: true,
-			GetCertificate: func(info *tls.ClientHelloInfo) (*tls.Certificate, error) {
-				cert := proxyHandler.GetCertificate(info)
-				if cert == nil {
-					return nil, fmt.Errorf("SSL not enabled")
-				}
-				return cert, nil
-			},
-		},
+		TLSConfig:         newProxyTLSConfig(proxyHandler),
 	}
 
 	httpServer := &http.Server{

@@ -93,3 +93,49 @@ func TestHostRulesAdminAcceptsAndNormalizesDefaultHostRule(t *testing.T) {
 		t.Fatalf("second host rule should be cleared as default: %#v", resp.Data)
 	}
 }
+
+func TestHostRulesAdminPreservesDisabledAndAvailability(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "config.json")
+	cfgManager := config.NewManager(configPath)
+	initialCfg, err := cfgManager.Load()
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	proxyHandler := proxy.NewHandler(7996, 7999, cfgManager, initialCfg, filepath.Join(t.TempDir(), "logs"), nil)
+	server := NewServer(proxyHandler, 7996, cfgManager, initialCfg, nil)
+
+	body := []byte(`[
+		{
+			"host":"app.example.com",
+			"target":"http://127.0.0.1:8080",
+			"disabled":true,
+			"availability":{"enabled":true,"start_time":"22:00","end_time":"06:00"}
+		}
+	]`)
+	req := httptest.NewRequest(http.MethodPost, "/api/host-rules", bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+	server.handleAddHostRule(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+
+	var resp struct {
+		Success bool              `json:"success"`
+		Data    []models.HostRule `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if !resp.Success || len(resp.Data) != 1 {
+		t.Fatalf("response = %#v, want one host rule", resp)
+	}
+	if !resp.Data[0].Disabled {
+		t.Fatalf("disabled = false, want true")
+	}
+	if resp.Data[0].Availability == nil ||
+		!resp.Data[0].Availability.Enabled ||
+		resp.Data[0].Availability.StartTime != "22:00" ||
+		resp.Data[0].Availability.EndTime != "06:00" {
+		t.Fatalf("availability = %#v", resp.Data[0].Availability)
+	}
+}

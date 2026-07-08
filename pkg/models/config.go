@@ -12,17 +12,25 @@ type Rule struct {
 }
 
 type HostRule struct {
-	Host            string          `json:"host" example:"redis.example.com"`
-	Target          string          `json:"target" example:"http://127.0.0.1:5173"`
-	UseAuth         bool            `json:"use_auth" example:"true"`
-	AccessMode      string          `json:"access_mode,omitempty" example:"login_first"`
-	SuppressToolbar bool            `json:"suppress_toolbar,omitempty" example:"false"`
-	PreserveHost    bool            `json:"preserve_host,omitempty" example:"true"`
-	IsDefault       bool            `json:"is_default,omitempty" example:"false"`
-	Title           string          `json:"title,omitempty" example:"Redis"`
-	Favicon         string          `json:"favicon,omitempty" example:"data:image/png;base64,..."`
-	BasicAuth       BasicAuthConfig `json:"basic_auth,omitempty"`
-	Locations       []HostLocation  `json:"locations,omitempty"`
+	Host            string                `json:"host" example:"redis.example.com"`
+	Target          string                `json:"target" example:"http://127.0.0.1:5173"`
+	UseAuth         bool                  `json:"use_auth" example:"true"`
+	AccessMode      string                `json:"access_mode,omitempty" example:"login_first"`
+	SuppressToolbar bool                  `json:"suppress_toolbar,omitempty" example:"false"`
+	PreserveHost    bool                  `json:"preserve_host,omitempty" example:"true"`
+	IsDefault       bool                  `json:"is_default,omitempty" example:"false"`
+	Disabled        bool                  `json:"disabled,omitempty" example:"false"`
+	Availability    *HostRuleAvailability `json:"availability,omitempty"`
+	Title           string                `json:"title,omitempty" example:"Redis"`
+	Favicon         string                `json:"favicon,omitempty" example:"data:image/png;base64,..."`
+	BasicAuth       BasicAuthConfig       `json:"basic_auth,omitempty"`
+	Locations       []HostLocation        `json:"locations,omitempty"`
+}
+
+type HostRuleAvailability struct {
+	Enabled   bool   `json:"enabled" example:"true"`
+	StartTime string `json:"start_time" example:"09:00"`
+	EndTime   string `json:"end_time" example:"18:00"`
 }
 
 const (

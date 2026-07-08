@@ -444,9 +444,18 @@ func copyHostRules(rules []models.HostRule) []models.HostRule {
 	copied := make([]models.HostRule, len(rules))
 	for i, rule := range rules {
 		copied[i] = rule
+		copied[i].Availability = copyHostRuleAvailability(rule.Availability)
 		copied[i].Locations = copyHostLocations(rule.Locations)
 	}
 	return copied
+}
+
+func copyHostRuleAvailability(value *models.HostRuleAvailability) *models.HostRuleAvailability {
+	if value == nil {
+		return nil
+	}
+	copied := *value
+	return &copied
 }
 
 func keepFirstDefaultHostRule(rules []models.HostRule) {
@@ -2119,6 +2128,11 @@ func (h *Handler) normalizeHostRule(newRule models.HostRule) (models.HostRule, e
 	}
 	newRule.Title = strings.TrimSpace(newRule.Title)
 	newRule.Favicon = strings.TrimSpace(newRule.Favicon)
+	availability, err := normalizeHostRuleAvailability(newRule.Availability)
+	if err != nil {
+		return models.HostRule{}, err
+	}
+	newRule.Availability = availability
 	basicAuth, err := normalizeBasicAuthConfig(newRule.BasicAuth)
 	if err != nil {
 		return models.HostRule{}, err
@@ -4082,6 +4096,29 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if matchedHostRule != nil {
 		accessMode = matchedHostRule.AccessMode
 	}
+	if matchedHostRule != nil {
+		availability := evaluateHostRuleAvailability(matchedHostRule, start)
+		if !availability.Available {
+			accessEntry.RouteType = "host_unavailable"
+			accessEntry.RouteKey = matchedHostRule.Host
+			accessEntry.Upstream = matchedHostRule.Target
+			accessEntry.Matched = true
+			accessEntry.AuthDecision = availability.Reason
+			accessEntry.AccessMode = accessMode
+			loggedStatusCode = http.StatusServiceUnavailable
+			if event := debugProxyEvent("host_unavailable", requestID); event != nil {
+				event.Str("host", logger.SanitizeLogString(matchedHostRule.Host)).
+					Str("reason", logger.SanitizeLogString(availability.Reason)).
+					Str("window", logger.SanitizeLogString(availability.Window)).
+					Send()
+			}
+			response.HostUnavailable(w, r, response.HostUnavailableOptions{
+				Reason: availability.Reason,
+				Window: availability.Window,
+			})
+			return
+		}
+	}
 
 	matchedRule, needsSlashRedirect := matchRule(r, snapshot)
 	if matchedHostRule != nil {
@@ -4090,14 +4127,18 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if matchedRule == nil && needsSlashRedirect == "" && matchedHostRule == nil && !isSelectRoute && !isAuthRoute {
-		if redirectURL := buildDefaultHostRuleRedirectURL(r, snapshot.defaultHostRule); redirectURL != "" {
+		defaultHostRule := snapshot.defaultHostRule
+		if defaultHostRule != nil && !hostRuleAvailableNow(defaultHostRule, start) {
+			defaultHostRule = nil
+		}
+		if redirectURL := buildDefaultHostRuleRedirectURL(r, defaultHostRule); redirectURL != "" {
 			accessEntry.RouteType = "default_host_redirect"
-			accessEntry.RouteKey = snapshot.defaultHostRule.Host
-			accessEntry.Upstream = snapshot.defaultHostRule.Target
+			accessEntry.RouteKey = defaultHostRule.Host
+			accessEntry.Upstream = defaultHostRule.Target
 			accessEntry.Matched = true
 			accessEntry.AuthDecision = "redirected"
 			if event := debugProxyEvent("default_host_redirect", requestID); event != nil {
-				event.Str("host", logger.SanitizeLogString(snapshot.defaultHostRule.Host)).
+				event.Str("host", logger.SanitizeLogString(defaultHostRule.Host)).
 					Str("target", logger.SanitizeURL(redirectURL)).
 					Send()
 			}
@@ -4482,6 +4523,7 @@ func filterSelectHostRulesByAuthScope(hostRules []models.HostRule, authResult au
 }
 
 func (h *Handler) handleSelectRoute(w http.ResponseWriter, r *http.Request, snapshot requestSnapshot, clientIP string, requestID string) authCheckResult {
+	availableHostRules := filterAvailableHostRules(snapshot.toolbarHostRules, time.Now())
 	if snapshot.authConfig.AuthURL != "" {
 		authResult := h.checkAuth(w, r, snapshot.authConfig, clientIP, "", "", requestID)
 		if !authResult.allowed {
@@ -4491,12 +4533,12 @@ func (h *Handler) handleSelectRoute(w http.ResponseWriter, r *http.Request, snap
 			w,
 			r,
 			snapshot.toolbarRules,
-			filterSelectHostRulesByAuthScope(snapshot.toolbarHostRules, authResult),
+			filterSelectHostRulesByAuthScope(availableHostRules, authResult),
 			snapshot.gatewayPortal,
 		)
 		return authResult
 	}
-	response.SelectPageWithPrefilteredRoutes(w, r, snapshot.toolbarRules, snapshot.toolbarHostRules, snapshot.gatewayPortal)
+	response.SelectPageWithPrefilteredRoutes(w, r, snapshot.toolbarRules, availableHostRules, snapshot.gatewayPortal)
 	return authCheckResult{allowed: true, decision: "not_required"}
 }
 
@@ -4994,7 +5036,7 @@ func (h *Handler) proxyToHostLocationTarget(w http.ResponseWriter, r *http.Reque
 				return response.GenerateToolbarWithPrefilteredHostsForRequest(
 					r,
 					snapshot.toolbarRules,
-					snapshot.toolbarHostRules,
+					filterAvailableHostRules(snapshot.toolbarHostRules, time.Now()),
 					r.URL.Path,
 					matchedRule.Host,
 					snapshot.authConfig.AuthHost,
@@ -5142,7 +5184,7 @@ func (h *Handler) proxyToHostTarget(w http.ResponseWriter, r *http.Request, snap
 				return response.GenerateToolbarWithPrefilteredHostsForRequest(
 					r,
 					snapshot.toolbarRules,
-					snapshot.toolbarHostRules,
+					filterAvailableHostRules(snapshot.toolbarHostRules, time.Now()),
 					r.URL.Path,
 					matchedRule.Host,
 					snapshot.authConfig.AuthHost,

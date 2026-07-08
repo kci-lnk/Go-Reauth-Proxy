@@ -274,17 +274,19 @@ func (s *Server) handleAddHostRule(w http.ResponseWriter, r *http.Request) {
 		Response    models.HostLocationResponse `json:"response"`
 	}
 	type hostRuleRequest struct {
-		Host            string                 `json:"host"`
-		Target          string                 `json:"target"`
-		UseAuth         *bool                  `json:"use_auth"`
-		AccessMode      string                 `json:"access_mode"`
-		SuppressToolbar *bool                  `json:"suppress_toolbar"`
-		PreserveHost    *bool                  `json:"preserve_host"`
-		IsDefault       bool                   `json:"is_default"`
-		Title           string                 `json:"title"`
-		Favicon         *string                `json:"favicon"`
-		BasicAuth       models.BasicAuthConfig `json:"basic_auth"`
-		Locations       []hostLocationRequest  `json:"locations"`
+		Host            string                       `json:"host"`
+		Target          string                       `json:"target"`
+		UseAuth         *bool                        `json:"use_auth"`
+		AccessMode      string                       `json:"access_mode"`
+		SuppressToolbar *bool                        `json:"suppress_toolbar"`
+		PreserveHost    *bool                        `json:"preserve_host"`
+		IsDefault       bool                         `json:"is_default"`
+		Disabled        *bool                        `json:"disabled"`
+		Availability    *models.HostRuleAvailability `json:"availability"`
+		Title           string                       `json:"title"`
+		Favicon         *string                      `json:"favicon"`
+		BasicAuth       models.BasicAuthConfig       `json:"basic_auth"`
+		Locations       []hostLocationRequest        `json:"locations"`
 	}
 
 	var reqs []hostRuleRequest
@@ -324,6 +326,8 @@ func (s *Server) handleAddHostRule(w http.ResponseWriter, r *http.Request) {
 			SuppressToolbar: req.SuppressToolbar != nil && *req.SuppressToolbar,
 			PreserveHost:    req.PreserveHost == nil || *req.PreserveHost,
 			IsDefault:       req.IsDefault,
+			Disabled:        req.Disabled != nil && *req.Disabled,
+			Availability:    req.Availability,
 			Title:           req.Title,
 			Favicon: func() string {
 				if req.Favicon == nil {

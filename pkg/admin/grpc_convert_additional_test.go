@@ -44,6 +44,8 @@ func TestHostRulesProtoRoundTripPreservesLocations(t *testing.T) {
 		SuppressToolbar: true,
 		PreserveHost:    true,
 		IsDefault:       true,
+		Disabled:        true,
+		Availability:    &models.HostRuleAvailability{Enabled: true, StartTime: "22:00", EndTime: "06:00"},
 		Title:           "App",
 		Favicon:         "data:image/png;base64,AA",
 		BasicAuth:       models.BasicAuthConfig{Enabled: true, Username: "u", Password: "p"},

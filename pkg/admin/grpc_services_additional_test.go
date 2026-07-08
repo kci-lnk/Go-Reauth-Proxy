@@ -43,7 +43,17 @@ func TestGatewayControlFlushRulesClearsRules(t *testing.T) {
 func TestGatewayControlHostRulesRoundTrip(t *testing.T) {
 	server := newGatewayControlTestServer(t, "secret")
 	ctx := authTestContext()
-	_, err := server.SetHostRules(ctx, &pb.HostRules{Items: []*pb.HostRule{{Host: "App.Example.Test", Target: "http://127.0.0.1:8080", UseAuth: true}}})
+	_, err := server.SetHostRules(ctx, &pb.HostRules{Items: []*pb.HostRule{{
+		Host:     "App.Example.Test",
+		Target:   "http://127.0.0.1:8080",
+		UseAuth:  true,
+		Disabled: true,
+		Availability: &pb.HostRuleAvailability{
+			Enabled:   true,
+			StartTime: "22:00",
+			EndTime:   "06:00",
+		},
+	}}})
 	if err != nil {
 		t.Fatalf("SetHostRules() returned error: %v", err)
 	}
@@ -53,6 +63,11 @@ func TestGatewayControlHostRulesRoundTrip(t *testing.T) {
 	}
 	if len(got.GetItems()) != 1 || got.GetItems()[0].GetHost() != "app.example.test" {
 		t.Fatalf("host rules = %#v", got.GetItems())
+	}
+	if !got.GetItems()[0].GetDisabled() ||
+		got.GetItems()[0].GetAvailability().GetStartTime() != "22:00" ||
+		got.GetItems()[0].GetAvailability().GetEndTime() != "06:00" {
+		t.Fatalf("availability fields not preserved: %#v", got.GetItems()[0])
 	}
 }
 

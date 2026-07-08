@@ -134,6 +134,28 @@ func protoToHostLocations(locations []*pb.HostLocation) []models.HostLocation {
 	return items
 }
 
+func hostRuleAvailabilityToProto(value *models.HostRuleAvailability) *pb.HostRuleAvailability {
+	if value == nil {
+		return nil
+	}
+	return &pb.HostRuleAvailability{
+		Enabled:   value.Enabled,
+		StartTime: value.StartTime,
+		EndTime:   value.EndTime,
+	}
+}
+
+func protoToHostRuleAvailability(value *pb.HostRuleAvailability) *models.HostRuleAvailability {
+	if value == nil {
+		return nil
+	}
+	return &models.HostRuleAvailability{
+		Enabled:   value.GetEnabled(),
+		StartTime: value.GetStartTime(),
+		EndTime:   value.GetEndTime(),
+	}
+}
+
 func hostRulesToProto(rules []models.HostRule) *pb.HostRules {
 	items := make([]*pb.HostRule, 0, len(rules))
 	for _, rule := range rules {
@@ -149,6 +171,8 @@ func hostRulesToProto(rules []models.HostRule) *pb.HostRules {
 			Favicon:         rule.Favicon,
 			BasicAuth:       basicAuthToProto(rule.BasicAuth),
 			Locations:       hostLocationsToProto(rule.Locations),
+			Disabled:        rule.Disabled,
+			Availability:    hostRuleAvailabilityToProto(rule.Availability),
 		})
 	}
 	return &pb.HostRules{Items: items}
@@ -175,6 +199,8 @@ func protoToHostRules(req *pb.HostRules) []models.HostRule {
 			Favicon:         rule.GetFavicon(),
 			BasicAuth:       protoToBasicAuth(rule.GetBasicAuth()),
 			Locations:       protoToHostLocations(rule.GetLocations()),
+			Disabled:        rule.GetDisabled(),
+			Availability:    protoToHostRuleAvailability(rule.GetAvailability()),
 		})
 	}
 	return rules

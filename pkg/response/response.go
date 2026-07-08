@@ -145,6 +145,7 @@ type pageData struct {
 	ToolbarHTML   template.HTML
 	RequestHost   string
 	RequestPath   string
+	Detail        string
 	HTMLLang      string
 	Labels        map[string]string
 }
@@ -344,6 +345,7 @@ func gatewayLabels(locale string) map[string]string {
 		"request":           i18n.T(locale, "gateway.request"),
 		"host":              i18n.T(locale, "gateway.host"),
 		"path":              i18n.T(locale, "gateway.path"),
+		"openWindow":        i18n.T(locale, "gateway.openWindow"),
 		"selectDescription": i18n.T(locale, "gateway.selectDescription"),
 		"routesEmpty":       i18n.T(locale, "gateway.routesEmpty"),
 		"logout":            i18n.T(locale, "gateway.logout"),

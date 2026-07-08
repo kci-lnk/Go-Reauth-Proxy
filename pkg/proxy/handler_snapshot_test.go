@@ -21,6 +21,40 @@ var (
 	benchmarkURLSink           *url.URL
 )
 
+func TestNewInternalTransportUsesHighIdleConnectionLimits(t *testing.T) {
+	transport := newInternalTransport()
+	if got, want := transport.MaxIdleConns, 2048; got != want {
+		t.Fatalf("MaxIdleConns = %d, want %d", got, want)
+	}
+	if got, want := transport.MaxIdleConnsPerHost, 2048; got != want {
+		t.Fatalf("MaxIdleConnsPerHost = %d, want %d", got, want)
+	}
+}
+
+func TestShouldRunPreflightForRouteKeepsLegacyDefault(t *testing.T) {
+	if !shouldRunPreflightForRoute(false, false, nil, nil) {
+		t.Fatalf("unmatched requests should keep the legacy preflight path")
+	}
+	if !shouldRunPreflightForRoute(true, false, nil, nil) {
+		t.Fatalf("select route should run preflight")
+	}
+	if !shouldRunPreflightForRoute(false, true, nil, nil) {
+		t.Fatalf("auth route should run preflight")
+	}
+	if shouldRunPreflightForRoute(false, false, &models.HostRule{UseAuth: false}, nil) {
+		t.Fatalf("host rule with use_auth=false should skip preflight")
+	}
+	if !shouldRunPreflightForRoute(false, false, &models.HostRule{UseAuth: true}, nil) {
+		t.Fatalf("host rule with use_auth=true should run preflight")
+	}
+	if shouldRunPreflightForRoute(false, false, nil, &models.Rule{UseAuth: false}) {
+		t.Fatalf("path rule with use_auth=false should skip preflight")
+	}
+	if !shouldRunPreflightForRoute(false, false, nil, &models.Rule{UseAuth: true}) {
+		t.Fatalf("path rule with use_auth=true should run preflight")
+	}
+}
+
 func TestNormalizeRequestHostMatchesLegacyBehavior(t *testing.T) {
 	cases := []string{
 		"",

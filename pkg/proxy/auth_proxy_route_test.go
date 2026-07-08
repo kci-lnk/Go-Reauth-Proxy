@@ -270,6 +270,61 @@ func TestHostRulePreflightScopeDeniedReturnsAccessDeniedPage(t *testing.T) {
 	}
 }
 
+func TestHostRuleWithoutAuthSkipsPreflight(t *testing.T) {
+	var preflightHits int32
+	var targetHits int32
+
+	bridge := testAuthBridge{
+		preflight: func(context.Context, *pb.PreflightAuthRequest) (*pb.PreflightAuthResponse, error) {
+			atomic.AddInt32(&preflightHits, 1)
+			return &pb.PreflightAuthResponse{AccessDeniedReason: reauthScopeDeniedReason}, nil
+		},
+	}
+
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&targetHits, 1)
+		_, _ = io.WriteString(w, "public")
+	}))
+	defer target.Close()
+
+	handler := &Handler{
+		HostRules: []models.HostRule{
+			{
+				Host:       "public.example.com",
+				Target:     target.URL,
+				UseAuth:    false,
+				AccessMode: "login_first",
+			},
+		},
+		AuthConfig: models.AuthConfig{
+			AuthURL:      "/api/auth/verify",
+			PreflightURL: "/api/auth/preflight",
+		},
+		authBridge:     bridge,
+		authCache:      newAuthStateCache(),
+		preflightCache: newPreflightStateCache(),
+	}
+	handler.publishRequestSnapshotLocked()
+
+	req := httptest.NewRequest(http.MethodGet, "http://public.example.com/", nil)
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body = %s", rec.Code, rec.Body.String())
+	}
+	if body := rec.Body.String(); body != "public" {
+		t.Fatalf("body = %q, want public", body)
+	}
+	if got := atomic.LoadInt32(&preflightHits); got != 0 {
+		t.Fatalf("preflight hits = %d, want 0", got)
+	}
+	if got := atomic.LoadInt32(&targetHits); got != 1 {
+		t.Fatalf("target hits = %d, want 1", got)
+	}
+}
+
 func TestSelectRouteFiltersHostRulesByCredentialScope(t *testing.T) {
 	var verifyHits int32
 

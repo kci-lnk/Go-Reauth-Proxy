@@ -29,7 +29,7 @@ const (
 	cursorChunkSize               = 64 * 1024
 	pageQueryTailWindowMaxEntries = 10000
 	unrecordedCredentialFilter    = "__unrecorded__"
-	asyncLogQueueSize             = 4096
+	asyncLogQueueSize             = 13200
 	asyncLogDropWarnInterval      = 30 * time.Second
 )
 

@@ -509,8 +509,8 @@ func normalizeRequestHost(host string) string {
 
 func newInternalTransport() *http.Transport {
 	transport := http.DefaultTransport.(*http.Transport).Clone()
-	transport.MaxIdleConns = 100
-	transport.MaxIdleConnsPerHost = 100
+	transport.MaxIdleConns = 2048
+	transport.MaxIdleConnsPerHost = 2048
 	transport.IdleConnTimeout = 90 * time.Second
 	transport.ForceAttemptHTTP2 = true
 	return transport
@@ -1023,6 +1023,19 @@ func (h *Handler) performPreflight(r *http.Request, authConfig models.AuthConfig
 			Send()
 	}
 	return decision, nil
+}
+
+func shouldRunPreflightForRoute(isSelectRoute bool, isAuthRoute bool, matchedHostRule *models.HostRule, matchedRule *models.Rule) bool {
+	if isSelectRoute || isAuthRoute {
+		return true
+	}
+	if matchedHostRule != nil {
+		return matchedHostRule.UseAuth
+	}
+	if matchedRule != nil {
+		return matchedRule.UseAuth
+	}
+	return true
 }
 
 func (h *Handler) abortConnection(w http.ResponseWriter) {
@@ -4269,64 +4282,72 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	isMatch := isSelectRoute || isAuthRoute || matchedHostRule != nil || matchedRule != nil || r.URL.Path == "/"
 	accessEntry.Matched = isMatch
 	accessEntry.AccessMode = accessMode
-	preflight := h.runPreflight(r, snapshot.authConfig, clientIP, isMatch, accessMode, requestID)
-	if preflight.accessDeniedReason != "" {
-		if isAuthRoute {
-			if event := debugProxyEvent("preflight_access_denied_ignored_auth_route", requestID); event != nil {
-				event.Str("client_ip", logger.SanitizeLogString(clientIP)).
-					Str("reason", logger.SanitizeLogString(preflight.accessDeniedReason)).
-					Str("path", logger.SanitizeLogString(r.URL.Path)).
-					Send()
+	if shouldRunPreflightForRoute(isSelectRoute, isAuthRoute, matchedHostRule, matchedRule) {
+		preflight := h.runPreflight(r, snapshot.authConfig, clientIP, isMatch, accessMode, requestID)
+		if preflight.accessDeniedReason != "" {
+			if isAuthRoute {
+				if event := debugProxyEvent("preflight_access_denied_ignored_auth_route", requestID); event != nil {
+					event.Str("client_ip", logger.SanitizeLogString(clientIP)).
+						Str("reason", logger.SanitizeLogString(preflight.accessDeniedReason)).
+						Str("path", logger.SanitizeLogString(r.URL.Path)).
+						Send()
+				}
+			} else {
+				accessEntry.RouteType = "preflight"
+				accessEntry.AuthDecision = "access_denied"
+				accessEntry.LoggedIn = preflight.credentialIdentity.hasCredential()
+				applyAuthCredentialIdentityToLogEntry(&accessEntry, preflight.credentialIdentity)
+				loggedStatusCode = http.StatusForbidden
+				if event := debugProxyEvent("preflight_access_denied", requestID); event != nil {
+					event.Str("client_ip", logger.SanitizeLogString(clientIP)).
+						Str("reason", logger.SanitizeLogString(preflight.accessDeniedReason)).
+						Str("credential_id", logger.SanitizeLogString(preflight.credentialIdentity.credentialID)).
+						Str("linked_totp_id", logger.SanitizeLogString(preflight.credentialIdentity.linkedTOTPID)).
+						Bool("matched", isMatch).
+						Str("access_mode", accessMode).
+						Send()
+				}
+				response.AccessDenied(w, r)
+				return
 			}
-		} else {
+		}
+		if preflight.deny {
 			accessEntry.RouteType = "preflight"
-			accessEntry.AuthDecision = "access_denied"
-			accessEntry.LoggedIn = preflight.credentialIdentity.hasCredential()
-			applyAuthCredentialIdentityToLogEntry(&accessEntry, preflight.credentialIdentity)
-			loggedStatusCode = http.StatusForbidden
-			if event := debugProxyEvent("preflight_access_denied", requestID); event != nil {
+			accessEntry.AuthDecision = "denied"
+			loggedStatusCode = 499
+			suppressAccessLog(w)
+			if event := debugProxyEvent("preflight_denied", requestID); event != nil {
 				event.Str("client_ip", logger.SanitizeLogString(clientIP)).
-					Str("reason", logger.SanitizeLogString(preflight.accessDeniedReason)).
-					Str("credential_id", logger.SanitizeLogString(preflight.credentialIdentity.credentialID)).
-					Str("linked_totp_id", logger.SanitizeLogString(preflight.credentialIdentity.linkedTOTPID)).
 					Bool("matched", isMatch).
 					Str("access_mode", accessMode).
 					Send()
 			}
-			response.AccessDenied(w, r)
+			h.abortConnection(w)
 			return
 		}
-	}
-	if preflight.deny {
-		accessEntry.RouteType = "preflight"
-		accessEntry.AuthDecision = "denied"
-		loggedStatusCode = 499
-		suppressAccessLog(w)
-		if event := debugProxyEvent("preflight_denied", requestID); event != nil {
-			event.Str("client_ip", logger.SanitizeLogString(clientIP)).
-				Bool("matched", isMatch).
+		if preflight.redirectLocation != "" {
+			accessEntry.RouteType = "preflight"
+			accessEntry.AuthDecision = "redirected"
+			if event := debugProxyEvent("preflight_redirected", requestID); event != nil {
+				event.Str("redirect_location", logger.SanitizeURL(preflight.redirectLocation)).
+					Bool("matched", isMatch).
+					Str("access_mode", accessMode).
+					Send()
+			}
+			http.Redirect(w, r, preflight.redirectLocation, http.StatusFound)
+			return
+		}
+		if event := debugProxyEvent("preflight_allowed", requestID); event != nil {
+			event.Bool("matched", isMatch).
 				Str("access_mode", accessMode).
 				Send()
 		}
-		h.abortConnection(w)
-		return
-	}
-	if preflight.redirectLocation != "" {
-		accessEntry.RouteType = "preflight"
-		accessEntry.AuthDecision = "redirected"
-		if event := debugProxyEvent("preflight_redirected", requestID); event != nil {
-			event.Str("redirect_location", logger.SanitizeURL(preflight.redirectLocation)).
-				Bool("matched", isMatch).
+	} else {
+		if event := debugProxyEvent("preflight_skipped_auth_not_required", requestID); event != nil {
+			event.Bool("matched", isMatch).
 				Str("access_mode", accessMode).
 				Send()
 		}
-		http.Redirect(w, r, preflight.redirectLocation, http.StatusFound)
-		return
-	}
-	if event := debugProxyEvent("preflight_allowed", requestID); event != nil {
-		event.Bool("matched", isMatch).
-			Str("access_mode", accessMode).
-			Send()
 	}
 	if needsSlashRedirect != "" {
 		accessEntry.RouteType = "slash_redirect"

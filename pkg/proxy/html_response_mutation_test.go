@@ -3,6 +3,7 @@ package proxy
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -21,6 +22,12 @@ type trackingReadCloser struct {
 	closed    bool
 }
 
+type failingReadCloser struct {
+	body []byte
+	err  error
+	read bool
+}
+
 func newTrackingReadCloser(body []byte) *trackingReadCloser {
 	return &trackingReadCloser{reader: bytes.NewReader(body)}
 }
@@ -32,6 +39,18 @@ func (rc *trackingReadCloser) Read(p []byte) (int, error) {
 
 func (rc *trackingReadCloser) Close() error {
 	rc.closed = true
+	return nil
+}
+
+func (rc *failingReadCloser) Read(p []byte) (int, error) {
+	if rc.read {
+		return 0, rc.err
+	}
+	rc.read = true
+	return copy(p, rc.body), rc.err
+}
+
+func (rc *failingReadCloser) Close() error {
 	return nil
 }
 
@@ -86,6 +105,125 @@ func TestMaybeMutateHTMLProxyResponseSmallHTMLRewritesAndInjectsToolbar(t *testi
 	}
 	if got := resp.Header.Get("Content-Length"); got != strconv.Itoa(len(mutated)) {
 		t.Fatalf("Content-Length header = %q, want %d", got, len(mutated))
+	}
+}
+
+func TestMaybeMutateHTMLProxyResponseToolbarOnlyStreamsBeforeBodyClose(t *testing.T) {
+	body := []byte(`<html><body><main>app</main></body></html>`)
+	resp, rc := newHTMLMutationResponse(body, "text/html", int64(len(body)))
+
+	err := maybeMutateHTMLProxyResponse(resp, htmlResponseMutationOptions{
+		toolbar: true,
+		toolbarHTML: func() string {
+			return `<script>toolbar()</script>`
+		},
+		routeType: "test",
+		routeKey:  "app.example.com",
+	})
+	if err != nil {
+		t.Fatalf("maybeMutateHTMLProxyResponse returned error: %v", err)
+	}
+	if rc.readCount != 0 {
+		t.Fatalf("readCount = %d, want 0 before streamed body is read", rc.readCount)
+	}
+	if resp.ContentLength != -1 || resp.Header.Get("Content-Length") != "" {
+		t.Fatalf("streamed toolbar response kept content length: field=%d header=%q", resp.ContentLength, resp.Header.Get("Content-Length"))
+	}
+
+	mutated, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read streamed mutated response: %v", err)
+	}
+	if bodyText := string(mutated); !strings.Contains(bodyText, `<main>app</main><script>toolbar()</script></body>`) {
+		t.Fatalf("streamed toolbar was not injected before body close: %s", bodyText)
+	}
+	if err := resp.Body.Close(); err != nil {
+		t.Fatalf("close streamed body: %v", err)
+	}
+	if !rc.closed {
+		t.Fatal("original response body was not closed through streaming wrapper")
+	}
+}
+
+func TestMaybeMutateHTMLProxyResponseToolbarOnlyStreamsAcrossBodyCloseBoundary(t *testing.T) {
+	prefix := "<html><body>" + strings.Repeat("x", htmlToolbarStreamChunkSize-len("<html><body>")-len("</"))
+	body := []byte(prefix + `</body></html>`)
+	resp, _ := newHTMLMutationResponse(body, "text/html", int64(len(body)))
+
+	err := maybeMutateHTMLProxyResponse(resp, htmlResponseMutationOptions{
+		toolbar: true,
+		toolbarHTML: func() string {
+			return `<script>toolbar()</script>`
+		},
+		routeType: "test",
+		routeKey:  "app.example.com",
+	})
+	if err != nil {
+		t.Fatalf("maybeMutateHTMLProxyResponse returned error: %v", err)
+	}
+
+	mutated, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read streamed mutated response: %v", err)
+	}
+	if bodyText := string(mutated); !strings.Contains(bodyText, `xxx<script>toolbar()</script></body>`) {
+		t.Fatalf("streamed toolbar was not injected across body close boundary")
+	}
+}
+
+func TestMaybeMutateHTMLProxyResponseToolbarOnlyStreamsAppendWithoutBodyClose(t *testing.T) {
+	body := []byte(`<!doctype html><html><main>app</main>`)
+	resp, _ := newHTMLMutationResponse(body, "text/html", -1)
+
+	err := maybeMutateHTMLProxyResponse(resp, htmlResponseMutationOptions{
+		toolbar: true,
+		toolbarHTML: func() string {
+			return `<script>toolbar()</script>`
+		},
+		routeType: "test",
+		routeKey:  "app.example.com",
+	})
+	if err != nil {
+		t.Fatalf("maybeMutateHTMLProxyResponse returned error: %v", err)
+	}
+
+	mutated, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read streamed mutated response: %v", err)
+	}
+	if bodyText := string(mutated); !strings.HasSuffix(bodyText, `<script>toolbar()</script>`) {
+		t.Fatalf("streamed toolbar was not appended to HTML without body close: %s", bodyText)
+	}
+}
+
+func TestMaybeMutateHTMLProxyResponseToolbarOnlyPreservesPendingOnReadError(t *testing.T) {
+	readErr := errors.New("upstream read failed")
+	body := []byte(`<html`)
+	resp := &http.Response{
+		Header:        make(http.Header),
+		Body:          &failingReadCloser{body: body, err: readErr},
+		ContentLength: -1,
+	}
+	resp.Header.Set("Content-Type", "text/html")
+
+	err := maybeMutateHTMLProxyResponse(resp, htmlResponseMutationOptions{
+		toolbar: true,
+		toolbarHTML: func() string {
+			return `<script>toolbar()</script>`
+		},
+		routeType: "test",
+		routeKey:  "app.example.com",
+	})
+	if err != nil {
+		t.Fatalf("maybeMutateHTMLProxyResponse returned error: %v", err)
+	}
+
+	got, err := io.ReadAll(resp.Body)
+	if !errors.Is(err, readErr) {
+		t.Fatalf("read error = %v, want %v", err, readErr)
+	}
+	if string(got) != string(body) {
+		t.Fatalf("streamed body before read error = %q, want %q", string(got), string(body))
 	}
 }
 
@@ -209,7 +347,7 @@ func TestPathRuleRewriteHTMLSkipsLargeHTMLBody(t *testing.T) {
 	}
 }
 
-func TestPublicHostRuleToolbarSkipsLargeHTMLBody(t *testing.T) {
+func TestPublicHostRuleToolbarStreamsLargeHTMLBody(t *testing.T) {
 	var verifyCalls int32
 	bridge := testAuthBridge{
 		verify: func(context.Context, *pb.VerifyAuthRequest) (*pb.VerifyAuthResponse, error) {
@@ -240,10 +378,11 @@ func TestPublicHostRuleToolbarSkipsLargeHTMLBody(t *testing.T) {
 	if got := atomic.LoadInt32(&verifyCalls); got != 1 {
 		t.Fatalf("verify calls = %d, want 1", got)
 	}
-	if got := rec.Body.Bytes(); !bytes.Equal(got, body) {
-		t.Fatalf("large toolbar candidate body changed; got len %d want len %d", len(got), len(body))
+	got := rec.Body.String()
+	if !strings.Contains(got, "reauth-proxy-toolbar") {
+		t.Fatalf("large HTML response did not include streamed toolbar")
 	}
-	if strings.Contains(rec.Body.String(), "reauth-proxy-toolbar") {
-		t.Fatalf("large HTML response included toolbar despite exceeding limit")
+	if !strings.Contains(got, `</main>`) || !strings.Contains(got, `</body></html>`) {
+		t.Fatalf("large HTML response lost original markers")
 	}
 }

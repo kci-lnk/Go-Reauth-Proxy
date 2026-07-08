@@ -66,6 +66,7 @@ func TestDebugLogRecordsProxyLifecycleWithRedaction(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200; body = %s", rec.Code, rec.Body.String())
 	}
+	logger.FlushDebugLogger()
 
 	logPath := filepath.Join(dir, time.Now().Format("2006-01-02")+".log")
 	data, err := os.ReadFile(logPath)

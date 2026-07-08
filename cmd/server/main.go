@@ -184,6 +184,7 @@ func startProxyServers(host string, proxyPort int, proxyHandler *proxy.Handler, 
 
 	var wg sync.WaitGroup
 	useProxyProto := proxyHandler.GetProxyProtocolForce()
+	httpsTLSConfig := httpsServer.TLSConfig
 	for _, tcpListener := range listeners {
 		var listenerForMux net.Listener = tcpListener
 		if useProxyProto {
@@ -204,7 +205,7 @@ func startProxyServers(host string, proxyPort int, proxyHandler *proxy.Handler, 
 
 		go func() {
 			defer wg.Done()
-			err := httpsServer.Serve(tls.NewListener(tlsL, httpsServer.TLSConfig))
+			err := httpsServer.Serve(tls.NewListener(tlsL, httpsTLSConfig))
 			if err != nil && err != http.ErrServerClosed && !isClosedConnErr(err) {
 				log.Printf("HTTPS server failed: %v", err)
 			}
@@ -495,4 +496,9 @@ func main() {
 	streamManager.Stop()
 	proxyStack.Stop()
 	stopInternalGRPC()
+	proxyHandler.Close()
+	if event := logger.DebugEvent("server", "shutdown_completed"); event != nil {
+		event.Send()
+	}
+	logger.FlushDebugLogger()
 }

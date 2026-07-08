@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/binary"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -345,7 +346,7 @@ func (rt *Runtime) Evaluate(r *http.Request, ctx EvaluateContext) Decision {
 	if it := tx.ProcessRequestHeaders(); it != nil {
 		interruption = it
 	} else if tx.IsRequestBodyAccessible() && r.Body != nil && r.Body != http.NoBody {
-		if it, err := readAndRestoreRequestBody(tx, r); err != nil {
+		if it, err := readAndRestoreRequestBody(tx, r, int64(cfg.RequestBodyLimitBytes)); err != nil {
 			decision.Err = err
 		} else if it != nil {
 			interruption = it
@@ -511,12 +512,30 @@ func (r requestBodyReadCloser) Close() error {
 	return r.closer.Close()
 }
 
+var errRequestBodyInspectionBufferLimit = errors.New("request body inspection buffer limit exceeded")
+
+type requestBodyInspectionBuffer struct {
+	bytes.Buffer
+	limit int64
+}
+
+func (b *requestBodyInspectionBuffer) Write(p []byte) (int, error) {
+	if b.limit >= 0 && int64(b.Len()+len(p)) > b.limit {
+		allowed := int(b.limit) - b.Len()
+		if allowed > 0 {
+			_, _ = b.Buffer.Write(p[:allowed])
+		}
+		return allowed, errRequestBodyInspectionBufferLimit
+	}
+	return b.Buffer.Write(p)
+}
+
 func readAndRestoreRequestBody(tx interface {
 	ReadRequestBodyFrom(io.Reader) (*types.Interruption, int, error)
-}, r *http.Request) (*types.Interruption, error) {
+}, r *http.Request, limit int64) (*types.Interruption, error) {
 	originalBody := r.Body
-	var buffered bytes.Buffer
-	tee := io.TeeReader(originalBody, &buffered)
+	buffered := &requestBodyInspectionBuffer{limit: limit}
+	tee := io.TeeReader(originalBody, buffered)
 	it, _, err := tx.ReadRequestBodyFrom(tee)
 	r.Body = requestBodyReadCloser{
 		Reader: io.MultiReader(bytes.NewReader(buffered.Bytes()), originalBody),

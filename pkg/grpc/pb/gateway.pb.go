@@ -831,12 +831,15 @@ func (x *AuthConfig) GetTrustForwardedProto() bool {
 }
 
 type LoggingConfig struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Enabled       bool                   `protobuf:"varint,1,opt,name=enabled,proto3" json:"enabled,omitempty"`
-	MaxDays       int32                  `protobuf:"varint,2,opt,name=max_days,json=maxDays,proto3" json:"max_days,omitempty"`
-	LogsDir       string                 `protobuf:"bytes,3,opt,name=logs_dir,json=logsDir,proto3" json:"logs_dir,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state          protoimpl.MessageState `protogen:"open.v1"`
+	Enabled        bool                   `protobuf:"varint,1,opt,name=enabled,proto3" json:"enabled,omitempty"`
+	MaxDays        int32                  `protobuf:"varint,2,opt,name=max_days,json=maxDays,proto3" json:"max_days,omitempty"`
+	LogsDir        string                 `protobuf:"bytes,3,opt,name=logs_dir,json=logsDir,proto3" json:"logs_dir,omitempty"`
+	DroppedEntries uint64                 `protobuf:"varint,4,opt,name=dropped_entries,json=droppedEntries,proto3" json:"dropped_entries,omitempty"`
+	QueueSize      int32                  `protobuf:"varint,5,opt,name=queue_size,json=queueSize,proto3" json:"queue_size,omitempty"`
+	QueueDepth     int32                  `protobuf:"varint,6,opt,name=queue_depth,json=queueDepth,proto3" json:"queue_depth,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
 func (x *LoggingConfig) Reset() {
@@ -888,6 +891,27 @@ func (x *LoggingConfig) GetLogsDir() string {
 		return x.LogsDir
 	}
 	return ""
+}
+
+func (x *LoggingConfig) GetDroppedEntries() uint64 {
+	if x != nil {
+		return x.DroppedEntries
+	}
+	return 0
+}
+
+func (x *LoggingConfig) GetQueueSize() int32 {
+	if x != nil {
+		return x.QueueSize
+	}
+	return 0
+}
+
+func (x *LoggingConfig) GetQueueDepth() int32 {
+	if x != nil {
+		return x.QueueDepth
+	}
+	return 0
 }
 
 type ReverseProxyThrottleConfig struct {
@@ -5670,11 +5694,16 @@ const file_fnknock_v1_gateway_proto_rawDesc = "" +
 	"\x10public_http_port\x18\f \x01(\x05R\x0epublicHttpPort\x12*\n" +
 	"\x11public_https_port\x18\r \x01(\x05R\x0fpublicHttpsPort\x12\x1b\n" +
 	"\tauth_host\x18\x0e \x01(\tR\bauthHost\x122\n" +
-	"\x15trust_forwarded_proto\x18\x0f \x01(\bR\x13trustForwardedProto\"_\n" +
+	"\x15trust_forwarded_proto\x18\x0f \x01(\bR\x13trustForwardedProto\"\xc8\x01\n" +
 	"\rLoggingConfig\x12\x18\n" +
 	"\aenabled\x18\x01 \x01(\bR\aenabled\x12\x19\n" +
 	"\bmax_days\x18\x02 \x01(\x05R\amaxDays\x12\x19\n" +
-	"\blogs_dir\x18\x03 \x01(\tR\alogsDir\"\xa1\x01\n" +
+	"\blogs_dir\x18\x03 \x01(\tR\alogsDir\x12'\n" +
+	"\x0fdropped_entries\x18\x04 \x01(\x04R\x0edroppedEntries\x12\x1d\n" +
+	"\n" +
+	"queue_size\x18\x05 \x01(\x05R\tqueueSize\x12\x1f\n" +
+	"\vqueue_depth\x18\x06 \x01(\x05R\n" +
+	"queueDepth\"\xa1\x01\n" +
 	"\x1aReverseProxyThrottleConfig\x12\x18\n" +
 	"\aenabled\x18\x01 \x01(\bR\aenabled\x12.\n" +
 	"\x13requests_per_second\x18\x02 \x01(\x05R\x11requestsPerSecond\x12\x14\n" +

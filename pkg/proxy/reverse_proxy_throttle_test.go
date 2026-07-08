@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"fmt"
 	"go-reauth-proxy/pkg/models"
 	"net"
 	"strings"
@@ -57,6 +58,30 @@ func TestReverseProxyThrottleDisableClearsEntries(t *testing.T) {
 	})
 	if decision := throttle.evaluate("192.0.2.1", now); !decision.Allowed {
 		t.Fatalf("re-enabled throttle decision = %#v, want allowed after clearing entries", decision)
+	}
+}
+
+func TestReverseProxyThrottleShardEnforcesMaxEntries(t *testing.T) {
+	throttle := newReverseProxyThrottle(models.ReverseProxyThrottleConfig{
+		Enabled:           true,
+		RequestsPerSecond: 100,
+		Burst:             100,
+		BlockSeconds:      5,
+	})
+	shard := &throttle.shards[0]
+	for i := 0; i < reverseProxyThrottleMaxEntriesPerShard+25; i++ {
+		shard.entries[fmt.Sprintf("identity-%d", i)] = &reverseProxyThrottleEntry{
+			lastSeen: time.Unix(int64(i), 0),
+		}
+	}
+
+	shard.enforceMaxEntriesLocked()
+
+	if got := len(shard.entries); got != reverseProxyThrottleMaxEntriesPerShard {
+		t.Fatalf("entry count = %d, want %d", got, reverseProxyThrottleMaxEntriesPerShard)
+	}
+	if _, ok := shard.entries["identity-0"]; ok {
+		t.Fatal("oldest identity was not evicted")
 	}
 }
 

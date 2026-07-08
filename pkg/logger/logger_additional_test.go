@@ -115,6 +115,25 @@ func TestWarnOnceWriterReturnsUnderlyingError(t *testing.T) {
 	}
 }
 
+func TestAsyncWriterDropsWhenQueueIsFull(t *testing.T) {
+	writer := &asyncWriter{
+		writer: io.Discard,
+		queue:  make(chan []byte, 1),
+	}
+
+	n, err := writer.Write([]byte("queued"))
+	if err != nil || n != len("queued") {
+		t.Fatalf("first Write() = %d, %v", n, err)
+	}
+	n, err = writer.Write([]byte("dropped"))
+	if err != nil || n != len("dropped") {
+		t.Fatalf("second Write() = %d, %v", n, err)
+	}
+	if got := writer.Dropped(); got != 1 {
+		t.Fatalf("Dropped() = %d, want 1", got)
+	}
+}
+
 func TestSetDebugLoggerNilWriterStillEnablesEvent(t *testing.T) {
 	t.Cleanup(func() {
 		setDebugLogger(false, io.Discard)

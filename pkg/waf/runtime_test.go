@@ -14,6 +14,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/corazawaf/coraza/v3/types"
+
 	"go-reauth-proxy/pkg/models"
 )
 
@@ -21,6 +23,27 @@ var (
 	benchmarkWAFBoolSink   bool
 	benchmarkWAFStringSink string
 )
+
+type recordingRequestBodyTx struct {
+	body string
+}
+
+func (tx *recordingRequestBodyTx) ReadRequestBodyFrom(reader io.Reader) (*types.Interruption, int, error) {
+	body, err := io.ReadAll(reader)
+	tx.body = string(body)
+	return nil, len(body), err
+}
+
+type recordingLimitedRequestBodyTx struct {
+	limit int64
+	body  string
+}
+
+func (tx *recordingLimitedRequestBodyTx) ReadRequestBodyFrom(reader io.Reader) (*types.Interruption, int, error) {
+	body, err := io.ReadAll(io.LimitReader(reader, tx.limit))
+	tx.body = string(body)
+	return nil, len(body), err
+}
 
 func writeTestRule(t *testing.T, rulesDir string, customRule string) {
 	t.Helper()
@@ -377,6 +400,62 @@ func TestRuntimeRestoresRequestBodyAfterInspection(t *testing.T) {
 	}
 	if string(restored) != body {
 		t.Fatalf("body was not restored, got %q", string(restored))
+	}
+}
+
+func TestRuntimePreservesRequestBodyLimitInterruptionAndRestoresBody(t *testing.T) {
+	rulesDir := t.TempDir()
+	writeTestRule(t, rulesDir, `SecRule INBOUND_DATA_ERROR "@eq 1" "id:1002,phase:2,deny,status:413,msg:'body limit',log"`)
+
+	cfg := testConfig(rulesDir, ModeBlocking)
+	cfg.RequestBodyLimitBytes = 5
+	cfg.RequestBodyInMemoryLimitBytes = 5
+	rt := NewRuntime(cfg, t.TempDir())
+	if _, err := rt.Reload(rt.Config(), "", ""); err != nil {
+		t.Fatalf("reload WAF: %v", err)
+	}
+
+	body := "0123456789abcdef"
+	req := httptest.NewRequest("POST", "http://app.example.test/submit", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.ContentLength = int64(len(body))
+
+	decision := rt.Evaluate(req, EvaluateContext{ClientIP: "203.0.113.10", RouteType: "path_rule", RouteKey: "/submit"})
+	if decision.Allowed {
+		t.Fatalf("expected request body limit rule to block request")
+	}
+	if decision.Status != 413 {
+		t.Fatalf("status = %d, want 413", decision.Status)
+	}
+	if !slices.Contains(decision.RuleIDs, 1002) {
+		t.Fatalf("expected body limit rule id, got %#v", decision.RuleIDs)
+	}
+	restored, err := io.ReadAll(req.Body)
+	if err != nil {
+		t.Fatalf("read restored body: %v", err)
+	}
+	if string(restored) != body {
+		t.Fatalf("restored body = %q, want %q", string(restored), body)
+	}
+}
+
+func TestReadAndRestoreRequestBodyLimitsInspectionBuffer(t *testing.T) {
+	body := "0123456789abcdef"
+	req := httptest.NewRequest("POST", "http://app.example.test/submit", strings.NewReader(body))
+	tx := &recordingLimitedRequestBodyTx{limit: 5}
+
+	if _, err := readAndRestoreRequestBody(tx, req, 5); err != nil {
+		t.Fatalf("readAndRestoreRequestBody returned error: %v", err)
+	}
+	if tx.body != "01234" {
+		t.Fatalf("inspected body = %q, want first 5 bytes", tx.body)
+	}
+	restored, err := io.ReadAll(req.Body)
+	if err != nil {
+		t.Fatalf("read restored body: %v", err)
+	}
+	if string(restored) != body {
+		t.Fatalf("restored body = %q, want %q", string(restored), body)
 	}
 }
 

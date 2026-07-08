@@ -126,6 +126,8 @@ type Handler struct {
 	preflightSkipUntilUnixNano atomic.Int64
 	authCache                  authStateCache
 	preflightCache             preflightStateCache
+	loggedInActiveCount        atomic.Int64
+	loggedInActiveCleanupNano  atomic.Int64
 	reverseProxyThrottle       *reverseProxyThrottle
 	reverseProxyThrottleExempt *reverseProxyThrottleExemptIPsRuntime
 	commonLocationExemptions   *commonLocationExemptionsRuntime
@@ -135,12 +137,20 @@ type Handler struct {
 	preserveHost               *preserveHostConfig
 	wafRuntime                 *proxywaf.Runtime
 	systemEventClient          *events.Client
+	throttleEventQueue         chan gatewayThrottleBlockedEvent
 }
 
 func (h *Handler) SetAuthBridgeManager(manager *rpcbridge.AuthBridgeManager) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.authBridge = manager
+}
+
+func (h *Handler) Close() {
+	if h == nil || h.gatewayLogManager == nil {
+		return
+	}
+	h.gatewayLogManager.Close()
 }
 
 func (h *Handler) authBridgeManager() authBridgeClient {
@@ -1135,6 +1145,7 @@ func NewHandler(adminPort int, proxyPort int, cfgManager *config.Manager, initia
 			log.Printf("Failed to load initial WAF rules: %v", err)
 		}
 	}
+	h.startGatewayThrottleEventWorker()
 	return h
 }
 
@@ -1324,7 +1335,9 @@ func gatewayThrottleDedupeKey(ip string, blockedUntil time.Time) string {
 	return string(buf)
 }
 
-func (h *Handler) emitGatewayThrottleBlockedEvent(args struct {
+const gatewayThrottleEventQueueSize = 64
+
+type gatewayThrottleBlockedEvent struct {
 	ClientIP     string
 	BlockedUntil time.Time
 	Config       models.ReverseProxyThrottleConfig
@@ -1333,7 +1346,34 @@ func (h *Handler) emitGatewayThrottleBlockedEvent(args struct {
 	RequestPath  string
 	IsAuthRoute  bool
 	HappenedAt   time.Time
-}) {
+}
+
+func (h *Handler) startGatewayThrottleEventWorker() {
+	if h == nil || h.systemEventClient == nil {
+		return
+	}
+	if h.throttleEventQueue == nil {
+		h.throttleEventQueue = make(chan gatewayThrottleBlockedEvent, gatewayThrottleEventQueueSize)
+	}
+	go func(queue <-chan gatewayThrottleBlockedEvent) {
+		for event := range queue {
+			h.emitGatewayThrottleBlockedEvent(event)
+		}
+	}(h.throttleEventQueue)
+}
+
+func (h *Handler) enqueueGatewayThrottleBlockedEvent(event gatewayThrottleBlockedEvent) {
+	if h == nil || h.systemEventClient == nil || h.throttleEventQueue == nil {
+		return
+	}
+	select {
+	case h.throttleEventQueue <- event:
+	default:
+		log.Printf("Dropping gateway throttle event for %s: event queue full", normalizeClientIP(event.ClientIP))
+	}
+}
+
+func (h *Handler) emitGatewayThrottleBlockedEvent(args gatewayThrottleBlockedEvent) {
 	client := h.systemEventClient
 	if client == nil {
 		return
@@ -3009,6 +3049,7 @@ type hostTrafficCounters struct {
 	totalOut                    atomic.Uint64
 	error5xx                    atomic.Uint64
 	activeIPs                   sync.Map
+	activeIPEntries             atomic.Int64
 	activeIPLastCleanupUnixNano atomic.Int64
 }
 
@@ -3026,7 +3067,19 @@ const (
 	hostActiveIPWindow          = 2 * time.Minute
 	hostActiveIPCleanupInterval = 30 * time.Second
 	hostActiveIPMaxItems        = 256
+	hostActiveIPHardLimit       = 4096
 )
+
+func (c *hostTrafficCounters) deleteActiveIP(key any) {
+	if c == nil {
+		return
+	}
+	if _, loaded := c.activeIPs.LoadAndDelete(key); loaded {
+		if c.activeIPEntries.Add(-1) < 0 {
+			c.activeIPEntries.Store(0)
+		}
+	}
+}
 
 func (c *hostTrafficCounters) cleanupActiveIPs(now time.Time) {
 	if c == nil {
@@ -3036,16 +3089,17 @@ func (c *hostTrafficCounters) cleanupActiveIPs(now time.Time) {
 	c.activeIPs.Range(func(key, value any) bool {
 		record, ok := value.(*hostActiveIPRecord)
 		if !ok || record == nil {
-			c.activeIPs.Delete(key)
+			c.deleteActiveIP(key)
 			return true
 		}
 		lastSeen := record.lastSeenUnixNano.Load()
 		activeConns := record.activeConns.Load()
 		if activeConns <= 0 && lastSeen < cutoff {
-			c.activeIPs.Delete(key)
+			c.deleteActiveIP(key)
 		}
 		return true
 	})
+	c.enforceActiveIPLimit()
 }
 
 func (c *hostTrafficCounters) cleanupActiveIPsIfNeeded(now time.Time) {
@@ -3063,6 +3117,43 @@ func (c *hostTrafficCounters) cleanupActiveIPsIfNeeded(now time.Time) {
 	c.cleanupActiveIPs(now)
 }
 
+func (c *hostTrafficCounters) enforceActiveIPLimit() {
+	if c == nil || c.activeIPEntries.Load() <= hostActiveIPHardLimit {
+		return
+	}
+	type activeIPCandidate struct {
+		key         any
+		lastSeen    int64
+		activeConns int64
+	}
+	candidates := make([]activeIPCandidate, 0)
+	c.activeIPs.Range(func(key, value any) bool {
+		record, ok := value.(*hostActiveIPRecord)
+		if !ok || record == nil {
+			candidates = append(candidates, activeIPCandidate{key: key})
+			return true
+		}
+		candidates = append(candidates, activeIPCandidate{
+			key:         key,
+			lastSeen:    record.lastSeenUnixNano.Load(),
+			activeConns: record.activeConns.Load(),
+		})
+		return true
+	})
+	sort.Slice(candidates, func(i, j int) bool {
+		if (candidates[i].activeConns <= 0) != (candidates[j].activeConns <= 0) {
+			return candidates[i].activeConns <= 0
+		}
+		return candidates[i].lastSeen < candidates[j].lastSeen
+	})
+	for _, candidate := range candidates {
+		if c.activeIPEntries.Load() <= hostActiveIPHardLimit {
+			return
+		}
+		c.deleteActiveIP(candidate.key)
+	}
+}
+
 func (c *hostTrafficCounters) markActiveIP(clientIP string, now time.Time) func() {
 	if c == nil {
 		return nil
@@ -3074,13 +3165,18 @@ func (c *hostTrafficCounters) markActiveIP(clientIP string, now time.Time) func(
 
 	c.cleanupActiveIPsIfNeeded(now)
 	record := &hostActiveIPRecord{ip: ip}
-	actual, _ := c.activeIPs.LoadOrStore(ip, record)
+	actual, loaded := c.activeIPs.LoadOrStore(ip, record)
 	if existing, ok := actual.(*hostActiveIPRecord); ok {
 		record = existing
 	}
 
 	record.lastSeenUnixNano.Store(now.UnixNano())
 	record.activeConns.Add(1)
+	if !loaded {
+		if c.activeIPEntries.Add(1) > hostActiveIPHardLimit {
+			c.cleanupActiveIPs(now)
+		}
+	}
 
 	return func() {
 		record.lastSeenUnixNano.Store(time.Now().UnixNano())
@@ -3101,13 +3197,13 @@ func (c *hostTrafficCounters) activeIPCount(now time.Time) int {
 	c.activeIPs.Range(func(key, value any) bool {
 		record, ok := value.(*hostActiveIPRecord)
 		if !ok || record == nil {
-			c.activeIPs.Delete(key)
+			c.deleteActiveIP(key)
 			return true
 		}
 		lastSeen := record.lastSeenUnixNano.Load()
 		activeConns := record.activeConns.Load()
 		if activeConns <= 0 && lastSeen < cutoff {
-			c.activeIPs.Delete(key)
+			c.deleteActiveIP(key)
 			return true
 		}
 		if lastSeen > 0 {
@@ -3129,14 +3225,14 @@ func (c *hostTrafficCounters) activeIPStats(now time.Time) []HostActiveIPStats {
 	c.activeIPs.Range(func(key, value any) bool {
 		record, ok := value.(*hostActiveIPRecord)
 		if !ok || record == nil {
-			c.activeIPs.Delete(key)
+			c.deleteActiveIP(key)
 			return true
 		}
 
 		lastSeen := record.lastSeenUnixNano.Load()
 		activeConns := record.activeConns.Load()
 		if activeConns <= 0 && lastSeen < cutoff {
-			c.activeIPs.Delete(key)
+			c.deleteActiveIP(key)
 			return true
 		}
 		if lastSeen <= 0 {
@@ -3295,6 +3391,8 @@ func (h *Handler) LogGatewayEntry(entry gatewaylog.Entry) {
 }
 
 const loggedInActiveWindow = 2 * time.Minute
+const loggedInActiveCleanupInterval = 30 * time.Second
+const loggedInActiveMaxEntries = 8192
 const proxyPathCookieName = "__proxy_path"
 const defaultCookieMaxNum = 3000
 const canonicalCookieIdentityStackPairs = 8
@@ -3517,7 +3615,13 @@ func (h *Handler) storeLoggedInActive(key string, now time.Time) {
 	if key == "" {
 		return
 	}
-	h.loggedInActive.Store(key, now.UnixNano())
+	nowUnixNano := now.UnixNano()
+	if _, loaded := h.loggedInActive.LoadOrStore(key, nowUnixNano); loaded {
+		h.loggedInActive.Store(key, nowUnixNano)
+	} else if h.loggedInActiveCount.Add(1) > loggedInActiveMaxEntries {
+		h.cleanupLoggedInActive(now)
+	}
+	h.cleanupLoggedInActiveIfNeeded(now)
 }
 
 func (h *Handler) markLoggedInActive(r *http.Request, clientIP string, now time.Time) {
@@ -3529,20 +3633,66 @@ func (h *Handler) MarkLoggedInActiveByClientIP(clientIP string, now time.Time) {
 }
 
 func (h *Handler) activeLoggedInCount(now time.Time) int64 {
-	cutoff := now.Add(-loggedInActiveWindow).UnixNano()
-	var count int64
+	h.cleanupLoggedInActive(now)
+	return h.loggedInActiveCount.Load()
+}
 
+func (h *Handler) cleanupLoggedInActiveIfNeeded(now time.Time) {
+	nowUnixNano := now.UnixNano()
+	lastCleanup := h.loggedInActiveCleanupNano.Load()
+	if lastCleanup > 0 && nowUnixNano-lastCleanup < int64(loggedInActiveCleanupInterval) {
+		return
+	}
+	if !h.loggedInActiveCleanupNano.CompareAndSwap(lastCleanup, nowUnixNano) {
+		return
+	}
+	h.cleanupLoggedInActive(now)
+}
+
+func (h *Handler) cleanupLoggedInActive(now time.Time) {
+	cutoff := now.Add(-loggedInActiveWindow).UnixNano()
 	h.loggedInActive.Range(func(key, value any) bool {
 		ts, ok := value.(int64)
 		if !ok || ts < cutoff {
-			h.loggedInActive.Delete(key)
+			h.deleteLoggedInActive(key)
 			return true
 		}
-		count++
 		return true
 	})
+	h.enforceLoggedInActiveLimit()
+}
 
-	return count
+func (h *Handler) deleteLoggedInActive(key any) {
+	if _, loaded := h.loggedInActive.LoadAndDelete(key); loaded {
+		if h.loggedInActiveCount.Add(-1) < 0 {
+			h.loggedInActiveCount.Store(0)
+		}
+	}
+}
+
+func (h *Handler) enforceLoggedInActiveLimit() {
+	if h.loggedInActiveCount.Load() <= loggedInActiveMaxEntries {
+		return
+	}
+	type loggedInActiveCandidate struct {
+		key any
+		ts  int64
+	}
+	candidates := make([]loggedInActiveCandidate, 0)
+	h.loggedInActive.Range(func(key, value any) bool {
+		ts, _ := value.(int64)
+		candidates = append(candidates, loggedInActiveCandidate{key: key, ts: ts})
+		return true
+	})
+	sort.Slice(candidates, func(i, j int) bool {
+		return candidates[i].ts < candidates[j].ts
+	})
+	for _, candidate := range candidates {
+		if h.loggedInActiveCount.Load() <= loggedInActiveMaxEntries {
+			return
+		}
+		h.deleteLoggedInActive(candidate.key)
+	}
 }
 
 type requestTrafficMetrics struct {
@@ -4002,16 +4152,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				Send()
 		}
 		if throttleDecision.NewlyBlocked {
-			go h.emitGatewayThrottleBlockedEvent(struct {
-				ClientIP     string
-				BlockedUntil time.Time
-				Config       models.ReverseProxyThrottleConfig
-				RouteType    string
-				Host         string
-				RequestPath  string
-				IsAuthRoute  bool
-				HappenedAt   time.Time
-			}{
+			h.enqueueGatewayThrottleBlockedEvent(gatewayThrottleBlockedEvent{
 				ClientIP:     clientIP,
 				BlockedUntil: throttleDecision.BlockedUntil,
 				Config:       throttleDecision.Config,
@@ -5202,7 +5343,11 @@ var (
 	htmlDoctypeMarker        = []byte(`<!doctype`)
 )
 
-const htmlProxyMutationBodyLimitBytes int64 = 2 * 1024 * 1024
+const (
+	htmlProxyMutationBodyLimitBytes int64 = 2 * 1024 * 1024
+	htmlToolbarStreamChunkSize            = 32 * 1024
+	htmlToolbarStreamTailBytes            = len("<!doctype") - 1
+)
 
 type htmlResponseMutationOptions struct {
 	rewrite       bool
@@ -5242,6 +5387,25 @@ func maybeMutateHTMLProxyResponse(resp *http.Response, opts htmlResponseMutation
 		logHTMLProxyMutation(opts, resp, "skipped", "not_html", 0, 0)
 		return nil
 	}
+	if resp.Body == nil {
+		logHTMLProxyMutation(opts, resp, "skipped", "no_body", 0, 0)
+		return nil
+	}
+	if opts.toolbar && !opts.rewrite {
+		toolbarHTML := ""
+		if opts.toolbarHTML != nil {
+			toolbarHTML = opts.toolbarHTML()
+		}
+		if toolbarHTML == "" {
+			logHTMLProxyMutation(opts, resp, "skipped", "empty_toolbar", 0, 0)
+			return nil
+		}
+		resp.Body = newStreamingToolbarReadCloser(resp.Body, toolbarHTML)
+		resp.ContentLength = -1
+		resp.Header.Del("Content-Length")
+		logHTMLProxyMutation(opts, resp, "streaming", "", 0, 0)
+		return nil
+	}
 
 	bodyBytes, skipReason, err := readHTMLProxyMutationBody(resp, htmlProxyMutationBodyLimitBytes)
 	if err != nil {
@@ -5253,16 +5417,13 @@ func maybeMutateHTMLProxyResponse(resp *http.Response, opts htmlResponseMutation
 	}
 
 	originalLen := len(bodyBytes)
-	if opts.rewrite {
-		bodyBytes = rewriteHTMLAbsolutePaths(bodyBytes, opts.rewritePrefix)
-	}
+	toolbarHTML := ""
 	if opts.toolbar {
-		toolbarHTML := ""
 		if opts.toolbarHTML != nil {
 			toolbarHTML = opts.toolbarHTML()
 		}
-		bodyBytes = injectToolbarIntoHTMLBytes(bodyBytes, toolbarHTML)
 	}
+	bodyBytes = mutateHTMLProxyBody(bodyBytes, opts.rewrite, opts.rewritePrefix, toolbarHTML)
 
 	resp.Body = io.NopCloser(bytes.NewReader(bodyBytes))
 	resp.ContentLength = int64(len(bodyBytes))
@@ -5316,6 +5477,185 @@ func logHTMLProxyMutation(opts htmlResponseMutationOptions, resp *http.Response,
 			Int("mutated_bytes", mutatedBytes).
 			Send()
 	}
+}
+
+type streamingToolbarReadCloser struct {
+	source    io.ReadCloser
+	toolbar   []byte
+	pending   []byte
+	output    []byte
+	scratch   []byte
+	injected  bool
+	sawHTML   bool
+	readError error
+}
+
+func newStreamingToolbarReadCloser(source io.ReadCloser, toolbarHTML string) io.ReadCloser {
+	return &streamingToolbarReadCloser{
+		source:  source,
+		toolbar: []byte(toolbarHTML),
+		scratch: make([]byte, htmlToolbarStreamChunkSize),
+	}
+}
+
+func (rc *streamingToolbarReadCloser) Read(p []byte) (int, error) {
+	for len(rc.output) == 0 && rc.readError == nil {
+		rc.readMore()
+	}
+	if len(rc.output) > 0 {
+		n := copy(p, rc.output)
+		rc.output = rc.output[n:]
+		return n, nil
+	}
+	if rc.readError != nil {
+		return 0, rc.readError
+	}
+	return 0, io.EOF
+}
+
+func (rc *streamingToolbarReadCloser) Close() error {
+	if rc == nil || rc.source == nil {
+		return nil
+	}
+	return rc.source.Close()
+}
+
+func (rc *streamingToolbarReadCloser) readMore() {
+	if rc.source == nil {
+		rc.finish()
+		rc.readError = io.EOF
+		return
+	}
+	n, err := rc.source.Read(rc.scratch)
+	if n > 0 {
+		rc.process(rc.scratch[:n])
+	}
+	if err == io.EOF {
+		rc.finish()
+		rc.readError = io.EOF
+		return
+	}
+	if err != nil {
+		rc.flushPending()
+		rc.readError = err
+	}
+}
+
+func (rc *streamingToolbarReadCloser) process(chunk []byte) {
+	if rc.injected {
+		rc.output = append(rc.output, chunk...)
+		return
+	}
+
+	combined := make([]byte, 0, len(rc.pending)+len(chunk))
+	combined = append(combined, rc.pending...)
+	combined = append(combined, chunk...)
+	if containsAnyHTMLMarkerFoldASCII(combined) {
+		rc.sawHTML = true
+	}
+	if idx := indexFoldASCII(combined, htmlBodyCloseMarker); idx >= 0 {
+		rc.output = append(rc.output, combined[:idx]...)
+		rc.output = append(rc.output, rc.toolbar...)
+		rc.output = append(rc.output, combined[idx:]...)
+		rc.pending = rc.pending[:0]
+		rc.injected = true
+		return
+	}
+
+	tail := htmlToolbarStreamTailBytes
+	if len(combined) > tail {
+		flushLen := len(combined) - tail
+		rc.output = append(rc.output, combined[:flushLen]...)
+		rc.pending = append(rc.pending[:0], combined[flushLen:]...)
+		return
+	}
+	rc.pending = append(rc.pending[:0], combined...)
+}
+
+func (rc *streamingToolbarReadCloser) finish() {
+	if rc.injected {
+		return
+	}
+	rc.flushPending()
+	if rc.sawHTML && len(rc.toolbar) > 0 {
+		rc.output = append(rc.output, rc.toolbar...)
+		rc.injected = true
+	}
+}
+
+func (rc *streamingToolbarReadCloser) flushPending() {
+	if len(rc.pending) == 0 {
+		return
+	}
+	rc.output = append(rc.output, rc.pending...)
+	rc.pending = rc.pending[:0]
+}
+
+func mutateHTMLProxyBody(body []byte, rewrite bool, prefix string, toolbarHTML string) []byte {
+	if len(body) == 0 {
+		return body
+	}
+	if !rewrite || prefix == "" {
+		return injectToolbarIntoHTMLBytes(body, toolbarHTML)
+	}
+
+	insertAt := -1
+	appendToolbarAtEnd := false
+	if toolbarHTML != "" {
+		if idx := lastIndexFoldASCII(body, htmlBodyCloseMarker); idx >= 0 {
+			insertAt = idx
+		} else {
+			appendToolbarAtEnd = containsAnyHTMLMarkerFoldASCII(body)
+		}
+	}
+
+	var out []byte
+	last := 0
+	for i := 0; i < len(body); {
+		if i == insertAt {
+			if out == nil {
+				out = make([]byte, 0, len(body)+len(toolbarHTML)+htmlRewriteExtraCapacity(len(body), len(prefix)))
+			}
+			out = append(out, body[last:i]...)
+			out = append(out, toolbarHTML...)
+			last = i
+			insertAt = -1
+			continue
+		}
+
+		oldLen, headLen, tail := htmlAbsolutePathReplacement(body[i:])
+		if oldLen == 0 {
+			i++
+			continue
+		}
+		if out == nil {
+			out = make([]byte, 0, len(body)+len(toolbarHTML)+htmlRewriteExtraCapacity(len(body), len(prefix)))
+		}
+		out = append(out, body[last:i]...)
+		out = append(out, body[i:i+headLen]...)
+		out = append(out, prefix...)
+		out = append(out, tail...)
+		i += oldLen
+		last = i
+	}
+
+	if out == nil {
+		if appendToolbarAtEnd {
+			out = make([]byte, 0, len(body)+len(toolbarHTML))
+			out = append(out, body...)
+			out = append(out, toolbarHTML...)
+			return out
+		}
+		return body
+	}
+	out = append(out, body[last:]...)
+	if insertAt >= 0 {
+		out = append(out, toolbarHTML...)
+	}
+	if appendToolbarAtEnd {
+		out = append(out, toolbarHTML...)
+	}
+	return out
 }
 
 func rewriteHTMLAbsolutePaths(body []byte, prefix string) []byte {
@@ -5435,6 +5775,22 @@ func lastIndexFoldASCII(s []byte, substr []byte) int {
 		return -1
 	}
 	for i := len(s) - len(substr); i >= 0; i-- {
+		if equalFoldASCIIBytes(s[i:i+len(substr)], substr) {
+			return i
+		}
+	}
+	return -1
+}
+
+func indexFoldASCII(s []byte, substr []byte) int {
+	if len(substr) == 0 {
+		return 0
+	}
+	if len(substr) > len(s) {
+		return -1
+	}
+	last := len(s) - len(substr)
+	for i := 0; i <= last; i++ {
 		if equalFoldASCIIBytes(s[i:i+len(substr)], substr) {
 			return i
 		}

@@ -2,6 +2,7 @@ package iptables
 
 import (
 	"encoding/json"
+	stderrors "errors"
 	"go-reauth-proxy/pkg/config"
 	"go-reauth-proxy/pkg/errors"
 	"go-reauth-proxy/pkg/response"
@@ -10,6 +11,8 @@ import (
 	"strconv"
 	"strings"
 )
+
+const iptablesJSONBodyLimitBytes int64 = 1 << 20
 
 type Handler struct {
 	Manager       *Manager
@@ -21,6 +24,63 @@ func NewHandler(manager *Manager, cfgManager *config.Manager) *Handler {
 		Manager:       manager,
 		configManager: cfgManager,
 	}
+}
+
+func readIptablesJSONBody(w http.ResponseWriter, r *http.Request) ([]byte, bool) {
+	if r == nil || r.Body == nil {
+		return nil, true
+	}
+	if r.ContentLength > iptablesJSONBodyLimitBytes {
+		response.JSONStatus(w, http.StatusRequestEntityTooLarge, false, errors.CodeReadBodyFailed, "Request body too large", nil)
+		return nil, false
+	}
+	body := http.MaxBytesReader(w, r.Body, iptablesJSONBodyLimitBytes)
+	defer body.Close()
+	bodyBytes, err := io.ReadAll(body)
+	if err == nil {
+		return bodyBytes, true
+	}
+	var maxBytesErr *http.MaxBytesError
+	if stderrors.As(err, &maxBytesErr) {
+		response.JSONStatus(w, http.StatusRequestEntityTooLarge, false, errors.CodeReadBodyFailed, "Request body too large", nil)
+		return nil, false
+	}
+	response.Error(w, errors.CodeReadBodyFailed, "Failed to read request body")
+	return nil, false
+}
+
+func decodeIptablesJSONBody(w http.ResponseWriter, r *http.Request, dst interface{}) bool {
+	if r == nil || r.Body == nil {
+		response.Error(w, errors.CodeInvalidJSON, "Invalid JSON body")
+		return false
+	}
+	if r.ContentLength > iptablesJSONBodyLimitBytes {
+		response.JSONStatus(w, http.StatusRequestEntityTooLarge, false, errors.CodeReadBodyFailed, "Request body too large", nil)
+		return false
+	}
+	body := http.MaxBytesReader(w, r.Body, iptablesJSONBodyLimitBytes)
+	defer body.Close()
+	decoder := json.NewDecoder(body)
+	if err := decoder.Decode(dst); err != nil {
+		var maxBytesErr *http.MaxBytesError
+		if stderrors.As(err, &maxBytesErr) {
+			response.JSONStatus(w, http.StatusRequestEntityTooLarge, false, errors.CodeReadBodyFailed, "Request body too large", nil)
+			return false
+		}
+		response.Error(w, errors.CodeInvalidJSON, "Invalid JSON body")
+		return false
+	}
+	var extra any
+	if err := decoder.Decode(&extra); err != io.EOF {
+		var maxBytesErr *http.MaxBytesError
+		if stderrors.As(err, &maxBytesErr) {
+			response.JSONStatus(w, http.StatusRequestEntityTooLarge, false, errors.CodeReadBodyFailed, "Request body too large", nil)
+			return false
+		}
+		response.Error(w, errors.CodeInvalidJSON, "Invalid JSON body")
+		return false
+	}
+	return true
 }
 
 type initRequest struct {
@@ -122,8 +182,11 @@ func (p *IntPortList) UnmarshalJSON(data []byte) error {
 // @Router /api/iptables/init [post]
 func (h *Handler) HandleInit(w http.ResponseWriter, r *http.Request) {
 	var chainName string
-	bodyBytes, err := io.ReadAll(r.Body)
-	if err == nil && len(bodyBytes) > 0 {
+	bodyBytes, ok := readIptablesJSONBody(w, r)
+	if !ok {
+		return
+	}
+	if len(bodyBytes) > 0 {
 		var req initRequest
 		if err := json.Unmarshal(bodyBytes, &req); err == nil {
 			if req.ChainName != "" {
@@ -140,7 +203,6 @@ func (h *Handler) HandleInit(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	r.Body.Close()
 
 	if err := h.Manager.Init(); err != nil {
 		handleError(w, err)
@@ -233,8 +295,7 @@ type sshFirewallClearRequest struct {
 // @Router /api/iptables/allow [post]
 func (h *Handler) HandleAllowIP(w http.ResponseWriter, r *http.Request) {
 	var req ipRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		response.Error(w, errors.CodeInvalidJSON, "Invalid JSON body")
+	if !decodeIptablesJSONBody(w, r, &req) {
 		return
 	}
 	if req.IP == "" {
@@ -262,8 +323,7 @@ func (h *Handler) HandleAllowIP(w http.ResponseWriter, r *http.Request) {
 // @Router /api/iptables/block [post]
 func (h *Handler) HandleBlockIP(w http.ResponseWriter, r *http.Request) {
 	var req ipRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		response.Error(w, errors.CodeInvalidJSON, "Invalid JSON body")
+	if !decodeIptablesJSONBody(w, r, &req) {
 		return
 	}
 	if req.IP == "" {
@@ -291,8 +351,7 @@ func (h *Handler) HandleBlockIP(w http.ResponseWriter, r *http.Request) {
 // @Router /api/iptables/remove [post]
 func (h *Handler) HandleRemoveIP(w http.ResponseWriter, r *http.Request) {
 	var req ipRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		response.Error(w, errors.CodeInvalidJSON, "Invalid JSON body")
+	if !decodeIptablesJSONBody(w, r, &req) {
 		return
 	}
 	if req.IP == "" {
@@ -320,8 +379,7 @@ func (h *Handler) HandleRemoveIP(w http.ResponseWriter, r *http.Request) {
 // @Router /api/iptables/tcp-port/block [post]
 func (h *Handler) HandleBlockTCPPortForIP(w http.ResponseWriter, r *http.Request) {
 	var req tcpPortRuleRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		response.Error(w, errors.CodeInvalidJSON, "Invalid JSON body")
+	if !decodeIptablesJSONBody(w, r, &req) {
 		return
 	}
 	if strings.TrimSpace(req.IP) == "" {
@@ -349,8 +407,7 @@ func (h *Handler) HandleBlockTCPPortForIP(w http.ResponseWriter, r *http.Request
 // @Router /api/iptables/tcp-port/remove [post]
 func (h *Handler) HandleRemoveTCPPortRule(w http.ResponseWriter, r *http.Request) {
 	var req tcpPortRuleRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		response.Error(w, errors.CodeInvalidJSON, "Invalid JSON body")
+	if !decodeIptablesJSONBody(w, r, &req) {
 		return
 	}
 	if strings.TrimSpace(req.IP) == "" {
@@ -367,8 +424,7 @@ func (h *Handler) HandleRemoveTCPPortRule(w http.ResponseWriter, r *http.Request
 
 func (h *Handler) HandleSyncSSHFirewall(w http.ResponseWriter, r *http.Request) {
 	var req sshFirewallSyncRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		response.Error(w, errors.CodeInvalidJSON, "Invalid JSON body")
+	if !decodeIptablesJSONBody(w, r, &req) {
 		return
 	}
 
@@ -407,11 +463,13 @@ func (h *Handler) HandleSyncSSHFirewall(w http.ResponseWriter, r *http.Request) 
 
 func (h *Handler) HandleClearSSHFirewall(w http.ResponseWriter, r *http.Request) {
 	var req sshFirewallClearRequest
-	bodyBytes, err := io.ReadAll(r.Body)
-	if err == nil && len(bodyBytes) > 0 {
+	bodyBytes, ok := readIptablesJSONBody(w, r)
+	if !ok {
+		return
+	}
+	if len(bodyBytes) > 0 {
 		_ = json.Unmarshal(bodyBytes, &req)
 	}
-	r.Body.Close()
 
 	chainName := req.ChainName
 	if strings.TrimSpace(chainName) == "" {
@@ -475,8 +533,7 @@ func (h *Handler) HandleAllowAll(w http.ResponseWriter, r *http.Request) {
 // @Router /api/iptables/tcp-redirect [post]
 func (h *Handler) HandleEnsureTCPRedirect(w http.ResponseWriter, r *http.Request) {
 	var req tcpRedirectRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		response.Error(w, errors.CodeInvalidJSON, "Invalid JSON body")
+	if !decodeIptablesJSONBody(w, r, &req) {
 		return
 	}
 
@@ -500,8 +557,7 @@ func (h *Handler) HandleEnsureTCPRedirect(w http.ResponseWriter, r *http.Request
 // @Router /api/iptables/tcp-redirect [delete]
 func (h *Handler) HandleClearTCPRedirect(w http.ResponseWriter, r *http.Request) {
 	var req tcpRedirectRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		response.Error(w, errors.CodeInvalidJSON, "Invalid JSON body")
+	if !decodeIptablesJSONBody(w, r, &req) {
 		return
 	}
 

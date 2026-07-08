@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"go-reauth-proxy/pkg/models"
@@ -319,6 +320,37 @@ func TestFnosPortIconHijackHTTPResponseSkipsLargeServiceList(t *testing.T) {
 	}
 	if string(got) != body {
 		t.Fatal("large service list body changed despite exceeding rewrite limit")
+	}
+}
+
+func TestFnosPortIconHijackHTTPResponseSkipsUnknownLengthWithoutReading(t *testing.T) {
+	handler := &Handler{
+		FnosPortIconHijack: models.FnosPortIconHijackConfig{Enabled: true},
+	}
+	body := []byte(`{"data":{"list":[{"uri":{"host":"","port":"8096","path":"/web/index.html"}}]}}`)
+	rc := newTrackingReadCloser(body)
+	resp := &http.Response{
+		Header:        http.Header{},
+		Body:          rc,
+		ContentLength: -1,
+		Request:       httptest.NewRequest(http.MethodGet, "/app-center/v1/service/list", nil),
+	}
+
+	err := handler.maybeRewriteFnosPortIconHijackHTTPResponse(resp, []models.HostRule{
+		{Host: "emby.example.com", Target: "http://127.0.0.1:8096"},
+	})
+	if err != nil {
+		t.Fatalf("rewrite HTTP response returned error: %v", err)
+	}
+	if rc.readCount != 0 {
+		t.Fatalf("readCount = %d, want 0 for unknown-length FNOS response", rc.readCount)
+	}
+	got, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read skipped body: %v", err)
+	}
+	if !bytes.Equal(got, body) {
+		t.Fatal("unknown-length service list body changed despite rewrite skip")
 	}
 }
 

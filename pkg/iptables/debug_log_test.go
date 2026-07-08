@@ -51,6 +51,7 @@ func TestDebugLogRecordsIptablesOperationWithAdminPortRedaction(t *testing.T) {
 	if err := manager.EnsureTCPRedirect(7996, 7999); err != nil {
 		t.Fatalf("EnsureTCPRedirect returned error: %v", err)
 	}
+	logger.FlushDebugLogger()
 
 	data, err := os.ReadFile(filepath.Join(dir, time.Now().Format("2006-01-02")+".log"))
 	if err != nil {

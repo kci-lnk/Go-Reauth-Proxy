@@ -103,6 +103,7 @@ func TestManagerLogDoesNothingWhenDisabled(t *testing.T) {
 func TestManagerLogWritesQueryEntryWhenEnabled(t *testing.T) {
 	dir := t.TempDir()
 	manager := NewManager(dir, models.LoggingConfig{Enabled: true})
+	t.Cleanup(manager.Close)
 	manager.Log(Entry{Method: "POST", Host: "app.example.test", Path: "/api", Status: 201, LoggedIn: true})
 	result, err := manager.Query("", 1, 20, "app.example.test", "201", "true", "", "", "page")
 	if err != nil {
@@ -110,6 +111,27 @@ func TestManagerLogWritesQueryEntryWhenEnabled(t *testing.T) {
 	}
 	if result.Total != 1 || len(result.Items) != 1 || result.Items[0].Method != "POST" {
 		t.Fatalf("Query() = %#v", result)
+	}
+}
+
+func TestManagerLogDropsWhenQueueIsFull(t *testing.T) {
+	manager := &Manager{
+		config:   models.LoggingConfig{Enabled: true},
+		logQueue: make(chan Entry, 1),
+	}
+
+	manager.Log(Entry{Path: "/queued"})
+	manager.Log(Entry{Path: "/dropped"})
+
+	if got := len(manager.logQueue); got != 1 {
+		t.Fatalf("queued entries = %d, want 1", got)
+	}
+	if got := manager.DroppedLogEntries(); got != 1 {
+		t.Fatalf("DroppedLogEntries() = %d, want 1", got)
+	}
+	info := manager.GetConfigInfo()
+	if info.DroppedEntries != 1 || info.QueueSize != 1 || info.QueueDepth != 1 {
+		t.Fatalf("ConfigInfo drop counters = %#v", info)
 	}
 }
 

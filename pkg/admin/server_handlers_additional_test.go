@@ -35,6 +35,38 @@ func TestAdminHandleAddRuleRejectsInvalidJSON(t *testing.T) {
 	}
 }
 
+func TestAdminHandleAddRuleRejectsOversizedBody(t *testing.T) {
+	server := newAdditionalAdminHTTPServer(t)
+	rec := httptest.NewRecorder()
+	body := bytes.Repeat([]byte("x"), int(adminJSONBodyLimitBytes)+1)
+	server.handleAddRule(rec, httptest.NewRequest(http.MethodPost, "/api/rules", bytes.NewReader(body)))
+	if rec.Code != http.StatusRequestEntityTooLarge || !bytes.Contains(rec.Body.Bytes(), []byte(`"success":false`)) {
+		t.Fatalf("status = %d, body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestAdminJSONDecoderRejectsOversizedBody(t *testing.T) {
+	server := newAdditionalAdminHTTPServer(t)
+	rec := httptest.NewRecorder()
+	body := bytes.Repeat([]byte("x"), int(adminJSONBodyLimitBytes)+1)
+	server.handleSetAuth(rec, httptest.NewRequest(http.MethodPost, "/api/auth", bytes.NewReader(body)))
+	if rec.Code != http.StatusRequestEntityTooLarge || !bytes.Contains(rec.Body.Bytes(), []byte(`"success":false`)) {
+		t.Fatalf("status = %d, body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestAdminJSONDecoderRejectsUnknownLengthOversizedTrailingWhitespace(t *testing.T) {
+	server := newAdditionalAdminHTTPServer(t)
+	rec := httptest.NewRecorder()
+	body := append([]byte(`{"proxy_protocol_force":true}`), bytes.Repeat([]byte(" "), int(adminJSONBodyLimitBytes)+1)...)
+	req := httptest.NewRequest(http.MethodPost, "/api/config/proxy-protocol", bytes.NewReader(body))
+	req.ContentLength = -1
+	server.handleSetProxyProtocolForce(rec, req)
+	if rec.Code != http.StatusRequestEntityTooLarge || !bytes.Contains(rec.Body.Bytes(), []byte(`"success":false`)) {
+		t.Fatalf("status = %d, body=%s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestAdminHandleAddRuleRejectsRootPath(t *testing.T) {
 	server := newAdditionalAdminHTTPServer(t)
 	rec := httptest.NewRecorder()

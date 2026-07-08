@@ -42,6 +42,7 @@ func TestDebugLogRecordsStreamReconcileWithAdminPortRedaction(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected reserved stream port error")
 	}
+	logger.FlushDebugLogger()
 
 	data, err := os.ReadFile(filepath.Join(dir, time.Now().Format("2006-01-02")+".log"))
 	if err != nil {

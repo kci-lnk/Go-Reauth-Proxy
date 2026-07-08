@@ -256,7 +256,14 @@ func protoToAuthConfig(cfg *pb.AuthConfig) models.AuthConfig {
 }
 
 func loggingConfigToProto(cfg gatewaylog.ConfigInfo) *pb.LoggingConfig {
-	return &pb.LoggingConfig{Enabled: cfg.Enabled, MaxDays: int32(cfg.MaxDays), LogsDir: cfg.LogsDir}
+	return &pb.LoggingConfig{
+		Enabled:        cfg.Enabled,
+		MaxDays:        int32(cfg.MaxDays),
+		LogsDir:        cfg.LogsDir,
+		DroppedEntries: cfg.DroppedEntries,
+		QueueSize:      int32(cfg.QueueSize),
+		QueueDepth:     int32(cfg.QueueDepth),
+	}
 }
 
 func protoToLoggingConfig(cfg *pb.LoggingConfig) models.LoggingConfig {

@@ -22,8 +22,15 @@ type Response struct {
 }
 
 func JSON(w http.ResponseWriter, success bool, code int, message string, data interface{}) {
+	JSONStatus(w, http.StatusOK, success, code, message, data)
+}
+
+func JSONStatus(w http.ResponseWriter, status int, success bool, code int, message string, data interface{}) {
+	if status <= 0 {
+		status = http.StatusOK
+	}
 	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
+	w.WriteHeader(status)
 	timestamp := time.Now().UnixMilli()
 	if data == nil {
 		var stack [512]byte

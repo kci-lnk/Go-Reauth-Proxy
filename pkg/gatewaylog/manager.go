@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"go-reauth-proxy/pkg/models"
@@ -28,6 +29,8 @@ const (
 	cursorChunkSize               = 64 * 1024
 	pageQueryTailWindowMaxEntries = 10000
 	unrecordedCredentialFilter    = "__unrecorded__"
+	asyncLogQueueSize             = 4096
+	asyncLogDropWarnInterval      = 30 * time.Second
 )
 
 var errStopScan = errors.New("stop scan")
@@ -79,9 +82,12 @@ type Entry struct {
 }
 
 type ConfigInfo struct {
-	Enabled bool   `json:"enabled"`
-	MaxDays int    `json:"max_days"`
-	LogsDir string `json:"logs_dir"`
+	Enabled        bool   `json:"enabled"`
+	MaxDays        int    `json:"max_days"`
+	LogsDir        string `json:"logs_dir"`
+	DroppedEntries uint64 `json:"dropped_entries"`
+	QueueSize      int    `json:"queue_size"`
+	QueueDepth     int    `json:"queue_depth"`
 }
 
 type DirectoryInfo struct {
@@ -271,11 +277,18 @@ func (w *DailyFileWriter) pathForDate(date string) string {
 }
 
 type Manager struct {
-	mu      sync.RWMutex
-	config  models.LoggingConfig
-	logsDir string
-	writer  *DailyFileWriter
-	logger  zerolog.Logger
+	mu                sync.RWMutex
+	config            models.LoggingConfig
+	logsDir           string
+	writer            *DailyFileWriter
+	logger            zerolog.Logger
+	logQueue          chan Entry
+	flushQueue        chan chan struct{}
+	done              chan struct{}
+	closeOnce         sync.Once
+	closed            atomic.Bool
+	droppedLogEntries atomic.Uint64
+	lastDropWarnNano  atomic.Int64
 }
 
 func NormalizeConfig(cfg models.LoggingConfig) models.LoggingConfig {
@@ -292,12 +305,17 @@ func NewManager(logsDir string, cfg models.LoggingConfig) *Manager {
 	writer := NewDailyFileWriter(logsDir, normalized.MaxDays)
 	logger := zerolog.New(writer).With().Timestamp().Logger()
 
-	return &Manager{
-		config:  normalized,
-		logsDir: logsDir,
-		writer:  writer,
-		logger:  logger,
+	m := &Manager{
+		config:     normalized,
+		logsDir:    logsDir,
+		writer:     writer,
+		logger:     logger,
+		logQueue:   make(chan Entry, asyncLogQueueSize),
+		flushQueue: make(chan chan struct{}),
+		done:       make(chan struct{}),
 	}
+	go m.runLogWorker()
+	return m
 }
 
 func (m *Manager) GetConfigInfo() ConfigInfo {
@@ -305,14 +323,18 @@ func (m *Manager) GetConfigInfo() ConfigInfo {
 	defer m.mu.RUnlock()
 
 	return ConfigInfo{
-		Enabled: m.config.Enabled,
-		MaxDays: m.config.MaxDays,
-		LogsDir: m.logsDir,
+		Enabled:        m.config.Enabled,
+		MaxDays:        m.config.MaxDays,
+		LogsDir:        m.logsDir,
+		DroppedEntries: m.droppedLogEntries.Load(),
+		QueueSize:      cap(m.logQueue),
+		QueueDepth:     len(m.logQueue),
 	}
 }
 
 func (m *Manager) UpdateConfig(cfg models.LoggingConfig) ConfigInfo {
 	normalized := NormalizeConfig(cfg)
+	m.Flush()
 
 	m.mu.Lock()
 	m.config = normalized
@@ -328,14 +350,108 @@ func (m *Manager) LogsDir() string {
 }
 
 func (m *Manager) Log(entry Entry) {
-	m.mu.RLock()
-	enabled := m.config.Enabled
-	logger := m.logger
-	m.mu.RUnlock()
-
-	if !enabled {
+	if m == nil || m.closed.Load() {
 		return
 	}
+	m.mu.RLock()
+	enabled := m.config.Enabled
+	queue := m.logQueue
+	m.mu.RUnlock()
+
+	if !enabled || m.closed.Load() {
+		return
+	}
+	entry = cloneLogEntry(entry)
+	select {
+	case queue <- entry:
+	default:
+		dropped := m.droppedLogEntries.Add(1)
+		m.warnDroppedLogEntry(dropped)
+	}
+}
+
+func (m *Manager) warnDroppedLogEntry(dropped uint64) {
+	if m == nil {
+		return
+	}
+	now := time.Now().UnixNano()
+	last := m.lastDropWarnNano.Load()
+	if last > 0 && now-last < int64(asyncLogDropWarnInterval) {
+		return
+	}
+	if !m.lastDropWarnNano.CompareAndSwap(last, now) {
+		return
+	}
+	_, _ = fmt.Fprintf(os.Stderr, "gateway access log queue full; dropped %d entries\n", dropped)
+}
+
+func (m *Manager) Flush() {
+	if m == nil || m.flushQueue == nil {
+		return
+	}
+	ack := make(chan struct{})
+	select {
+	case m.flushQueue <- ack:
+		<-ack
+	case <-m.done:
+	}
+}
+
+func (m *Manager) Close() {
+	if m == nil {
+		return
+	}
+	m.closeOnce.Do(func() {
+		m.closed.Store(true)
+		m.Flush()
+		close(m.done)
+	})
+}
+
+func (m *Manager) DroppedLogEntries() uint64 {
+	if m == nil {
+		return 0
+	}
+	return m.droppedLogEntries.Load()
+}
+
+func (m *Manager) runLogWorker() {
+	for {
+		select {
+		case entry := <-m.logQueue:
+			m.writeLogEntry(entry)
+		case ack := <-m.flushQueue:
+			m.drainLogQueue()
+			close(ack)
+		case <-m.done:
+			m.drainLogQueue()
+			return
+		}
+	}
+}
+
+func (m *Manager) drainLogQueue() {
+	for {
+		select {
+		case entry := <-m.logQueue:
+			m.writeLogEntry(entry)
+		default:
+			return
+		}
+	}
+}
+
+func cloneLogEntry(entry Entry) Entry {
+	if len(entry.WAFRuleIDs) > 0 {
+		entry.WAFRuleIDs = append([]int(nil), entry.WAFRuleIDs...)
+	}
+	return entry
+}
+
+func (m *Manager) writeLogEntry(entry Entry) {
+	m.mu.RLock()
+	logger := m.logger
+	m.mu.RUnlock()
 
 	event := logger.Info()
 	event.Str("method", entry.Method).
@@ -383,6 +499,7 @@ func (m *Manager) Log(entry Entry) {
 }
 
 func (m *Manager) GetDates() (DatesResult, error) {
+	m.Flush()
 	dates, err := m.listDates(true)
 	if err != nil {
 		return DatesResult{}, err
@@ -396,6 +513,7 @@ func (m *Manager) GetDates() (DatesResult, error) {
 }
 
 func (m *Manager) Query(date string, page int, limit int, search string, status string, loggedIn string, credential string, cursor string, pagination string) (QueryResult, error) {
+	m.Flush()
 	selectedDate, err := normalizeDate(date)
 	if err != nil {
 		return QueryResult{}, err
@@ -463,6 +581,7 @@ func (m *Manager) Query(date string, page int, limit int, search string, status 
 }
 
 func (m *Manager) DeleteDate(date string) (DeleteResult, error) {
+	m.Flush()
 	selectedDate, err := normalizeDate(date)
 	if err != nil {
 		return DeleteResult{}, err

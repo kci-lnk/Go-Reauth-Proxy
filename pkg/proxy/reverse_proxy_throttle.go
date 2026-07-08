@@ -4,18 +4,20 @@ import (
 	"go-reauth-proxy/pkg/models"
 	"net"
 	"net/netip"
+	"sort"
 	"strings"
 	"sync"
 	"time"
 )
 
 const (
-	defaultReverseProxyThrottleRPS       = 100
-	defaultReverseProxyThrottleBurst     = 200
-	defaultReverseProxyThrottleBlockSecs = 30
-	reverseProxyThrottleCleanupInterval  = 1 * time.Minute
-	reverseProxyThrottleMinimumEntryTTL  = 2 * time.Minute
-	reverseProxyThrottleShardCount       = 64
+	defaultReverseProxyThrottleRPS         = 100
+	defaultReverseProxyThrottleBurst       = 200
+	defaultReverseProxyThrottleBlockSecs   = 30
+	reverseProxyThrottleCleanupInterval    = 1 * time.Minute
+	reverseProxyThrottleMinimumEntryTTL    = 2 * time.Minute
+	reverseProxyThrottleShardCount         = 64
+	reverseProxyThrottleMaxEntriesPerShard = 2048
 )
 
 type reverseProxyThrottle struct {
@@ -153,6 +155,7 @@ func (t *reverseProxyThrottle) evaluate(clientIP string, now time.Time) reverseP
 	entry.lastSeen = now
 	if entry.tokens < 1 {
 		entry.blockedUntil = now.Add(time.Duration(cfg.BlockSeconds) * time.Second)
+		shard.enforceMaxEntriesLocked()
 		decision.Allowed = false
 		decision.NewlyBlocked = true
 		decision.BlockedUntil = entry.blockedUntil
@@ -160,6 +163,7 @@ func (t *reverseProxyThrottle) evaluate(clientIP string, now time.Time) reverseP
 	}
 
 	entry.tokens -= 1
+	shard.enforceMaxEntriesLocked()
 	return decision
 }
 
@@ -199,6 +203,37 @@ func (s *reverseProxyThrottleShard) cleanupLocked(now time.Time, cfg models.Reve
 		}
 	}
 	s.nextCleanup = now.Add(reverseProxyThrottleCleanupInterval)
+	s.enforceMaxEntriesLocked()
+}
+
+func (s *reverseProxyThrottleShard) enforceMaxEntriesLocked() {
+	if s == nil || len(s.entries) <= reverseProxyThrottleMaxEntriesPerShard {
+		return
+	}
+	type throttleCandidate struct {
+		identity string
+		lastSeen time.Time
+	}
+	candidates := make([]throttleCandidate, 0, len(s.entries))
+	for identity, entry := range s.entries {
+		if entry == nil {
+			delete(s.entries, identity)
+			continue
+		}
+		candidates = append(candidates, throttleCandidate{
+			identity: identity,
+			lastSeen: entry.lastSeen,
+		})
+	}
+	sort.Slice(candidates, func(i, j int) bool {
+		return candidates[i].lastSeen.Before(candidates[j].lastSeen)
+	})
+	for _, candidate := range candidates {
+		if len(s.entries) <= reverseProxyThrottleMaxEntriesPerShard {
+			return
+		}
+		delete(s.entries, candidate.identity)
+	}
 }
 
 func reverseProxyThrottleEntryTTL(cfg models.ReverseProxyThrottleConfig) time.Duration {

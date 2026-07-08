@@ -34,6 +34,7 @@ func TestDebugLogRecordsWAFReloadWithAdminPortRedaction(t *testing.T) {
 	if _, err := rt.Reload(models.WAFConfig{Enabled: false, Mode: ModeOff}, "bundle", "http://127.0.0.1:7996/bundle"); err != nil {
 		t.Fatalf("Reload returned error: %v", err)
 	}
+	logger.FlushDebugLogger()
 
 	data, err := os.ReadFile(filepath.Join(dir, time.Now().Format("2006-01-02")+".log"))
 	if err != nil {

@@ -382,6 +382,38 @@ func TestHandleInitPersistsRequestedChainName(t *testing.T) {
 	}
 }
 
+func TestHandleInitRejectsOversizedBody(t *testing.T) {
+	handler := NewHandler(newRecordingManager(), nil)
+	rec := httptest.NewRecorder()
+	body := bytes.Repeat([]byte("x"), int(iptablesJSONBodyLimitBytes)+1)
+	handler.HandleInit(rec, httptest.NewRequest(http.MethodPost, "/init", bytes.NewReader(body)))
+	if rec.Code != http.StatusRequestEntityTooLarge || !strings.Contains(rec.Body.String(), `"success":false`) {
+		t.Fatalf("status = %d, body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestHandleAllowIPRejectsOversizedBody(t *testing.T) {
+	handler := NewHandler(newRecordingManager(), nil)
+	rec := httptest.NewRecorder()
+	body := bytes.Repeat([]byte("x"), int(iptablesJSONBodyLimitBytes)+1)
+	handler.HandleAllowIP(rec, httptest.NewRequest(http.MethodPost, "/allow", bytes.NewReader(body)))
+	if rec.Code != http.StatusRequestEntityTooLarge || !strings.Contains(rec.Body.String(), `"success":false`) {
+		t.Fatalf("status = %d, body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestHandleAllowIPRejectsUnknownLengthOversizedTrailingWhitespace(t *testing.T) {
+	handler := NewHandler(newRecordingManager(), nil)
+	rec := httptest.NewRecorder()
+	body := append([]byte(`{"ip":"198.51.100.7"}`), bytes.Repeat([]byte(" "), int(iptablesJSONBodyLimitBytes)+1)...)
+	req := httptest.NewRequest(http.MethodPost, "/allow", bytes.NewReader(body))
+	req.ContentLength = -1
+	handler.HandleAllowIP(rec, req)
+	if rec.Code != http.StatusRequestEntityTooLarge || !strings.Contains(rec.Body.String(), `"success":false`) {
+		t.Fatalf("status = %d, body=%s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestHandleEnsureTCPRedirectRejectsInvalidJSON(t *testing.T) {
 	rec := httptest.NewRecorder()
 	handler := NewHandler(newRecordingManager(), nil)

@@ -25,7 +25,9 @@ const (
 	DebugLogEnv     = "GO_REPROXY_DEBUG_LOG"
 	DebugLogDirEnv  = "GO_REPROXY_DEBUG_LOG_DIR"
 
-	DefaultDebugLogDir = "/tmp/__fnknock"
+	DefaultDebugLogDir       = "/tmp/__fnknock"
+	debugLogQueueSize        = 4096
+	debugLogDropWarnInterval = 30 * time.Second
 )
 
 const debugDateLayout = "2006-01-02"
@@ -141,6 +143,130 @@ func (w warnOnceWriter) Write(p []byte) (int, error) {
 	return n, err
 }
 
+type asyncWriter struct {
+	writer    io.Writer
+	queue     chan []byte
+	flush     chan chan struct{}
+	done      chan struct{}
+	closeOnce sync.Once
+	closed    atomic.Bool
+	dropped   atomic.Uint64
+	lastWarn  atomic.Int64
+}
+
+func newAsyncWriter(writer io.Writer, queueSize int) *asyncWriter {
+	if writer == nil {
+		writer = io.Discard
+	}
+	if queueSize <= 0 {
+		queueSize = 1
+	}
+	w := &asyncWriter{
+		writer: writer,
+		queue:  make(chan []byte, queueSize),
+		flush:  make(chan chan struct{}),
+		done:   make(chan struct{}),
+	}
+	go w.run()
+	return w
+}
+
+func (w *asyncWriter) Write(p []byte) (int, error) {
+	if w == nil || w.closed.Load() {
+		return len(p), nil
+	}
+	buf := append([]byte(nil), p...)
+	if w.closed.Load() {
+		return len(p), nil
+	}
+	select {
+	case w.queue <- buf:
+	default:
+		dropped := w.dropped.Add(1)
+		w.warnDropped(dropped)
+	}
+	return len(p), nil
+}
+
+func (w *asyncWriter) warnDropped(dropped uint64) {
+	if w == nil {
+		return
+	}
+	now := time.Now().UnixNano()
+	last := w.lastWarn.Load()
+	if last > 0 && now-last < int64(debugLogDropWarnInterval) {
+		return
+	}
+	if !w.lastWarn.CompareAndSwap(last, now) {
+		return
+	}
+	_, _ = fmt.Fprintf(os.Stderr, "debug log queue full; dropped %d entries\n", dropped)
+}
+
+func (w *asyncWriter) Flush() {
+	if w == nil {
+		return
+	}
+	ack := make(chan struct{})
+	select {
+	case w.flush <- ack:
+		<-ack
+	case <-w.done:
+	}
+}
+
+func (w *asyncWriter) Close() error {
+	if w == nil {
+		return nil
+	}
+	w.closeOnce.Do(func() {
+		w.closed.Store(true)
+		w.Flush()
+		close(w.done)
+	})
+	return nil
+}
+
+func (w *asyncWriter) Dropped() uint64 {
+	if w == nil {
+		return 0
+	}
+	return w.dropped.Load()
+}
+
+func (w *asyncWriter) run() {
+	for {
+		select {
+		case p := <-w.queue:
+			w.write(p)
+		case ack := <-w.flush:
+			w.drain()
+			close(ack)
+		case <-w.done:
+			w.drain()
+			return
+		}
+	}
+}
+
+func (w *asyncWriter) drain() {
+	for {
+		select {
+		case p := <-w.queue:
+			w.write(p)
+		default:
+			return
+		}
+	}
+}
+
+func (w *asyncWriter) write(p []byte) {
+	if len(p) == 0 {
+		return
+	}
+	_, _ = w.writer.Write(p)
+}
+
 func configureDebugLoggerFromEnv() {
 	if !BoolEnv(DebugLogEnv) {
 		setDebugLogger(false, io.Discard)
@@ -151,7 +277,7 @@ func configureDebugLoggerFromEnv() {
 	if dir == "" {
 		dir = DefaultDebugLogDir
 	}
-	setDebugLogger(true, warnOnceWriter{writer: newDailyFileWriter(dir)})
+	setDebugLogger(true, newAsyncWriter(warnOnceWriter{writer: newDailyFileWriter(dir)}, debugLogQueueSize))
 }
 
 func setDebugLogger(enabled bool, writer io.Writer) {
@@ -162,10 +288,26 @@ func setDebugLogger(enabled bool, writer io.Writer) {
 	logger := zerolog.New(writer).With().Timestamp().Logger().Level(zerolog.DebugLevel)
 
 	debugMu.Lock()
+	oldWriter := debugWriter
 	debugEnabled = enabled
 	debugWriter = writer
 	debugLogger = logger
 	debugMu.Unlock()
+
+	if oldWriter != writer {
+		if closer, ok := oldWriter.(interface{ Close() error }); ok {
+			_ = closer.Close()
+		}
+	}
+}
+
+func FlushDebugLogger() {
+	debugMu.RLock()
+	writer := debugWriter
+	debugMu.RUnlock()
+	if flusher, ok := writer.(interface{ Flush() }); ok {
+		flusher.Flush()
+	}
 }
 
 func DebugEnabled() bool {

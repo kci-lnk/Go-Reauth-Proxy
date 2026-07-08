@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"fmt"
 	"go-reauth-proxy/pkg/models"
 	"io"
 	"net/http"
@@ -60,6 +61,33 @@ func TestTrafficStatsIncludesHostBreakdown(t *testing.T) {
 	}
 	if hostStats.Error5xx != 1 {
 		t.Fatalf("host Error5xx = %d, want 1", hostStats.Error5xx)
+	}
+}
+
+func TestHostTrafficCountersEnforceActiveIPLimitOnWrite(t *testing.T) {
+	counters := &hostTrafficCounters{}
+	now := time.Unix(100, 0)
+	for i := 0; i < hostActiveIPHardLimit+25; i++ {
+		release := counters.markActiveIP(fmt.Sprintf("198.51.%d.%d", i/255, i%255), now.Add(time.Duration(i)*time.Millisecond))
+		if release != nil {
+			release()
+		}
+	}
+
+	if got := counters.activeIPEntries.Load(); got > hostActiveIPHardLimit {
+		t.Fatalf("active IP entries = %d, want <= %d", got, hostActiveIPHardLimit)
+	}
+}
+
+func TestLoggedInActiveEnforcesMaxEntriesOnWrite(t *testing.T) {
+	handler := &Handler{}
+	now := time.Unix(100, 0)
+	for i := 0; i < loggedInActiveMaxEntries+25; i++ {
+		handler.storeLoggedInActive(fmt.Sprintf("identity-%d", i), now.Add(time.Duration(i)*time.Millisecond))
+	}
+
+	if got := handler.activeLoggedInCount(now.Add(time.Minute)); got > loggedInActiveMaxEntries {
+		t.Fatalf("logged-in active count = %d, want <= %d", got, loggedInActiveMaxEntries)
 	}
 }
 

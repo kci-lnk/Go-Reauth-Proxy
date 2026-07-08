@@ -65,6 +65,7 @@ func TestDebugLogWritesDailyJSONL(t *testing.T) {
 		t.Fatal("expected enabled debug event")
 	}
 	event.Str("field", "value").Send()
+	FlushDebugLogger()
 
 	logPath := filepath.Join(dir, time.Now().Format(debugDateLayout)+".log")
 	data, err := os.ReadFile(logPath)

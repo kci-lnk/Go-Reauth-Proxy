@@ -2,6 +2,7 @@ package admin
 
 import (
 	"encoding/json"
+	stderrors "errors"
 	"fmt"
 	"go-reauth-proxy/pkg/config"
 	"go-reauth-proxy/pkg/errors"
@@ -20,6 +21,8 @@ import (
 
 	"github.com/gorilla/mux"
 )
+
+const adminJSONBodyLimitBytes int64 = 1 << 20
 
 type Server struct {
 	ProxyHandler    *proxy.Handler
@@ -87,6 +90,77 @@ func (s *Server) handleGetRules(w http.ResponseWriter, r *http.Request) {
 	response.Success(w, rules)
 }
 
+func readAdminJSONBody(w http.ResponseWriter, r *http.Request) ([]byte, bool) {
+	if r == nil || r.Body == nil {
+		return nil, true
+	}
+	if r.ContentLength > adminJSONBodyLimitBytes {
+		response.JSONStatus(w, http.StatusRequestEntityTooLarge, false, errors.CodeReadBodyFailed, "Request body too large", nil)
+		return nil, false
+	}
+	body := http.MaxBytesReader(w, r.Body, adminJSONBodyLimitBytes)
+	defer body.Close()
+	bodyBytes, err := io.ReadAll(body)
+	if err == nil {
+		return bodyBytes, true
+	}
+	var maxBytesErr *http.MaxBytesError
+	if stderrors.As(err, &maxBytesErr) {
+		response.JSONStatus(w, http.StatusRequestEntityTooLarge, false, errors.CodeReadBodyFailed, "Request body too large", nil)
+		return nil, false
+	}
+	response.Error(w, errors.CodeReadBodyFailed, "Failed to read request body")
+	return nil, false
+}
+
+func decodeAdminJSONBody(w http.ResponseWriter, r *http.Request, dst interface{}) bool {
+	return decodeAdminJSONBodyWithOptions(w, r, dst, false)
+}
+
+func decodeOptionalAdminJSONBody(w http.ResponseWriter, r *http.Request, dst interface{}) bool {
+	return decodeAdminJSONBodyWithOptions(w, r, dst, true)
+}
+
+func decodeAdminJSONBodyWithOptions(w http.ResponseWriter, r *http.Request, dst interface{}, allowEmpty bool) bool {
+	if r == nil || r.Body == nil {
+		if allowEmpty {
+			return true
+		}
+		response.Error(w, errors.CodeInvalidJSON, "Invalid JSON object")
+		return false
+	}
+	if r.ContentLength > adminJSONBodyLimitBytes {
+		response.JSONStatus(w, http.StatusRequestEntityTooLarge, false, errors.CodeReadBodyFailed, "Request body too large", nil)
+		return false
+	}
+	body := http.MaxBytesReader(w, r.Body, adminJSONBodyLimitBytes)
+	defer body.Close()
+	decoder := json.NewDecoder(body)
+	if err := decoder.Decode(dst); err != nil {
+		if allowEmpty && stderrors.Is(err, io.EOF) {
+			return true
+		}
+		var maxBytesErr *http.MaxBytesError
+		if stderrors.As(err, &maxBytesErr) {
+			response.JSONStatus(w, http.StatusRequestEntityTooLarge, false, errors.CodeReadBodyFailed, "Request body too large", nil)
+			return false
+		}
+		response.Error(w, errors.CodeInvalidJSON, "Invalid JSON object")
+		return false
+	}
+	var extra any
+	if err := decoder.Decode(&extra); err != io.EOF {
+		var maxBytesErr *http.MaxBytesError
+		if stderrors.As(err, &maxBytesErr) {
+			response.JSONStatus(w, http.StatusRequestEntityTooLarge, false, errors.CodeReadBodyFailed, "Request body too large", nil)
+			return false
+		}
+		response.Error(w, errors.CodeInvalidJSON, "Invalid JSON object")
+		return false
+	}
+	return true
+}
+
 // handleAddRule sets proxy rules (overrides existing)
 // @Summary Set rules
 // @Description Set proxy rules (overrides existing rules)
@@ -98,12 +172,10 @@ func (s *Server) handleGetRules(w http.ResponseWriter, r *http.Request) {
 // @Failure 400 {object} response.Response
 // @Router /api/rules [post]
 func (s *Server) handleAddRule(w http.ResponseWriter, r *http.Request) {
-	bodyBytes, err := io.ReadAll(r.Body)
-	if err != nil {
-		response.Error(w, errors.CodeReadBodyFailed, "Failed to read request body")
+	bodyBytes, ok := readAdminJSONBody(w, r)
+	if !ok {
 		return
 	}
-	r.Body.Close()
 
 	type ruleRequest struct {
 		Path        string `json:"path"`
@@ -187,12 +259,10 @@ func (s *Server) handleGetHostRules(w http.ResponseWriter, r *http.Request) {
 // @Failure 400 {object} response.Response
 // @Router /api/host-rules [post]
 func (s *Server) handleAddHostRule(w http.ResponseWriter, r *http.Request) {
-	bodyBytes, err := io.ReadAll(r.Body)
-	if err != nil {
-		response.Error(w, errors.CodeReadBodyFailed, "Failed to read request body")
+	bodyBytes, ok := readAdminJSONBody(w, r)
+	if !ok {
 		return
 	}
-	r.Body.Close()
 
 	type hostLocationRequest struct {
 		Path        string                      `json:"path"`
@@ -295,12 +365,10 @@ func (s *Server) handleGetStreamRules(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleSetStreamRules(w http.ResponseWriter, r *http.Request) {
-	bodyBytes, err := io.ReadAll(r.Body)
-	if err != nil {
-		response.Error(w, errors.CodeReadBodyFailed, "Failed to read request body")
+	bodyBytes, ok := readAdminJSONBody(w, r)
+	if !ok {
 		return
 	}
-	r.Body.Close()
 
 	type streamRuleRequest struct {
 		Protocol   string `json:"protocol"`
@@ -434,8 +502,7 @@ func (s *Server) handleListGeneralBlacklist(w http.ResponseWriter, r *http.Reque
 
 func (s *Server) handleGeneralBlacklistStatus(w http.ResponseWriter, r *http.Request) {
 	var req generalBlacklistRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		response.Error(w, errors.CodeInvalidJSON, "Invalid JSON object")
+	if !decodeAdminJSONBody(w, r, &req) {
 		return
 	}
 
@@ -449,8 +516,7 @@ func (s *Server) handleGeneralBlacklistStatus(w http.ResponseWriter, r *http.Req
 
 func (s *Server) handleAddGeneralBlacklist(w http.ResponseWriter, r *http.Request) {
 	var req generalBlacklistRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		response.Error(w, errors.CodeInvalidJSON, "Invalid JSON object")
+	if !decodeAdminJSONBody(w, r, &req) {
 		return
 	}
 
@@ -464,8 +530,7 @@ func (s *Server) handleAddGeneralBlacklist(w http.ResponseWriter, r *http.Reques
 
 func (s *Server) handleDeleteGeneralBlacklist(w http.ResponseWriter, r *http.Request) {
 	var req generalBlacklistRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		response.Error(w, errors.CodeInvalidJSON, "Invalid JSON object")
+	if !decodeAdminJSONBody(w, r, &req) {
 		return
 	}
 
@@ -513,8 +578,7 @@ func (s *Server) handleSetDefaultRoute(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		DefaultRoute string `json:"default_route"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		response.Error(w, errors.CodeInvalidJSON, "Invalid JSON object")
+	if !decodeAdminJSONBody(w, r, &req) {
 		return
 	}
 
@@ -574,8 +638,7 @@ func (s *Server) handleSetProxyProtocolForce(w http.ResponseWriter, r *http.Requ
 	var req struct {
 		ProxyProtocolForce *bool `json:"proxy_protocol_force"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		response.Error(w, errors.CodeInvalidJSON, "Invalid JSON object")
+	if !decodeAdminJSONBody(w, r, &req) {
 		return
 	}
 	if req.ProxyProtocolForce == nil {
@@ -613,8 +676,7 @@ func (s *Server) handleSetLocaleConfig(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req models.LocaleConfig
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		response.Error(w, errors.CodeInvalidJSON, "Invalid JSON object")
+	if !decodeAdminJSONBody(w, r, &req) {
 		return
 	}
 
@@ -637,8 +699,7 @@ func (s *Server) handleGetReverseProxyThrottle(w http.ResponseWriter, r *http.Re
 
 func (s *Server) handleSetReverseProxyThrottle(w http.ResponseWriter, r *http.Request) {
 	var req reverseProxyThrottleResponse
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		response.Error(w, errors.CodeInvalidJSON, "Invalid JSON object")
+	if !decodeAdminJSONBody(w, r, &req) {
 		return
 	}
 	if err := s.ProxyHandler.SetReverseProxyThrottle(req); err != nil {
@@ -654,8 +715,7 @@ func (s *Server) handleGetGatewayVisibility(w http.ResponseWriter, r *http.Reque
 
 func (s *Server) handleSetGatewayVisibility(w http.ResponseWriter, r *http.Request) {
 	var req models.GatewayVisibilityConfig
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		response.Error(w, errors.CodeInvalidJSON, "Invalid JSON object")
+	if !decodeAdminJSONBody(w, r, &req) {
 		return
 	}
 
@@ -690,8 +750,7 @@ func (s *Server) handleGetForwardedHeadersConfig(w http.ResponseWriter, r *http.
 // @Router /api/config/forwarded-headers [post]
 func (s *Server) handleSetForwardedHeadersConfig(w http.ResponseWriter, r *http.Request) {
 	var req models.ForwardedHeadersConfig
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		response.Error(w, errors.CodeInvalidJSON, "Invalid JSON object")
+	if !decodeAdminJSONBody(w, r, &req) {
 		return
 	}
 
@@ -725,8 +784,7 @@ func (s *Server) handleGetPreserveHostConfig(w http.ResponseWriter, r *http.Requ
 // @Router /api/config/preserve-host [post]
 func (s *Server) handleSetPreserveHostConfig(w http.ResponseWriter, r *http.Request) {
 	var req models.PreserveHostConfig
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		response.Error(w, errors.CodeInvalidJSON, "Invalid JSON object")
+	if !decodeAdminJSONBody(w, r, &req) {
 		return
 	}
 
@@ -760,8 +818,7 @@ func (s *Server) handleGetCrawlerBlockerConfig(w http.ResponseWriter, r *http.Re
 // @Router /api/config/crawler-blocker [post]
 func (s *Server) handleSetCrawlerBlockerConfig(w http.ResponseWriter, r *http.Request) {
 	var req models.CrawlerBlockerConfig
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		response.Error(w, errors.CodeInvalidJSON, "Invalid JSON object")
+	if !decodeAdminJSONBody(w, r, &req) {
 		return
 	}
 
@@ -779,8 +836,7 @@ func (s *Server) handleGetGatewayPortalConfig(w http.ResponseWriter, r *http.Req
 
 func (s *Server) handleSetGatewayPortalConfig(w http.ResponseWriter, r *http.Request) {
 	var req models.GatewayPortalConfig
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		response.Error(w, errors.CodeInvalidJSON, "Invalid JSON object")
+	if !decodeAdminJSONBody(w, r, &req) {
 		return
 	}
 
@@ -798,8 +854,7 @@ func (s *Server) handleGetFnosPortIconHijackConfig(w http.ResponseWriter, r *htt
 
 func (s *Server) handleSetFnosPortIconHijackConfig(w http.ResponseWriter, r *http.Request) {
 	var req models.FnosPortIconHijackConfig
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		response.Error(w, errors.CodeInvalidJSON, "Invalid JSON object")
+	if !decodeAdminJSONBody(w, r, &req) {
 		return
 	}
 
@@ -817,8 +872,7 @@ func (s *Server) handleGetReverseProxyThrottleExemptIPs(w http.ResponseWriter, r
 
 func (s *Server) handleSetReverseProxyThrottleExemptIPs(w http.ResponseWriter, r *http.Request) {
 	var req reverseProxyThrottleExemptIPsRuntimeResponse
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		response.Error(w, errors.CodeInvalidJSON, "Invalid JSON object")
+	if !decodeAdminJSONBody(w, r, &req) {
 		return
 	}
 
@@ -832,8 +886,7 @@ func (s *Server) handleGetCommonLocationExemptions(w http.ResponseWriter, r *htt
 
 func (s *Server) handleSetCommonLocationExemptions(w http.ResponseWriter, r *http.Request) {
 	var req commonLocationExemptionsRuntimeResponse
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		response.Error(w, errors.CodeInvalidJSON, "Invalid JSON object")
+	if !decodeAdminJSONBody(w, r, &req) {
 		return
 	}
 
@@ -942,8 +995,7 @@ func mergeAuthConfig(current models.AuthConfig, patch authConfigPatch) (models.A
 // @Router /api/auth [post]
 func (s *Server) handleSetAuth(w http.ResponseWriter, r *http.Request) {
 	var req authConfigPatch
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		response.Error(w, errors.CodeInvalidJSON, "Invalid JSON object")
+	if !decodeAdminJSONBody(w, r, &req) {
 		return
 	}
 
@@ -965,8 +1017,7 @@ func (s *Server) handleGetLoggingConfig(w http.ResponseWriter, r *http.Request) 
 
 func (s *Server) handleSetLoggingConfig(w http.ResponseWriter, r *http.Request) {
 	var req models.LoggingConfig
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		response.Error(w, errors.CodeInvalidJSON, "Invalid JSON object")
+	if !decodeAdminJSONBody(w, r, &req) {
 		return
 	}
 	if req.MaxDays < 0 {
@@ -992,8 +1043,7 @@ func (s *Server) handleGetWAFStatus(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleSetWAFConfig(w http.ResponseWriter, r *http.Request) {
 	var req models.WAFConfig
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		response.Error(w, errors.CodeInvalidJSON, "Invalid JSON object")
+	if !decodeAdminJSONBody(w, r, &req) {
 		return
 	}
 	status, err := s.ProxyHandler.SetWAFConfig(req)
@@ -1012,8 +1062,7 @@ type wafBundleRequest struct {
 
 func (s *Server) handleValidateWAFBundle(w http.ResponseWriter, r *http.Request) {
 	var req wafBundleRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		response.Error(w, errors.CodeInvalidJSON, "Invalid JSON object")
+	if !decodeAdminJSONBody(w, r, &req) {
 		return
 	}
 	cfg := s.ProxyHandler.GetWAFConfig()
@@ -1030,8 +1079,7 @@ func (s *Server) handleValidateWAFBundle(w http.ResponseWriter, r *http.Request)
 
 func (s *Server) handleReloadWAFBundle(w http.ResponseWriter, r *http.Request) {
 	var req wafBundleRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		response.Error(w, errors.CodeInvalidJSON, "Invalid JSON object")
+	if !decodeAdminJSONBody(w, r, &req) {
 		return
 	}
 	cfg := s.ProxyHandler.GetWAFConfig()
@@ -1053,11 +1101,8 @@ func (s *Server) handleDrainWAFEvents(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Limit int `json:"limit"`
 	}
-	if r.Body != nil {
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil && err != io.EOF {
-			response.Error(w, errors.CodeInvalidJSON, "Invalid JSON object")
-			return
-		}
+	if !decodeOptionalAdminJSONBody(w, r, &req) {
+		return
 	}
 	if req.Limit <= 0 {
 		req.Limit = 500
@@ -1130,8 +1175,7 @@ func (s *Server) handleDeleteLoggingEntries(w http.ResponseWriter, r *http.Reque
 	var req struct {
 		Date string `json:"date"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		response.Error(w, errors.CodeInvalidJSON, "Invalid JSON object")
+	if !decodeAdminJSONBody(w, r, &req) {
 		return
 	}
 
@@ -1166,8 +1210,7 @@ func (s *Server) handleGetSSL(w http.ResponseWriter, r *http.Request) {
 // @Router /api/ssl [post]
 func (s *Server) handleSetSSL(w http.ResponseWriter, r *http.Request) {
 	var req models.SSLDeploymentRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		response.Error(w, errors.CodeInvalidJSON, "Invalid JSON object")
+	if !decodeAdminJSONBody(w, r, &req) {
 		return
 	}
 

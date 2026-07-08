@@ -879,7 +879,7 @@ const toolbarTemplate = `
 	`
 
 const toolbarDataMarker = "__REAUTH_TOOLBAR_DATA__"
-const toolbarFaviconMaxBytes = 32 * 1024
+const toolbarFaviconMaxBytes = 128 * 1024
 
 var (
 	toolbarTemplatePrefix string

@@ -246,6 +246,22 @@ func TestGenerateToolbarWithHostsIncludesFaviconOnlyWhenEnabled(t *testing.T) {
 	}
 }
 
+func TestGenerateToolbarWithHostsIncludesLargeFaviconUnderLimit(t *testing.T) {
+	icon := "data:image/x-icon;base64," + strings.Repeat("A", 90*1024)
+	toolbar := GenerateToolbarWithHosts(
+		nil,
+		[]models.HostRule{{Host: "app.example.com", Title: "App Portal", Favicon: icon}},
+		"",
+		"",
+		"",
+		models.GatewayPortalConfig{DisplayStyle: models.GatewayPortalDisplayStyleTitle, ShowAppIcon: true},
+	)
+
+	if !strings.Contains(toolbar, `"favicon":"`+icon+`"`) {
+		t.Fatalf("toolbar did not include large favicon under limit: %s", toolbar)
+	}
+}
+
 func TestGenerateToolbarWithHostsOmitsOversizedFavicon(t *testing.T) {
 	icon := "data:image/png;base64," + strings.Repeat("A", toolbarFaviconMaxBytes)
 	toolbar := GenerateToolbarWithHosts(

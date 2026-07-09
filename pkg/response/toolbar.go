@@ -1,6 +1,8 @@
 package response
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"go-reauth-proxy/pkg/i18n"
 	"go-reauth-proxy/pkg/models"
 	"net/http"
@@ -880,14 +882,30 @@ const toolbarTemplate = `
 
 const toolbarDataMarker = "__REAUTH_TOOLBAR_DATA__"
 const toolbarFaviconMaxBytes = 128 * 1024
+const toolbarRuntimeDataExpression = `(window.__REAUTH_PROXY_TOOLBAR_DATA__ || {})`
 
 var (
 	toolbarTemplatePrefix string
 	toolbarTemplateSuffix string
+	toolbarRuntime        []byte
+	toolbarAssetPath      string
 )
 
 func init() {
-	toolbarTemplatePrefix, toolbarTemplateSuffix, _ = strings.Cut(toolbarTemplate, toolbarDataMarker)
+	runtimePrefix, runtimeSuffix, found := strings.Cut(toolbarTemplate, toolbarDataMarker)
+	if !found {
+		panic("toolbar runtime data marker is missing")
+	}
+
+	runtimeDocument := strings.TrimSpace(runtimePrefix + toolbarRuntimeDataExpression + runtimeSuffix)
+	runtimeDocument = strings.TrimSpace(strings.TrimPrefix(runtimeDocument, "<script>"))
+	runtimeDocument = strings.TrimSpace(strings.TrimSuffix(runtimeDocument, "</script>"))
+	toolbarRuntime = []byte(runtimeDocument)
+
+	digest := sha256.Sum256(toolbarRuntime)
+	toolbarAssetPath = "/__assets__/toolbar/toolbar." + hex.EncodeToString(digest[:]) + ".js"
+	toolbarTemplatePrefix = `<script id="reauth-proxy-toolbar-loader">window.__REAUTH_PROXY_TOOLBAR_DATA__=`
+	toolbarTemplateSuffix = `;(function(d){var s=d.createElement("script");s.src="` + toolbarAssetPath + `";s.defer=true;(d.head||d.documentElement).appendChild(s);})(document);</script>`
 }
 
 type toolbarLabels struct {

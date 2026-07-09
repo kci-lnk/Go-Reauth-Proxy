@@ -29,6 +29,19 @@ func TestNormalizeSSLConfigDropsEmptyCertificates(t *testing.T) {
 	}
 }
 
+func TestNewProxyTransportEnablesBoundedTLSClientSessionCache(t *testing.T) {
+	transport := newProxyTransport()
+	if transport.TLSClientConfig == nil || transport.TLSClientConfig.ClientSessionCache == nil {
+		t.Fatal("proxy transport does not enable TLS client session reuse")
+	}
+	if !transport.TLSClientConfig.InsecureSkipVerify {
+		t.Fatal("proxy transport changed the configured upstream TLS verification behavior")
+	}
+	if transport.ResponseHeaderTimeout != 0 {
+		t.Fatalf("ResponseHeaderTimeout = %v, want no gateway-level timeout", transport.ResponseHeaderTimeout)
+	}
+}
+
 func TestNormalizeSSLConfigRejectsPartialCertificate(t *testing.T) {
 	if _, err := normalizeSSLConfig(models.SSLConfig{Certificates: []models.SSLDeployedCertificate{{Cert: "cert"}}}); err == nil {
 		t.Fatal("normalizeSSLConfig() accepted cert without key")
@@ -170,7 +183,11 @@ func TestPreferredPrivateIPv4DetectorCachesValue(t *testing.T) {
 		calls.Add(1)
 		return "192.168.1.10"
 	})
-	if detector.get() != "192.168.1.10" || detector.get() != "192.168.1.10" {
+	if got := detector.get(); got != "" {
+		t.Fatalf("cold detector value = %q, want non-blocking empty value", got)
+	}
+	waitForPrivateIPv4Value(t, detector.get, "192.168.1.10")
+	if detector.get() != "192.168.1.10" {
 		t.Fatal("detector returned unexpected value")
 	}
 	if calls.Load() != 1 {
@@ -184,7 +201,11 @@ func TestCachedPrivateIPv4ResolverCachesValue(t *testing.T) {
 		calls.Add(1)
 		return "10.0.0.5"
 	})
-	if resolver.get("HOST.EXAMPLE.TEST.") != "10.0.0.5" || resolver.get("host.example.test") != "10.0.0.5" {
+	if got := resolver.get("HOST.EXAMPLE.TEST."); got != "" {
+		t.Fatalf("cold resolver value = %q, want non-blocking empty value", got)
+	}
+	waitForPrivateIPv4Value(t, func() string { return resolver.get("host.example.test") }, "10.0.0.5")
+	if resolver.get("host.example.test") != "10.0.0.5" {
 		t.Fatal("resolver returned unexpected value")
 	}
 	if calls.Load() != 1 {
@@ -215,6 +236,7 @@ func TestResolveUpstreamPrivateIPv4HintUsesLoopbackDetector(t *testing.T) {
 	defer func() { privateIPv4Detector = oldDetector }()
 
 	target, _ := url.Parse("http://127.0.0.1:8080")
+	waitForPrivateIPv4Value(t, func() string { return resolveUpstreamPrivateIPv4Hint(target) }, "10.0.0.9")
 	if got := resolveUpstreamPrivateIPv4Hint(target); got != "10.0.0.9" {
 		t.Fatalf("hint = %q", got)
 	}
@@ -222,17 +244,131 @@ func TestResolveUpstreamPrivateIPv4HintUsesLoopbackDetector(t *testing.T) {
 
 func TestResolveUpstreamPrivateIPv4HintUsesHostnameResolver(t *testing.T) {
 	oldResolver := hostnamePrivateIPv4Resolver
+	resolvedHost := make(chan string, 1)
 	hostnamePrivateIPv4Resolver = newCachedPrivateIPv4Resolver(time.Hour, func(host string) string {
-		if host != "app.example.test" {
-			t.Fatalf("host = %q", host)
-		}
+		resolvedHost <- host
 		return "172.16.1.9"
 	})
 	defer func() { hostnamePrivateIPv4Resolver = oldResolver }()
 
 	target, _ := url.Parse("http://app.example.test:8080")
+	waitForPrivateIPv4Value(t, func() string { return resolveUpstreamPrivateIPv4Hint(target) }, "172.16.1.9")
 	if got := resolveUpstreamPrivateIPv4Hint(target); got != "172.16.1.9" {
 		t.Fatalf("hint = %q", got)
+	}
+	if got := <-resolvedHost; got != "app.example.test" {
+		t.Fatalf("resolved host = %q", got)
+	}
+}
+
+func TestPreferredPrivateIPv4DetectorReturnsStaleValueDuringRefresh(t *testing.T) {
+	var calls atomic.Int32
+	refreshStarted := make(chan struct{})
+	releaseRefresh := make(chan struct{})
+	detector := newPreferredPrivateIPv4Detector(time.Millisecond, func() string {
+		if calls.Add(1) == 1 {
+			return "10.0.0.1"
+		}
+		close(refreshStarted)
+		<-releaseRefresh
+		return "10.0.0.2"
+	})
+
+	waitForPrivateIPv4Value(t, detector.get, "10.0.0.1")
+	time.Sleep(5 * time.Millisecond)
+	result := make(chan string, 1)
+	go func() { result <- detector.get() }()
+	select {
+	case got := <-result:
+		if got != "10.0.0.1" {
+			t.Fatalf("stale value = %q, want 10.0.0.1", got)
+		}
+	case <-time.After(100 * time.Millisecond):
+		close(releaseRefresh)
+		t.Fatal("expired detector cache blocked on refresh")
+	}
+	select {
+	case <-refreshStarted:
+	case <-time.After(time.Second):
+		close(releaseRefresh)
+		t.Fatal("detector refresh did not start")
+	}
+	detector.ttl = time.Hour
+	close(releaseRefresh)
+	waitForPrivateIPv4Value(t, detector.get, "10.0.0.2")
+}
+
+func TestCachedPrivateIPv4ResolverReturnsStaleValueDuringRefresh(t *testing.T) {
+	var calls atomic.Int32
+	refreshStarted := make(chan struct{})
+	releaseRefresh := make(chan struct{})
+	resolver := newCachedPrivateIPv4Resolver(time.Millisecond, func(string) string {
+		if calls.Add(1) == 1 {
+			return "172.16.0.1"
+		}
+		close(refreshStarted)
+		<-releaseRefresh
+		return "172.16.0.2"
+	})
+	get := func() string { return resolver.get("app.example.test") }
+
+	waitForPrivateIPv4Value(t, get, "172.16.0.1")
+	time.Sleep(5 * time.Millisecond)
+	result := make(chan string, 1)
+	go func() { result <- get() }()
+	select {
+	case got := <-result:
+		if got != "172.16.0.1" {
+			t.Fatalf("stale value = %q, want 172.16.0.1", got)
+		}
+	case <-time.After(100 * time.Millisecond):
+		close(releaseRefresh)
+		t.Fatal("expired hostname cache blocked on refresh")
+	}
+	select {
+	case <-refreshStarted:
+	case <-time.After(time.Second):
+		close(releaseRefresh)
+		t.Fatal("hostname refresh did not start")
+	}
+	resolver.ttl = time.Hour
+	close(releaseRefresh)
+	waitForPrivateIPv4Value(t, get, "172.16.0.2")
+}
+
+func TestCachedPrivateIPv4ResolverCleansLongExpiredHosts(t *testing.T) {
+	resolver := newCachedPrivateIPv4Resolver(10*time.Millisecond, func(string) string { return "" })
+	holder := &cachedPrivateIPv4ResolverEntry{}
+	holder.value.Store(&cachedPrivateIPv4Entry{
+		value:     "172.16.0.1",
+		expiresAt: time.Now().Add(-time.Second),
+	})
+	resolver.entries.Store("old.example.test", holder)
+	resolver.cleanupExpiredAsync(time.Now())
+
+	deadline := time.Now().Add(time.Second)
+	for {
+		if _, ok := resolver.entries.Load("old.example.test"); !ok {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("long-expired hostname cache entry was not removed")
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+func waitForPrivateIPv4Value(t *testing.T, get func() string, want string) {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	for {
+		if got := get(); got == want {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for private IPv4 value %q", want)
+		}
+		time.Sleep(time.Millisecond)
 	}
 }
 

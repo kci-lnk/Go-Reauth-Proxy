@@ -36,14 +36,14 @@ func TestLocalServiceURLMatchesLegacyFormat(t *testing.T) {
 
 func BenchmarkLocalServiceURL(b *testing.B) {
 	b.ReportAllocs()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		streamBenchmarkStringSink = localServiceURL(7999, "/api/auth/verify")
 	}
 }
 
 func BenchmarkLocalServiceURLOld(b *testing.B) {
 	b.ReportAllocs()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		streamBenchmarkStringSink = fmt.Sprintf("http://127.0.0.1:%d%s", 7999, ensureLeadingSlash("/api/auth/verify"))
 	}
 }
@@ -82,7 +82,7 @@ func TestStreamErrorClassifiersMatchLegacyBehavior(t *testing.T) {
 func BenchmarkNormalizeRelayErrorClosedMessage(b *testing.B) {
 	err := errors.New("read tcp: USE OF CLOSED NETWORK CONNECTION")
 	b.ReportAllocs()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		streamBenchmarkErrorSink = normalizeRelayError(err)
 	}
 }
@@ -90,7 +90,7 @@ func BenchmarkNormalizeRelayErrorClosedMessage(b *testing.B) {
 func BenchmarkNormalizeRelayErrorClosedMessageOld(b *testing.B) {
 	err := errors.New("read tcp: USE OF CLOSED NETWORK CONNECTION")
 	b.ReportAllocs()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		streamBenchmarkErrorSink = normalizeRelayErrorLegacyForBenchmark(err)
 	}
 }
@@ -98,7 +98,7 @@ func BenchmarkNormalizeRelayErrorClosedMessageOld(b *testing.B) {
 func BenchmarkIsClosedConnErrMessage(b *testing.B) {
 	err := errors.New("read tcp: USE OF CLOSED NETWORK CONNECTION")
 	b.ReportAllocs()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		streamBenchmarkBoolSink = isClosedConnErr(err)
 	}
 }
@@ -106,7 +106,7 @@ func BenchmarkIsClosedConnErrMessage(b *testing.B) {
 func BenchmarkIsClosedConnErrMessageOld(b *testing.B) {
 	err := errors.New("read tcp: USE OF CLOSED NETWORK CONNECTION")
 	b.ReportAllocs()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		streamBenchmarkBoolSink = isClosedConnErrLegacyForBenchmark(err)
 	}
 }
@@ -114,7 +114,7 @@ func BenchmarkIsClosedConnErrMessageOld(b *testing.B) {
 func BenchmarkIsAddrInUseErrMessage(b *testing.B) {
 	err := errors.New("listen tcp :8080: ADDRESS ALREADY IN USE")
 	b.ReportAllocs()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		streamBenchmarkBoolSink = isAddrInUseErr(err)
 	}
 }
@@ -122,7 +122,7 @@ func BenchmarkIsAddrInUseErrMessage(b *testing.B) {
 func BenchmarkIsAddrInUseErrMessageOld(b *testing.B) {
 	err := errors.New("listen tcp :8080: ADDRESS ALREADY IN USE")
 	b.ReportAllocs()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		streamBenchmarkBoolSink = isAddrInUseErrLegacyForBenchmark(err)
 	}
 }

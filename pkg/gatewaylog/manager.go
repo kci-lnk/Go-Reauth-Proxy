@@ -16,6 +16,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"go-reauth-proxy/pkg/diagnostics"
 	"go-reauth-proxy/pkg/models"
 
 	"github.com/rs/zerolog"
@@ -31,6 +32,8 @@ const (
 	unrecordedCredentialFilter    = "__unrecorded__"
 	asyncLogQueueSize             = 13200
 	asyncLogDropWarnInterval      = 30 * time.Second
+	asyncLogFlushInterval         = 50 * time.Millisecond
+	asyncLogWriterBufferSize      = 64 * 1024
 )
 
 var errStopScan = errors.New("stop scan")
@@ -136,6 +139,7 @@ type DailyFileWriter struct {
 	retentionDays int
 	currentDate   string
 	currentFile   *os.File
+	currentBuffer *bufio.Writer
 	lastCleanup   string
 	dirReady      bool
 }
@@ -164,6 +168,10 @@ func (w *DailyFileWriter) DeleteDate(date string) (bool, error) {
 	defer w.mu.Unlock()
 
 	if w.currentDate == date && w.currentFile != nil {
+		if w.currentBuffer != nil {
+			_ = w.currentBuffer.Flush()
+			w.currentBuffer = nil
+		}
 		_ = w.currentFile.Close()
 		w.currentFile = nil
 		w.currentDate = ""
@@ -193,10 +201,45 @@ func (w *DailyFileWriter) Write(p []byte) (int, error) {
 	if err := w.maybeCleanupLocked(now); err != nil {
 		return 0, err
 	}
-	if w.currentFile == nil {
+	if w.currentFile == nil || w.currentBuffer == nil {
 		return 0, fmt.Errorf("log file is not open")
 	}
-	return w.currentFile.Write(p)
+	return w.currentBuffer.Write(p)
+}
+
+func (w *DailyFileWriter) Flush() error {
+	if w == nil {
+		return nil
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.currentBuffer == nil {
+		return nil
+	}
+	return w.currentBuffer.Flush()
+}
+
+func (w *DailyFileWriter) Close() error {
+	if w == nil {
+		return nil
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	var flushErr error
+	if w.currentBuffer != nil {
+		flushErr = w.currentBuffer.Flush()
+		w.currentBuffer = nil
+	}
+	if w.currentFile == nil {
+		return flushErr
+	}
+	closeErr := w.currentFile.Close()
+	w.currentFile = nil
+	w.currentDate = ""
+	if flushErr != nil {
+		return flushErr
+	}
+	return closeErr
 }
 
 func (w *DailyFileWriter) ensureDirLocked() error {
@@ -229,6 +272,12 @@ func (w *DailyFileWriter) rotateLocked(now time.Time) error {
 	}
 
 	if w.currentFile != nil {
+		if w.currentBuffer != nil {
+			if err := w.currentBuffer.Flush(); err != nil {
+				return err
+			}
+			w.currentBuffer = nil
+		}
 		_ = w.currentFile.Close()
 		w.currentFile = nil
 	}
@@ -240,6 +289,7 @@ func (w *DailyFileWriter) rotateLocked(now time.Time) error {
 
 	w.currentDate = date
 	w.currentFile = file
+	w.currentBuffer = bufio.NewWriterSize(file, asyncLogWriterBufferSize)
 	return nil
 }
 
@@ -276,19 +326,27 @@ func (w *DailyFileWriter) pathForDate(date string) string {
 	return filepath.Join(w.baseDir, date+fileExtension)
 }
 
+type logQueueState struct {
+	entries chan *Entry
+	stopped chan struct{}
+}
+
 type Manager struct {
 	mu                sync.RWMutex
+	workerMu          sync.Mutex
 	config            models.LoggingConfig
 	logsDir           string
 	writer            *DailyFileWriter
 	logger            zerolog.Logger
-	logQueue          chan Entry
+	logQueue          atomic.Pointer[logQueueState]
 	flushQueue        chan chan struct{}
 	done              chan struct{}
 	closeOnce         sync.Once
 	closed            atomic.Bool
+	enabled           atomic.Bool
 	droppedLogEntries atomic.Uint64
 	lastDropWarnNano  atomic.Int64
+	entryPool         sync.Pool
 }
 
 func NormalizeConfig(cfg models.LoggingConfig) models.LoggingConfig {
@@ -310,11 +368,14 @@ func NewManager(logsDir string, cfg models.LoggingConfig) *Manager {
 		logsDir:    logsDir,
 		writer:     writer,
 		logger:     logger,
-		logQueue:   make(chan Entry, asyncLogQueueSize),
 		flushQueue: make(chan chan struct{}),
 		done:       make(chan struct{}),
 	}
-	go m.runLogWorker()
+	m.entryPool.New = func() any { return new(Entry) }
+	if normalized.Enabled {
+		m.ensureLogWorker()
+		m.enabled.Store(true)
+	}
 	return m
 }
 
@@ -322,24 +383,37 @@ func (m *Manager) GetConfigInfo() ConfigInfo {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
+	queueSize := 0
+	queueDepth := 0
+	if queue := m.logQueue.Load(); queue != nil {
+		queueSize = cap(queue.entries)
+		queueDepth = len(queue.entries)
+	}
 	return ConfigInfo{
 		Enabled:        m.config.Enabled,
 		MaxDays:        m.config.MaxDays,
 		LogsDir:        m.logsDir,
 		DroppedEntries: m.droppedLogEntries.Load(),
-		QueueSize:      cap(m.logQueue),
-		QueueDepth:     len(m.logQueue),
+		QueueSize:      queueSize,
+		QueueDepth:     queueDepth,
 	}
 }
 
 func (m *Manager) UpdateConfig(cfg models.LoggingConfig) ConfigInfo {
 	normalized := NormalizeConfig(cfg)
+	if !normalized.Enabled {
+		m.enabled.Store(false)
+	}
 	m.Flush()
+	if normalized.Enabled {
+		m.ensureLogWorker()
+	}
 
 	m.mu.Lock()
 	m.config = normalized
 	m.writer.SetRetentionDays(normalized.MaxDays)
 	m.mu.Unlock()
+	m.enabled.Store(normalized.Enabled)
 
 	_ = m.writer.Cleanup()
 	return m.GetConfigInfo()
@@ -349,23 +423,26 @@ func (m *Manager) LogsDir() string {
 	return m.logsDir
 }
 
-func (m *Manager) Log(entry Entry) {
-	if m == nil || m.closed.Load() {
-		return
-	}
-	m.mu.RLock()
-	enabled := m.config.Enabled
-	queue := m.logQueue
-	m.mu.RUnlock()
+func (m *Manager) Enabled() bool {
+	return m != nil && !m.closed.Load() && m.enabled.Load()
+}
 
-	if !enabled || m.closed.Load() {
+func (m *Manager) Log(entry Entry) {
+	if m == nil || m.closed.Load() || !m.enabled.Load() {
 		return
 	}
-	entry = cloneLogEntry(entry)
+	queue := m.logQueue.Load()
+	if queue == nil || m.closed.Load() || !m.enabled.Load() {
+		return
+	}
+	queued := m.entryPool.Get().(*Entry)
+	*queued = cloneLogEntry(entry)
 	select {
-	case queue <- entry:
+	case queue.entries <- queued:
 	default:
+		m.releaseLogEntry(queued)
 		dropped := m.droppedLogEntries.Add(1)
+		diagnostics.RecordGatewayLogDrop()
 		m.warnDroppedLogEntry(dropped)
 	}
 }
@@ -386,7 +463,7 @@ func (m *Manager) warnDroppedLogEntry(dropped uint64) {
 }
 
 func (m *Manager) Flush() {
-	if m == nil || m.flushQueue == nil {
+	if m == nil || m.flushQueue == nil || m.logQueue.Load() == nil {
 		return
 	}
 	ack := make(chan struct{})
@@ -403,8 +480,13 @@ func (m *Manager) Close() {
 	}
 	m.closeOnce.Do(func() {
 		m.closed.Store(true)
+		m.enabled.Store(false)
 		m.Flush()
 		close(m.done)
+		if queue := m.logQueue.Load(); queue != nil {
+			<-queue.stopped
+		}
+		_ = m.writer.Close()
 	})
 }
 
@@ -415,25 +497,49 @@ func (m *Manager) DroppedLogEntries() uint64 {
 	return m.droppedLogEntries.Load()
 }
 
-func (m *Manager) runLogWorker() {
+func (m *Manager) ensureLogWorker() {
+	if m == nil || m.closed.Load() || m.logQueue.Load() != nil {
+		return
+	}
+	m.workerMu.Lock()
+	defer m.workerMu.Unlock()
+	if m.closed.Load() || m.logQueue.Load() != nil {
+		return
+	}
+	queue := &logQueueState{
+		entries: make(chan *Entry, asyncLogQueueSize),
+		stopped: make(chan struct{}),
+	}
+	m.logQueue.Store(queue)
+	go m.runLogWorker(queue)
+}
+
+func (m *Manager) runLogWorker(queue *logQueueState) {
+	defer close(queue.stopped)
+	ticker := time.NewTicker(asyncLogFlushInterval)
+	defer ticker.Stop()
 	for {
 		select {
-		case entry := <-m.logQueue:
+		case entry := <-queue.entries:
 			m.writeLogEntry(entry)
 		case ack := <-m.flushQueue:
-			m.drainLogQueue()
+			m.drainLogQueue(queue)
+			_ = m.writer.Flush()
 			close(ack)
+		case <-ticker.C:
+			_ = m.writer.Flush()
 		case <-m.done:
-			m.drainLogQueue()
+			m.drainLogQueue(queue)
+			_ = m.writer.Flush()
 			return
 		}
 	}
 }
 
-func (m *Manager) drainLogQueue() {
+func (m *Manager) drainLogQueue(queue *logQueueState) {
 	for {
 		select {
-		case entry := <-m.logQueue:
+		case entry := <-queue.entries:
 			m.writeLogEntry(entry)
 		default:
 			return
@@ -448,7 +554,19 @@ func cloneLogEntry(entry Entry) Entry {
 	return entry
 }
 
-func (m *Manager) writeLogEntry(entry Entry) {
+func (m *Manager) releaseLogEntry(entry *Entry) {
+	if entry == nil {
+		return
+	}
+	*entry = Entry{}
+	m.entryPool.Put(entry)
+}
+
+func (m *Manager) writeLogEntry(entry *Entry) {
+	if entry == nil {
+		return
+	}
+	defer m.releaseLogEntry(entry)
 	m.mu.RLock()
 	logger := m.logger
 	m.mu.RUnlock()

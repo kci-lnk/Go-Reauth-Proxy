@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"go-reauth-proxy/pkg/diagnostics"
 	"go-reauth-proxy/pkg/gatewaylog"
 	"go-reauth-proxy/pkg/logger"
 	"go-reauth-proxy/pkg/models"
@@ -16,24 +17,54 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 )
 
 const (
-	streamAuthTimeout     = 2 * time.Second
-	streamDialTimeout     = 5 * time.Second
-	streamAcceptBackoff   = 150 * time.Millisecond
-	udpSessionIdleTimeout = 2 * time.Minute
-	udpPacketBufferSize   = 64 * 1024
+	streamAuthTimeout          = 2 * time.Second
+	streamDialTimeout          = 5 * time.Second
+	streamAcceptBackoff        = 150 * time.Millisecond
+	udpSessionIdleTimeout      = 2 * time.Minute
+	udpSessionReaperInterval   = 10 * time.Second
+	udpSmallPacketBufferSize   = 2 * 1024
+	udpMediumPacketBufferSize  = 8 * 1024
+	udpLargePacketBufferSize   = 64 * 1024
+	udpSessionQueuePacketLimit = 32
+	udpSessionQueueByteLimit   = 256 * 1024
+	udpListenerQueueByteLimit  = 64 * 1024 * 1024
+	udpSessionInitLimit        = 128
+	udpListenerSessionLimit    = 8192
+)
+
+type udpSmallPacketBuffer [udpSmallPacketBufferSize]byte
+type udpMediumPacketBuffer [udpMediumPacketBufferSize]byte
+type udpLargePacketBuffer [udpLargePacketBufferSize]byte
+
+var (
+	udpSmallPacketBufferPool = sync.Pool{New: func() any {
+		return new(udpSmallPacketBuffer)
+	}}
+	udpMediumPacketBufferPool = sync.Pool{New: func() any {
+		return new(udpMediumPacketBuffer)
+	}}
+	udpLargePacketBufferPool = sync.Pool{New: func() any {
+		return new(udpLargePacketBuffer)
+	}}
 )
 
 type Manager struct {
-	mu        sync.RWMutex
-	handler   *proxy.Handler
-	listeners map[streamRuleKey]managedListener
-	rules     map[streamRuleKey]models.StreamRule
-	closed    bool
+	mu           sync.RWMutex
+	handler      *proxy.Handler
+	listeners    map[streamRuleKey]managedListener
+	rules        map[streamRuleKey]models.StreamRule
+	ruleSnapshot atomic.Pointer[streamRuleSnapshot]
+	closed       bool
+}
+
+type streamRuleSnapshot struct {
+	rules map[streamRuleKey]models.StreamRule
 }
 
 type streamRuleKey struct {
@@ -93,39 +124,106 @@ type tcpListenerState struct {
 }
 
 type udpListenerState struct {
-	key         streamRuleKey
-	packetConns []net.PacketConn
-	stop        chan struct{}
-	wg          sync.WaitGroup
-	mu          sync.Mutex
-	sessions    map[string]*udpSession
-	closing     bool
+	key            streamRuleKey
+	packetConns    []net.PacketConn
+	stop           chan struct{}
+	initSlots      chan struct{}
+	wg             sync.WaitGroup
+	mu             sync.Mutex
+	sessions       map[string]*udpSession
+	closing        bool
+	queuedBytes    atomic.Int64
+	droppedPackets atomic.Uint64
+	droppedBytes   atomic.Uint64
 }
 
 type udpSession struct {
-	id         string
-	packetConn net.PacketConn
-	clientAddr net.Addr
-	upstream   net.Conn
-	start      time.Time
+	id           string
+	listener     *udpListenerState
+	packetConn   net.PacketConn
+	clientAddr   net.Addr
+	rule         models.StreamRule
+	start        time.Time
+	ctx          context.Context
+	cancel       context.CancelFunc
+	done         chan struct{}
+	notify       chan struct{}
+	closed       atomic.Bool
+	lastActivity atomic.Int64
+	bytesIn      atomic.Uint64
+	bytesOut     atomic.Uint64
+	status       atomic.Int64
+	initReserved atomic.Bool
 
-	closeOnce sync.Once
-	mu        sync.Mutex
-	entry     gatewaylog.Entry
+	closeOnce   sync.Once
+	upstreamMu  sync.Mutex
+	upstream    net.Conn
+	queueMu     sync.Mutex
+	queue       [udpSessionQueuePacketLimit]udpPacket
+	queueHead   int
+	queueLen    int
+	queueBytes  int
+	queueClosed bool
+	entryMu     sync.Mutex
+	entry       gatewaylog.Entry
 }
 
 type relayResult struct {
-	direction string
-	bytes     uint64
-	err       error
+	bytes uint64
+	err   error
+}
+
+type udpPacket struct {
+	payload   []byte
+	poolClass int
+	pooled    any
+}
+
+func acquireUDPPacket(size int) udpPacket {
+	switch {
+	case size <= udpSmallPacketBufferSize:
+		buffer := udpSmallPacketBufferPool.Get().(*udpSmallPacketBuffer)
+		return udpPacket{payload: buffer[:size], poolClass: udpSmallPacketBufferSize, pooled: buffer}
+	case size <= udpMediumPacketBufferSize:
+		buffer := udpMediumPacketBufferPool.Get().(*udpMediumPacketBuffer)
+		return udpPacket{payload: buffer[:size], poolClass: udpMediumPacketBufferSize, pooled: buffer}
+	case size <= udpLargePacketBufferSize:
+		buffer := udpLargePacketBufferPool.Get().(*udpLargePacketBuffer)
+		return udpPacket{payload: buffer[:size], poolClass: udpLargePacketBufferSize, pooled: buffer}
+	default:
+		return udpPacket{payload: make([]byte, size)}
+	}
+}
+
+func releaseUDPPacket(packet udpPacket) {
+	if packet.pooled == nil {
+		return
+	}
+	switch packet.poolClass {
+	case udpSmallPacketBufferSize:
+		udpSmallPacketBufferPool.Put(packet.pooled)
+	case udpMediumPacketBufferSize:
+		udpMediumPacketBufferPool.Put(packet.pooled)
+	case udpLargePacketBufferSize:
+		udpLargePacketBufferPool.Put(packet.pooled)
+	}
+}
+
+func udpPacketQueueFootprint(packet udpPacket) int {
+	if packet.poolClass > 0 {
+		return packet.poolClass
+	}
+	return len(packet.payload)
 }
 
 func NewManager(handler *proxy.Handler) *Manager {
-	return &Manager{
+	m := &Manager{
 		handler:   handler,
 		listeners: make(map[streamRuleKey]managedListener),
 		rules:     make(map[streamRuleKey]models.StreamRule),
 	}
+	m.ruleSnapshot.Store(&streamRuleSnapshot{rules: m.rules})
+	return m
 }
 
 func (m *Manager) Reconcile(rules []models.StreamRule) error {
@@ -232,6 +330,7 @@ func (m *Manager) Reconcile(rules []models.StreamRule) error {
 		m.listeners[key] = state
 	}
 	m.rules = nextRules
+	m.ruleSnapshot.Store(&streamRuleSnapshot{rules: nextRules})
 
 	removed := make([]managedListener, 0, len(toRemove))
 	for _, key := range toRemove {
@@ -320,6 +419,7 @@ func (m *Manager) Stop() {
 		delete(m.listeners, key)
 	}
 	m.rules = map[streamRuleKey]models.StreamRule{}
+	m.ruleSnapshot.Store(&streamRuleSnapshot{rules: m.rules})
 	m.mu.Unlock()
 
 	for _, state := range states {
@@ -331,10 +431,11 @@ func (m *Manager) Stop() {
 }
 
 func (m *Manager) currentRule(key streamRuleKey) (models.StreamRule, bool) {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-
-	rule, ok := m.rules[key]
+	snapshot := m.ruleSnapshot.Load()
+	if snapshot == nil {
+		return models.StreamRule{}, false
+	}
+	rule, ok := snapshot.rules[key]
 	return rule, ok
 }
 
@@ -513,7 +614,7 @@ func (s *tcpListenerState) close() {
 	}
 }
 
-func newUDPListenerState(key streamRuleKey, handler func(*udpListenerState, net.PacketConn, net.Addr, []byte, streamRuleKey)) (*udpListenerState, error) {
+func newUDPListenerState(key streamRuleKey, handler func(*udpListenerState, net.PacketConn, net.Addr, udpPacket, streamRuleKey)) (*udpListenerState, error) {
 	hosts := []string{"0.0.0.0", "::"}
 	packetConns := make([]net.PacketConn, 0, len(hosts))
 	listenAddrs := make([]string, 0, len(hosts))
@@ -558,9 +659,12 @@ func newUDPListenerState(key streamRuleKey, handler func(*udpListenerState, net.
 		key:         key,
 		packetConns: packetConns,
 		stop:        make(chan struct{}),
+		initSlots:   make(chan struct{}, udpSessionInitLimit),
 		sessions:    make(map[string]*udpSession),
 	}
 
+	state.wg.Add(1)
+	go state.reaperLoop()
 	for _, pc := range packetConns {
 		state.wg.Add(1)
 		go state.readLoop(pc, handler)
@@ -576,10 +680,12 @@ func newUDPListenerState(key streamRuleKey, handler func(*udpListenerState, net.
 	return state, nil
 }
 
-func (s *udpListenerState) readLoop(pc net.PacketConn, handler func(*udpListenerState, net.PacketConn, net.Addr, []byte, streamRuleKey)) {
+func (s *udpListenerState) readLoop(pc net.PacketConn, handler func(*udpListenerState, net.PacketConn, net.Addr, udpPacket, streamRuleKey)) {
 	defer s.wg.Done()
 
-	buffer := make([]byte, udpPacketBufferSize)
+	readPacket := acquireUDPPacket(udpLargePacketBufferSize)
+	defer releaseUDPPacket(readPacket)
+	buffer := readPacket.payload[:cap(readPacket.payload)]
 	for {
 		n, clientAddr, err := pc.ReadFrom(buffer)
 		if err != nil {
@@ -616,8 +722,40 @@ func (s *udpListenerState) readLoop(pc net.PacketConn, handler func(*udpListener
 			continue
 		}
 
-		payload := append([]byte(nil), buffer[:n]...)
-		handler(s, pc, clientAddr, payload, s.key)
+		packet := acquireUDPPacket(n)
+		copy(packet.payload, buffer[:n])
+		handler(s, pc, clientAddr, packet, s.key)
+	}
+}
+
+func (s *udpListenerState) reaperLoop() {
+	defer s.wg.Done()
+
+	ticker := time.NewTicker(udpSessionReaperInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case now := <-ticker.C:
+			s.reapIdleSessions(now)
+		case <-s.stop:
+			return
+		}
+	}
+}
+
+func (s *udpListenerState) reapIdleSessions(now time.Time) {
+	cutoff := now.Add(-udpSessionIdleTimeout).UnixNano()
+	s.mu.Lock()
+	sessions := make([]*udpSession, 0, len(s.sessions))
+	for _, session := range s.sessions {
+		if session.lastActivity.Load() <= cutoff {
+			sessions = append(sessions, session)
+		}
+	}
+	s.mu.Unlock()
+
+	for _, session := range sessions {
+		session.closeIfIdle(cutoff)
 	}
 }
 
@@ -625,28 +763,67 @@ func (s *udpListenerState) sessionID(pc net.PacketConn, clientAddr net.Addr) str
 	return pc.LocalAddr().String() + "|" + clientAddr.String()
 }
 
-func (s *udpListenerState) getSession(id string) (*udpSession, bool) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	session, ok := s.sessions[id]
-	return session, ok
-}
-
-func (s *udpListenerState) storeSession(session *udpSession) (*udpSession, bool, bool) {
+func (s *udpListenerState) getOrCreateSession(packetConn net.PacketConn, clientAddr net.Addr, rule models.StreamRule) (*udpSession, bool, bool) {
+	id := s.sessionID(packetConn, clientAddr)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	if s.closing {
 		return nil, false, false
 	}
-	if existing, ok := s.sessions[session.id]; ok {
+	if existing, ok := s.sessions[id]; ok {
 		return existing, true, true
 	}
+	if len(s.sessions) >= udpListenerSessionLimit {
+		return nil, false, false
+	}
+	reserved := false
+	if s.initSlots != nil {
+		select {
+		case s.initSlots <- struct{}{}:
+			reserved = true
+		default:
+			return nil, false, false
+		}
+	}
 
+	start := time.Now()
+	clientIP := extractRemoteIP(clientAddr)
+	entry := newStreamEntry(streamRuleKeyFromRule(rule), addrString(clientAddr), clientIP)
+	entry.AuthRequired = rule.UseAuth
+	entry.Upstream = rule.Target
+	ctx, cancel := context.WithCancel(context.Background())
+	session := &udpSession{
+		id:         id,
+		listener:   s,
+		packetConn: packetConn,
+		clientAddr: clientAddr,
+		rule:       rule,
+		start:      start,
+		ctx:        ctx,
+		cancel:     cancel,
+		done:       make(chan struct{}),
+		notify:     make(chan struct{}, 1),
+		entry:      entry,
+	}
+	session.lastActivity.Store(start.UnixNano())
+	session.status.Store(int64(entry.Status))
+	session.initReserved.Store(reserved)
 	s.sessions[session.id] = session
-	s.wg.Add(1)
 	return session, false, true
+}
+
+func (s *udpListenerState) startSession(session *udpSession, run func()) bool {
+	s.mu.Lock()
+	if s.closing || s.sessions[session.id] != session {
+		s.mu.Unlock()
+		return false
+	}
+	s.wg.Add(1)
+	s.mu.Unlock()
+
+	go run()
+	return true
 }
 
 func (s *udpListenerState) removeSession(id string, session *udpSession) {
@@ -655,6 +832,33 @@ func (s *udpListenerState) removeSession(id string, session *udpSession) {
 		delete(s.sessions, id)
 	}
 	s.mu.Unlock()
+}
+
+func (s *udpListenerState) reserveQueuedBytes(bytes int) bool {
+	if bytes <= 0 || bytes > udpListenerQueueByteLimit {
+		return false
+	}
+	for {
+		current := s.queuedBytes.Load()
+		if current > int64(udpListenerQueueByteLimit-bytes) {
+			return false
+		}
+		if s.queuedBytes.CompareAndSwap(current, current+int64(bytes)) {
+			return true
+		}
+	}
+}
+
+func (s *udpListenerState) releaseQueuedBytes(bytes int) {
+	if bytes > 0 {
+		s.queuedBytes.Add(-int64(bytes))
+	}
+}
+
+func (s *udpListenerState) dropPacket(packet udpPacket) {
+	s.droppedPackets.Add(1)
+	s.droppedBytes.Add(uint64(len(packet.payload)))
+	releaseUDPPacket(packet)
 }
 
 func (s *udpListenerState) close() {
@@ -695,52 +899,181 @@ func (s *udpSession) addBytesIn(bytes int) {
 	if bytes <= 0 {
 		return
 	}
-
-	s.mu.Lock()
-	s.entry.BytesIn += uint64(bytes)
-	s.mu.Unlock()
+	s.bytesIn.Add(uint64(bytes))
 }
 
 func (s *udpSession) addBytesOut(bytes int) {
 	if bytes <= 0 {
 		return
 	}
-
-	s.mu.Lock()
-	s.entry.BytesOut += uint64(bytes)
-	s.mu.Unlock()
+	s.bytesOut.Add(uint64(bytes))
 }
 
 func (s *udpSession) setStatus(status int) {
 	if status <= 0 {
 		return
 	}
+	s.status.Store(int64(status))
+}
 
-	s.mu.Lock()
-	s.entry.Status = status
-	s.mu.Unlock()
+func (s *udpSession) setAuthResult(decision string, loggedIn bool) {
+	s.entryMu.Lock()
+	s.entry.AuthDecision = decision
+	s.entry.LoggedIn = loggedIn
+	s.entryMu.Unlock()
 }
 
 func (s *udpSession) snapshotEntry() gatewaylog.Entry {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
+	s.entryMu.Lock()
 	entry := s.entry
+	s.entryMu.Unlock()
+	entry.Status = int(s.status.Load())
+	entry.BytesIn = s.bytesIn.Load()
+	entry.BytesOut = s.bytesOut.Load()
 	entry.DurationMs = time.Since(s.start).Milliseconds()
 	return entry
 }
 
 func (s *udpSession) routeInfo() (string, string) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
 	return s.entry.RouteKey, s.entry.Upstream
+}
+
+func (s *udpSession) touch(now time.Time) bool {
+	s.queueMu.Lock()
+	defer s.queueMu.Unlock()
+	if s.queueClosed {
+		return false
+	}
+	s.lastActivity.Store(now.UnixNano())
+	return true
+}
+
+func (s *udpSession) closeIfIdle(cutoffUnixNano int64) {
+	if s == nil {
+		return
+	}
+	s.queueMu.Lock()
+	if s.queueClosed || s.lastActivity.Load() > cutoffUnixNano {
+		s.queueMu.Unlock()
+		return
+	}
+	s.queueClosed = true
+	s.queueMu.Unlock()
+	s.close()
+}
+
+func (s *udpSession) enqueue(packet udpPacket) bool {
+	packetBytes := len(packet.payload)
+	if packetBytes == 0 {
+		return false
+	}
+	if packetBytes > udpSessionQueueByteLimit {
+		diagnostics.RecordUDPQueueDrop()
+		return false
+	}
+
+	s.queueMu.Lock()
+	if s.queueClosed {
+		s.queueMu.Unlock()
+		return false
+	}
+	if s.queueLen >= udpSessionQueuePacketLimit || s.queueBytes > udpSessionQueueByteLimit-packetBytes {
+		diagnostics.RecordUDPQueueDrop()
+		s.queueMu.Unlock()
+		return false
+	}
+	queueFootprint := udpPacketQueueFootprint(packet)
+	if !s.listener.reserveQueuedBytes(queueFootprint) {
+		diagnostics.RecordUDPQueueDrop()
+		s.queueMu.Unlock()
+		return false
+	}
+	tail := (s.queueHead + s.queueLen) % len(s.queue)
+	s.queue[tail] = packet
+	s.queueLen++
+	s.queueBytes += packetBytes
+	s.lastActivity.Store(time.Now().UnixNano())
+	s.queueMu.Unlock()
+
+	select {
+	case s.notify <- struct{}{}:
+	default:
+	}
+	return true
+}
+
+func (s *udpSession) dequeue() (udpPacket, bool) {
+	s.queueMu.Lock()
+	if s.queueLen == 0 {
+		s.queueMu.Unlock()
+		return udpPacket{}, false
+	}
+	packet := s.queue[s.queueHead]
+	s.queue[s.queueHead] = udpPacket{}
+	s.queueHead = (s.queueHead + 1) % len(s.queue)
+	s.queueLen--
+	packetBytes := len(packet.payload)
+	s.queueBytes -= packetBytes
+	s.queueMu.Unlock()
+
+	s.listener.releaseQueuedBytes(udpPacketQueueFootprint(packet))
+	return packet, true
+}
+
+func (s *udpSession) releaseInitReservation() {
+	if s == nil || !s.initReserved.Swap(false) || s.listener == nil || s.listener.initSlots == nil {
+		return
+	}
+	<-s.listener.initSlots
+}
+
+func (s *udpSession) setUpstream(upstream net.Conn) bool {
+	s.upstreamMu.Lock()
+	defer s.upstreamMu.Unlock()
+	if s.closed.Load() {
+		return false
+	}
+	s.upstream = upstream
+	return true
+}
+
+func (s *udpSession) upstreamConn() net.Conn {
+	s.upstreamMu.Lock()
+	defer s.upstreamMu.Unlock()
+	return s.upstream
 }
 
 func (s *udpSession) close() {
 	s.closeOnce.Do(func() {
-		if s.upstream != nil {
-			_ = s.upstream.Close()
+		s.closed.Store(true)
+		s.cancel()
+		close(s.done)
+
+		s.queueMu.Lock()
+		s.queueClosed = true
+		packets := make([]udpPacket, 0, s.queueLen)
+		queuedBytes := 0
+		for s.queueLen > 0 {
+			packet := s.queue[s.queueHead]
+			s.queue[s.queueHead] = udpPacket{}
+			s.queueHead = (s.queueHead + 1) % len(s.queue)
+			s.queueLen--
+			queuedBytes += udpPacketQueueFootprint(packet)
+			packets = append(packets, packet)
+		}
+		s.queueBytes = 0
+		s.queueMu.Unlock()
+		s.listener.releaseQueuedBytes(queuedBytes)
+		for _, packet := range packets {
+			releaseUDPPacket(packet)
+		}
+
+		s.upstreamMu.Lock()
+		upstream := s.upstream
+		s.upstream = nil
+		s.upstreamMu.Unlock()
+		if upstream != nil {
+			_ = upstream.Close()
 		}
 	})
 }
@@ -900,13 +1233,15 @@ func (m *Manager) handleConn(client net.Conn, key streamRuleKey) {
 	}
 }
 
-func (m *Manager) handleUDPPacket(listener *udpListenerState, packetConn net.PacketConn, clientAddr net.Addr, payload []byte, key streamRuleKey) {
-	if len(payload) == 0 {
+func (m *Manager) handleUDPPacket(listener *udpListenerState, packetConn net.PacketConn, clientAddr net.Addr, packet udpPacket, key streamRuleKey) {
+	if len(packet.payload) == 0 {
+		releaseUDPPacket(packet)
 		return
 	}
 
 	rule, ok := m.currentRule(key)
 	if !ok {
+		releaseUDPPacket(packet)
 		entry := newStreamEntry(key, addrString(clientAddr), extractRemoteIP(clientAddr))
 		entry.Matched = false
 		entry.Status = http.StatusNotFound
@@ -921,96 +1256,64 @@ func (m *Manager) handleUDPPacket(listener *udpListenerState, packetConn net.Pac
 		return
 	}
 
-	sessionID := listener.sessionID(packetConn, clientAddr)
-	session, exists := listener.getSession(sessionID)
-	if !exists {
-		session = m.createUDPSession(listener, packetConn, clientAddr, rule)
-		if session == nil {
-			return
-		}
-	}
-
-	if err := session.upstream.SetDeadline(time.Now().Add(udpSessionIdleTimeout)); err != nil {
-		_, target := session.routeInfo()
-		if event := logger.DebugEvent("stream", "udp_deadline_refresh_failed"); event != nil {
-			event.Str("key", logger.SanitizeLogString(key.String())).
-				Str("target", logger.SanitizeLogString(target)).
-				Str("client_addr", logger.SanitizeLogString(addrString(clientAddr))).
-				Str("error", logger.SanitizeLogString(err.Error())).
-				Send()
-		}
-		log.Printf("Failed to refresh UDP session deadline on %s for %s: %v", key.String(), target, err)
-	}
-
-	written, err := session.upstream.Write(payload)
-	if written > 0 {
-		session.addBytesIn(written)
-	}
-	if err != nil {
-		session.setStatus(http.StatusBadGateway)
-		if event := logger.DebugEvent("stream", "udp_upstream_write_failed"); event != nil {
-			event.Str("key", logger.SanitizeLogString(key.String())).
-				Str("target", logger.SanitizeLogString(rule.Target)).
-				Str("client_addr", logger.SanitizeLogString(addrString(clientAddr))).
-				Int("payload_bytes", len(payload)).
-				Int("written_bytes", written).
-				Str("error", logger.SanitizeLogString(err.Error())).
-				Send()
-		}
-		log.Printf("UDP upstream write failed on %s to %s for %s: %v", key.String(), rule.Target, addrString(clientAddr), err)
-		session.close()
+	session, loaded, ok := listener.getOrCreateSession(packetConn, clientAddr, rule)
+	if !ok {
+		diagnostics.RecordUDPQueueDrop()
+		listener.dropPacket(packet)
 		return
 	}
-	if written != len(payload) {
-		session.setStatus(http.StatusBadGateway)
-		if event := logger.DebugEvent("stream", "udp_upstream_short_write"); event != nil {
-			event.Str("key", logger.SanitizeLogString(key.String())).
-				Str("target", logger.SanitizeLogString(rule.Target)).
-				Str("client_addr", logger.SanitizeLogString(addrString(clientAddr))).
-				Int("payload_bytes", len(payload)).
-				Int("written_bytes", written).
-				Send()
+	if !session.enqueue(packet) {
+		listener.dropPacket(packet)
+		if !loaded {
+			session.close()
+			listener.removeSession(session.id, session)
+			session.releaseInitReservation()
 		}
-		log.Printf("UDP upstream short write on %s to %s for %s: wrote %d of %d bytes", key.String(), rule.Target, addrString(clientAddr), written, len(payload))
+		return
+	}
+	if loaded {
+		return
+	}
+	if !listener.startSession(session, func() { m.runUDPSession(listener, session) }) {
 		session.close()
+		listener.removeSession(session.id, session)
+		session.releaseInitReservation()
 	}
 }
 
-func (m *Manager) createUDPSession(listener *udpListenerState, packetConn net.PacketConn, clientAddr net.Addr, rule models.StreamRule) *udpSession {
-	start := time.Now()
+func (m *Manager) initializeUDPSession(session *udpSession) bool {
+	rule := session.rule
 	key := streamRuleKeyFromRule(rule)
-	clientIP := extractRemoteIP(clientAddr)
-	entry := newStreamEntry(key, addrString(clientAddr), clientIP)
-	entry.AuthRequired = rule.UseAuth
-	entry.Upstream = rule.Target
+	clientIP := extractRemoteIP(session.clientAddr)
 	if event := logger.DebugEvent("stream", "udp_session_start"); event != nil {
 		event.Str("key", logger.SanitizeLogString(key.String())).
 			Interface("listen_port", logger.SanitizePort(key.ListenPort)).
 			Str("target", logger.SanitizeLogString(rule.Target)).
-			Str("client_addr", logger.SanitizeLogString(addrString(clientAddr))).
+			Str("client_addr", logger.SanitizeLogString(addrString(session.clientAddr))).
 			Str("client_ip", logger.SanitizeLogString(clientIP)).
 			Bool("auth_required", rule.UseAuth).
 			Send()
 	}
 
 	if !m.handler.IsClientIPVisible(clientIP) {
-		entry.Status = 499
-		entry.AuthDecision = "visibility_denied"
+		session.setStatus(499)
+		session.setAuthResult("visibility_denied", false)
 		if event := logger.DebugEvent("stream", "udp_visibility_denied"); event != nil {
 			event.Str("key", logger.SanitizeLogString(key.String())).
 				Str("client_ip", logger.SanitizeLogString(clientIP)).
 				Send()
 		}
-		m.logStreamEntry(entry, start)
-		return nil
+		return false
 	}
 
 	if rule.UseAuth {
-		allowed, status, decision, err := m.verify(rule, clientIP)
-		entry.AuthDecision = decision
-		entry.LoggedIn = allowed
+		allowed, status, decision, err := m.verifyContext(session.ctx, rule, clientIP)
+		if session.ctx.Err() != nil {
+			return false
+		}
+		session.setAuthResult(decision, allowed)
 		if !allowed {
-			entry.Status = status
+			session.setStatus(status)
 			if err != nil {
 				if event := logger.DebugEvent("stream", "udp_auth_rejected"); event != nil {
 					event.Str("key", logger.SanitizeLogString(key.String())).
@@ -1028,8 +1331,7 @@ func (m *Manager) createUDPSession(listener *udpListenerState, packetConn net.Pa
 					Str("decision", logger.SanitizeLogString(decision)).
 					Send()
 			}
-			m.logStreamEntry(entry, start)
-			return nil
+			return false
 		}
 		if event := logger.DebugEvent("stream", "udp_auth_allowed"); event != nil {
 			event.Str("key", logger.SanitizeLogString(key.String())).
@@ -1039,12 +1341,16 @@ func (m *Manager) createUDPSession(listener *udpListenerState, packetConn net.Pa
 		}
 		m.handler.MarkLoggedInActiveByClientIP(clientIP, time.Now())
 	} else {
-		entry.AuthDecision = "public"
+		session.setAuthResult("public", false)
 	}
 
-	upstream, err := net.DialTimeout(rule.Protocol, rule.Target, streamDialTimeout)
+	dialer := &net.Dialer{Timeout: streamDialTimeout}
+	upstream, err := dialer.DialContext(session.ctx, rule.Protocol, rule.Target)
 	if err != nil {
-		entry.Status = http.StatusBadGateway
+		if session.ctx.Err() != nil {
+			return false
+		}
+		session.setStatus(http.StatusBadGateway)
 		if event := logger.DebugEvent("stream", "udp_upstream_dial_failed"); event != nil {
 			event.Str("key", logger.SanitizeLogString(key.String())).
 				Str("target", logger.SanitizeLogString(rule.Target)).
@@ -1052,67 +1358,30 @@ func (m *Manager) createUDPSession(listener *udpListenerState, packetConn net.Pa
 				Send()
 		}
 		log.Printf("Stream upstream dial failed on %s to %s: %v", key.String(), rule.Target, err)
-		m.logStreamEntry(entry, start)
-		return nil
+		return false
+	}
+	if !session.setUpstream(upstream) {
+		_ = upstream.Close()
+		return false
 	}
 	if event := logger.DebugEvent("stream", "udp_upstream_dialed"); event != nil {
 		event.Str("key", logger.SanitizeLogString(key.String())).
 			Str("target", logger.SanitizeLogString(rule.Target)).
 			Send()
 	}
-
-	session := &udpSession{
-		id:         listener.sessionID(packetConn, clientAddr),
-		packetConn: packetConn,
-		clientAddr: clientAddr,
-		upstream:   upstream,
-		start:      start,
-		entry:      entry,
-	}
-
-	if err := session.upstream.SetDeadline(time.Now().Add(udpSessionIdleTimeout)); err != nil {
-		if event := logger.DebugEvent("stream", "udp_deadline_init_failed"); event != nil {
-			event.Str("key", logger.SanitizeLogString(key.String())).
-				Str("target", logger.SanitizeLogString(rule.Target)).
-				Str("error", logger.SanitizeLogString(err.Error())).
-				Send()
-		}
-		log.Printf("Failed to initialize UDP session deadline on %s for %s: %v", key.String(), rule.Target, err)
-	}
-
-	storedSession, loaded, ok := listener.storeSession(session)
-	if !ok {
-		session.close()
-		if event := logger.DebugEvent("stream", "udp_session_store_failed"); event != nil {
-			event.Str("key", logger.SanitizeLogString(key.String())).
-				Str("session_id", logger.SanitizeLogString(session.id)).
-				Send()
-		}
-		return nil
-	}
-	if loaded {
-		session.close()
-		if event := logger.DebugEvent("stream", "udp_session_reused"); event != nil {
-			event.Str("key", logger.SanitizeLogString(key.String())).
-				Str("session_id", logger.SanitizeLogString(session.id)).
-				Send()
-		}
-		return storedSession
-	}
-
 	if event := logger.DebugEvent("stream", "udp_session_stored"); event != nil {
 		event.Str("key", logger.SanitizeLogString(key.String())).
 			Str("session_id", logger.SanitizeLogString(session.id)).
 			Send()
 	}
-	go m.runUDPSession(listener, storedSession)
-	return storedSession
+	return true
 }
 
 func (m *Manager) runUDPSession(listener *udpListenerState, session *udpSession) {
 	defer listener.wg.Done()
 	defer listener.removeSession(session.id, session)
 	defer session.close()
+	defer session.releaseInitReservation()
 	defer func() {
 		entry := session.snapshotEntry()
 		m.logStreamEntry(entry, session.start)
@@ -1130,30 +1399,129 @@ func (m *Manager) runUDPSession(listener *udpListenerState, session *udpSession)
 		}
 	}()
 
-	buffer := make([]byte, udpPacketBufferSize)
+	initialized := m.initializeUDPSession(session)
+	session.releaseInitReservation()
+	if !initialized {
+		return
+	}
+
+	m.relayUDPSession(session)
+}
+
+func (m *Manager) relayUDPSession(session *udpSession) {
+	upstream := session.upstreamConn()
+	if upstream == nil {
+		return
+	}
+
+	readerDone := make(chan struct{}, 1)
+	go func() {
+		m.readUDPUpstream(session, upstream)
+		readerDone <- struct{}{}
+	}()
+	readerFinished := false
+	defer func() {
+		session.close()
+		if !readerFinished {
+			<-readerDone
+		}
+	}()
+
 	for {
-		_ = session.upstream.SetReadDeadline(time.Now().Add(udpSessionIdleTimeout))
-		n, err := session.upstream.Read(buffer)
+		select {
+		case <-session.done:
+			return
+		case <-readerDone:
+			readerFinished = true
+			return
+		case <-session.notify:
+			for {
+				packet, ok := session.dequeue()
+				if !ok {
+					break
+				}
+				payloadBytes := len(packet.payload)
+				written, err := upstream.Write(packet.payload)
+				releaseUDPPacket(packet)
+				if written > 0 {
+					session.addBytesIn(written)
+					session.touch(time.Now())
+				}
+				if err != nil {
+					if !isClosedConnErr(err) && session.ctx.Err() == nil {
+						session.setStatus(http.StatusBadGateway)
+						routeKey, target := session.routeInfo()
+						if event := logger.DebugEvent("stream", "udp_upstream_write_failed"); event != nil {
+							event.Str("route_key", logger.SanitizeLogString(routeKey)).
+								Str("target", logger.SanitizeLogString(target)).
+								Str("client_addr", logger.SanitizeLogString(addrString(session.clientAddr))).
+								Int("payload_bytes", payloadBytes).
+								Int("written_bytes", written).
+								Str("error", logger.SanitizeLogString(err.Error())).
+								Send()
+						}
+						log.Printf("UDP upstream write failed on %s to %s for %s: %v", routeKey, target, addrString(session.clientAddr), err)
+					}
+					return
+				}
+				if written != payloadBytes {
+					session.setStatus(http.StatusBadGateway)
+					routeKey, target := session.routeInfo()
+					if event := logger.DebugEvent("stream", "udp_upstream_short_write"); event != nil {
+						event.Str("route_key", logger.SanitizeLogString(routeKey)).
+							Str("target", logger.SanitizeLogString(target)).
+							Str("client_addr", logger.SanitizeLogString(addrString(session.clientAddr))).
+							Int("payload_bytes", payloadBytes).
+							Int("written_bytes", written).
+							Send()
+					}
+					log.Printf("UDP upstream short write on %s to %s for %s: wrote %d of %d bytes", routeKey, target, addrString(session.clientAddr), written, payloadBytes)
+					return
+				}
+
+				select {
+				case <-session.done:
+					return
+				case <-readerDone:
+					readerFinished = true
+					return
+				default:
+				}
+			}
+		}
+	}
+}
+
+func (m *Manager) readUDPUpstream(session *udpSession, upstream net.Conn) {
+	packet := acquireUDPPacket(udpLargePacketBufferSize)
+	defer releaseUDPPacket(packet)
+	buffer := packet.payload[:cap(packet.payload)]
+	for {
+		n, err := upstream.Read(buffer)
 		if n > 0 {
+			if !session.touch(time.Now()) {
+				return
+			}
 			written, writeErr := session.packetConn.WriteTo(buffer[:n], session.clientAddr)
 			if written > 0 {
 				session.addBytesOut(written)
 			}
 			if writeErr != nil {
-				if !isClosedConnErr(writeErr) {
-					session.setStatus(http.StatusBadGateway)
-					routeKey, target := session.routeInfo()
-					if event := logger.DebugEvent("stream", "udp_downstream_write_failed"); event != nil {
-						event.Str("route_key", logger.SanitizeLogString(routeKey)).
-							Str("target", logger.SanitizeLogString(target)).
-							Str("client_addr", logger.SanitizeLogString(addrString(session.clientAddr))).
-							Int("payload_bytes", n).
-							Int("written_bytes", written).
-							Str("error", logger.SanitizeLogString(writeErr.Error())).
-							Send()
-					}
-					log.Printf("UDP downstream write failed on %s to %s for %s: %v", routeKey, target, addrString(session.clientAddr), writeErr)
+				if isClosedConnErr(writeErr) || session.ctx.Err() != nil {
+					return
 				}
+				session.setStatus(http.StatusBadGateway)
+				routeKey, target := session.routeInfo()
+				if event := logger.DebugEvent("stream", "udp_downstream_write_failed"); event != nil {
+					event.Str("route_key", logger.SanitizeLogString(routeKey)).
+						Str("target", logger.SanitizeLogString(target)).
+						Str("client_addr", logger.SanitizeLogString(addrString(session.clientAddr))).
+						Int("payload_bytes", n).
+						Int("written_bytes", written).
+						Str("error", logger.SanitizeLogString(writeErr.Error())).
+						Send()
+				}
+				log.Printf("UDP downstream write failed on %s to %s for %s: %v", routeKey, target, addrString(session.clientAddr), writeErr)
 				return
 			}
 			if written != n {
@@ -1171,26 +1539,31 @@ func (m *Manager) runUDPSession(listener *udpListenerState, session *udpSession)
 				return
 			}
 		}
-		if err != nil {
-			if isTimeoutErr(err) || isClosedConnErr(err) || errors.Is(err, io.EOF) {
-				return
-			}
-			session.setStatus(http.StatusBadGateway)
-			routeKey, target := session.routeInfo()
-			if event := logger.DebugEvent("stream", "udp_upstream_read_failed"); event != nil {
-				event.Str("route_key", logger.SanitizeLogString(routeKey)).
-					Str("target", logger.SanitizeLogString(target)).
-					Str("client_addr", logger.SanitizeLogString(addrString(session.clientAddr))).
-					Str("error", logger.SanitizeLogString(err.Error())).
-					Send()
-			}
-			log.Printf("UDP upstream read failed on %s to %s for %s: %v", routeKey, target, addrString(session.clientAddr), err)
+		if err == nil {
+			continue
+		}
+		if isClosedConnErr(err) || errors.Is(err, io.EOF) || session.ctx.Err() != nil {
 			return
 		}
+		session.setStatus(http.StatusBadGateway)
+		routeKey, target := session.routeInfo()
+		if event := logger.DebugEvent("stream", "udp_upstream_read_failed"); event != nil {
+			event.Str("route_key", logger.SanitizeLogString(routeKey)).
+				Str("target", logger.SanitizeLogString(target)).
+				Str("client_addr", logger.SanitizeLogString(addrString(session.clientAddr))).
+				Str("error", logger.SanitizeLogString(err.Error())).
+				Send()
+		}
+		log.Printf("UDP upstream read failed on %s to %s for %s: %v", routeKey, target, addrString(session.clientAddr), err)
+		return
 	}
 }
 
 func (m *Manager) verify(rule models.StreamRule, clientIP string) (bool, int, string, error) {
+	return m.verifyContext(context.Background(), rule, clientIP)
+}
+
+func (m *Manager) verifyContext(parent context.Context, rule models.StreamRule, clientIP string) (bool, int, string, error) {
 	authConfig := m.handler.GetAuthConfig()
 	if strings.TrimSpace(authConfig.AuthURL) == "" {
 		if event := logger.DebugEvent("stream", "auth_verify_skipped_missing_auth_url"); event != nil {
@@ -1212,7 +1585,7 @@ func (m *Manager) verify(rule models.StreamRule, clientIP string) (bool, int, st
 			Send()
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), streamAuthTimeout)
+	ctx, cancel := context.WithTimeout(parent, streamAuthTimeout)
 	defer cancel()
 
 	resp, err := m.handler.VerifyStreamAuth(ctx, rule, clientIP)
@@ -1299,42 +1672,27 @@ func (m *Manager) verify(rule models.StreamRule, clientIP string) (bool, int, st
 }
 
 func relayBidirectional(client net.Conn, upstream net.Conn) (uint64, uint64, error) {
-	results := make(chan relayResult, 2)
+	clientToUpstream := make(chan relayResult, 1)
 
 	go func() {
 		bytes, err := copyStream(upstream, client)
 		closeWrite(upstream)
-		results <- relayResult{direction: "in", bytes: bytes, err: err}
+		clientToUpstream <- relayResult{bytes: bytes, err: err}
 	}()
 
-	go func() {
-		bytes, err := copyStream(client, upstream)
-		closeWrite(client)
-		results <- relayResult{direction: "out", bytes: bytes, err: err}
-	}()
+	bytesOut, upstreamToClientErr := copyStream(client, upstream)
+	closeWrite(client)
+	inResult := <-clientToUpstream
 
-	var bytesIn uint64
-	var bytesOut uint64
-	var firstErr error
-
-	for i := 0; i < 2; i++ {
-		result := <-results
-		if result.direction == "in" {
-			bytesIn = result.bytes
-		} else {
-			bytesOut = result.bytes
-		}
-		if err := normalizeRelayError(result.err); err != nil && firstErr == nil {
-			firstErr = err
-		}
+	firstErr := normalizeRelayError(upstreamToClientErr)
+	if err := normalizeRelayError(inResult.err); firstErr == nil {
+		firstErr = err
 	}
-
-	return bytesIn, bytesOut, firstErr
+	return inResult.bytes, bytesOut, firstErr
 }
 
 func copyStream(dst net.Conn, src net.Conn) (uint64, error) {
-	buffer := make([]byte, 32*1024)
-	written, err := io.CopyBuffer(dst, src, buffer)
+	written, err := io.Copy(dst, src)
 	if written < 0 {
 		written = 0
 	}

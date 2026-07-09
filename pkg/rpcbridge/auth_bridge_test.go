@@ -2,12 +2,17 @@ package rpcbridge
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"io"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"sync"
 	"testing"
 	"time"
 
+	"go-reauth-proxy/pkg/diagnostics"
 	"go-reauth-proxy/pkg/grpc/pb"
 
 	"google.golang.org/grpc"
@@ -115,6 +120,15 @@ func TestAuthBridgeGRPCRoundTrip(t *testing.T) {
 	})
 
 	waitForConnectedBridge(t, manager)
+	if err := stream.Send(&pb.AuthBridgeEnvelope{
+		Payload: &pb.AuthBridgeEnvelope_Ready{Ready: &pb.AuthBridgeReady{
+			InstanceId:   "grpc-client",
+			Capabilities: []string{CapabilityAuthorizeHTTPV1},
+		}},
+	}); err != nil {
+		t.Fatalf("send ready envelope: %v", err)
+	}
+	waitForCapability(t, manager, CapabilityAuthorizeHTTPV1)
 
 	clientDone := make(chan error, 1)
 	go func() {
@@ -158,121 +172,189 @@ func TestAuthBridgeGRPCRoundTrip(t *testing.T) {
 	}
 }
 
-func TestAuthBridgeRoundTripDoesNotHoldManagerLockDuringSend(t *testing.T) {
+func TestAuthBridgeReadyCapabilitiesAndAuthorizeHTTP(t *testing.T) {
 	manager := NewAuthBridgeManager("secret")
 	stream := &blockingAuthBridgeStream{
-		ctx:         context.Background(),
-		sendStarted: make(chan struct{}),
-		releaseSend: make(chan struct{}),
+		ctx:  context.Background(),
+		sent: make(chan *pb.AuthBridgeEnvelope, 1),
+	}
+	active := manager.attachStream(stream)
+	t.Cleanup(func() { manager.detachStream(active) })
+
+	if manager.SupportsCapability(CapabilityAuthorizeHTTPV1) {
+		t.Fatal("capability reported before ready envelope")
+	}
+	manager.handleIncoming(active, &pb.AuthBridgeEnvelope{
+		Payload: &pb.AuthBridgeEnvelope_Ready{Ready: &pb.AuthBridgeReady{
+			InstanceId:   "rust-1",
+			Capabilities: []string{"", "  " + CapabilityAuthorizeHTTPV1 + "  ", "other"},
+		}},
+	})
+	if !manager.SupportsCapability(CapabilityAuthorizeHTTPV1) {
+		t.Fatal("authorize capability was not parsed from ready envelope")
+	}
+	if !manager.SupportsCapability("other") || manager.SupportsCapability("missing") {
+		t.Fatal("capability snapshot did not match ready envelope")
 	}
 
-	manager.attachStream(stream)
-
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-	defer cancel()
-	result := make(chan error, 1)
+	result := make(chan struct {
+		resp *pb.AuthorizeHttpResponse
+		err  error
+	}, 1)
 	go func() {
-		_, err := manager.roundTrip(ctx, &pb.AuthBridgeEnvelope{
-			Payload: &pb.AuthBridgeEnvelope_VerifyAuthRequest{
-				VerifyAuthRequest: &pb.VerifyAuthRequest{},
-			},
+		resp, err := manager.AuthorizeHTTP(context.Background(), &pb.AuthorizeHttpRequest{
+			Context: &pb.AuthContext{ClientIp: "127.0.0.1"},
+			Matched: true,
+			Mode:    pb.HttpAuthMode_HTTP_AUTH_MODE_PREFLIGHT_AND_VERIFY,
 		})
-		result <- err
+		result <- struct {
+			resp *pb.AuthorizeHttpResponse
+			err  error
+		}{resp: resp, err: err}
 	}()
 
+	var request *pb.AuthBridgeEnvelope
 	select {
-	case <-stream.sendStarted:
-	case <-time.After(500 * time.Millisecond):
-		t.Fatal("roundTrip did not start sending")
+	case request = <-stream.sent:
+	case <-time.After(time.Second):
+		t.Fatal("combined auth request was not sent")
 	}
-
-	requestID := make(chan string, 1)
-	go func() {
-		manager.mu.Lock()
-		defer manager.mu.Unlock()
-		for id := range manager.pending {
-			requestID <- id
-			return
-		}
-	}()
-
-	var id string
-	select {
-	case id = <-requestID:
-	case <-time.After(100 * time.Millisecond):
-		t.Fatal("manager lock was blocked while stream.Send was in progress")
+	if got := request.GetAuthorizeHttpRequest(); got == nil || !got.GetMatched() {
+		t.Fatalf("request = %#v, want matched authorize HTTP request", request)
 	}
-
-	manager.dispatchResponse(&pb.AuthBridgeEnvelope{
-		RequestId: id,
-		Payload: &pb.AuthBridgeEnvelope_VerifyAuthResponse{
-			VerifyAuthResponse: &pb.VerifyAuthResponse{Success: true, Status: 200},
+	manager.dispatchResponse(active, &pb.AuthBridgeEnvelope{
+		RequestId: request.GetRequestId(),
+		Payload: &pb.AuthBridgeEnvelope_AuthorizeHttpResponse{
+			AuthorizeHttpResponse: &pb.AuthorizeHttpResponse{
+				Preflight:           &pb.PreflightAuthResponse{},
+				Verify:              &pb.VerifyAuthResponse{Success: true, Status: 200},
+				VerifyCacheScope:    pb.AuthCacheScope_AUTH_CACHE_SCOPE_HOST,
+				PreflightCacheScope: pb.AuthCacheScope_AUTH_CACHE_SCOPE_EXACT_REQUEST,
+			},
 		},
 	})
-	close(stream.releaseSend)
 
 	select {
-	case err := <-result:
-		if err != nil {
-			t.Fatalf("roundTrip returned error: %v", err)
+	case got := <-result:
+		if got.err != nil {
+			t.Fatalf("AuthorizeHTTP returned error: %v", got.err)
+		}
+		if !got.resp.GetVerify().GetSuccess() || got.resp.GetVerifyCacheScope() != pb.AuthCacheScope_AUTH_CACHE_SCOPE_HOST {
+			t.Fatalf("AuthorizeHTTP response = %#v", got.resp)
 		}
 	case <-time.After(time.Second):
-		t.Fatal("roundTrip did not complete")
+		t.Fatal("AuthorizeHTTP did not complete")
 	}
 }
 
-func TestAuthBridgeDetachIgnoresReplacedStream(t *testing.T) {
+func TestAuthBridgeLegacyBridgeRejectsCombinedRequest(t *testing.T) {
 	manager := NewAuthBridgeManager("secret")
-	oldStream := &blockingAuthBridgeStream{ctx: context.Background()}
-	newStream := &blockingAuthBridgeStream{ctx: context.Background()}
+	active := manager.attachStream(&blockingAuthBridgeStream{ctx: context.Background()})
+	t.Cleanup(func() { manager.detachStream(active) })
 
-	oldActive := manager.attachStream(oldStream)
-	oldPending := make(chan *pb.AuthBridgeEnvelope, 1)
-	manager.mu.Lock()
-	manager.pending["old"] = oldPending
-	manager.mu.Unlock()
-
-	newActive := manager.attachStream(newStream)
-	select {
-	case value := <-oldPending:
-		if value != nil {
-			t.Fatalf("old pending channel received %#v, want unavailable signal", value)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("old pending channel was not signaled on stream replacement")
-	}
-
-	newPending := make(chan *pb.AuthBridgeEnvelope, 1)
-	manager.mu.Lock()
-	manager.pending["new"] = newPending
-	manager.mu.Unlock()
-
-	manager.detachStream(oldActive)
-	select {
-	case value := <-newPending:
-		t.Fatalf("new pending channel received %#v after old stream detach", value)
-	default:
-	}
-
-	manager.detachStream(newActive)
-	select {
-	case value := <-newPending:
-		if value != nil {
-			t.Fatalf("new pending channel received %#v, want unavailable signal", value)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("new pending channel was not signaled on current stream detach")
+	_, err := manager.AuthorizeHTTP(context.Background(), &pb.AuthorizeHttpRequest{})
+	if !errors.Is(err, ErrAuthBridgeCapabilityUnsupported) {
+		t.Fatalf("AuthorizeHTTP error = %v, want ErrAuthBridgeCapabilityUnsupported", err)
 	}
 }
 
-func TestAuthBridgeRoundTripHonorsContextWhileSendBlocked(t *testing.T) {
+func TestAuthBridgeLegacyRequestCompatibility(t *testing.T) {
+	manager := NewAuthBridgeManager("secret")
+	stream := &blockingAuthBridgeStream{
+		ctx:  context.Background(),
+		sent: make(chan *pb.AuthBridgeEnvelope, 1),
+	}
+	active := manager.attachStream(stream)
+	t.Cleanup(func() { manager.detachStream(active) })
+
+	tests := []struct {
+		name     string
+		call     func(context.Context) error
+		respond  func(*pb.AuthBridgeEnvelope) *pb.AuthBridgeEnvelope
+		validate func(*pb.AuthBridgeEnvelope) bool
+	}{
+		{
+			name: "verify",
+			call: func(ctx context.Context) error {
+				resp, err := manager.VerifyAuth(ctx, &pb.VerifyAuthRequest{})
+				if err == nil && (!resp.GetSuccess() || resp.GetStatus() != 200) {
+					return errors.New("unexpected verify response")
+				}
+				return err
+			},
+			validate: func(msg *pb.AuthBridgeEnvelope) bool { return msg.GetVerifyAuthRequest() != nil },
+			respond: func(msg *pb.AuthBridgeEnvelope) *pb.AuthBridgeEnvelope {
+				return &pb.AuthBridgeEnvelope{RequestId: msg.GetRequestId(), Payload: &pb.AuthBridgeEnvelope_VerifyAuthResponse{VerifyAuthResponse: &pb.VerifyAuthResponse{Success: true, Status: 200}}}
+			},
+		},
+		{
+			name: "preflight",
+			call: func(ctx context.Context) error {
+				resp, err := manager.PreflightAuth(ctx, &pb.PreflightAuthRequest{})
+				if err == nil && resp.GetDeny() {
+					return errors.New("unexpected preflight response")
+				}
+				return err
+			},
+			validate: func(msg *pb.AuthBridgeEnvelope) bool { return msg.GetPreflightAuthRequest() != nil },
+			respond: func(msg *pb.AuthBridgeEnvelope) *pb.AuthBridgeEnvelope {
+				return &pb.AuthBridgeEnvelope{RequestId: msg.GetRequestId(), Payload: &pb.AuthBridgeEnvelope_PreflightAuthResponse{PreflightAuthResponse: &pb.PreflightAuthResponse{}}}
+			},
+		},
+		{
+			name: "stream",
+			call: func(ctx context.Context) error {
+				resp, err := manager.VerifyStreamAuth(ctx, &pb.VerifyStreamAuthRequest{})
+				if err == nil && !resp.GetAllowed() {
+					return errors.New("unexpected stream response")
+				}
+				return err
+			},
+			validate: func(msg *pb.AuthBridgeEnvelope) bool { return msg.GetVerifyStreamAuthRequest() != nil },
+			respond: func(msg *pb.AuthBridgeEnvelope) *pb.AuthBridgeEnvelope {
+				return &pb.AuthBridgeEnvelope{RequestId: msg.GetRequestId(), Payload: &pb.AuthBridgeEnvelope_VerifyStreamAuthResponse{VerifyStreamAuthResponse: &pb.VerifyStreamAuthResponse{Allowed: true, Status: 200}}}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := make(chan error, 1)
+			go func() { result <- tt.call(context.Background()) }()
+			var request *pb.AuthBridgeEnvelope
+			select {
+			case request = <-stream.sent:
+			case <-time.After(time.Second):
+				t.Fatal("legacy request was not sent")
+			}
+			if !tt.validate(request) {
+				t.Fatalf("request payload = %T", request.GetPayload())
+			}
+			manager.dispatchResponse(active, tt.respond(request))
+			select {
+			case err := <-result:
+				if err != nil {
+					t.Fatalf("legacy call returned error: %v", err)
+				}
+			case <-time.After(time.Second):
+				t.Fatal("legacy call did not complete")
+			}
+		})
+	}
+}
+
+func TestAuthBridgeRoundTripHonorsContextWhileWriterBlocked(t *testing.T) {
 	manager := NewAuthBridgeManager("secret")
 	stream := &blockingAuthBridgeStream{
 		ctx:         context.Background(),
 		sendStarted: make(chan struct{}),
 		releaseSend: make(chan struct{}),
 	}
-	manager.attachStream(stream)
+	active := manager.attachStream(stream)
+	t.Cleanup(func() {
+		manager.detachStream(active)
+		stream.release()
+	})
 
 	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Millisecond)
 	defer cancel()
@@ -300,11 +382,16 @@ func TestAuthBridgeRoundTripHonorsContextWhileSendBlocked(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("roundTrip did not respect context while Send was blocked")
 	}
+	waitForPendingCount(t, manager, 0)
+	if manager.stream.Load() != nil {
+		t.Fatal("timed-out blocked Send left the auth bridge stream attached")
+	}
 
-	newStream := &blockingAuthBridgeStream{ctx: context.Background()}
+	newStream := &blockingAuthBridgeStream{ctx: context.Background(), sent: make(chan *pb.AuthBridgeEnvelope, 1)}
 	attachDone := make(chan struct{})
+	var newActive *authBridgeStream
 	go func() {
-		manager.attachStream(newStream)
+		newActive = manager.attachStream(newStream)
 		close(attachDone)
 	}()
 	select {
@@ -312,43 +399,270 @@ func TestAuthBridgeRoundTripHonorsContextWhileSendBlocked(t *testing.T) {
 	case <-time.After(100 * time.Millisecond):
 		t.Fatal("new stream attach was blocked by the old stuck Send")
 	}
-	close(stream.releaseSend)
+	manager.detachStream(newActive)
+	stream.release()
 }
 
-func TestAuthBridgeDispatchAfterUnavailableSignalDoesNotPanic(t *testing.T) {
+func TestAuthBridgeCanceledSendThatUnblocksWithinGraceKeepsStream(t *testing.T) {
 	manager := NewAuthBridgeManager("secret")
-	ch := make(chan *pb.AuthBridgeEnvelope, 1)
-	manager.mu.Lock()
-	manager.pending["request"] = ch
-	manager.mu.Unlock()
-	signalPendingUnavailable(map[string]chan *pb.AuthBridgeEnvelope{"request": ch})
-
-	defer func() {
-		if recovered := recover(); recovered != nil {
-			t.Fatalf("dispatchResponse panicked after unavailable signal: %v", recovered)
-		}
-	}()
-	manager.dispatchResponse(&pb.AuthBridgeEnvelope{
-		RequestId: "request",
-		Payload: &pb.AuthBridgeEnvelope_VerifyAuthResponse{
-			VerifyAuthResponse: &pb.VerifyAuthResponse{Success: true, Status: 200},
-		},
+	stream := &blockingAuthBridgeStream{
+		ctx:         context.Background(),
+		sendStarted: make(chan struct{}),
+		releaseSend: make(chan struct{}),
+	}
+	active := manager.attachStream(stream)
+	t.Cleanup(func() {
+		manager.detachStream(active)
+		stream.release()
 	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	result := make(chan error, 1)
+	go func() {
+		_, err := manager.roundTrip(ctx, verifyEnvelope())
+		result <- err
+	}()
+	select {
+	case <-stream.sendStarted:
+	case <-time.After(time.Second):
+		t.Fatal("roundTrip did not start sending")
+	}
+	cancel()
+	if err := <-result; !errors.Is(err, context.Canceled) {
+		t.Fatalf("roundTrip error = %v, want context canceled", err)
+	}
+	stream.release()
+	deadline := time.Now().Add(time.Second)
+	for active.sending.Load() != nil && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if active.sending.Load() != nil {
+		t.Fatal("Send did not unblock")
+	}
+	time.Sleep(authBridgeCanceledSendGrace + 20*time.Millisecond)
+	if manager.stream.Load() != active {
+		t.Fatal("briefly blocked canceled Send detached a healthy auth bridge")
+	}
+}
+
+func TestAuthBridgeBoundedWriterQueue(t *testing.T) {
+	diagnostics.SetEnabled(true)
+	t.Cleanup(func() { diagnostics.SetEnabled(false) })
+	manager := NewAuthBridgeManager("secret")
+	stream := &blockingAuthBridgeStream{
+		ctx:         context.Background(),
+		sendStarted: make(chan struct{}),
+		releaseSend: make(chan struct{}),
+	}
+	active := manager.attachStream(stream)
+	t.Cleanup(func() {
+		manager.detachStream(active)
+		stream.release()
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	results := make(chan error, authBridgeSendQueueSize+1)
+	call := func() {
+		_, err := manager.roundTrip(ctx, verifyEnvelope())
+		results <- err
+	}
+	go call()
+	select {
+	case <-stream.sendStarted:
+	case <-time.After(time.Second):
+		t.Fatal("writer did not enter blocked Send")
+	}
+	for range authBridgeSendQueueSize {
+		go call()
+	}
+	waitForQueueLength(t, active, authBridgeSendQueueSize)
+	waitForAuthBridgeQueueDepth(t, uint64(authBridgeSendQueueSize))
+	metrics := readAuthBridgeQueueMetrics(t)
+	if metrics.Peak < uint64(authBridgeSendQueueSize) {
+		t.Fatalf("auth bridge queue peak = %d, want at least %d", metrics.Peak, authBridgeSendQueueSize)
+	}
+
+	_, err := manager.roundTrip(context.Background(), verifyEnvelope())
+	if !errors.Is(err, ErrAuthBridgeQueueFull) {
+		t.Fatalf("overflow request error = %v, want ErrAuthBridgeQueueFull", err)
+	}
+	if got := len(active.sendQueue); got != authBridgeSendQueueSize {
+		t.Fatalf("queue length = %d, want %d", got, authBridgeSendQueueSize)
+	}
+
+	cancel()
+	for range authBridgeSendQueueSize + 1 {
+		select {
+		case err := <-results:
+			if !errors.Is(err, context.Canceled) && !errors.Is(err, ErrAuthBridgeUnavailable) {
+				t.Fatalf("queued request error = %v, want context canceled or unavailable after stream detach", err)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatal("queued request did not observe cancellation")
+		}
+	}
+	waitForPendingCount(t, manager, 0)
+	stream.release()
+	waitForAuthBridgeQueueDepth(t, 0)
+}
+
+func TestAuthBridgeReconnectFailsOnlyOldPendingRequests(t *testing.T) {
+	manager := NewAuthBridgeManager("secret")
+	oldStream := &blockingAuthBridgeStream{
+		ctx:         context.Background(),
+		sendStarted: make(chan struct{}),
+		releaseSend: make(chan struct{}),
+	}
+	oldActive := manager.attachStream(oldStream)
+	manager.handleIncoming(oldActive, &pb.AuthBridgeEnvelope{Payload: &pb.AuthBridgeEnvelope_Ready{Ready: &pb.AuthBridgeReady{Capabilities: []string{CapabilityAuthorizeHTTPV1}}}})
+
+	oldResult := make(chan error, 1)
+	go func() {
+		_, err := manager.roundTrip(context.Background(), verifyEnvelope())
+		oldResult <- err
+	}()
+	select {
+	case <-oldStream.sendStarted:
+	case <-time.After(time.Second):
+		t.Fatal("old stream did not start sending")
+	}
+
+	newStream := &blockingAuthBridgeStream{ctx: context.Background(), sent: make(chan *pb.AuthBridgeEnvelope, 1)}
+	newActive := manager.attachStream(newStream)
+	t.Cleanup(func() {
+		manager.detachStream(newActive)
+		oldStream.release()
+	})
+	if manager.SupportsCapability(CapabilityAuthorizeHTTPV1) {
+		t.Fatal("capabilities leaked across stream replacement")
+	}
+	select {
+	case err := <-oldResult:
+		if !errors.Is(err, ErrAuthBridgeUnavailable) {
+			t.Fatalf("old request error = %v, want unavailable", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("old pending request was not failed on reconnect")
+	}
+
+	newResult := make(chan error, 1)
+	go func() {
+		_, err := manager.VerifyAuth(context.Background(), &pb.VerifyAuthRequest{})
+		newResult <- err
+	}()
+	request := <-newStream.sent
+	manager.detachStream(oldActive)
+	manager.dispatchResponse(newActive, &pb.AuthBridgeEnvelope{
+		RequestId: request.GetRequestId(),
+		Payload:   &pb.AuthBridgeEnvelope_VerifyAuthResponse{VerifyAuthResponse: &pb.VerifyAuthResponse{Success: true, Status: 200}},
+	})
+	select {
+	case err := <-newResult:
+		if err != nil {
+			t.Fatalf("new request failed after old detach: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("new request did not complete")
+	}
+	oldStream.release()
 }
 
 func waitForConnectedBridge(t *testing.T, manager *AuthBridgeManager) {
 	t.Helper()
 	deadline := time.Now().Add(time.Second)
 	for time.Now().Before(deadline) {
-		manager.mu.Lock()
-		connected := manager.stream != nil
-		manager.mu.Unlock()
-		if connected {
+		if manager.stream.Load() != nil {
 			return
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
 	t.Fatal("auth bridge did not connect")
+}
+
+func waitForCapability(t *testing.T, manager *AuthBridgeManager, capability string) {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if manager.SupportsCapability(capability) {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatalf("auth bridge did not advertise capability %q", capability)
+}
+
+func waitForPendingCount(t *testing.T, manager *AuthBridgeManager, want int) {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		got := 0
+		for i := range manager.pending {
+			shard := &manager.pending[i]
+			shard.Lock()
+			got += len(shard.calls)
+			shard.Unlock()
+		}
+		if got == want {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatalf("pending request count did not reach %d", want)
+}
+
+func waitForQueueLength(t *testing.T, stream *authBridgeStream, want int) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if len(stream.sendQueue) == want {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatalf("writer queue length = %d, want %d", len(stream.sendQueue), want)
+}
+
+type authBridgeQueueMetrics struct {
+	Depth uint64
+	Peak  uint64
+}
+
+func readAuthBridgeQueueMetrics(t *testing.T) authBridgeQueueMetrics {
+	t.Helper()
+	recorder := httptest.NewRecorder()
+	diagnostics.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/debug/metrics", nil))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("diagnostics status = %d", recorder.Code)
+	}
+	var payload struct {
+		Auth struct {
+			Depth uint64 `json:"bridge_queue_depth"`
+			Peak  uint64 `json:"bridge_queue_depth_peak"`
+		} `json:"auth"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode diagnostics: %v", err)
+	}
+	return authBridgeQueueMetrics{Depth: payload.Auth.Depth, Peak: payload.Auth.Peak}
+}
+
+func waitForAuthBridgeQueueDepth(t *testing.T, want uint64) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if got := readAuthBridgeQueueMetrics(t).Depth; got == want {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatalf("auth bridge diagnostic queue depth = %d, want %d", readAuthBridgeQueueMetrics(t).Depth, want)
+}
+
+func verifyEnvelope() *pb.AuthBridgeEnvelope {
+	return &pb.AuthBridgeEnvelope{
+		Payload: &pb.AuthBridgeEnvelope_VerifyAuthRequest{VerifyAuthRequest: &pb.VerifyAuthRequest{}},
+	}
 }
 
 type blockingAuthBridgeStream struct {
@@ -357,6 +671,8 @@ type blockingAuthBridgeStream struct {
 	sendStarted     chan struct{}
 	sendStartedOnce sync.Once
 	releaseSend     chan struct{}
+	releaseOnce     sync.Once
+	sent            chan *pb.AuthBridgeEnvelope
 }
 
 func (s *blockingAuthBridgeStream) Context() context.Context {
@@ -366,7 +682,7 @@ func (s *blockingAuthBridgeStream) Context() context.Context {
 	return s.ctx
 }
 
-func (s *blockingAuthBridgeStream) Send(*pb.AuthBridgeEnvelope) error {
+func (s *blockingAuthBridgeStream) Send(msg *pb.AuthBridgeEnvelope) error {
 	if s.sendStarted != nil {
 		s.sendStartedOnce.Do(func() {
 			close(s.sendStarted)
@@ -375,9 +691,18 @@ func (s *blockingAuthBridgeStream) Send(*pb.AuthBridgeEnvelope) error {
 	if s.releaseSend != nil {
 		<-s.releaseSend
 	}
+	if s.sent != nil {
+		s.sent <- msg
+	}
 	return nil
 }
 
 func (s *blockingAuthBridgeStream) Recv() (*pb.AuthBridgeEnvelope, error) {
 	return nil, io.EOF
+}
+
+func (s *blockingAuthBridgeStream) release() {
+	if s.releaseSend != nil {
+		s.releaseOnce.Do(func() { close(s.releaseSend) })
+	}
 }

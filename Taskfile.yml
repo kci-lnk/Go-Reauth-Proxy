@@ -114,6 +114,21 @@ tasks:
     cmds:
       - go test -v ./...
 
+  test:race:
+    desc: "Run the full race-detector suite"
+    cmds:
+      - go test -race ./...
+
+  bench:hot:
+    desc: "Run repeatable hot-path performance benchmarks"
+    cmds:
+      - go test -p=1 -run '^$' -bench 'Benchmark(Handler|Auth|Preflight|StreamingToolbar|RewriteHTML|Relay|UDP|ManagerLog|DailyFileWriter)' -benchmem -count=10 -benchtime=1s ./pkg/proxy ./pkg/rpcbridge ./pkg/stream ./pkg/gatewaylog
+
+  bench:all:
+    desc: "Run all benchmarks serially for benchstat comparison"
+    cmds:
+      - go test -p=1 -run '^$' -bench . -benchmem -count=10 -benchtime=1s ./...
+
   clean:
     desc: "Clean build artifacts"
     cmds:

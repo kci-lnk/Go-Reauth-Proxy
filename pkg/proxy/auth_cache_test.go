@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -22,6 +23,8 @@ var (
 	benchmarkCookieMapSink            map[string]string
 	benchmarkSetCookieMutationsSink   authSetCookieMutations
 )
+
+const benchmarkAuthCacheCapacity = 8192
 
 func TestCanonicalCookieIdentitySkipsProxyPathAndSorts(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "https://app.example.com/path", nil)
@@ -252,6 +255,64 @@ func TestAuthCacheLookupSeparatesAuthorizationIdentityByClientIP(t *testing.T) {
 	}
 }
 
+func TestAuthCacheLookupSeparatesDedicatedAccessTokensAndUserAgents(t *testing.T) {
+	newRequest := func(userAgent string, token string) *http.Request {
+		req := httptest.NewRequest(http.MethodGet, "https://app.example.com/media", nil)
+		req.Header.Set("User-Agent", userAgent)
+		if token != "" {
+			req.Header.Set("AccessToken", token)
+		}
+		return req
+	}
+
+	first, ok := buildAuthCacheLookup(newRequest("com.trim.media", "token-a"), "198.51.100.10", "")
+	if !ok {
+		t.Fatal("first access-token lookup was not buildable")
+	}
+	for name, req := range map[string]*http.Request{
+		"different token": newRequest("com.trim.media", "token-b"),
+		"missing token":   newRequest("com.trim.media", ""),
+		"different agent": newRequest("browser", "token-a"),
+	} {
+		t.Run(name, func(t *testing.T) {
+			lookup, ok := buildAuthCacheLookup(req, "198.51.100.10", "")
+			if !ok {
+				t.Fatal("lookup was not buildable")
+			}
+			if lookup.identityKey == first.identityKey || lookup.cacheKey == first.cacheKey {
+				t.Fatalf("credential context reused cache identity: first=%#v other=%#v", first, lookup)
+			}
+		})
+	}
+}
+
+func TestAuthCacheLookupSeparatesCookieIdentityByUserAgent(t *testing.T) {
+	request := func(userAgent string) *http.Request {
+		req := httptest.NewRequest(http.MethodGet, "https://app.example.com/path", nil)
+		req.AddCookie(&http.Cookie{Name: authSessionCookieName, Value: "session-a"})
+		req.Header.Set("User-Agent", userAgent)
+		return req
+	}
+	first, _ := buildAuthCacheLookup(request("com.trim.media"), "198.51.100.10", "")
+	second, _ := buildAuthCacheLookup(request("browser"), "198.51.100.10", "")
+	if first.identityKey == second.identityKey || first.cacheKey == second.cacheKey {
+		t.Fatalf("user-agent-dependent cookie identities collided: first=%#v second=%#v", first, second)
+	}
+}
+
+func TestAuthCacheLookupSeparatesIPIdentityByUserAgent(t *testing.T) {
+	request := func(userAgent string) *http.Request {
+		req := httptest.NewRequest(http.MethodGet, "https://app.example.com/path", nil)
+		req.Header.Set("User-Agent", userAgent)
+		return req
+	}
+	first, _ := buildAuthCacheLookup(request("com.trim.media"), "198.51.100.10", "")
+	second, _ := buildAuthCacheLookup(request("browser"), "198.51.100.10", "")
+	if first.identityKey == second.identityKey || first.cacheKey == second.cacheKey {
+		t.Fatalf("user-agent-dependent IP identities collided: first=%#v second=%#v", first, second)
+	}
+}
+
 func TestAuthCacheInvalidationClearsAllClientIPVariantsForIdentity(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "https://app.example.com/path", nil)
 	req.AddCookie(&http.Cookie{Name: authSessionCookieName, Value: "session-a"})
@@ -339,6 +400,65 @@ func TestAuthCacheStoreEnforcesMaxEntriesAndIdentityIndex(t *testing.T) {
 	}
 	if _, ok := handler.authCache.entries["key-"+strconv.Itoa(authCacheMaxEntries)]; !ok {
 		t.Fatal("newest auth cache entry was evicted unexpectedly")
+	}
+}
+
+func TestAuthCacheFIFOOrderIndexDoesNotLeakAtSmallCapacity(t *testing.T) {
+	cache := newAuthStateCache()
+	now := time.Now()
+	entry := authCacheEntry{
+		result:      authCheckResult{allowed: true, authenticated: true},
+		expiresAt:   now.Add(time.Hour),
+		identityKey: "identity-a",
+	}
+
+	storeAuthCacheEntryWithLimit(&cache, "key-a", entry, 2)
+	storeAuthCacheEntryWithLimit(&cache, "key-b", entry, 2)
+	storeAuthCacheEntryWithLimit(&cache, "key-a", entry, 2)
+	storeAuthCacheEntryWithLimit(&cache, "key-c", entry, 2)
+
+	if _, ok := cache.entries["key-b"]; ok {
+		t.Fatal("FIFO cache retained the oldest key after capacity eviction")
+	}
+	if _, ok := cache.entries["key-a"]; !ok {
+		t.Fatal("FIFO cache evicted the refreshed key")
+	}
+	if _, ok := cache.entries["key-c"]; !ok {
+		t.Fatal("FIFO cache did not retain the newest key")
+	}
+	if got := cache.order.Len(); got != 2 {
+		t.Fatalf("FIFO order length = %d, want 2", got)
+	}
+	if got := len(cache.orderByKey); got != 2 {
+		t.Fatalf("FIFO order index length = %d, want 2", got)
+	}
+	if got := cache.order.Front().Value.(string); got != "key-a" {
+		t.Fatalf("FIFO oldest key = %q, want key-a", got)
+	}
+	if got := cache.order.Back().Value.(string); got != "key-c" {
+		t.Fatalf("FIFO newest key = %q, want key-c", got)
+	}
+	identityKeys := cache.keysByIdentity[entry.identityKey]
+	if len(identityKeys) != 2 {
+		t.Fatalf("identity index size = %d, want 2", len(identityKeys))
+	}
+	if _, ok := identityKeys["key-b"]; ok {
+		t.Fatal("identity index retained the evicted key")
+	}
+	for _, key := range []string{"key-a", "key-c"} {
+		element := cache.orderByKey[key]
+		if element == nil || element.Value != key {
+			t.Fatalf("order index for %q is missing or stale", key)
+		}
+	}
+
+	cache.mu.Lock()
+	cache.deleteEntryLocked("key-a")
+	cache.deleteEntryLocked("key-c")
+	cache.mu.Unlock()
+	if len(cache.entries) != 0 || cache.order.Len() != 0 || len(cache.orderByKey) != 0 || len(cache.keysByIdentity) != 0 {
+		t.Fatalf("cache indexes leaked after deletion: entries=%d order=%d order_index=%d identities=%d",
+			len(cache.entries), cache.order.Len(), len(cache.orderByKey), len(cache.keysByIdentity))
 	}
 }
 
@@ -542,7 +662,7 @@ func BenchmarkCanonicalCookieIdentitySingleCookie(b *testing.B) {
 	req.AddCookie(&http.Cookie{Name: authSessionCookieName, Value: "session-a"})
 
 	b.ReportAllocs()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		benchmarkCookieIdentitySink = canonicalCookieIdentity(req)
 	}
 }
@@ -718,7 +838,7 @@ func BenchmarkCanonicalCookieIdentityManyCookies(b *testing.B) {
 	req.AddCookie(&http.Cookie{Name: "empty", Value: ""})
 
 	b.ReportAllocs()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		benchmarkCookieIdentitySink = canonicalCookieIdentity(req)
 	}
 }
@@ -730,7 +850,7 @@ func BenchmarkBuildAuthCacheLookupCookie(b *testing.B) {
 	req.AddCookie(&http.Cookie{Name: "theme", Value: "dark"})
 
 	b.ReportAllocs()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		lookup, ok := buildAuthCacheLookup(req, "198.51.100.10", "login_first")
 		if !ok {
 			b.Fatal("auth cache lookup was not buildable")
@@ -746,7 +866,7 @@ func BenchmarkBuildPreflightCacheLookupCookie(b *testing.B) {
 	req.AddCookie(&http.Cookie{Name: "theme", Value: "dark"})
 
 	b.ReportAllocs()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		lookup, ok := buildPreflightCacheLookup(req, "198.51.100.10", "login_first", true)
 		if !ok {
 			b.Fatal("preflight cache lookup was not buildable")
@@ -762,7 +882,7 @@ func BenchmarkRequestHasExplicitAuthIdentityCookie(b *testing.B) {
 	req.AddCookie(&http.Cookie{Name: authSessionCookieName, Value: "session-a"})
 
 	b.ReportAllocs()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		benchmarkBoolSink = requestHasExplicitAuthIdentity(req)
 	}
 }
@@ -772,7 +892,7 @@ func BenchmarkRequestHasExplicitAuthIdentityAuthorization(b *testing.B) {
 	req.Header.Set("Authorization", "Bearer token-a")
 
 	b.ReportAllocs()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		benchmarkBoolSink = requestHasExplicitAuthIdentity(req)
 	}
 }
@@ -787,7 +907,7 @@ func BenchmarkRequestCookieMap(b *testing.B) {
 	req.AddCookie(&http.Cookie{Name: "empty", Value: ""})
 
 	b.ReportAllocs()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		benchmarkCookieMapSink = requestCookieMap(req)
 	}
 }
@@ -802,7 +922,7 @@ func BenchmarkRequestCookieMapLegacy(b *testing.B) {
 	req.AddCookie(&http.Cookie{Name: "empty", Value: ""})
 
 	b.ReportAllocs()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		benchmarkCookieMapSink = legacyRequestCookieMap(req)
 	}
 }
@@ -817,7 +937,7 @@ func BenchmarkCanonicalCookieIdentityFromMap(b *testing.B) {
 	}
 
 	b.ReportAllocs()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		benchmarkCookieIdentitySink = canonicalCookieIdentityFromMap(values)
 	}
 }
@@ -832,7 +952,7 @@ func BenchmarkCanonicalCookieIdentityFromMapLegacy(b *testing.B) {
 	}
 
 	b.ReportAllocs()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		benchmarkCookieIdentitySink = legacyCanonicalCookieIdentityFromMap(values)
 	}
 }
@@ -845,7 +965,7 @@ func BenchmarkParseRelevantAuthSetCookies(b *testing.B) {
 	}
 
 	b.ReportAllocs()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		benchmarkSetCookieMutationsSink = parseRelevantAuthSetCookies(headers)
 	}
 }
@@ -858,7 +978,109 @@ func BenchmarkParseRelevantAuthSetCookiesLegacy(b *testing.B) {
 	}
 
 	b.ReportAllocs()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		benchmarkSetCookieMutationsSink = legacyRelevantAuthSetCookieMutations(headers)
+	}
+}
+
+func BenchmarkAuthCacheHighCardinalityURLWritesCapacity8192(b *testing.B) {
+	keys := benchmarkHighCardinalityAuthCacheKeys(benchmarkAuthCacheCapacity * 2)
+	cache, entry := prefilledBenchmarkAuthCache(keys[:benchmarkAuthCacheCapacity])
+	next := uint64(benchmarkAuthCacheCapacity)
+
+	b.ReportAllocs()
+	for b.Loop() {
+		key := keys[next%uint64(len(keys))]
+		storeAuthCacheEntryWithLimit(cache, key, entry, benchmarkAuthCacheCapacity)
+		next++
+	}
+	assertBenchmarkAuthCacheIndexes(b, cache)
+}
+
+func BenchmarkAuthCacheHighCardinalityURLWritesCapacity8192Parallel(b *testing.B) {
+	keys := benchmarkHighCardinalityAuthCacheKeys(benchmarkAuthCacheCapacity * 2)
+	cache, entry := prefilledBenchmarkAuthCache(keys[:benchmarkAuthCacheCapacity])
+	var next atomic.Uint64
+	next.Store(benchmarkAuthCacheCapacity)
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	b.RunParallel(func(pb *testing.PB) {
+		for pb.Next() {
+			index := next.Add(1) - 1
+			key := keys[index%uint64(len(keys))]
+			storeAuthCacheEntryWithLimit(cache, key, entry, benchmarkAuthCacheCapacity)
+		}
+	})
+	b.StopTimer()
+	assertBenchmarkAuthCacheIndexes(b, cache)
+}
+
+func benchmarkHighCardinalityAuthCacheKeys(count int) []string {
+	keys := make([]string, count)
+	for i := range keys {
+		requestURL := &url.URL{
+			Path:     "/api/resources/" + strconv.Itoa(i),
+			RawQuery: "cursor=" + strconv.Itoa(i),
+		}
+		keys[i] = authCacheLookupKey(
+			"benchmark-identity",
+			"198.51.100.10",
+			"login_first",
+			"https",
+			"GET",
+			"app.example.test",
+			requestURL,
+		)
+	}
+	return keys
+}
+
+func prefilledBenchmarkAuthCache(keys []string) (*authStateCache, authCacheEntry) {
+	cache := newAuthStateCache()
+	entry := authCacheEntry{
+		result:      authCheckResult{allowed: true, authenticated: true},
+		expiresAt:   time.Now().Add(time.Hour),
+		identityKey: "benchmark-identity",
+	}
+	for _, key := range keys {
+		storeAuthCacheEntryWithLimit(&cache, key, entry, benchmarkAuthCacheCapacity)
+	}
+	return &cache, entry
+}
+
+func storeAuthCacheEntryWithLimit(cache *authStateCache, cacheKey string, entry authCacheEntry, limit int) {
+	cache.mu.Lock()
+	cache.deleteEntryLocked(cacheKey)
+	cache.entries[cacheKey] = entry
+	cache.orderByKey[cacheKey] = cache.order.PushBack(cacheKey)
+	if entry.identityKey != "" {
+		keys := cache.keysByIdentity[entry.identityKey]
+		if keys == nil {
+			keys = make(map[string]struct{})
+			cache.keysByIdentity[entry.identityKey] = keys
+		}
+		keys[cacheKey] = struct{}{}
+	}
+	cache.enforceMaxEntriesLocked(limit)
+	cache.mu.Unlock()
+}
+
+func assertBenchmarkAuthCacheIndexes(b *testing.B, cache *authStateCache) {
+	b.Helper()
+	cache.mu.RLock()
+	defer cache.mu.RUnlock()
+
+	if got := len(cache.entries); got != benchmarkAuthCacheCapacity {
+		b.Fatalf("auth cache entries = %d, want %d", got, benchmarkAuthCacheCapacity)
+	}
+	if got := cache.order.Len(); got != benchmarkAuthCacheCapacity {
+		b.Fatalf("auth cache FIFO order = %d, want %d", got, benchmarkAuthCacheCapacity)
+	}
+	if got := len(cache.orderByKey); got != benchmarkAuthCacheCapacity {
+		b.Fatalf("auth cache FIFO index = %d, want %d", got, benchmarkAuthCacheCapacity)
+	}
+	if got := len(cache.keysByIdentity["benchmark-identity"]); got != benchmarkAuthCacheCapacity {
+		b.Fatalf("auth cache identity index = %d, want %d", got, benchmarkAuthCacheCapacity)
 	}
 }

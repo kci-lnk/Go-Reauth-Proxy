@@ -58,14 +58,14 @@ func TestJSONNoDataResponseDecodes(t *testing.T) {
 
 func BenchmarkAppendJSONResponseNoData(b *testing.B) {
 	b.ReportAllocs()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		responseBenchmarkBytesSink = appendJSONResponseNoData(nil, false, 10003, "Invalid JSON object", 123456789)
 	}
 }
 
 func BenchmarkAppendJSONResponseNoDataOld(b *testing.B) {
 	b.ReportAllocs()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		responseBenchmarkBytesSink = legacyJSONResponseNoDataForBenchmark(false, 10003, "Invalid JSON object", 123456789)
 	}
 }

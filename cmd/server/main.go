@@ -387,6 +387,13 @@ func main() {
 	if err != nil {
 		logger.Fatalf("Internal gRPC token is required: %v", err)
 	}
+	stopDiagnostics, diagnosticsAddr, err := startDiagnosticsServer(os.Getenv(diagnosticsAddrEnv), internalRPCToken)
+	if err != nil {
+		logger.Fatalf("Diagnostics server failed: %v", err)
+	}
+	if diagnosticsAddr != "" {
+		log.Printf("Diagnostics server listening on %s", diagnosticsAddr)
+	}
 
 	systemEventClient := events.NewClient(nil)
 	authBridgeManager := rpcbridge.NewAuthBridgeManager(internalRPCToken)
@@ -539,6 +546,7 @@ func main() {
 	streamManager.Stop()
 	proxyStack.Stop()
 	stopInternalGRPC()
+	stopDiagnostics()
 	proxyHandler.Close()
 	if event := logger.DebugEvent("server", "shutdown_completed"); event != nil {
 		event.Send()

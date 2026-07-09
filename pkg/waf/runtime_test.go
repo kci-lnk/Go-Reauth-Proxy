@@ -529,21 +529,21 @@ func legacyNormalizeHost(host string) string {
 
 func BenchmarkNormalizeHostNoPort(b *testing.B) {
 	b.ReportAllocs()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		benchmarkWAFStringSink = normalizeHost("app.example.test")
 	}
 }
 
 func BenchmarkNormalizeHostWithPort(b *testing.B) {
 	b.ReportAllocs()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		benchmarkWAFStringSink = normalizeHost("App.Example.TEST:443")
 	}
 }
 
 func BenchmarkNormalizeHostLowercaseWithPort(b *testing.B) {
 	b.ReportAllocs()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		benchmarkWAFStringSink = normalizeHost("app.example.test:443")
 	}
 }
@@ -551,7 +551,7 @@ func BenchmarkNormalizeHostLowercaseWithPort(b *testing.B) {
 func BenchmarkFormatTraceID(b *testing.B) {
 	uuid := [16]byte{0x7a, 0xfe, 0x10, 0x02, 0xc0, 0xff, 0x4e, 0xee, 0xaa, 0xbb, 0x12, 0x34, 0x56, 0x78, 0x90, 0xab}
 	b.ReportAllocs()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		benchmarkWAFStringSink = formatTraceID(uuid)
 	}
 }
@@ -559,7 +559,7 @@ func BenchmarkFormatTraceID(b *testing.B) {
 func BenchmarkFormatTraceIDOld(b *testing.B) {
 	uuid := [16]byte{0x7a, 0xfe, 0x10, 0x02, 0xc0, 0xff, 0x4e, 0xee, 0xaa, 0xbb, 0x12, 0x34, 0x56, 0x78, 0x90, 0xab}
 	b.ReportAllocs()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		benchmarkWAFStringSink = formatTraceIDLegacyForBenchmark(uuid)
 	}
 }
@@ -573,7 +573,7 @@ func BenchmarkRuntimeIsExcludedHost(b *testing.B) {
 	req := httptest.NewRequest("GET", "https://app.example.test/dashboard", nil)
 
 	b.ReportAllocs()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		benchmarkWAFBoolSink = rt.isExcluded(req)
 	}
 }
@@ -587,7 +587,7 @@ func BenchmarkRuntimeIsExcludedPath(b *testing.B) {
 	req := httptest.NewRequest("GET", "https://app.example.test/admin/dashboard", nil)
 
 	b.ReportAllocs()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		benchmarkWAFBoolSink = rt.isExcluded(req)
 	}
 }
@@ -600,7 +600,7 @@ func BenchmarkRuntimeIsExcludedNoExclusions(b *testing.B) {
 	req := httptest.NewRequest("GET", "https://app.example.test/dashboard", nil)
 
 	b.ReportAllocs()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		benchmarkWAFBoolSink = rt.isExcluded(req)
 	}
 }
@@ -610,7 +610,7 @@ func BenchmarkRuntimeEvaluateDisabled(b *testing.B) {
 	req := httptest.NewRequest("GET", "https://app.example.test/dashboard", nil)
 
 	b.ReportAllocs()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		benchmarkWAFBoolSink = rt.Evaluate(req, EvaluateContext{}).Allowed
 	}
 }

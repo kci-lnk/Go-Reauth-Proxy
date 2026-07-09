@@ -84,6 +84,22 @@ func TestNewManagerAppliesDefaultChainParentsAndTables(t *testing.T) {
 	}
 }
 
+func TestDisabledManagerNeverInvokesCommandRunner(t *testing.T) {
+	runner := &recordingIptablesRunner{}
+	manager := NewManager(Options{Disabled: true})
+	manager.runner = runner
+
+	if err := manager.Init(); err == nil {
+		t.Fatal("Init() error = nil, want disabled error")
+	}
+	if _, err := manager.ParseRules(); err == nil {
+		t.Fatal("ParseRules() error = nil, want disabled error")
+	}
+	if len(runner.calls) != 0 || len(runner.restores) != 0 {
+		t.Fatalf("disabled manager invoked command runner: calls=%v restores=%v", runner.calls, runner.restores)
+	}
+}
+
 func TestNormalizeTablesTrimsAndDeduplicates(t *testing.T) {
 	got := normalizeTables([]string{" iptables ", "", "iptables", "ip6tables"})
 	want := []string{"iptables", "ip6tables"}

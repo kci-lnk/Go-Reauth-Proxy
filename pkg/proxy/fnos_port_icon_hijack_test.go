@@ -603,28 +603,28 @@ func buildFnosPortIconHijackTargetsLegacyForBenchmark(hostRules []models.HostRul
 
 func BenchmarkHostRuleTargetPortExplicit(b *testing.B) {
 	b.ReportAllocs()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		benchmarkFnosPortSink, benchmarkBoolSink = hostRuleTargetPort("http://127.0.0.1:8096/path")
 	}
 }
 
 func BenchmarkHostRuleTargetPortExplicitOld(b *testing.B) {
 	b.ReportAllocs()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		benchmarkFnosPortSink, benchmarkBoolSink = legacyHostRuleTargetPortForBenchmark("http://127.0.0.1:8096/path")
 	}
 }
 
 func BenchmarkHostRuleTargetPortDefaultHTTPS(b *testing.B) {
 	b.ReportAllocs()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		benchmarkFnosPortSink, benchmarkBoolSink = hostRuleTargetPort("https://emby.example.com/web")
 	}
 }
 
 func BenchmarkHostRuleTargetPortDefaultHTTPSOld(b *testing.B) {
 	b.ReportAllocs()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		benchmarkFnosPortSink, benchmarkBoolSink = legacyHostRuleTargetPortForBenchmark("https://emby.example.com/web")
 	}
 }
@@ -639,7 +639,7 @@ func BenchmarkBuildFnosPortIconHijackTargets(b *testing.B) {
 		{Host: "socket.example.com", Target: "wss://192.168.1.11/socket"},
 	}
 	b.ReportAllocs()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		benchmarkFnosTargetsSink = buildFnosPortIconHijackTargets(hostRules)
 	}
 }
@@ -654,7 +654,7 @@ func BenchmarkBuildFnosPortIconHijackTargetsOld(b *testing.B) {
 		{Host: "socket.example.com", Target: "wss://192.168.1.11/socket"},
 	}
 	b.ReportAllocs()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		benchmarkFnosTargetsSink = buildFnosPortIconHijackTargetsLegacyForBenchmark(hostRules)
 	}
 }

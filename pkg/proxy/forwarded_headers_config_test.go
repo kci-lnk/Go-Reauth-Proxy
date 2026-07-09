@@ -59,7 +59,7 @@ func BenchmarkNormalizeForwardedHeadersTargetURL(b *testing.B) {
 	}
 
 	b.ReportAllocs()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		_, benchmarkHostSink, benchmarkBoolSink = normalizeForwardedHeadersTargetURL(target)
 	}
 }
@@ -71,7 +71,7 @@ func BenchmarkNormalizeForwardedHeadersTargetURLOld(b *testing.B) {
 	}
 
 	b.ReportAllocs()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		_, benchmarkHostSink, benchmarkBoolSink = legacyNormalizeForwardedHeadersTargetURLForBenchmark(target)
 	}
 }
@@ -88,7 +88,7 @@ func BenchmarkForwardedHeadersShouldOmit(b *testing.B) {
 	}
 
 	b.ReportAllocs()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		benchmarkBoolSink = runtime.shouldOmit(target)
 	}
 }
@@ -105,7 +105,7 @@ func BenchmarkForwardedHeadersShouldOmitOld(b *testing.B) {
 	}
 
 	b.ReportAllocs()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		benchmarkBoolSink = legacyForwardedHeadersShouldOmitForBenchmark(true, omitTargets, target)
 	}
 }

@@ -571,7 +571,7 @@ func BenchmarkGenerateToolbarWithHostsForLocale(b *testing.B) {
 	portal := models.GatewayPortalConfig{DisplayStyle: models.GatewayPortalDisplayStyleTitle}
 
 	b.ReportAllocs()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		toolbarBenchmarkSink = GenerateToolbarWithHostsForLocale("en", rules, hostRules, "/app-001", "app-001.example.com", "app-002.example.com", portal)
 	}
 }
@@ -581,7 +581,7 @@ func BenchmarkGenerateToolbarWithNavigableHostsForLocale(b *testing.B) {
 	portal := models.GatewayPortalConfig{DisplayStyle: models.GatewayPortalDisplayStyleTitle}
 
 	b.ReportAllocs()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		toolbarBenchmarkSink = GenerateToolbarWithHostsForLocale("en", rules, hostRules, "/app-001", "app-001.example.com", "", portal)
 	}
 }
@@ -590,7 +590,7 @@ func BenchmarkFilterToolbarRulesAllNavigable(b *testing.B) {
 	rules, _ := toolbarBenchmarkNavigableRoutes(128)
 
 	b.ReportAllocs()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		toolbarBenchmarkRulesSink = filterToolbarRules(rules)
 	}
 }
@@ -599,7 +599,7 @@ func BenchmarkFilterToolbarRulesAllNavigableOld(b *testing.B) {
 	rules, _ := toolbarBenchmarkNavigableRoutes(128)
 
 	b.ReportAllocs()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		toolbarBenchmarkRulesSink = filterToolbarRulesOldForBenchmark(rules)
 	}
 }
@@ -608,7 +608,7 @@ func BenchmarkFilterToolbarHostRulesAllNavigable(b *testing.B) {
 	_, hostRules := toolbarBenchmarkNavigableRoutes(128)
 
 	b.ReportAllocs()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		toolbarBenchmarkHostRulesSink = filterToolbarHostRules(hostRules, "")
 	}
 }
@@ -617,7 +617,7 @@ func BenchmarkFilterToolbarHostRulesAllNavigableOld(b *testing.B) {
 	_, hostRules := toolbarBenchmarkNavigableRoutes(128)
 
 	b.ReportAllocs()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		toolbarBenchmarkHostRulesSink = filterToolbarHostRulesOldForBenchmark(hostRules, "")
 	}
 }
@@ -629,7 +629,7 @@ func BenchmarkGenerateToolbarWithPrefilteredHostsForLocale(b *testing.B) {
 	portal := models.GatewayPortalConfig{DisplayStyle: models.GatewayPortalDisplayStyleTitle}
 
 	b.ReportAllocs()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		toolbarBenchmarkSink = GenerateToolbarWithPrefilteredHostsForLocale("en", filteredRules, filteredHostRules, "/app-001", "app-001.example.com", "app-002.example.com", portal)
 	}
 }
@@ -641,7 +641,7 @@ func BenchmarkGenerateToolbarWithPrefilteredHostsForLocaleOld(b *testing.B) {
 	portal := models.GatewayPortalConfig{DisplayStyle: models.GatewayPortalDisplayStyleTitle}
 
 	b.ReportAllocs()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		toolbarBenchmarkSink = generateToolbarWithPrefilteredHostsForLocaleOldForBenchmark("en", filteredRules, filteredHostRules, "/app-001", "app-001.example.com", "app-002.example.com", portal)
 	}
 }
@@ -650,7 +650,7 @@ func BenchmarkShouldSuppressToolbarForUserAgent(b *testing.B) {
 	userAgent := "Mozilla COM.TRIM.APP"
 
 	b.ReportAllocs()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		toolbarBenchmarkBoolSink = ShouldSuppressToolbarForUserAgent(userAgent)
 	}
 }
@@ -659,7 +659,7 @@ func BenchmarkShouldSuppressToolbarForUserAgentOld(b *testing.B) {
 	userAgent := "Mozilla COM.TRIM.APP"
 
 	b.ReportAllocs()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		normalized := strings.ToLower(strings.TrimSpace(userAgent))
 		toolbarBenchmarkBoolSink = strings.Contains(normalized, "com.trim.app") ||
 			strings.Contains(normalized, "com.trim.media") ||
@@ -672,7 +672,7 @@ func BenchmarkGatewayPortalHostFavicon(b *testing.B) {
 	portal := models.GatewayPortalConfig{ShowAppIcon: true}
 
 	b.ReportAllocs()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		toolbarBenchmarkSink = GatewayPortalHostFavicon(rule, portal)
 	}
 }
@@ -682,7 +682,7 @@ func BenchmarkGatewayPortalHostFaviconOld(b *testing.B) {
 	portal := models.GatewayPortalConfig{ShowAppIcon: true}
 
 	b.ReportAllocs()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		favicon := strings.TrimSpace(rule.Favicon)
 		if !models.NormalizeGatewayPortalConfig(portal).ShowAppIcon || !strings.HasPrefix(strings.ToLower(favicon), "data:image/") {
 			toolbarBenchmarkSink = ""
@@ -696,7 +696,7 @@ func BenchmarkNormalizeToolbarHostMixedCase(b *testing.B) {
 	host := " App-001.EXAMPLE.Com. "
 
 	b.ReportAllocs()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		toolbarBenchmarkSink = normalizeToolbarHost(host)
 	}
 }
@@ -705,7 +705,7 @@ func BenchmarkNormalizeToolbarHostMixedCaseOld(b *testing.B) {
 	host := " App-001.EXAMPLE.Com. "
 
 	b.ReportAllocs()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		toolbarBenchmarkSink = strings.TrimSuffix(strings.ToLower(strings.TrimSpace(host)), ".")
 	}
 }
@@ -717,7 +717,7 @@ func BenchmarkFilterToolbarHostRulesByHostMixedCaseNoMatch(b *testing.B) {
 	}
 
 	b.ReportAllocs()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		toolbarBenchmarkHostRulesSink = filterToolbarHostRulesByHost(hostRules, "auth.example.com")
 	}
 }
@@ -729,7 +729,7 @@ func BenchmarkFilterToolbarHostRulesByHostMixedCaseNoMatchOld(b *testing.B) {
 	}
 
 	b.ReportAllocs()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		toolbarBenchmarkHostRulesSink = legacyFilterToolbarHostRulesByHost(hostRules, "auth.example.com")
 	}
 }

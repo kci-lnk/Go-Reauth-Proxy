@@ -8,7 +8,9 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -88,6 +90,32 @@ func TestPublishReturnsBodyForNonSuccessStatus(t *testing.T) {
 	err := NewClient(nil).Publish(context.Background(), port, SystemEventPublishInput{Type: "x"})
 	if err == nil || !strings.Contains(err.Error(), "502: upstream down") {
 		t.Fatalf("Publish() error = %v, want status and body", err)
+	}
+}
+
+func TestPublishDrainsSuccessfulResponseForConnectionReuse(t *testing.T) {
+	var newConnections atomic.Int64
+	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusAccepted)
+		_, _ = w.Write([]byte("accepted"))
+	}))
+	server.Config.ConnState = func(_ net.Conn, state http.ConnState) {
+		if state == http.StateNew {
+			newConnections.Add(1)
+		}
+	}
+	server.Start()
+	defer server.Close()
+
+	port := server.Listener.Addr().(*net.TCPAddr).Port
+	client := NewClient(nil)
+	for range 2 {
+		if err := client.Publish(context.Background(), port, SystemEventPublishInput{Type: "reuse"}); err != nil {
+			t.Fatalf("Publish() returned error: %v", err)
+		}
+	}
+	if got := newConnections.Load(); got != 1 {
+		t.Fatalf("new TCP connections = %d, want 1", got)
 	}
 }
 
@@ -192,14 +220,14 @@ func (r failingRoundTripper) RoundTrip(*http.Request) (*http.Response, error) {
 
 func BenchmarkLocalSystemEventsURL(b *testing.B) {
 	b.ReportAllocs()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		eventsBenchmarkStringSink = localSystemEventsURL(defaultSystemEventsPort)
 	}
 }
 
 func BenchmarkLocalSystemEventsURLOld(b *testing.B) {
 	b.ReportAllocs()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		eventsBenchmarkStringSink = fmt.Sprintf("http://127.0.0.1:%d%s", defaultSystemEventsPort, internalSystemEventsPath)
 	}
 }

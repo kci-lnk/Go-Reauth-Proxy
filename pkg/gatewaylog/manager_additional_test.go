@@ -28,6 +28,7 @@ func TestDefaultLogsDirUsesRuntimeDir(t *testing.T) {
 func TestNewManagerExposesConfigInfo(t *testing.T) {
 	dir := t.TempDir()
 	manager := NewManager(dir, models.LoggingConfig{Enabled: true, MaxDays: 3})
+	t.Cleanup(manager.Close)
 	info := manager.GetConfigInfo()
 	if !info.Enabled || info.MaxDays != 3 || info.LogsDir != dir {
 		t.Fatalf("ConfigInfo = %#v", info)
@@ -36,6 +37,7 @@ func TestNewManagerExposesConfigInfo(t *testing.T) {
 
 func TestUpdateConfigNormalizesAndPersistsInMemory(t *testing.T) {
 	manager := NewManager(t.TempDir(), models.LoggingConfig{})
+	t.Cleanup(manager.Close)
 	info := manager.UpdateConfig(models.LoggingConfig{Enabled: true, MaxDays: 0})
 	if !info.Enabled || info.MaxDays != DefaultMaxDays {
 		t.Fatalf("UpdateConfig() = %#v", info)
@@ -47,6 +49,9 @@ func TestDailyFileWriterWriteCreatesTodayFile(t *testing.T) {
 	writer := NewDailyFileWriter(dir, 7)
 	if _, err := writer.Write([]byte("hello\n")); err != nil {
 		t.Fatalf("Write() returned error: %v", err)
+	}
+	if err := writer.Flush(); err != nil {
+		t.Fatalf("Flush() returned error: %v", err)
 	}
 	path := filepath.Join(dir, time.Now().Format(dateLayout)+fileExtension)
 	data, err := os.ReadFile(path)
@@ -90,6 +95,10 @@ func TestDailyFileWriterCleanupRemovesOldLogFiles(t *testing.T) {
 func TestManagerLogDoesNothingWhenDisabled(t *testing.T) {
 	dir := t.TempDir()
 	manager := NewManager(dir, models.LoggingConfig{Enabled: false})
+	t.Cleanup(manager.Close)
+	if info := manager.GetConfigInfo(); info.QueueSize != 0 || info.QueueDepth != 0 {
+		t.Fatalf("disabled logger allocated queue: %#v", info)
+	}
 	manager.Log(Entry{Method: "GET", Path: "/off", Status: 200})
 	entries, err := os.ReadDir(dir)
 	if err != nil && !os.IsNotExist(err) {
@@ -97,6 +106,43 @@ func TestManagerLogDoesNothingWhenDisabled(t *testing.T) {
 	}
 	if len(entries) != 0 {
 		t.Fatalf("disabled logger wrote files: %#v", entries)
+	}
+}
+
+func TestManagerStartsWorkerLazilyWhenEnabled(t *testing.T) {
+	dir := t.TempDir()
+	manager := NewManager(dir, models.LoggingConfig{Enabled: false})
+	t.Cleanup(manager.Close)
+
+	info := manager.UpdateConfig(models.LoggingConfig{Enabled: true})
+	if info.QueueSize != asyncLogQueueSize {
+		t.Fatalf("enabled logger queue size = %d, want %d", info.QueueSize, asyncLogQueueSize)
+	}
+	manager.Log(Entry{Method: "GET", Path: "/enabled", Status: 200})
+	manager.Flush()
+	if depth := manager.GetConfigInfo().QueueDepth; depth != 0 {
+		t.Fatalf("queue depth after Flush = %d, want 0", depth)
+	}
+}
+
+func TestManagerBatchLoggingHasNoDropsAndFlushIsVisible(t *testing.T) {
+	manager := NewManager(t.TempDir(), models.LoggingConfig{Enabled: true})
+	t.Cleanup(manager.Close)
+
+	const entries = 10_000
+	for i := 0; i < entries; i++ {
+		manager.Log(Entry{Method: "GET", Path: "/batch", Status: 200})
+	}
+	manager.Flush()
+	if dropped := manager.DroppedLogEntries(); dropped != 0 {
+		t.Fatalf("dropped entries = %d, want 0", dropped)
+	}
+	result, err := manager.Query("", 1, 1, "", "", "", "", "", "page")
+	if err != nil {
+		t.Fatalf("Query() returned error: %v", err)
+	}
+	if result.Total != entries {
+		t.Fatalf("Query().Total = %d, want %d", result.Total, entries)
 	}
 }
 
@@ -116,14 +162,17 @@ func TestManagerLogWritesQueryEntryWhenEnabled(t *testing.T) {
 
 func TestManagerLogDropsWhenQueueIsFull(t *testing.T) {
 	manager := &Manager{
-		config:   models.LoggingConfig{Enabled: true},
-		logQueue: make(chan Entry, 1),
+		config: models.LoggingConfig{Enabled: true},
 	}
+	manager.entryPool.New = func() any { return new(Entry) }
+	manager.enabled.Store(true)
+	queue := &logQueueState{entries: make(chan *Entry, 1)}
+	manager.logQueue.Store(queue)
 
 	manager.Log(Entry{Path: "/queued"})
 	manager.Log(Entry{Path: "/dropped"})
 
-	if got := len(manager.logQueue); got != 1 {
+	if got := len(queue.entries); got != 1 {
 		t.Fatalf("queued entries = %d, want 1", got)
 	}
 	if got := manager.DroppedLogEntries(); got != 1 {
@@ -293,5 +342,40 @@ func writeAdditionalLogLines(t *testing.T, path string, lines ...string) {
 	}
 	if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o644); err != nil {
 		t.Fatalf("write logs: %v", err)
+	}
+}
+
+func BenchmarkManagerLogBatched(b *testing.B) {
+	manager := NewManager(b.TempDir(), models.LoggingConfig{Enabled: true})
+	b.Cleanup(manager.Close)
+	entry := Entry{Method: "GET", Host: "bench.example.test", Path: "/api/items", Status: 200}
+	b.ReportAllocs()
+	count := 0
+	for b.Loop() {
+		manager.Log(entry)
+		count++
+		if count%4096 == 0 {
+			manager.Flush()
+		}
+	}
+	manager.Flush()
+	if dropped := manager.DroppedLogEntries(); dropped != 0 {
+		b.Fatalf("dropped entries = %d", dropped)
+	}
+}
+
+func BenchmarkDailyFileWriterBuffered(b *testing.B) {
+	writer := NewDailyFileWriter(b.TempDir(), DefaultMaxDays)
+	b.Cleanup(func() { _ = writer.Close() })
+	line := []byte(`{"time":"2026-01-01T00:00:00Z","method":"GET","host":"bench.example.test","path":"/api/items","status":200}` + "\n")
+	b.SetBytes(int64(len(line)))
+	b.ReportAllocs()
+	for b.Loop() {
+		if _, err := writer.Write(line); err != nil {
+			b.Fatal(err)
+		}
+	}
+	if err := writer.Flush(); err != nil {
+		b.Fatal(err)
 	}
 }

@@ -160,7 +160,7 @@ func BenchmarkSanitizeLogStringPlain(b *testing.B) {
 	})
 
 	b.ReportAllocs()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		loggerBenchmarkSink = SanitizeLogString("ordinary stream reconcile message")
 	}
 }
@@ -172,7 +172,7 @@ func BenchmarkSanitizeLogStringSensitiveHeader(b *testing.B) {
 	})
 
 	b.ReportAllocs()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		loggerBenchmarkSink = SanitizeLogString("Authorization: Bearer secret")
 	}
 }
@@ -180,10 +180,25 @@ func BenchmarkSanitizeLogStringSensitiveHeader(b *testing.B) {
 func BenchmarkIsSensitiveNameAuthorization(b *testing.B) {
 	var sink bool
 	b.ReportAllocs()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		sink = IsSensitiveName("Authorization")
 	}
 	loggerBenchmarkBoolSink = sink
+}
+
+func BenchmarkIsSensitiveNameAuthorizationParallel(b *testing.B) {
+	b.ReportAllocs()
+	b.RunParallel(func(pb *testing.PB) {
+		var sink bool
+		var ran bool
+		for pb.Next() {
+			ran = true
+			sink = IsSensitiveName("Authorization")
+		}
+		if ran && !sink {
+			b.Error("Authorization was not recognized as sensitive")
+		}
+	})
 }
 
 func BenchmarkSanitizeLogStringAdminPort(b *testing.B) {
@@ -193,7 +208,7 @@ func BenchmarkSanitizeLogStringAdminPort(b *testing.B) {
 	})
 
 	b.ReportAllocs()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		loggerBenchmarkSink = SanitizeLogString("cannot target local admin port 7996")
 	}
 }
@@ -205,7 +220,7 @@ func BenchmarkSanitizeLogStringAdminHostPort(b *testing.B) {
 	})
 
 	b.ReportAllocs()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		loggerBenchmarkSink = SanitizeLogString("LOCALHOST:7996")
 	}
 }
@@ -217,7 +232,7 @@ func BenchmarkSanitizeLogStringAdminPortEmbeddedDigits(b *testing.B) {
 	})
 
 	b.ReportAllocs()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		loggerBenchmarkSink = SanitizeLogString("peer id 179960")
 	}
 }

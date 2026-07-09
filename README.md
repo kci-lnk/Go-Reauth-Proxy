@@ -58,7 +58,9 @@
 
 当配置了证书后，明文 HTTP 请求会被 `307` 重定向到 HTTPS。
 
-Rust 后端作为客户端连接 `127.0.0.1:${GO_BACKEND_PORT}`，建立长生命周期 AuthBridge stream。Go 通过该 stream 发送 `VerifyAuth`、`PreflightAuth`、`VerifyStreamAuth` 请求，不再直接通过 HTTP 请求 Rust 鉴权接口。
+Rust 后端作为客户端连接 `127.0.0.1:${GO_BACKEND_PORT}`，建立长生命周期 AuthBridge stream。Go 通过该 stream 发送联合 `AuthorizeHttp`（旧后端自动回退 `VerifyAuth` + `PreflightAuth`）和 `VerifyStreamAuth` 请求，不再直接通过 HTTP 请求 Rust 鉴权接口。
+
+滚动发布联合鉴权协议时应先发布 Rust 后端、再发布 Go 网关；Go 会通过 `authorize_http_v1` capability 协商，在旧 Rust 后端上自动保持原有双调用流程。
 
 `proxy_protocol_force=true` 时，代理监听地址会从 `0.0.0.0/::` 切换为 `127.0.0.1/::1`，并优先从 `X-Forwarded-For` / `X-Real-IP` 获取客户端 IP。
 
@@ -272,6 +274,7 @@ Go 会把以下请求上下文放入 typed `AuthContext`：
 
 - 控制台常规日志默认不输出，避免内部控制面轮询和反代运行日志刷屏；需要排查时可设置 `GO_REPROXY_LOG=1` 开启
 - 反代访问明细写入日志文件，由配置项 `logging.enabled` 控制，默认关闭
+- 可选设置 `GO_REPROXY_DIAGNOSTICS_ADDR=127.0.0.1:6060` 开启 `/debug/pprof/*` 与 `/debug/metrics`；只接受 loopback 地址，并要求请求携带 `x-fn-knock-internal-rpc-token: $FN_KNOCK_INTERNAL_RPC_TOKEN`（或同值 Bearer token）。未设置时不会启动诊断监听器
 - `TrafficService` 返回：
   - `total_in` / `total_out`
   - `active_conns`（最近 2 分钟活跃已登录身份）

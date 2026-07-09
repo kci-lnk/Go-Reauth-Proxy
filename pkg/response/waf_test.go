@@ -89,7 +89,7 @@ func BenchmarkWantsJSON(b *testing.B) {
 	req.Header.Set("Accept", "Application/JSON")
 
 	b.ReportAllocs()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		wafBenchmarkBoolSink = wantsJSON(req)
 	}
 }
@@ -99,7 +99,7 @@ func BenchmarkWantsJSONToLower(b *testing.B) {
 	req.Header.Set("Accept", "Application/JSON")
 
 	b.ReportAllocs()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		accept := strings.ToLower(req.Header.Get("Accept"))
 		wafBenchmarkBoolSink = strings.Contains(accept, "application/json") && !strings.Contains(accept, "text/html")
 	}
@@ -107,14 +107,14 @@ func BenchmarkWantsJSONToLower(b *testing.B) {
 
 func BenchmarkAppendWAFBlockedJSON(b *testing.B) {
 	b.ReportAllocs()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		responseBenchmarkBytesSink = appendWAFBlockedJSON(nil, "Request blocked by WAF", "waf_test_trace")
 	}
 }
 
 func BenchmarkAppendWAFBlockedJSONOld(b *testing.B) {
 	b.ReportAllocs()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		responseBenchmarkBytesSink = legacyWAFBlockedJSONForBenchmark("Request blocked by WAF", "waf_test_trace")
 	}
 }

@@ -6,10 +6,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
+	"go-reauth-proxy/pkg/diagnostics"
 	"go-reauth-proxy/pkg/grpc/pb"
 
 	"google.golang.org/grpc/codes"
@@ -17,12 +20,21 @@ import (
 	"google.golang.org/grpc/status"
 )
 
-const InternalTokenMetadataKey = "x-fn-knock-internal-rpc-token"
+const (
+	InternalTokenMetadataKey    = "x-fn-knock-internal-rpc-token"
+	CapabilityAuthorizeHTTPV1   = "authorize_http_v1"
+	authBridgeSendQueueSize     = 256
+	authBridgePendingShardCount = 64
+	authBridgeRoundTripTimeout  = 5 * time.Second
+	authBridgeCanceledSendGrace = 100 * time.Millisecond
+)
 
 var (
-	ErrAuthBridgeUnavailable     = errors.New("auth bridge is not connected")
-	ErrInternalRPCTokenRequired  = errors.New("FN_KNOCK_INTERNAL_RPC_TOKEN must be set for internal gRPC")
-	errInternalRPCTokenUnsetGRPC = status.Error(codes.Unauthenticated, "internal rpc token is not configured")
+	ErrAuthBridgeUnavailable           = errors.New("auth bridge is not connected")
+	ErrAuthBridgeQueueFull             = errors.New("auth bridge request queue is full")
+	ErrAuthBridgeCapabilityUnsupported = errors.New("auth bridge capability is not supported")
+	ErrInternalRPCTokenRequired        = errors.New("FN_KNOCK_INTERNAL_RPC_TOKEN must be set for internal gRPC")
+	errInternalRPCTokenUnsetGRPC       = status.Error(codes.Unauthenticated, "internal rpc token is not configured")
 )
 
 type AuthBridgeManager struct {
@@ -30,17 +42,46 @@ type AuthBridgeManager struct {
 
 	token string
 
-	mu      sync.Mutex
-	stream  *authBridgeStream
-	pending map[string]chan *pb.AuthBridgeEnvelope
-	nextID  uint64
+	stream  atomic.Pointer[authBridgeStream]
+	nextID  atomic.Uint64
+	pending [authBridgePendingShardCount]authBridgePendingShard
 }
 
 type authBridgeStream struct {
-	server   pb.AuthBridgeService_ConnectAuthBridgeServer
-	sendMu   sync.Mutex
-	done     chan struct{}
-	doneOnce sync.Once
+	server       pb.AuthBridgeService_ConnectAuthBridgeServer
+	sendQueue    chan authBridgeOutboundRequest
+	done         chan struct{}
+	doneOnce     sync.Once
+	capabilities atomic.Pointer[authBridgeCapabilities]
+	sending      atomic.Pointer[authBridgeSending]
+}
+
+type authBridgeCapabilities struct {
+	values map[string]struct{}
+}
+
+type authBridgeOutboundRequest struct {
+	ctx       context.Context
+	requestID string
+	call      *authBridgePendingCall
+	msg       *pb.AuthBridgeEnvelope
+}
+
+type authBridgeSending struct {
+	requestID string
+	call      *authBridgePendingCall
+}
+
+type authBridgePendingCall struct {
+	stream   *authBridgeStream
+	response *pb.AuthBridgeEnvelope
+	err      error
+}
+
+type authBridgePendingShard struct {
+	sync.Mutex
+	cond  *sync.Cond
+	calls map[string]*authBridgePendingCall
 }
 
 type authBridgeRecvResult struct {
@@ -49,10 +90,13 @@ type authBridgeRecvResult struct {
 }
 
 func NewAuthBridgeManager(token string) *AuthBridgeManager {
-	return &AuthBridgeManager{
-		token:   strings.TrimSpace(token),
-		pending: make(map[string]chan *pb.AuthBridgeEnvelope),
+	m := &AuthBridgeManager{token: strings.TrimSpace(token)}
+	for i := range m.pending {
+		shard := &m.pending[i]
+		shard.cond = sync.NewCond(shard)
+		shard.calls = make(map[string]*authBridgePendingCall)
 	}
+	return m
 }
 
 func (m *AuthBridgeManager) ConnectAuthBridge(stream pb.AuthBridgeService_ConnectAuthBridgeServer) error {
@@ -75,7 +119,7 @@ func (m *AuthBridgeManager) ConnectAuthBridge(stream pb.AuthBridgeService_Connec
 			return status.Error(codes.Unavailable, "auth bridge stream closed")
 		case result := <-recvCh:
 			if result.err == nil {
-				m.dispatchResponse(result.msg)
+				m.handleIncoming(active, result.msg)
 				continue
 			}
 			if errors.Is(result.err, io.EOF) {
@@ -84,6 +128,39 @@ func (m *AuthBridgeManager) ConnectAuthBridge(stream pb.AuthBridgeService_Connec
 			return result.err
 		}
 	}
+}
+
+// SupportsCapability reports whether the currently connected bridge advertised
+// capability in its most recent ready envelope.
+func (m *AuthBridgeManager) SupportsCapability(capability string) bool {
+	active := m.stream.Load()
+	return active != nil && active.supportsCapability(capability)
+}
+
+// AuthorizeHTTP performs the combined HTTP preflight and verification request.
+// Callers can use SupportsCapability to select this path without probing a
+// legacy bridge; this method also rechecks the capability against the exact
+// stream used for the request so a reconnect cannot send a new envelope to an
+// older bridge.
+func (m *AuthBridgeManager) AuthorizeHTTP(ctx context.Context, req *pb.AuthorizeHttpRequest) (*pb.AuthorizeHttpResponse, error) {
+	active := m.stream.Load()
+	if active == nil {
+		return nil, ErrAuthBridgeUnavailable
+	}
+	if !active.supportsCapability(CapabilityAuthorizeHTTPV1) {
+		return nil, ErrAuthBridgeCapabilityUnsupported
+	}
+	msg, err := m.roundTripOnStream(ctx, active, &pb.AuthBridgeEnvelope{
+		Payload: &pb.AuthBridgeEnvelope_AuthorizeHttpRequest{AuthorizeHttpRequest: req},
+	})
+	if err != nil {
+		return nil, err
+	}
+	resp := msg.GetAuthorizeHttpResponse()
+	if resp == nil {
+		return nil, fmt.Errorf("auth bridge returned %T for authorize http", msg.GetPayload())
+	}
+	return resp, nil
 }
 
 func (m *AuthBridgeManager) VerifyAuth(ctx context.Context, req *pb.VerifyAuthRequest) (*pb.VerifyAuthResponse, error) {
@@ -129,80 +206,135 @@ func (m *AuthBridgeManager) VerifyStreamAuth(ctx context.Context, req *pb.Verify
 }
 
 func (m *AuthBridgeManager) roundTrip(ctx context.Context, msg *pb.AuthBridgeEnvelope) (*pb.AuthBridgeEnvelope, error) {
+	return m.roundTripOnStream(ctx, nil, msg)
+}
+
+func (m *AuthBridgeManager) roundTripOnStream(ctx context.Context, expected *authBridgeStream, msg *pb.AuthBridgeEnvelope) (*pb.AuthBridgeEnvelope, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	ctx, cancel := context.WithDeadline(ctx, deadlineOrDefault(ctx, 5*time.Second))
+	ctx, cancel := context.WithDeadline(ctx, deadlineOrDefault(ctx, authBridgeRoundTripTimeout))
 	defer cancel()
 
-	m.mu.Lock()
-	if m.stream == nil {
-		m.mu.Unlock()
+	active := m.stream.Load()
+	if active == nil || (expected != nil && active != expected) {
 		return nil, ErrAuthBridgeUnavailable
 	}
-	requestID := m.nextRequestIDLocked()
+	diagnostics.RecordAuthBridgeRequest()
+
+	requestID := strconv.FormatUint(m.nextID.Add(1), 10)
 	msg.RequestId = requestID
-	ch := make(chan *pb.AuthBridgeEnvelope, 1)
-	m.pending[requestID] = ch
-	stream := m.stream
-	m.mu.Unlock()
+	call := &authBridgePendingCall{stream: active}
+	shard := m.pendingShard(requestID)
+	shard.Lock()
+	shard.calls[requestID] = call
+	shard.Unlock()
 
-	cleanupPending := func() {
-		m.mu.Lock()
-		delete(m.pending, requestID)
-		m.mu.Unlock()
+	stopCancellation := context.AfterFunc(ctx, func() {
+		ctxErr := ctx.Err()
+		m.completePending(requestID, call, nil, ctxErr)
+		m.recoverBlockedSend(active, requestID, call, ctxErr)
+	})
+	defer stopCancellation()
+
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		m.completePending(requestID, call, nil, ctxErr)
+		return nil, ctxErr
 	}
-
-	m.mu.Lock()
-	if m.stream != stream {
-		delete(m.pending, requestID)
-		m.mu.Unlock()
+	if m.stream.Load() != active || active.isClosed() {
+		m.completePending(requestID, call, nil, ErrAuthBridgeUnavailable)
 		return nil, ErrAuthBridgeUnavailable
 	}
-	m.mu.Unlock()
-	if err := stream.send(ctx, msg); err != nil {
-		cleanupPending()
-		if errors.Is(err, context.DeadlineExceeded) {
-			m.detachStream(stream)
-		}
+
+	if err := active.enqueue(m, authBridgeOutboundRequest{
+		ctx:       ctx,
+		requestID: requestID,
+		call:      call,
+		msg:       msg,
+	}); err != nil {
+		m.completePending(requestID, call, nil, err)
 		return nil, err
 	}
-	defer cleanupPending()
 
-	select {
-	case resp := <-ch:
-		if resp == nil {
-			return nil, ErrAuthBridgeUnavailable
+	shard.Lock()
+	for call.response == nil && call.err == nil {
+		shard.cond.Wait()
+	}
+	resp, err := call.response, call.err
+	shard.Unlock()
+	if err != nil {
+		return nil, err
+	}
+	return resp, nil
+}
+
+func (m *AuthBridgeManager) recoverBlockedSend(stream *authBridgeStream, requestID string, call *authBridgePendingCall, ctxErr error) {
+	if stream == nil || !stream.isSending(requestID, call) {
+		return
+	}
+	if errors.Is(ctxErr, context.DeadlineExceeded) {
+		m.detachStream(stream)
+		return
+	}
+	if !errors.Is(ctxErr, context.Canceled) {
+		return
+	}
+	time.AfterFunc(authBridgeCanceledSendGrace, func() {
+		if stream.isSending(requestID, call) {
+			m.detachStream(stream)
 		}
-		return resp, nil
-	case <-ctx.Done():
-		return nil, ctx.Err()
+	})
+}
+
+func (s *authBridgeStream) enqueue(m *AuthBridgeManager, request authBridgeOutboundRequest) error {
+	if err := request.ctx.Err(); err != nil {
+		return err
+	}
+	select {
+	case <-s.done:
+		return ErrAuthBridgeUnavailable
+	default:
+	}
+	select {
+	case s.sendQueue <- request:
+		m.observeQueueDepth(s)
+		return nil
+	case <-s.done:
+		m.observeQueueDepth(s)
+		return ErrAuthBridgeUnavailable
+	case <-request.ctx.Done():
+		m.observeQueueDepth(s)
+		return request.ctx.Err()
+	default:
+		m.observeQueueDepth(s)
+		diagnostics.RecordAuthBridgeQueueDrop()
+		return ErrAuthBridgeQueueFull
 	}
 }
 
-func (s *authBridgeStream) send(ctx context.Context, msg *pb.AuthBridgeEnvelope) error {
-	done := make(chan error, 1)
-	go func() {
-		s.sendMu.Lock()
-		defer s.sendMu.Unlock()
+func (s *authBridgeStream) writerLoop(m *AuthBridgeManager) {
+	for {
 		select {
-		case <-ctx.Done():
-			done <- ctx.Err()
-			return
 		case <-s.done:
-			done <- ErrAuthBridgeUnavailable
 			return
-		default:
+		case request := <-s.sendQueue:
+			m.observeQueueDepth(s)
+			if s.isClosed() || request.ctx.Err() != nil || !m.pendingMatches(request.requestID, request.call) {
+				continue
+			}
+			sending := &authBridgeSending{requestID: request.requestID, call: request.call}
+			s.sending.Store(sending)
+			if s.isClosed() || request.ctx.Err() != nil || !m.pendingMatches(request.requestID, request.call) {
+				s.sending.CompareAndSwap(sending, nil)
+				continue
+			}
+			err := s.server.Send(request.msg)
+			s.sending.CompareAndSwap(sending, nil)
+			if err != nil {
+				m.detachStream(s)
+				return
+			}
 		}
-		done <- s.server.Send(msg)
-	}()
-	select {
-	case err := <-done:
-		return err
-	case <-s.done:
-		return ErrAuthBridgeUnavailable
-	case <-ctx.Done():
-		return ctx.Err()
 	}
 }
 
@@ -227,66 +359,150 @@ func (s *authBridgeStream) close() {
 	})
 }
 
-func (m *AuthBridgeManager) nextRequestIDLocked() string {
-	m.nextID++
-	return fmt.Sprintf("%d-%d", time.Now().UnixNano(), m.nextID)
+func (s *authBridgeStream) isClosed() bool {
+	select {
+	case <-s.done:
+		return true
+	default:
+		return false
+	}
 }
 
-func (m *AuthBridgeManager) dispatchResponse(msg *pb.AuthBridgeEnvelope) {
+func (s *authBridgeStream) isSending(requestID string, call *authBridgePendingCall) bool {
+	current := s.sending.Load()
+	return current != nil && current.requestID == requestID && current.call == call
+}
+
+func (s *authBridgeStream) setCapabilities(ready *pb.AuthBridgeReady) {
+	values := make(map[string]struct{}, len(ready.GetCapabilities()))
+	for _, capability := range ready.GetCapabilities() {
+		capability = strings.TrimSpace(capability)
+		if capability != "" {
+			values[capability] = struct{}{}
+		}
+	}
+	s.capabilities.Store(&authBridgeCapabilities{values: values})
+}
+
+func (s *authBridgeStream) supportsCapability(capability string) bool {
+	capability = strings.TrimSpace(capability)
+	if capability == "" {
+		return false
+	}
+	snapshot := s.capabilities.Load()
+	if snapshot == nil {
+		return false
+	}
+	_, ok := snapshot.values[capability]
+	return ok
+}
+
+func (m *AuthBridgeManager) handleIncoming(stream *authBridgeStream, msg *pb.AuthBridgeEnvelope) {
+	if msg == nil {
+		return
+	}
+	if ready := msg.GetReady(); ready != nil {
+		stream.setCapabilities(ready)
+		return
+	}
+	m.dispatchResponse(stream, msg)
+}
+
+func (m *AuthBridgeManager) dispatchResponse(stream *authBridgeStream, msg *pb.AuthBridgeEnvelope) {
 	if msg == nil || msg.RequestId == "" {
 		return
 	}
-	m.mu.Lock()
-	ch := m.pending[msg.RequestId]
-	m.mu.Unlock()
-	if ch == nil {
-		return
+	shard := m.pendingShard(msg.RequestId)
+	shard.Lock()
+	call := shard.calls[msg.RequestId]
+	if call != nil && call.stream == stream {
+		delete(shard.calls, msg.RequestId)
+		call.response = msg
+		shard.cond.Broadcast()
 	}
-	select {
-	case ch <- msg:
-	default:
-	}
+	shard.Unlock()
 }
 
 func (m *AuthBridgeManager) attachStream(stream pb.AuthBridgeService_ConnectAuthBridgeServer) *authBridgeStream {
-	active := &authBridgeStream{server: stream, done: make(chan struct{})}
-	m.mu.Lock()
-	previous := m.stream
-	var pending map[string]chan *pb.AuthBridgeEnvelope
-	if previous != nil {
-		pending = m.pending
-		m.pending = make(map[string]chan *pb.AuthBridgeEnvelope)
+	active := &authBridgeStream{
+		server:    stream,
+		sendQueue: make(chan authBridgeOutboundRequest, authBridgeSendQueueSize),
+		done:      make(chan struct{}),
 	}
-	m.stream = active
-	m.mu.Unlock()
+	previous := m.stream.Swap(active)
+	m.observeQueueDepth(active)
+	go active.writerLoop(m)
 
 	if previous != nil {
 		previous.close()
+		m.failPendingForStream(previous, ErrAuthBridgeUnavailable)
 	}
-	signalPendingUnavailable(pending)
 	return active
 }
 
 func (m *AuthBridgeManager) detachStream(stream *authBridgeStream) {
-	m.mu.Lock()
-	var pending map[string]chan *pb.AuthBridgeEnvelope
-	if m.stream == stream {
-		m.stream = nil
-		pending = m.pending
-		m.pending = make(map[string]chan *pb.AuthBridgeEnvelope)
+	if m.stream.CompareAndSwap(stream, nil) {
+		diagnostics.ObserveAuthBridgeQueueDepth(0)
+		if active := m.stream.Load(); active != nil {
+			m.observeQueueDepth(active)
+		}
 	}
-	m.mu.Unlock()
-
 	stream.close()
-	signalPendingUnavailable(pending)
+	m.failPendingForStream(stream, ErrAuthBridgeUnavailable)
 }
 
-func signalPendingUnavailable(pending map[string]chan *pb.AuthBridgeEnvelope) {
-	for _, ch := range pending {
-		select {
-		case ch <- nil:
-		default:
+func (m *AuthBridgeManager) observeQueueDepth(stream *authBridgeStream) {
+	if m.stream.Load() != stream {
+		return
+	}
+	diagnostics.ObserveAuthBridgeQueueDepth(uint64(len(stream.sendQueue)))
+}
+
+func (m *AuthBridgeManager) pendingShard(requestID string) *authBridgePendingShard {
+	var hash uint64 = 14695981039346656037
+	for i := 0; i < len(requestID); i++ {
+		hash ^= uint64(requestID[i])
+		hash *= 1099511628211
+	}
+	return &m.pending[hash&(authBridgePendingShardCount-1)]
+}
+
+func (m *AuthBridgeManager) pendingMatches(requestID string, want *authBridgePendingCall) bool {
+	shard := m.pendingShard(requestID)
+	shard.Lock()
+	matches := shard.calls[requestID] == want
+	shard.Unlock()
+	return matches
+}
+
+func (m *AuthBridgeManager) completePending(requestID string, want *authBridgePendingCall, response *pb.AuthBridgeEnvelope, err error) {
+	shard := m.pendingShard(requestID)
+	shard.Lock()
+	if shard.calls[requestID] == want {
+		delete(shard.calls, requestID)
+		want.response = response
+		want.err = err
+		shard.cond.Broadcast()
+	}
+	shard.Unlock()
+}
+
+func (m *AuthBridgeManager) failPendingForStream(stream *authBridgeStream, err error) {
+	for i := range m.pending {
+		shard := &m.pending[i]
+		shard.Lock()
+		changed := false
+		for requestID, call := range shard.calls {
+			if call.stream == stream {
+				delete(shard.calls, requestID)
+				call.err = err
+				changed = true
+			}
 		}
+		if changed {
+			shard.cond.Broadcast()
+		}
+		shard.Unlock()
 	}
 }
 

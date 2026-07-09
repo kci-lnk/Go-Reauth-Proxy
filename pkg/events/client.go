@@ -77,10 +77,12 @@ func (c *Client) Publish(
 	defer resp.Body.Close()
 
 	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		_, _ = io.Copy(io.Discard, resp.Body)
 		return nil
 	}
 
 	responseBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+	_, _ = io.Copy(io.Discard, resp.Body)
 	message := strings.TrimSpace(string(responseBody))
 	if message == "" {
 		message = http.StatusText(resp.StatusCode)

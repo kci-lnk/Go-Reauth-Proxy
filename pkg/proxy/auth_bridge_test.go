@@ -30,9 +30,25 @@ func testServerPort(t *testing.T, rawURL string) int {
 }
 
 type testAuthBridge struct {
+	supports  bool
+	authorize func(context.Context, *pb.AuthorizeHttpRequest) (*pb.AuthorizeHttpResponse, error)
 	verify    func(context.Context, *pb.VerifyAuthRequest) (*pb.VerifyAuthResponse, error)
 	preflight func(context.Context, *pb.PreflightAuthRequest) (*pb.PreflightAuthResponse, error)
 	stream    func(context.Context, *pb.VerifyStreamAuthRequest) (*pb.VerifyStreamAuthResponse, error)
+}
+
+func (b testAuthBridge) SupportsCapability(capability string) bool {
+	return b.supports && capability == "authorize_http_v1"
+}
+
+func (b testAuthBridge) AuthorizeHTTP(ctx context.Context, in *pb.AuthorizeHttpRequest) (*pb.AuthorizeHttpResponse, error) {
+	if b.authorize != nil {
+		return b.authorize(ctx, in)
+	}
+	return &pb.AuthorizeHttpResponse{
+		Preflight: &pb.PreflightAuthResponse{},
+		Verify:    &pb.VerifyAuthResponse{Success: true, Status: http.StatusOK},
+	}, nil
 }
 
 func setTestAuthBridge(t *testing.T, handler *Handler, bridge authBridgeClient) {

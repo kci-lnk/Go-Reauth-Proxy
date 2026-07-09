@@ -117,7 +117,7 @@ func BenchmarkFilterMissingUpdateTargetDirectivesNoChange(b *testing.B) {
 	raw, defined := makeWAFLoaderFixture(2000, 0)
 	b.SetBytes(int64(len(raw)))
 	b.ReportAllocs()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		filtered, changed := filterMissingUpdateTargetDirectives(raw, defined)
 		benchmarkWAFBytesSink = filtered
 		benchmarkWAFBoolSink = changed
@@ -128,7 +128,7 @@ func BenchmarkFilterMissingUpdateTargetDirectivesNoChangeOld(b *testing.B) {
 	raw, defined := makeWAFLoaderFixture(2000, 0)
 	b.SetBytes(int64(len(raw)))
 	b.ReportAllocs()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		filtered, changed := filterMissingUpdateTargetDirectivesLegacyForBenchmark(raw, defined)
 		benchmarkWAFBytesSink = filtered
 		benchmarkWAFBoolSink = changed
@@ -139,7 +139,7 @@ func BenchmarkFilterMissingUpdateTargetDirectivesChanged(b *testing.B) {
 	raw, defined := makeWAFLoaderFixture(2000, 32)
 	b.SetBytes(int64(len(raw)))
 	b.ReportAllocs()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		filtered, changed := filterMissingUpdateTargetDirectives(raw, defined)
 		benchmarkWAFBytesSink = filtered
 		benchmarkWAFBoolSink = changed
@@ -150,7 +150,7 @@ func BenchmarkFilterMissingUpdateTargetDirectivesChangedOld(b *testing.B) {
 	raw, defined := makeWAFLoaderFixture(2000, 32)
 	b.SetBytes(int64(len(raw)))
 	b.ReportAllocs()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		filtered, changed := filterMissingUpdateTargetDirectivesLegacyForBenchmark(raw, defined)
 		benchmarkWAFBytesSink = filtered
 		benchmarkWAFBoolSink = changed
@@ -161,7 +161,7 @@ func BenchmarkCollectDefinedRuleIDs(b *testing.B) {
 	targets, totalBytes := makeWAFLoaderRuleTargets(b, 4000)
 	b.SetBytes(totalBytes)
 	b.ReportAllocs()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		ids, err := collectDefinedRuleIDs(targets)
 		if err != nil {
 			b.Fatal(err)
@@ -174,7 +174,7 @@ func BenchmarkCollectDefinedRuleIDsOld(b *testing.B) {
 	targets, totalBytes := makeWAFLoaderRuleTargets(b, 4000)
 	b.SetBytes(totalBytes)
 	b.ReportAllocs()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		ids, err := collectDefinedRuleIDsLegacyForBenchmark(targets)
 		if err != nil {
 			b.Fatal(err)

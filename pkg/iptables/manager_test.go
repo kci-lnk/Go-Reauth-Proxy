@@ -256,7 +256,7 @@ func TestParentJumpDeleteArgsMatchesLegacy(t *testing.T) {
 func BenchmarkParseRuleLine(b *testing.B) {
 	line := "-A REAUTH_FW -p tcp -m tcp -s 198.51.100.7/32 --dport 443 -j DROP"
 	b.ReportAllocs()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		rule, ok := parseRuleLine(line)
 		iptablesRuleSink = rule
 		iptablesBoolSink = ok
@@ -266,7 +266,7 @@ func BenchmarkParseRuleLine(b *testing.B) {
 func BenchmarkParseRuleLineOld(b *testing.B) {
 	line := "-A REAUTH_FW -p tcp -m tcp -s 198.51.100.7/32 --dport 443 -j DROP"
 	b.ReportAllocs()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		rule, ok := parseRuleLineLegacyForBenchmark(line)
 		iptablesRuleSink = rule
 		iptablesBoolSink = ok
@@ -276,7 +276,7 @@ func BenchmarkParseRuleLineOld(b *testing.B) {
 func BenchmarkParentJumpDeleteArgsNoMatch(b *testing.B) {
 	line := "-A INPUT -p tcp -m tcp -s 198.51.100.7/32 --dport 443 -j OTHER_CHAIN"
 	b.ReportAllocs()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		args, ok := parentJumpDeleteArgs(line, "INPUT", "REAUTH_FW")
 		iptablesArgsSink = args
 		iptablesBoolSink = ok
@@ -286,7 +286,7 @@ func BenchmarkParentJumpDeleteArgsNoMatch(b *testing.B) {
 func BenchmarkParentJumpDeleteArgsNoMatchOld(b *testing.B) {
 	line := "-A INPUT -p tcp -m tcp -s 198.51.100.7/32 --dport 443 -j OTHER_CHAIN"
 	b.ReportAllocs()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		args, ok := parentJumpDeleteArgsLegacyForBenchmark(line, "INPUT", "REAUTH_FW")
 		iptablesArgsSink = args
 		iptablesBoolSink = ok
@@ -296,7 +296,7 @@ func BenchmarkParentJumpDeleteArgsNoMatchOld(b *testing.B) {
 func BenchmarkParentJumpDeleteArgsMatch(b *testing.B) {
 	line := "-A INPUT -p tcp -m tcp -s 198.51.100.7/32 --dport 443 -j REAUTH_FW"
 	b.ReportAllocs()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		args, ok := parentJumpDeleteArgs(line, "INPUT", "REAUTH_FW")
 		iptablesArgsSink = args
 		iptablesBoolSink = ok
@@ -306,7 +306,7 @@ func BenchmarkParentJumpDeleteArgsMatch(b *testing.B) {
 func BenchmarkParentJumpDeleteArgsMatchOld(b *testing.B) {
 	line := "-A INPUT -p tcp -m tcp -s 198.51.100.7/32 --dport 443 -j REAUTH_FW"
 	b.ReportAllocs()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		args, ok := parentJumpDeleteArgsLegacyForBenchmark(line, "INPUT", "REAUTH_FW")
 		iptablesArgsSink = args
 		iptablesBoolSink = ok
@@ -319,7 +319,7 @@ func BenchmarkParseRules(b *testing.B) {
 	manager.runner = parseRulesRunner{output: output}
 	b.SetBytes(int64(len(output)))
 	b.ReportAllocs()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		rules, err := manager.ParseRules()
 		if err != nil {
 			b.Fatal(err)
@@ -332,7 +332,7 @@ func BenchmarkParseRulesOld(b *testing.B) {
 	output := makeIptablesRulesOutput(4000)
 	b.SetBytes(int64(len(output)))
 	b.ReportAllocs()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		iptablesRulesSink = parseRulesLegacyForBenchmark(output)
 	}
 }

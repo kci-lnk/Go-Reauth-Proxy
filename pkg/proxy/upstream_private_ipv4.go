@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -23,19 +24,17 @@ var (
 )
 
 type preferredPrivateIPv4Detector struct {
-	mu        sync.Mutex
-	value     string
-	expiresAt time.Time
-	ttl       time.Duration
-	detect    func() string
+	ttl        time.Duration
+	detect     func() string
+	value      atomic.Pointer[cachedPrivateIPv4Entry]
+	refreshing atomic.Bool
 }
 
 type cachedPrivateIPv4Resolver struct {
-	mu       sync.Mutex
-	ttl      time.Duration
-	resolve  func(string) string
-	entries  map[string]cachedPrivateIPv4Entry
-	inflight map[string]*cachedPrivateIPv4Call
+	ttl             time.Duration
+	resolve         func(string) string
+	entries         sync.Map
+	lastCleanupNano atomic.Int64
 }
 
 type cachedPrivateIPv4Entry struct {
@@ -43,9 +42,9 @@ type cachedPrivateIPv4Entry struct {
 	expiresAt time.Time
 }
 
-type cachedPrivateIPv4Call struct {
-	done  chan struct{}
-	value string
+type cachedPrivateIPv4ResolverEntry struct {
+	value      atomic.Pointer[cachedPrivateIPv4Entry]
+	refreshing atomic.Bool
 }
 
 func newPreferredPrivateIPv4Detector(ttl time.Duration, detect func() string) *preferredPrivateIPv4Detector {
@@ -62,18 +61,31 @@ func newPreferredPrivateIPv4Detector(ttl time.Duration, detect func() string) *p
 }
 
 func (d *preferredPrivateIPv4Detector) get() string {
-	now := time.Now()
-
-	d.mu.Lock()
-	defer d.mu.Unlock()
-
-	if !d.expiresAt.IsZero() && now.Before(d.expiresAt) {
-		return d.value
+	entry := d.value.Load()
+	if entry == nil || !entry.expiresAt.After(time.Now()) {
+		d.refreshAsync()
 	}
+	if entry == nil {
+		return ""
+	}
+	return entry.value
+}
 
-	d.value = d.detect()
-	d.expiresAt = time.Now().Add(d.ttl)
-	return d.value
+func (d *preferredPrivateIPv4Detector) refreshAsync() {
+	if d == nil || !d.refreshing.CompareAndSwap(false, true) {
+		return
+	}
+	if entry := d.value.Load(); entry != nil && entry.expiresAt.After(time.Now()) {
+		d.refreshing.Store(false)
+		return
+	}
+	go func() {
+		defer d.refreshing.Store(false)
+		d.value.Store(&cachedPrivateIPv4Entry{
+			value:     d.detect(),
+			expiresAt: time.Now().Add(d.ttl),
+		})
+	}()
 }
 
 func newCachedPrivateIPv4Resolver(ttl time.Duration, resolve func(string) string) *cachedPrivateIPv4Resolver {
@@ -83,12 +95,7 @@ func newCachedPrivateIPv4Resolver(ttl time.Duration, resolve func(string) string
 	if resolve == nil {
 		resolve = func(string) string { return "" }
 	}
-	return &cachedPrivateIPv4Resolver{
-		ttl:      ttl,
-		resolve:  resolve,
-		entries:  make(map[string]cachedPrivateIPv4Entry),
-		inflight: make(map[string]*cachedPrivateIPv4Call),
-	}
+	return &cachedPrivateIPv4Resolver{ttl: ttl, resolve: resolve}
 }
 
 func (r *cachedPrivateIPv4Resolver) get(hostname string) string {
@@ -97,43 +104,76 @@ func (r *cachedPrivateIPv4Resolver) get(hostname string) string {
 		return ""
 	}
 
+	holder := r.loadEntry(key)
+	entry := holder.value.Load()
 	now := time.Now()
+	if entry == nil || !entry.expiresAt.After(now) {
+		r.refreshAsync(key, holder)
+	}
+	r.cleanupExpiredAsync(now)
+	if entry == nil {
+		return ""
+	}
+	return entry.value
+}
 
-	r.mu.Lock()
-	if entry, ok := r.entries[key]; ok && entry.expiresAt.After(now) {
-		value := entry.value
-		r.mu.Unlock()
-		return value
+func (r *cachedPrivateIPv4Resolver) loadEntry(key string) *cachedPrivateIPv4ResolverEntry {
+	if value, ok := r.entries.Load(key); ok {
+		return value.(*cachedPrivateIPv4ResolverEntry)
 	}
-	if call, ok := r.inflight[key]; ok {
-		r.mu.Unlock()
-		<-call.done
-		return call.value
-	}
-	if r.entries == nil {
-		r.entries = make(map[string]cachedPrivateIPv4Entry)
-	}
-	if r.inflight == nil {
-		r.inflight = make(map[string]*cachedPrivateIPv4Call)
-	}
-	call := &cachedPrivateIPv4Call{done: make(chan struct{})}
-	r.inflight[key] = call
-	r.mu.Unlock()
+	candidate := &cachedPrivateIPv4ResolverEntry{}
+	actual, _ := r.entries.LoadOrStore(key, candidate)
+	return actual.(*cachedPrivateIPv4ResolverEntry)
+}
 
-	value := r.resolve(key)
-	expiresAt := time.Now().Add(r.ttl)
-
-	r.mu.Lock()
-	r.entries[key] = cachedPrivateIPv4Entry{
-		value:     value,
-		expiresAt: expiresAt,
+func (r *cachedPrivateIPv4Resolver) refreshAsync(key string, holder *cachedPrivateIPv4ResolverEntry) {
+	if holder == nil || !holder.refreshing.CompareAndSwap(false, true) {
+		return
 	}
-	delete(r.inflight, key)
-	call.value = value
-	close(call.done)
-	r.mu.Unlock()
+	if entry := holder.value.Load(); entry != nil && entry.expiresAt.After(time.Now()) {
+		holder.refreshing.Store(false)
+		return
+	}
 
-	return value
+	go func() {
+		defer holder.refreshing.Store(false)
+		holder.value.Store(&cachedPrivateIPv4Entry{
+			value:     r.resolve(key),
+			expiresAt: time.Now().Add(r.ttl),
+		})
+	}()
+}
+
+func (r *cachedPrivateIPv4Resolver) cleanupExpiredAsync(now time.Time) {
+	interval := r.ttl
+	if interval <= 0 {
+		interval = upstreamPrivateIPv4CacheTTL
+	}
+	nowNano := now.UnixNano()
+	last := r.lastCleanupNano.Load()
+	if last > 0 && nowNano-last < int64(interval) {
+		return
+	}
+	if !r.lastCleanupNano.CompareAndSwap(last, nowNano) {
+		return
+	}
+	go func(cutoff time.Time, staleFor time.Duration) {
+		r.entries.Range(func(key, value any) bool {
+			holder, ok := value.(*cachedPrivateIPv4ResolverEntry)
+			if !ok || holder == nil {
+				r.entries.CompareAndDelete(key, value)
+				return true
+			}
+			if holder.refreshing.Load() {
+				return true
+			}
+			entry := holder.value.Load()
+			if entry == nil || entry.expiresAt.Add(staleFor).Before(cutoff) {
+				r.entries.CompareAndDelete(key, holder)
+			}
+			return true
+		})
+	}(now, interval)
 }
 
 func applyUpstreamPrivateIPv4HintHeader(out *http.Request, targetURL *url.URL) {

@@ -595,7 +595,7 @@ func BenchmarkRewriteHTMLAbsolutePaths(b *testing.B) {
 
 	b.ReportAllocs()
 	b.SetBytes(int64(len(body)))
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		benchmarkBytesSink = rewriteHTMLAbsolutePaths(body, "/app")
 	}
 }
@@ -605,7 +605,7 @@ func BenchmarkRewriteHTMLAbsolutePathsReplaceAll(b *testing.B) {
 
 	b.ReportAllocs()
 	b.SetBytes(int64(len(body)))
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		benchmarkBytesSink = rewriteHTMLAbsolutePathsReplaceAllForBenchmark(body, "/app")
 	}
 }
@@ -616,7 +616,7 @@ func BenchmarkInjectToolbarIntoNonHTMLBytes(b *testing.B) {
 
 	b.ReportAllocs()
 	b.SetBytes(int64(len(body)))
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		benchmarkBytesSink = injectToolbarIntoHTMLBytes(body, toolbar)
 	}
 }
@@ -627,7 +627,7 @@ func BenchmarkInjectToolbarIntoNonHTMLBytesOld(b *testing.B) {
 
 	b.ReportAllocs()
 	b.SetBytes(int64(len(body)))
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		benchmarkBytesSink = injectToolbarIntoHTMLBytesOldForBenchmark(body, toolbar)
 	}
 }
@@ -638,7 +638,7 @@ func BenchmarkInjectToolbarIntoHTMLWithoutBodyClose(b *testing.B) {
 
 	b.ReportAllocs()
 	b.SetBytes(int64(len(body)))
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		benchmarkBytesSink = injectToolbarIntoHTMLBytes(body, toolbar)
 	}
 }
@@ -649,7 +649,7 @@ func BenchmarkInjectToolbarIntoHTMLWithoutBodyCloseOld(b *testing.B) {
 
 	b.ReportAllocs()
 	b.SetBytes(int64(len(body)))
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		benchmarkBytesSink = injectToolbarIntoHTMLBytesOldForBenchmark(body, toolbar)
 	}
 }
@@ -658,7 +658,7 @@ func BenchmarkIsHTMLContentType(b *testing.B) {
 	contentType := "Text/HTML; charset=utf-8"
 
 	b.ReportAllocs()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		benchmarkBoolSink = isHTMLContentType(contentType)
 	}
 }
@@ -667,70 +667,70 @@ func BenchmarkIsHTMLContentTypeToLower(b *testing.B) {
 	contentType := "Text/HTML; charset=utf-8"
 
 	b.ReportAllocs()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		benchmarkBoolSink = strings.Contains(strings.ToLower(contentType), "text/html")
 	}
 }
 
 func BenchmarkNormalizeRequestHostNoPort(b *testing.B) {
 	b.ReportAllocs()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		benchmarkHostSink = normalizeRequestHost("app.example.com")
 	}
 }
 
 func BenchmarkNormalizeRequestHostWithPort(b *testing.B) {
 	b.ReportAllocs()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		benchmarkHostSink = normalizeRequestHost("App.Example.COM:443")
 	}
 }
 
 func BenchmarkNormalizeRequestHostLowercaseWithPort(b *testing.B) {
 	b.ReportAllocs()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		benchmarkHostSink = normalizeRequestHost("app.example.com:443")
 	}
 }
 
 func BenchmarkLocalServiceBaseURL(b *testing.B) {
 	b.ReportAllocs()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		benchmarkHostSink = localServiceBaseURL(7999)
 	}
 }
 
 func BenchmarkLocalServiceBaseURLOld(b *testing.B) {
 	b.ReportAllocs()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		benchmarkHostSink = fmt.Sprintf("http://127.0.0.1:%d", 7999)
 	}
 }
 
 func BenchmarkLocalServiceURL(b *testing.B) {
 	b.ReportAllocs()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		benchmarkHostSink = localServiceURL(7999, "/api/auth/check")
 	}
 }
 
 func BenchmarkLocalServiceURLOld(b *testing.B) {
 	b.ReportAllocs()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		benchmarkHostSink = fmt.Sprintf("http://127.0.0.1:%d%s", 7999, ensureLeadingSlash("/api/auth/check"))
 	}
 }
 
 func BenchmarkLocalServiceTargetURL(b *testing.B) {
 	b.ReportAllocs()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		benchmarkURLSink = localServiceTargetURL(7999)
 	}
 }
 
 func BenchmarkLocalServiceTargetURLOld(b *testing.B) {
 	b.ReportAllocs()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		targetURL, _ := url.Parse(localServiceBaseURL(7999))
 		benchmarkURLSink = targetURL
 	}
@@ -739,7 +739,7 @@ func BenchmarkLocalServiceTargetURLOld(b *testing.B) {
 func BenchmarkGatewayThrottleDedupeKey(b *testing.B) {
 	blockedUntil := time.Unix(1760000000, 0)
 	b.ReportAllocs()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		benchmarkHostSink = gatewayThrottleDedupeKey("198.51.100.10", blockedUntil)
 	}
 }
@@ -747,7 +747,7 @@ func BenchmarkGatewayThrottleDedupeKey(b *testing.B) {
 func BenchmarkGatewayThrottleDedupeKeyOld(b *testing.B) {
 	blockedUntil := time.Unix(1760000000, 0)
 	b.ReportAllocs()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		benchmarkHostSink = fmt.Sprintf("gateway-throttle:%s:%d", "198.51.100.10", blockedUntil.Unix())
 	}
 }
@@ -773,7 +773,7 @@ func BenchmarkPathRuleRouteRuntimeLookup(b *testing.B) {
 	req := httptest.NewRequest(http.MethodGet, "http://example.com/app/assets/main.js?cache=1", nil)
 
 	b.ReportAllocs()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		rule, redirect := matchRule(req, snapshot)
 		if redirect != "" || rule == nil {
 			b.Fatalf("matchRule returned rule=%#v redirect=%q", rule, redirect)
@@ -792,7 +792,7 @@ func BenchmarkPathRuleLongestPrefixLookup(b *testing.B) {
 	requestPath := "/app/assets/main.js"
 
 	b.ReportAllocs()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		rule, longest := longestPathRuleMatch(requestPath, snapshot)
 		if rule == nil || longest == 0 {
 			b.Fatalf("longestPathRuleMatch returned rule=%#v longest=%d", rule, longest)
@@ -807,7 +807,7 @@ func BenchmarkPathRuleLongestPrefixLookupOld(b *testing.B) {
 	requestPath := "/app/assets/main.js"
 
 	b.ReportAllocs()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		rule, longest := longestPathRuleMatchOldForBenchmark(requestPath, rulesByLength)
 		if rule == nil || longest == 0 {
 			b.Fatalf("old match returned rule=%#v longest=%d", rule, longest)

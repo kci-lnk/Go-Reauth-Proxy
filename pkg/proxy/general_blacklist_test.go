@@ -197,7 +197,7 @@ func BenchmarkGeneralBlacklistRecordMatches(b *testing.B) {
 	}
 
 	b.ReportAllocs()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		benchmarkBoolSink = generalBlacklistRecordMatches(record, "review")
 	}
 }
@@ -210,7 +210,7 @@ func BenchmarkGeneralBlacklistRecordMatchesOld(b *testing.B) {
 	}
 
 	b.ReportAllocs()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		benchmarkBoolSink = strings.Contains(strings.ToLower(record.IP), "review") ||
 			strings.Contains(strings.ToLower(record.Source), "review") ||
 			strings.Contains(strings.ToLower(record.Comment), "review")

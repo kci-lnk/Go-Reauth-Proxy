@@ -28,6 +28,11 @@ type failingReadCloser struct {
 	read bool
 }
 
+type limitedReadCloser struct {
+	reader *bytes.Reader
+	limit  int
+}
+
 func newTrackingReadCloser(body []byte) *trackingReadCloser {
 	return &trackingReadCloser{reader: bytes.NewReader(body)}
 }
@@ -53,6 +58,15 @@ func (rc *failingReadCloser) Read(p []byte) (int, error) {
 func (rc *failingReadCloser) Close() error {
 	return nil
 }
+
+func (rc *limitedReadCloser) Read(p []byte) (int, error) {
+	if len(p) > rc.limit {
+		p = p[:rc.limit]
+	}
+	return rc.reader.Read(p)
+}
+
+func (rc *limitedReadCloser) Close() error { return nil }
 
 func newHTMLMutationResponse(body []byte, contentType string, contentLength int64) (*http.Response, *trackingReadCloser) {
 	rc := newTrackingReadCloser(body)
@@ -171,6 +185,34 @@ func TestMaybeMutateHTMLProxyResponseToolbarOnlyStreamsAcrossBodyCloseBoundary(t
 	}
 }
 
+func TestStreamingToolbarReadCloserHandlesOneByteChunks(t *testing.T) {
+	body := []byte(`<!doctype html><HTML><BODY><main>app</main></BODY></HTML>`)
+	source := &limitedReadCloser{reader: bytes.NewReader(body), limit: 1}
+	rc := newStreamingToolbarReadCloser(source, `<script>toolbar()</script>`)
+
+	mutated, err := io.ReadAll(rc)
+	if err != nil {
+		t.Fatalf("read one-byte chunks: %v", err)
+	}
+	if got := string(mutated); !strings.Contains(got, `<main>app</main><script>toolbar()</script></BODY>`) {
+		t.Fatalf("toolbar was not injected across one-byte chunks: %s", got)
+	}
+}
+
+func TestStreamingToolbarReadCloserDoesNotMutateOneByteNonHTMLChunks(t *testing.T) {
+	body := []byte(`plain text that is not an html document`)
+	source := &limitedReadCloser{reader: bytes.NewReader(body), limit: 1}
+	rc := newStreamingToolbarReadCloser(source, `<script>toolbar()</script>`)
+
+	got, err := io.ReadAll(rc)
+	if err != nil {
+		t.Fatalf("read one-byte non-HTML chunks: %v", err)
+	}
+	if !bytes.Equal(got, body) {
+		t.Fatalf("non-HTML body changed: got %q, want %q", got, body)
+	}
+}
+
 func TestMaybeMutateHTMLProxyResponseToolbarOnlyStreamsAppendWithoutBodyClose(t *testing.T) {
 	body := []byte(`<!doctype html><html><main>app</main>`)
 	resp, _ := newHTMLMutationResponse(body, "text/html", -1)
@@ -224,6 +266,33 @@ func TestMaybeMutateHTMLProxyResponseToolbarOnlyPreservesPendingOnReadError(t *t
 	}
 	if string(got) != string(body) {
 		t.Fatalf("streamed body before read error = %q, want %q", string(got), string(body))
+	}
+}
+
+func BenchmarkStreamingToolbarReadCloser2MiB(b *testing.B) {
+	body := make([]byte, 0, 2*1024*1024)
+	body = append(body, []byte(`<!doctype html><html><body>`)...)
+	body = append(body, bytes.Repeat([]byte("x"), 2*1024*1024-len(body)-len(`</body></html>`))...)
+	body = append(body, []byte(`</body></html>`)...)
+	toolbar := `<script id="reauth-proxy-toolbar-loader">window.__REAUTH_PROXY_TOOLBAR_DATA__={};</script>`
+	readBuffer := make([]byte, 32*1024)
+	b.SetBytes(int64(len(body)))
+	b.ReportAllocs()
+
+	for b.Loop() {
+		rc := newStreamingToolbarReadCloser(io.NopCloser(bytes.NewReader(body)), toolbar)
+		for {
+			_, err := rc.Read(readBuffer)
+			if err == io.EOF {
+				break
+			}
+			if err != nil {
+				b.Fatalf("read streamed toolbar body: %v", err)
+			}
+		}
+		if err := rc.Close(); err != nil {
+			b.Fatalf("close streamed toolbar body: %v", err)
+		}
 	}
 }
 

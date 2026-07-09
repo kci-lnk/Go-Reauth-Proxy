@@ -19,6 +19,7 @@ type Options struct {
 	ParentChain interface{} // string or []string
 	ExemptPorts []string
 	Tables      []string
+	Disabled    bool
 }
 
 type commandRunner interface {
@@ -72,6 +73,7 @@ type Manager struct {
 	runner                     commandRunner
 	baseRulesMu                sync.RWMutex
 	baseFirewallEnabledByTable map[string]bool
+	disabled                   bool
 }
 
 type TCPPortAccessPolicy struct {
@@ -174,6 +176,16 @@ func NewManager(opts Options) *Manager {
 		ExemptPorts:  opts.ExemptPorts,
 		tables:       tables,
 		runner:       execRunner{useSudo: shouldUseSudo()},
+		disabled:     opts.Disabled || iptablesDisabledByEnvironment(),
+	}
+}
+
+func iptablesDisabledByEnvironment() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("FN_KNOCK_DISABLE_IPTABLES"))) {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
 	}
 }
 
@@ -204,6 +216,9 @@ func (m *Manager) hasTable(table string) bool {
 }
 
 func (m *Manager) runTable(table string, args ...string) error {
+	if m.disabled {
+		return errors.New(errors.CodeIptablesCommandError, "iptables is disabled for this runtime")
+	}
 	output, err := m.runner.CombinedOutput(table, args...)
 	if err != nil {
 		if event := logger.DebugEvent("iptables", "command_failed"); event != nil {
@@ -219,6 +234,9 @@ func (m *Manager) runTable(table string, args ...string) error {
 }
 
 func (m *Manager) runTableOutput(table string, args ...string) (string, error) {
+	if m.disabled {
+		return "", errors.New(errors.CodeIptablesCommandError, "iptables is disabled for this runtime")
+	}
 	output, err := m.runner.CombinedOutput(table, args...)
 	if err != nil {
 		if event := logger.DebugEvent("iptables", "command_failed"); event != nil {
@@ -245,6 +263,9 @@ func restoreCommandForTable(table string) string {
 }
 
 func (m *Manager) runTableRestore(table string, input string) error {
+	if m.disabled {
+		return errors.New(errors.CodeIptablesCommandError, "iptables is disabled for this runtime")
+	}
 	restoreCommand := restoreCommandForTable(table)
 	if restoreCommand == "" {
 		return fmt.Errorf("unsupported restore table: %s", table)

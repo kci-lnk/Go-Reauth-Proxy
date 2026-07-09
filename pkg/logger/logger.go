@@ -33,14 +33,18 @@ const (
 const debugDateLayout = "2006-01-02"
 
 var (
-	debugMu               sync.RWMutex
-	debugEnabled          bool
-	debugWriter           io.Writer = io.Discard
-	debugLogger           zerolog.Logger
+	debugMu               sync.Mutex
+	debugState            atomic.Pointer[debugRuntime]
 	debugWarnedWrite      atomic.Bool
 	debugAdminPort        atomic.Pointer[debugAdminPortRedaction]
 	debugRequestIDCounter atomic.Uint64
 )
+
+type debugRuntime struct {
+	enabled bool
+	writer  io.Writer
+	logger  zerolog.Logger
+}
 
 type debugAdminPortRedaction struct {
 	port int
@@ -288,44 +292,42 @@ func setDebugLogger(enabled bool, writer io.Writer) {
 	logger := zerolog.New(writer).With().Timestamp().Logger().Level(zerolog.DebugLevel)
 
 	debugMu.Lock()
-	oldWriter := debugWriter
-	debugEnabled = enabled
-	debugWriter = writer
-	debugLogger = logger
+	old := debugState.Swap(&debugRuntime{
+		enabled: enabled,
+		writer:  writer,
+		logger:  logger,
+	})
 	debugMu.Unlock()
 
-	if oldWriter != writer {
-		if closer, ok := oldWriter.(interface{ Close() error }); ok {
+	if old != nil && old.writer != writer {
+		if closer, ok := old.writer.(interface{ Close() error }); ok {
 			_ = closer.Close()
 		}
 	}
 }
 
 func FlushDebugLogger() {
-	debugMu.RLock()
-	writer := debugWriter
-	debugMu.RUnlock()
+	state := debugState.Load()
+	if state == nil {
+		return
+	}
+	writer := state.writer
 	if flusher, ok := writer.(interface{ Flush() }); ok {
 		flusher.Flush()
 	}
 }
 
 func DebugEnabled() bool {
-	debugMu.RLock()
-	defer debugMu.RUnlock()
-	return debugEnabled
+	state := debugState.Load()
+	return state != nil && state.enabled
 }
 
 func DebugEvent(component string, event string) *zerolog.Event {
-	debugMu.RLock()
-	enabled := debugEnabled
-	logger := debugLogger
-	debugMu.RUnlock()
-
-	if !enabled {
+	state := debugState.Load()
+	if state == nil || !state.enabled {
 		return nil
 	}
-	return logger.Debug().
+	return state.logger.Debug().
 		Str("component", SanitizeLogString(component)).
 		Str("event", SanitizeLogString(event))
 }

@@ -145,56 +145,56 @@ func TestFirstForwardedClientIPMatchesLegacyBehavior(t *testing.T) {
 
 func BenchmarkNormalizeIPAddressIPv4(b *testing.B) {
 	b.ReportAllocs()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		reverseProxyThrottleBenchmarkSink = normalizeIPAddress("198.51.100.10")
 	}
 }
 
 func BenchmarkNormalizeIPAddressIPv4Old(b *testing.B) {
 	b.ReportAllocs()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		reverseProxyThrottleBenchmarkSink = normalizeIPAddressLegacyForBenchmark("198.51.100.10")
 	}
 }
 
 func BenchmarkNormalizeIPAddressIPv4Port(b *testing.B) {
 	b.ReportAllocs()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		reverseProxyThrottleBenchmarkSink = normalizeIPAddress("198.51.100.10:12345")
 	}
 }
 
 func BenchmarkNormalizeIPAddressIPv4PortOld(b *testing.B) {
 	b.ReportAllocs()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		reverseProxyThrottleBenchmarkSink = normalizeIPAddressLegacyForBenchmark("198.51.100.10:12345")
 	}
 }
 
 func BenchmarkNormalizeClientIPRemoteAddr(b *testing.B) {
 	b.ReportAllocs()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		reverseProxyThrottleBenchmarkSink = normalizeClientIP("198.51.100.10:12345")
 	}
 }
 
 func BenchmarkNormalizeClientIPRemoteAddrOld(b *testing.B) {
 	b.ReportAllocs()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		reverseProxyThrottleBenchmarkSink = normalizeClientIPLegacyForBenchmark("198.51.100.10:12345")
 	}
 }
 
 func BenchmarkFirstForwardedClientIP(b *testing.B) {
 	b.ReportAllocs()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		reverseProxyThrottleBenchmarkSink = firstForwardedClientIP("198.51.100.10, 198.51.100.11")
 	}
 }
 
 func BenchmarkFirstForwardedClientIPOld(b *testing.B) {
 	b.ReportAllocs()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		reverseProxyThrottleBenchmarkSink = firstForwardedClientIPLegacyForBenchmark("198.51.100.10, 198.51.100.11")
 	}
 }

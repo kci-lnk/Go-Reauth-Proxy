@@ -46,7 +46,7 @@ func BenchmarkIsFNAppRequestUserAgent(b *testing.B) {
 	req.Header.Set("User-Agent", "FN Client COM.TRIM.APP")
 
 	b.ReportAllocs()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		benchmarkBoolSink = isFNAppRequest(req)
 	}
 }
@@ -56,7 +56,7 @@ func BenchmarkIsFNAppRequestUserAgentOld(b *testing.B) {
 	req.Header.Set("User-Agent", "FN Client COM.TRIM.APP")
 
 	b.ReportAllocs()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		benchmarkBoolSink = isFNAppRequestOldUserAgentForBenchmark(req)
 	}
 }
@@ -81,7 +81,7 @@ func BenchmarkIsFNAppRequestRelayCookie(b *testing.B) {
 	req.Header.Set("Cookie", "theme=dark; MODE=RELAY")
 
 	b.ReportAllocs()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		benchmarkBoolSink = isFNAppRequest(req)
 	}
 }
@@ -91,7 +91,7 @@ func BenchmarkIsFNAppRequestRelayCookieOld(b *testing.B) {
 	req.Header.Set("Cookie", "theme=dark; MODE=RELAY")
 
 	b.ReportAllocs()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		benchmarkBoolSink = strings.Contains(strings.ToLower(req.Header.Get("Cookie")), strings.ToLower(fnAppRelayCookieValue))
 	}
 }
@@ -102,7 +102,7 @@ func BenchmarkIsFNAppWebSocketRequest(b *testing.B) {
 	req.Header.Set("Connection", "keep-alive, Upgrade")
 
 	b.ReportAllocs()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		benchmarkBoolSink = isFNAppWebSocketRequest(req)
 	}
 }
@@ -113,7 +113,7 @@ func BenchmarkIsFNAppWebSocketRequestOldConnection(b *testing.B) {
 	req.Header.Set("Connection", "keep-alive, Upgrade")
 
 	b.ReportAllocs()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		benchmarkBoolSink = strings.EqualFold(strings.TrimSpace(req.Header.Get("Upgrade")), "websocket") &&
 			strings.Contains(strings.ToLower(req.Header.Get("Connection")), "upgrade")
 	}

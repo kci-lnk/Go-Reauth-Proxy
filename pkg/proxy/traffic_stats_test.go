@@ -68,9 +68,9 @@ func TestHostTrafficCountersEnforceActiveIPLimitOnWrite(t *testing.T) {
 	counters := &hostTrafficCounters{}
 	now := time.Unix(100, 0)
 	for i := 0; i < hostActiveIPHardLimit+25; i++ {
-		release := counters.markActiveIP(fmt.Sprintf("198.51.%d.%d", i/255, i%255), now.Add(time.Duration(i)*time.Millisecond))
-		if release != nil {
-			release()
+		record := counters.markActiveIP(fmt.Sprintf("198.51.%d.%d", i/255, i%255), now.Add(time.Duration(i)*time.Millisecond))
+		if record != nil {
+			releaseHostActiveIP(record, now)
 		}
 	}
 
@@ -147,9 +147,9 @@ func TestHostActiveIPsTracksRecentClients(t *testing.T) {
 	metrics := &requestTrafficMetrics{statusCode: http.StatusOK}
 	metrics.bindHost(handler, "app.example.com")
 
-	release := metrics.markActiveIP("192.0.2.10:4321", now)
-	if release == nil {
-		t.Fatal("expected active IP release function")
+	metrics.markActiveIP("192.0.2.10:4321", now)
+	if metrics.activeIPRecord == nil {
+		t.Fatal("expected active IP record")
 	}
 
 	active := handler.GetHostActiveIPs("App.Example.COM:443", now)
@@ -177,8 +177,8 @@ func TestHostActiveIPsTracksRecentClients(t *testing.T) {
 		t.Fatalf("host ActiveIPCount = %#v, want 1", stats.ByHost)
 	}
 
-	release()
 	releasedAt := time.Now()
+	metrics.releaseActiveIP(releasedAt)
 	stillRecent := handler.GetHostActiveIPs("app.example.com", releasedAt.Add(hostActiveIPWindow-time.Second))
 	if len(stillRecent.Items) != 1 {
 		t.Fatalf("recent active IP count = %d, want 1", len(stillRecent.Items))

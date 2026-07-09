@@ -441,8 +441,7 @@ func BenchmarkQueryEntriesFirstPage(b *testing.B) {
 	}
 
 	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		items, total, hasMore, err := queryEntries(logPath, filter, 1, 50)
 		if err != nil {
 			b.Fatalf("query entries: %v", err)
@@ -461,8 +460,7 @@ func BenchmarkQueryEntriesFirstPageSearch(b *testing.B) {
 	}
 
 	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		items, total, hasMore, err := queryEntries(logPath, filter, 1, 50)
 		if err != nil {
 			b.Fatalf("query entries: %v", err)
@@ -481,8 +479,7 @@ func BenchmarkQueryEntriesFirstPageStatusFilter(b *testing.B) {
 	}
 
 	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		items, total, hasMore, err := queryEntries(logPath, filter, 1, 50)
 		if err != nil {
 			b.Fatalf("query entries: %v", err)
@@ -501,8 +498,7 @@ func BenchmarkQueryEntriesFirstPageLoggedInFilter(b *testing.B) {
 	}
 
 	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		items, total, hasMore, err := queryEntries(logPath, filter, 1, 50)
 		if err != nil {
 			b.Fatalf("query entries: %v", err)
@@ -521,8 +517,7 @@ func BenchmarkQueryEntriesFirstPageTwoPass(b *testing.B) {
 	}
 
 	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		items, total, hasMore, err := queryEntriesStreamingTwoPass(logPath, filter, 1, 50)
 		if err != nil {
 			b.Fatalf("query entries: %v", err)
@@ -541,8 +536,7 @@ func BenchmarkQueryEntriesByCursorSparseStatusFilter(b *testing.B) {
 	}
 
 	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		items, nextCursor, hasMore, _, err := queryEntriesByCursor(logPath, filter, "", 50)
 		if err != nil {
 			b.Fatalf("query entries by cursor: %v", err)
@@ -564,8 +558,7 @@ func BenchmarkQueryEntriesByCursorSparseStatusFilterOld(b *testing.B) {
 	}
 
 	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		items, nextCursor, hasMore, _, err := queryEntriesByCursorLegacyForBenchmark(logPath, filter, "", 50)
 		if err != nil {
 			b.Fatalf("query entries by cursor: %v", err)
@@ -592,8 +585,7 @@ func BenchmarkScanLinesBackward(b *testing.B) {
 	}
 
 	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		count := 0
 		if err := scanLinesBackward(file, stat.Size(), func(_ []byte, _ int64) (bool, error) {
 			count++
@@ -621,8 +613,7 @@ func BenchmarkScanLinesBackwardOld(b *testing.B) {
 	}
 
 	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		count := 0
 		if err := scanLinesBackwardLegacyForBenchmark(file, stat.Size(), func(_ []byte, _ int64) (bool, error) {
 			count++

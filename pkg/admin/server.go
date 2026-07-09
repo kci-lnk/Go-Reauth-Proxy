@@ -15,6 +15,7 @@ import (
 	"go-reauth-proxy/pkg/version"
 	"io"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -66,6 +67,7 @@ func NewServer(handler *proxy.Handler, port int, cfgManager *config.Manager, ini
 	iptablesManager := iptables.NewManager(iptables.Options{
 		ChainName:   iptablesChainName,
 		ParentChain: []string{"INPUT", "DOCKER-USER"},
+		Disabled:    iptablesDisabledByEnvironment(),
 	})
 	iptablesHandler := iptables.NewHandler(iptablesManager, cfgManager)
 
@@ -75,6 +77,15 @@ func NewServer(handler *proxy.Handler, port int, cfgManager *config.Manager, ini
 		StreamManager:   streamManager,
 		ConfigManager:   cfgManager,
 		Port:            port,
+	}
+}
+
+func iptablesDisabledByEnvironment() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("FN_KNOCK_DISABLE_IPTABLES"))) {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
 	}
 }
 

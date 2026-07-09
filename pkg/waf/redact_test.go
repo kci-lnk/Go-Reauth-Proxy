@@ -66,14 +66,14 @@ func TestRedactRawQueryNoSensitiveFastPathPreservesRawQuery(t *testing.T) {
 
 func BenchmarkIsSensitiveName(b *testing.B) {
 	b.ReportAllocs()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		wafRedactBenchmarkBoolSink = isSensitiveName("X-Access-Token")
 	}
 }
 
 func BenchmarkIsSensitiveNameOld(b *testing.B) {
 	b.ReportAllocs()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		wafRedactBenchmarkBoolSink = isSensitiveNameOldForBenchmark("X-Access-Token")
 	}
 }
@@ -82,7 +82,7 @@ func BenchmarkRedactRawQuery(b *testing.B) {
 	raw := "ok=1&Token=secret&session_id=abc&path=%2Fapp"
 
 	b.ReportAllocs()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		wafRedactBenchmarkStringSink = redactRawQuery(raw)
 	}
 }
@@ -91,7 +91,7 @@ func BenchmarkRedactRawQueryFast(b *testing.B) {
 	raw := "ok=1&Token=secret&session_id=abc&path=/app"
 
 	b.ReportAllocs()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		wafRedactBenchmarkStringSink = redactRawQuery(raw)
 	}
 }
@@ -100,7 +100,7 @@ func BenchmarkRedactRawQueryNoSensitiveFast(b *testing.B) {
 	raw := "ok=1&path=/app&trace_id=waf_123"
 
 	b.ReportAllocs()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		wafRedactBenchmarkStringSink = redactRawQuery(raw)
 	}
 }

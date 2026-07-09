@@ -347,7 +347,7 @@ func BenchmarkPublicRequestSchemeNoForwardedHeaders(b *testing.B) {
 	req := httptest.NewRequest(http.MethodGet, "http://auth.fnknock.cn/", nil)
 
 	b.ReportAllocs()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		benchmarkHostSink = publicRequestScheme(req)
 	}
 }
@@ -357,7 +357,7 @@ func BenchmarkPublicRequestSchemeForwardedHeader(b *testing.B) {
 	req.Header.Set("Forwarded", `for=192.0.2.1; proto="https"; host=auth.fnknock.cn`)
 
 	b.ReportAllocs()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		benchmarkHostSink = publicRequestScheme(req)
 	}
 }
@@ -367,70 +367,70 @@ func BenchmarkPublicRequestSchemeCloudflareVisitor(b *testing.B) {
 	req.Header.Set("CF-Visitor", `{"scheme":"https"}`)
 
 	b.ReportAllocs()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		benchmarkHostSink = publicRequestScheme(req)
 	}
 }
 
 func BenchmarkSplitRequestHostPortNoPort(b *testing.B) {
 	b.ReportAllocs()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		benchmarkHostSink, benchmarkPortSink = splitRequestHostPort("auth.fnknock.cn")
 	}
 }
 
 func BenchmarkSplitRequestHostPortWithPort(b *testing.B) {
 	b.ReportAllocs()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		benchmarkHostSink, benchmarkPortSink = splitRequestHostPort("auth.fnknock.cn:8443")
 	}
 }
 
 func BenchmarkSplitRequestHostPortIPv6WithPort(b *testing.B) {
 	b.ReportAllocs()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		benchmarkHostSink, benchmarkPortSink = splitRequestHostPort("[2001:db8::1]:8443")
 	}
 }
 
 func BenchmarkIsValidPortValid(b *testing.B) {
 	b.ReportAllocs()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		benchmarkBoolSink = isValidPort("8443")
 	}
 }
 
 func BenchmarkIsValidPortValidOld(b *testing.B) {
 	b.ReportAllocs()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		benchmarkBoolSink = legacyIsValidPort("8443")
 	}
 }
 
 func BenchmarkIsValidPortInvalid(b *testing.B) {
 	b.ReportAllocs()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		benchmarkBoolSink = isValidPort("8443/tcp")
 	}
 }
 
 func BenchmarkIsValidPortInvalidOld(b *testing.B) {
 	b.ReportAllocs()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		benchmarkBoolSink = legacyIsValidPort("8443/tcp")
 	}
 }
 
 func BenchmarkPublicPortFromAuthBaseURL(b *testing.B) {
 	b.ReportAllocs()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		benchmarkPortSink = publicPortFromAuthBaseURL("https://auth.fnknock.cn:8443/path", "https")
 	}
 }
 
 func BenchmarkPublicPortFromAuthBaseURLOld(b *testing.B) {
 	b.ReportAllocs()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		benchmarkPortSink = legacyPublicPortFromAuthBaseURL("https://auth.fnknock.cn:8443/path", "https")
 	}
 }

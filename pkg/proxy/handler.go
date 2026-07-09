@@ -8,6 +8,7 @@ import (
 	"encoding/base64"
 	"fmt"
 	"go-reauth-proxy/pkg/config"
+	"go-reauth-proxy/pkg/diagnostics"
 	"go-reauth-proxy/pkg/errors"
 	"go-reauth-proxy/pkg/events"
 	"go-reauth-proxy/pkg/gatewaylog"
@@ -115,7 +116,6 @@ type Handler struct {
 
 	trafficTotalIn  atomic.Uint64
 	trafficTotalOut atomic.Uint64
-	trafficActive   atomic.Int64
 	trafficError5xx atomic.Uint64
 	trafficByHost   sync.Map
 
@@ -228,6 +228,8 @@ type authCheckResult struct {
 }
 
 type authBridgeClient interface {
+	SupportsCapability(string) bool
+	AuthorizeHTTP(context.Context, *pb.AuthorizeHttpRequest) (*pb.AuthorizeHttpResponse, error)
 	VerifyAuth(context.Context, *pb.VerifyAuthRequest) (*pb.VerifyAuthResponse, error)
 	PreflightAuth(context.Context, *pb.PreflightAuthRequest) (*pb.PreflightAuthResponse, error)
 	VerifyStreamAuth(context.Context, *pb.VerifyStreamAuthRequest) (*pb.VerifyStreamAuthResponse, error)
@@ -523,7 +525,10 @@ func newProxyTransport() *http.Transport {
 		KeepAlive: 30 * time.Second,
 	}).DialContext
 	// Hardcode skipping upstream TLS verification for reverse-proxy targets.
-	transport.TLSClientConfig = &tls.Config{InsecureSkipVerify: true}
+	transport.TLSClientConfig = &tls.Config{
+		InsecureSkipVerify: true,
+		ClientSessionCache: tls.NewLRUClientSessionCache(256),
+	}
 	transport.TLSHandshakeTimeout = 10 * time.Second
 	// Let long-running admin/API requests such as local service discovery
 	// decide their own deadline instead of failing at the gateway layer.
@@ -699,29 +704,50 @@ func copyUserAgentHeader(dst, src *http.Request) {
 	dst.Header.Set("User-Agent", "")
 }
 
-func authContextFromRequest(r *http.Request, clientIP string, accessMode string) *pb.AuthContext {
+type requestAuthContext struct {
+	context    *pb.AuthContext
+	headers    http.Header
+	legacyOnce sync.Once
+}
+
+func newRequestAuthContext(r *http.Request, clientIP string, accessMode string) *requestAuthContext {
 	if r == nil {
-		return &pb.AuthContext{ClientIp: clientIP, AccessMode: accessMode}
+		return &requestAuthContext{context: &pb.AuthContext{ClientIp: clientIP, AccessMode: accessMode}}
 	}
 	scheme := requestScheme(r)
-	ctx := &pb.AuthContext{
-		ClientIp:       clientIP,
-		ForwardedFor:   clientIP,
-		ForwardedHost:  r.Host,
-		ForwardedProto: scheme,
-		ForwardedPath:  r.URL.RequestURI(),
-		Host:           r.Host,
-		Scheme:         scheme,
-		Path:           r.URL.Path,
-		RawQuery:       r.URL.RawQuery,
-		RequestUri:     r.URL.RequestURI(),
-		Cookie:         r.Header.Get("Cookie"),
-		Authorization:  r.Header.Get("Authorization"),
-		UserAgent:      r.Header.Get("User-Agent"),
-		AccessMode:     accessMode,
-		ExtraHeaders:   headersToProto(r.Header),
+	return &requestAuthContext{
+		context: &pb.AuthContext{
+			ClientIp:              clientIP,
+			ForwardedFor:          clientIP,
+			ForwardedHost:         r.Host,
+			ForwardedProto:        scheme,
+			ForwardedPath:         r.URL.RequestURI(),
+			Host:                  r.Host,
+			Scheme:                scheme,
+			Path:                  r.URL.Path,
+			RawQuery:              r.URL.RawQuery,
+			RequestUri:            r.URL.RequestURI(),
+			Cookie:                r.Header.Get("Cookie"),
+			Authorization:         r.Header.Get("Authorization"),
+			UserAgent:             r.Header.Get("User-Agent"),
+			AccessMode:            accessMode,
+			AccessToken:           r.Header.Get("AccessToken"),
+			AccessTokenHyphenated: r.Header.Get("Access-Token"),
+		},
+		headers: r.Header,
 	}
-	return ctx
+}
+
+func (c *requestAuthContext) proto(includeLegacyHeaders bool) *pb.AuthContext {
+	if c == nil {
+		return &pb.AuthContext{}
+	}
+	if includeLegacyHeaders {
+		c.legacyOnce.Do(func() {
+			c.context.ExtraHeaders = headersToProto(c.headers)
+		})
+	}
+	return c.context
 }
 
 func headersToProto(headers http.Header) []*pb.Header {
@@ -852,7 +878,7 @@ func (h *Handler) shouldOmitPreserveHost(target *url.URL) bool {
 	return h.preserveHost.shouldOmit(target)
 }
 
-func (h *Handler) runPreflight(r *http.Request, authConfig models.AuthConfig, clientIP string, isMatch bool, accessMode string, requestID string) preflightDecision {
+func (h *Handler) runPreflight(r *http.Request, authConfig models.AuthConfig, clientIP string, isMatch bool, accessMode string, requestID string, requestAuth *requestAuthContext) preflightDecision {
 	if r.Header.Get(internalPreflightHeader) == "1" {
 		if event := debugProxyEvent("preflight_skipped_internal", requestID); event != nil {
 			event.Send()
@@ -897,7 +923,8 @@ func (h *Handler) runPreflight(r *http.Request, authConfig models.AuthConfig, cl
 	}
 
 	if canLookup && ttl > 0 {
-		executionAny, _, _ := h.preflightCache.group.Do(lookup.cacheKey, func() (any, error) {
+		sharedRequest := r.WithContext(context.WithoutCancel(r.Context()))
+		resultCh := h.preflightCache.group.DoChan(lookup.cacheKey, func() (any, error) {
 			if entry, ok := h.preflightCacheGet(lookup.cacheKey, time.Now()); ok {
 				if shouldBypassFNAppNegativePreflightCache(r, entry.decision) {
 					h.preflightCache.mu.Lock()
@@ -916,7 +943,7 @@ func (h *Handler) runPreflight(r *http.Request, authConfig models.AuthConfig, cl
 				}
 			}
 
-			decision, err := h.performPreflight(r, authConfig, clientIP, isMatch, accessMode, requestID)
+			decision, cacheScope, err := h.performPreflight(sharedRequest, authConfig, clientIP, isMatch, accessMode, requestID, requestAuth)
 			if err != nil {
 				cooldownUntil := time.Now().Add(preflightFailureCooldown).UnixNano()
 				h.preflightSkipUntilUnixNano.Store(cooldownUntil)
@@ -935,20 +962,26 @@ func (h *Handler) runPreflight(r *http.Request, authConfig models.AuthConfig, cl
 				expiresAt:   time.Now().Add(ttl),
 				identityKey: lookup.identityKey,
 			}
-			if !shouldBypassFNAppNegativePreflightCache(r, decision) {
+			if cacheScope == pb.AuthCacheScope_AUTH_CACHE_SCOPE_EXACT_REQUEST && !shouldBypassFNAppNegativePreflightCache(r, decision) {
 				h.preflightCacheStore(lookup.cacheKey, entry, time.Now())
+				return preflightCacheExecution{entry: &entry}, nil
 			}
-			return preflightCacheExecution{entry: &entry}, nil
+			return preflightCacheExecution{decision: decision}, nil
 		})
-
-		execution, _ := executionAny.(preflightCacheExecution)
+		var execution preflightCacheExecution
+		select {
+		case result := <-resultCh:
+			execution, _ = result.Val.(preflightCacheExecution)
+		case <-r.Context().Done():
+			return preflightDecision{}
+		}
 		if execution.entry != nil {
 			return execution.entry.decision
 		}
 		return execution.decision
 	}
 
-	decision, err := h.performPreflight(r, authConfig, clientIP, isMatch, accessMode, requestID)
+	decision, _, err := h.performPreflight(r, authConfig, clientIP, isMatch, accessMode, requestID, requestAuth)
 	if err != nil {
 		cooldownUntil := time.Now().Add(preflightFailureCooldown).UnixNano()
 		h.preflightSkipUntilUnixNano.Store(cooldownUntil)
@@ -964,7 +997,7 @@ func (h *Handler) runPreflight(r *http.Request, authConfig models.AuthConfig, cl
 	return decision
 }
 
-func (h *Handler) performPreflight(r *http.Request, authConfig models.AuthConfig, clientIP string, isMatch bool, accessMode string, requestID string) (preflightDecision, error) {
+func (h *Handler) performPreflight(r *http.Request, authConfig models.AuthConfig, clientIP string, isMatch bool, accessMode string, requestID string, requestAuth *requestAuthContext) (preflightDecision, pb.AuthCacheScope, error) {
 	start := time.Now()
 	if event := debugProxyEvent("preflight_request_start", requestID); event != nil {
 		event.Str("transport", "auth_bridge").
@@ -982,17 +1015,42 @@ func (h *Handler) performPreflight(r *http.Request, authConfig models.AuthConfig
 
 	bridge := h.authBridgeManager()
 	if bridge == nil {
-		return preflightDecision{}, rpcbridge.ErrAuthBridgeUnavailable
+		return preflightDecision{}, pb.AuthCacheScope_AUTH_CACHE_SCOPE_NONE, rpcbridge.ErrAuthBridgeUnavailable
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), preflightTimeout)
+	ctx, cancel := context.WithTimeout(r.Context(), preflightTimeout)
 	defer cancel()
-	resp, err := bridge.PreflightAuth(ctx, &pb.PreflightAuthRequest{
-		Context: authContextFromRequest(r, clientIP, accessMode),
-		Matched: isMatch,
-	})
-	if err != nil {
-		return preflightDecision{}, err
+	var resp *pb.PreflightAuthResponse
+	var err error
+	cacheScope := pb.AuthCacheScope_AUTH_CACHE_SCOPE_EXACT_REQUEST
+	supportsCombined := bridge.SupportsCapability(rpcbridge.CapabilityAuthorizeHTTPV1)
+	if supportsCombined {
+		var combined *pb.AuthorizeHttpResponse
+		combined, err = bridge.AuthorizeHTTP(ctx, &pb.AuthorizeHttpRequest{
+			Context: requestAuth.proto(false),
+			Matched: isMatch,
+			Mode:    pb.HttpAuthMode_HTTP_AUTH_MODE_PREFLIGHT_ONLY,
+		})
+		if err == nil {
+			resp = combined.GetPreflight()
+			cacheScope = combined.GetPreflightCacheScope()
+			if resp == nil {
+				err = fmt.Errorf("auth bridge returned no preflight response")
+			}
+		}
 	}
+	if !supportsCombined || err == rpcbridge.ErrAuthBridgeCapabilityUnsupported {
+		resp, err = bridge.PreflightAuth(ctx, &pb.PreflightAuthRequest{
+			Context: requestAuth.proto(true),
+			Matched: isMatch,
+		})
+	}
+	if err != nil {
+		return preflightDecision{}, pb.AuthCacheScope_AUTH_CACHE_SCOPE_NONE, err
+	}
+	return h.preflightDecisionFromResponse(resp, requestID, start), cacheScope, nil
+}
+
+func (h *Handler) preflightDecisionFromResponse(resp *pb.PreflightAuthResponse, requestID string, start time.Time) preflightDecision {
 	responseHeaders := protoHeadersToHTTP(resp.GetResponseHeaders())
 
 	decision := preflightDecision{
@@ -1022,7 +1080,7 @@ func (h *Handler) performPreflight(r *http.Request, authConfig models.AuthConfig
 			Interface("response_headers", logger.SanitizeHeader(responseHeaders)).
 			Send()
 	}
-	return decision, nil
+	return decision
 }
 
 func shouldRunPreflightForRoute(isSelectRoute bool, isAuthRoute bool, matchedHostRule *models.HostRule, matchedRule *models.Rule) bool {
@@ -3181,7 +3239,7 @@ func (c *hostTrafficCounters) enforceActiveIPLimit() {
 	}
 }
 
-func (c *hostTrafficCounters) markActiveIP(clientIP string, now time.Time) func() {
+func (c *hostTrafficCounters) markActiveIP(clientIP string, now time.Time) *hostActiveIPRecord {
 	if c == nil {
 		return nil
 	}
@@ -3191,25 +3249,37 @@ func (c *hostTrafficCounters) markActiveIP(clientIP string, now time.Time) func(
 	}
 
 	c.cleanupActiveIPsIfNeeded(now)
-	record := &hostActiveIPRecord{ip: ip}
-	actual, loaded := c.activeIPs.LoadOrStore(ip, record)
-	if existing, ok := actual.(*hostActiveIPRecord); ok {
-		record = existing
+	record, loaded := c.activeIPs.Load(ip)
+	activeRecord, ok := record.(*hostActiveIPRecord)
+	if !loaded || !ok || activeRecord == nil {
+		candidate := &hostActiveIPRecord{ip: ip}
+		actual, wasLoaded := c.activeIPs.LoadOrStore(ip, candidate)
+		loaded = wasLoaded
+		if existing, valid := actual.(*hostActiveIPRecord); valid && existing != nil {
+			activeRecord = existing
+		} else {
+			activeRecord = candidate
+		}
 	}
 
-	record.lastSeenUnixNano.Store(now.UnixNano())
-	record.activeConns.Add(1)
+	activeRecord.lastSeenUnixNano.Store(now.UnixNano())
+	activeRecord.activeConns.Add(1)
 	if !loaded {
 		if c.activeIPEntries.Add(1) > hostActiveIPHardLimit {
 			c.cleanupActiveIPs(now)
 		}
 	}
 
-	return func() {
-		record.lastSeenUnixNano.Store(time.Now().UnixNano())
-		if record.activeConns.Add(-1) < 0 {
-			record.activeConns.Store(0)
-		}
+	return activeRecord
+}
+
+func releaseHostActiveIP(record *hostActiveIPRecord, now time.Time) {
+	if record == nil {
+		return
+	}
+	record.lastSeenUnixNano.Store(now.UnixNano())
+	if record.activeConns.Add(-1) < 0 {
+		record.activeConns.Store(0)
 	}
 }
 
@@ -3731,6 +3801,7 @@ type requestTrafficMetrics struct {
 	wroteHeader     bool
 	host            string
 	hostTraffic     *hostTrafficCounters
+	activeIPRecord  *hostActiveIPRecord
 }
 
 func (m *requestTrafficMetrics) bindHost(handler *Handler, host string) {
@@ -3745,11 +3816,19 @@ func (m *requestTrafficMetrics) bindHost(handler *Handler, host string) {
 	m.hostTraffic = handler.getHostTrafficCounters(normalizedHost)
 }
 
-func (m *requestTrafficMetrics) markActiveIP(clientIP string, now time.Time) func() {
+func (m *requestTrafficMetrics) markActiveIP(clientIP string, now time.Time) {
 	if m == nil || m.hostTraffic == nil {
-		return nil
+		return
 	}
-	return m.hostTraffic.markActiveIP(clientIP, now)
+	m.activeIPRecord = m.hostTraffic.markActiveIP(clientIP, now)
+}
+
+func (m *requestTrafficMetrics) releaseActiveIP(now time.Time) {
+	if m == nil {
+		return
+	}
+	releaseHostActiveIP(m.activeIPRecord, now)
+	m.activeIPRecord = nil
 }
 
 func (m *requestTrafficMetrics) flushIn(handler *Handler) {
@@ -3906,7 +3985,6 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if logger.DebugEnabled() {
 		requestID = logger.NextDebugRequestID()
 	}
-	h.trafficActive.Add(1)
 	metrics := &requestTrafficMetrics{statusCode: http.StatusOK}
 	accessEntry := gatewaylog.Entry{
 		Method:          r.Method,
@@ -3949,8 +4027,8 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	defer func() {
 		rec := recover()
+		metrics.releaseActiveIP(time.Now())
 		metrics.flush(h)
-		h.trafficActive.Add(-1)
 		if metrics.statusCode >= 500 {
 			h.trafficError5xx.Add(1)
 			metrics.add5xx()
@@ -3965,6 +4043,9 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			accessEntry.Status = loggedStatusCode
 		} else {
 			accessEntry.Status = metrics.statusCode
+		}
+		if diagnostics.Enabled() {
+			diagnostics.ObserveHTTPRequest(time.Since(start), accessEntry.Status)
 		}
 		if clientIP != "" {
 			accessEntry.RemoteIP = clientIP
@@ -4095,20 +4176,31 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if response.IsToolbarAssetPath(r.URL.Path) {
+		accessEntry.RouteType = "toolbar_asset"
+		accessEntry.RouteKey = r.URL.Path
+		accessEntry.Matched = true
+		response.ServeToolbarAsset(w, r)
+		return
+	}
+
 	isSelectRoute := r.URL.Path == "/__select__"
 	isAuthRoute := strings.HasPrefix(r.URL.Path, "/__auth__/")
 	matchedHostRule := matchHostRule(r, snapshot)
 	matchedHostLocation := matchHostLocation(r, matchedHostRule)
 	if matchedHostRule != nil {
 		metrics.bindHost(h, matchedHostRule.Host)
-		if releaseHostActiveIP := metrics.markActiveIP(clientIP, time.Now()); releaseHostActiveIP != nil {
-			defer releaseHostActiveIP()
-		}
+		metrics.markActiveIP(clientIP, time.Now())
 	}
 	accessMode := ""
 	if matchedHostRule != nil {
 		accessMode = matchedHostRule.AccessMode
 	}
+	authContextAccessMode := ""
+	if matchedHostRule != nil && matchedHostRule.UseAuth {
+		authContextAccessMode = accessMode
+	}
+	var requestAuth *requestAuthContext
 	if matchedHostRule != nil {
 		availability := evaluateHostRuleAvailability(matchedHostRule, start)
 		if !availability.Available {
@@ -4282,8 +4374,24 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	isMatch := isSelectRoute || isAuthRoute || matchedHostRule != nil || matchedRule != nil || r.URL.Path == "/"
 	accessEntry.Matched = isMatch
 	accessEntry.AccessMode = accessMode
+	var preparedAuth *authCheckExecution
 	if shouldRunPreflightForRoute(isSelectRoute, isAuthRoute, matchedHostRule, matchedRule) {
-		preflight := h.runPreflight(r, snapshot.authConfig, clientIP, isMatch, accessMode, requestID)
+		if strings.TrimSpace(snapshot.authConfig.AuthURL) != "" {
+			requestAuth = newRequestAuthContext(r, clientIP, authContextAccessMode)
+		}
+		preflight := preflightDecision{}
+		verifyRequired := strings.TrimSpace(snapshot.authConfig.AuthURL) != "" && !isAuthRoute &&
+			(isSelectRoute || (matchedHostRule != nil && matchedHostRule.UseAuth) || (matchedRule != nil && matchedRule.UseAuth))
+		if verifyRequired {
+			if combined, used := h.executeCombinedHTTPAuth(r, snapshot.authConfig, clientIP, authContextAccessMode, isMatch, requestID, requestAuth); used {
+				preflight = combined.preflight
+				preparedAuth = &combined.auth
+			} else {
+				preflight = h.runPreflight(r, snapshot.authConfig, clientIP, isMatch, accessMode, requestID, requestAuth)
+			}
+		} else {
+			preflight = h.runPreflight(r, snapshot.authConfig, clientIP, isMatch, accessMode, requestID, requestAuth)
+		}
 		if preflight.accessDeniedReason != "" {
 			if isAuthRoute {
 				if event := debugProxyEvent("preflight_access_denied_ignored_auth_route", requestID); event != nil {
@@ -4366,7 +4474,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		accessEntry.RouteType = "select"
 		accessEntry.RouteKey = r.URL.Path
 		accessEntry.AuthRequired = snapshot.authConfig.AuthURL != ""
-		authResult := h.handleSelectRoute(w, r, snapshot, clientIP, requestID)
+		authResult := h.handleSelectRoute(w, r, snapshot, clientIP, requestID, requestAuth, preparedAuth)
 		applyAuthResultToLogEntry(&accessEntry, authResult)
 		if event := debugProxyEvent("select_route_served", requestID); event != nil {
 			event.Bool("auth_required", accessEntry.AuthRequired).
@@ -4412,7 +4520,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		accessEntry.AuthRequired = matchedHostRule.UseAuth && snapshot.authConfig.AuthURL != ""
 		authResult := authCheckResult{allowed: true, decision: "not_required"}
 		if accessEntry.AuthRequired {
-			authResult = h.checkAuth(w, r, snapshot.authConfig, clientIP, matchedHostRule.AccessMode, authUpstreamTarget, requestID)
+			authResult = h.checkAuth(w, r, snapshot.authConfig, clientIP, matchedHostRule.AccessMode, authUpstreamTarget, requestID, requestAuth, preparedAuth)
 			applyAuthResultToLogEntry(&accessEntry, authResult)
 			if !authResult.allowed {
 				if authResult.decision == "denied" {
@@ -4426,7 +4534,10 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		} else if !matchedHostRule.SuppressToolbar && snapshotReverseProxyTargetSupportsHTMLFeatures(snapshot, toolbarProbeTarget) && shouldProbeAuthForToolbar(r, snapshot.authConfig, snapshot.gatewayPortal) {
-			authResult = h.checkAuthForToolbar(w, r, snapshot.authConfig, clientIP, requestID)
+			if requestAuth == nil {
+				requestAuth = newRequestAuthContext(r, clientIP, "")
+			}
+			authResult = h.checkAuthForToolbar(w, r, snapshot.authConfig, clientIP, requestID, requestAuth)
 			applyAuthResultToLogEntry(&accessEntry, authResult)
 		} else {
 			accessEntry.AuthDecision = authResult.decision
@@ -4492,7 +4603,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	authResult := authCheckResult{allowed: true, decision: "not_required"}
 	if accessEntry.AuthRequired {
-		authResult = h.checkAuth(w, r, snapshot.authConfig, clientIP, "", matchedRule.Target, requestID)
+		authResult = h.checkAuth(w, r, snapshot.authConfig, clientIP, "", matchedRule.Target, requestID, requestAuth, preparedAuth)
 		applyAuthResultToLogEntry(&accessEntry, authResult)
 		if !authResult.allowed {
 			if authResult.decision == "denied" {
@@ -4506,7 +4617,10 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	} else if snapshotReverseProxyTargetSupportsHTMLFeatures(snapshot, matchedRule.Target) && shouldProbeAuthForToolbar(r, snapshot.authConfig, snapshot.gatewayPortal) {
-		authResult = h.checkAuthForToolbar(w, r, snapshot.authConfig, clientIP, requestID)
+		if requestAuth == nil {
+			requestAuth = newRequestAuthContext(r, clientIP, "")
+		}
+		authResult = h.checkAuthForToolbar(w, r, snapshot.authConfig, clientIP, requestID, requestAuth)
 		applyAuthResultToLogEntry(&accessEntry, authResult)
 	} else {
 		accessEntry.AuthDecision = authResult.decision
@@ -4543,10 +4657,10 @@ func filterSelectHostRulesByAuthScope(hostRules []models.HostRule, authResult au
 	return filtered
 }
 
-func (h *Handler) handleSelectRoute(w http.ResponseWriter, r *http.Request, snapshot requestSnapshot, clientIP string, requestID string) authCheckResult {
+func (h *Handler) handleSelectRoute(w http.ResponseWriter, r *http.Request, snapshot requestSnapshot, clientIP string, requestID string, requestAuth *requestAuthContext, prepared *authCheckExecution) authCheckResult {
 	availableHostRules := filterAvailableHostRules(snapshot.toolbarHostRules, time.Now())
 	if snapshot.authConfig.AuthURL != "" {
-		authResult := h.checkAuth(w, r, snapshot.authConfig, clientIP, "", "", requestID)
+		authResult := h.checkAuth(w, r, snapshot.authConfig, clientIP, "", "", requestID, requestAuth, prepared)
 		if !authResult.allowed {
 			return authResult
 		}
@@ -5410,7 +5524,10 @@ const (
 	htmlProxyMutationBodyLimitBytes int64 = 2 * 1024 * 1024
 	htmlToolbarStreamChunkSize            = 32 * 1024
 	htmlToolbarStreamTailBytes            = len("<!doctype") - 1
+	htmlToolbarStreamMaxSegments          = 5
 )
+
+var htmlToolbarStreamBufferPool = newProxyBufferPool(htmlToolbarStreamChunkSize)
 
 type htmlResponseMutationOptions struct {
 	rewrite       bool
@@ -5542,53 +5659,117 @@ func logHTMLProxyMutation(opts htmlResponseMutationOptions, resp *http.Response,
 	}
 }
 
+type toolbarStreamSegment struct {
+	data   []byte
+	text   string
+	offset int
+}
+
 type streamingToolbarReadCloser struct {
-	source    io.ReadCloser
-	toolbar   []byte
-	pending   []byte
-	output    []byte
-	scratch   []byte
-	injected  bool
-	sawHTML   bool
-	readError error
+	source  io.ReadCloser
+	toolbar string
+	scratch []byte
+
+	pending     [htmlToolbarStreamTailBytes]byte
+	emitPrefix  [htmlToolbarStreamTailBytes]byte
+	pendingLen  int
+	segments    [htmlToolbarStreamMaxSegments]toolbarStreamSegment
+	segmentNext int
+	segmentLen  int
+
+	injected        bool
+	sawHTML         bool
+	readError       error
+	scratchReleased bool
 }
 
 func newStreamingToolbarReadCloser(source io.ReadCloser, toolbarHTML string) io.ReadCloser {
+	scratch := htmlToolbarStreamBufferPool.Get()
+	if len(scratch) < htmlToolbarStreamChunkSize {
+		scratch = make([]byte, htmlToolbarStreamChunkSize)
+	}
 	return &streamingToolbarReadCloser{
 		source:  source,
-		toolbar: []byte(toolbarHTML),
-		scratch: make([]byte, htmlToolbarStreamChunkSize),
+		toolbar: toolbarHTML,
+		scratch: scratch[:htmlToolbarStreamChunkSize],
 	}
 }
 
 func (rc *streamingToolbarReadCloser) Read(p []byte) (int, error) {
-	for len(rc.output) == 0 && rc.readError == nil {
+	if len(p) == 0 {
+		return 0, nil
+	}
+	for {
+		if n := rc.readSegments(p); n > 0 {
+			return n, nil
+		}
+		if rc.readError != nil {
+			rc.releaseScratch()
+			return 0, rc.readError
+		}
 		rc.readMore()
 	}
-	if len(rc.output) > 0 {
-		n := copy(p, rc.output)
-		rc.output = rc.output[n:]
-		return n, nil
-	}
-	if rc.readError != nil {
-		return 0, rc.readError
-	}
-	return 0, io.EOF
 }
 
 func (rc *streamingToolbarReadCloser) Close() error {
-	if rc == nil || rc.source == nil {
+	if rc == nil {
 		return nil
 	}
-	return rc.source.Close()
+	rc.releaseScratch()
+	if rc.source == nil {
+		return nil
+	}
+	source := rc.source
+	rc.source = nil
+	return source.Close()
+}
+
+func (rc *streamingToolbarReadCloser) releaseScratch() {
+	if rc == nil || rc.scratchReleased {
+		return
+	}
+	rc.scratchReleased = true
+	if rc.scratch != nil {
+		htmlToolbarStreamBufferPool.Put(rc.scratch)
+		rc.scratch = nil
+	}
+}
+
+func (rc *streamingToolbarReadCloser) readSegments(p []byte) int {
+	for rc.segmentNext < rc.segmentLen {
+		segment := &rc.segments[rc.segmentNext]
+		var n int
+		if segment.data != nil {
+			n = copy(p, segment.data[segment.offset:])
+			if segment.offset+n == len(segment.data) {
+				rc.segmentNext++
+			} else {
+				segment.offset += n
+			}
+		} else {
+			n = copy(p, segment.text[segment.offset:])
+			if segment.offset+n == len(segment.text) {
+				rc.segmentNext++
+			} else {
+				segment.offset += n
+			}
+		}
+		if n > 0 {
+			return n
+		}
+	}
+	return 0
 }
 
 func (rc *streamingToolbarReadCloser) readMore() {
+	rc.segmentNext = 0
+	rc.segmentLen = 0
 	if rc.source == nil {
 		rc.finish()
 		rc.readError = io.EOF
 		return
 	}
+
 	n, err := rc.source.Read(rc.scratch)
 	if n > 0 {
 		rc.process(rc.scratch[:n])
@@ -5606,33 +5787,76 @@ func (rc *streamingToolbarReadCloser) readMore() {
 
 func (rc *streamingToolbarReadCloser) process(chunk []byte) {
 	if rc.injected {
-		rc.output = append(rc.output, chunk...)
+		rc.appendBytes(chunk)
 		return
 	}
 
-	combined := make([]byte, 0, len(rc.pending)+len(chunk))
-	combined = append(combined, rc.pending...)
-	combined = append(combined, chunk...)
-	if containsAnyHTMLMarkerFoldASCII(combined) {
+	oldPendingLen := rc.pendingLen
+	copy(rc.emitPrefix[:oldPendingLen], rc.pending[:oldPendingLen])
+	oldPending := rc.emitPrefix[:oldPendingLen]
+	if !rc.sawHTML && containsAnyHTMLMarkerAcrossChunks(oldPending, chunk) {
 		rc.sawHTML = true
 	}
-	if idx := indexFoldASCII(combined, htmlBodyCloseMarker); idx >= 0 {
-		rc.output = append(rc.output, combined[:idx]...)
-		rc.output = append(rc.output, rc.toolbar...)
-		rc.output = append(rc.output, combined[idx:]...)
-		rc.pending = rc.pending[:0]
+
+	if idx := indexFoldASCIIChunks(oldPending, chunk, htmlBodyCloseMarker); idx >= 0 {
+		rc.appendLogicalRange(oldPending, chunk, 0, idx)
+		rc.appendString(rc.toolbar)
+		rc.appendLogicalRange(oldPending, chunk, idx, len(oldPending)+len(chunk))
+		rc.pendingLen = 0
 		rc.injected = true
 		return
 	}
 
-	tail := htmlToolbarStreamTailBytes
-	if len(combined) > tail {
-		flushLen := len(combined) - tail
-		rc.output = append(rc.output, combined[:flushLen]...)
-		rc.pending = append(rc.pending[:0], combined[flushLen:]...)
+	totalLen := len(oldPending) + len(chunk)
+	keepLen := min(totalLen, htmlToolbarStreamTailBytes)
+	flushLen := totalLen - keepLen
+	rc.appendLogicalRange(oldPending, chunk, 0, flushLen)
+	rc.copyLogicalRangeToPending(oldPending, chunk, flushLen, totalLen)
+}
+
+func (rc *streamingToolbarReadCloser) appendLogicalRange(prefix []byte, chunk []byte, start int, end int) {
+	if start >= end {
 		return
 	}
-	rc.pending = append(rc.pending[:0], combined...)
+	if start < len(prefix) {
+		prefixEnd := min(end, len(prefix))
+		rc.appendBytes(prefix[start:prefixEnd])
+	}
+	if end > len(prefix) {
+		chunkStart := max(0, start-len(prefix))
+		rc.appendBytes(chunk[chunkStart : end-len(prefix)])
+	}
+}
+
+func (rc *streamingToolbarReadCloser) copyLogicalRangeToPending(prefix []byte, chunk []byte, start int, end int) {
+	rc.pendingLen = 0
+	if start >= end {
+		return
+	}
+	if start < len(prefix) {
+		prefixEnd := min(end, len(prefix))
+		rc.pendingLen += copy(rc.pending[rc.pendingLen:], prefix[start:prefixEnd])
+	}
+	if end > len(prefix) {
+		chunkStart := max(0, start-len(prefix))
+		rc.pendingLen += copy(rc.pending[rc.pendingLen:], chunk[chunkStart:end-len(prefix)])
+	}
+}
+
+func (rc *streamingToolbarReadCloser) appendBytes(data []byte) {
+	if len(data) == 0 {
+		return
+	}
+	rc.segments[rc.segmentLen] = toolbarStreamSegment{data: data}
+	rc.segmentLen++
+}
+
+func (rc *streamingToolbarReadCloser) appendString(text string) {
+	if text == "" {
+		return
+	}
+	rc.segments[rc.segmentLen] = toolbarStreamSegment{text: text}
+	rc.segmentLen++
 }
 
 func (rc *streamingToolbarReadCloser) finish() {
@@ -5640,18 +5864,65 @@ func (rc *streamingToolbarReadCloser) finish() {
 		return
 	}
 	rc.flushPending()
-	if rc.sawHTML && len(rc.toolbar) > 0 {
-		rc.output = append(rc.output, rc.toolbar...)
+	if rc.sawHTML && rc.toolbar != "" {
+		rc.appendString(rc.toolbar)
 		rc.injected = true
 	}
 }
 
 func (rc *streamingToolbarReadCloser) flushPending() {
-	if len(rc.pending) == 0 {
+	if rc.pendingLen == 0 {
 		return
 	}
-	rc.output = append(rc.output, rc.pending...)
-	rc.pending = rc.pending[:0]
+	rc.appendBytes(rc.pending[:rc.pendingLen])
+	rc.pendingLen = 0
+}
+
+func containsAnyHTMLMarkerAcrossChunks(prefix []byte, chunk []byte) bool {
+	if containsAnyHTMLMarkerFoldASCII(chunk) {
+		return true
+	}
+	if len(prefix) == 0 {
+		return false
+	}
+
+	var boundary [htmlToolbarStreamTailBytes * 2]byte
+	n := copy(boundary[:], prefix)
+	n += copy(boundary[n:], chunk[:min(len(chunk), htmlToolbarStreamTailBytes)])
+	return containsAnyHTMLMarkerFoldASCII(boundary[:n])
+}
+
+func indexFoldASCIIChunks(prefix []byte, chunk []byte, marker []byte) int {
+	if idx := indexFoldASCII(prefix, marker); idx >= 0 {
+		return idx
+	}
+	if len(prefix) > 0 && len(marker) > 1 {
+		start := max(0, len(prefix)-len(marker)+1)
+		totalLen := len(prefix) + len(chunk)
+		for i := start; i < len(prefix) && i+len(marker) <= totalLen; i++ {
+			matched := true
+			for j := range marker {
+				position := i + j
+				var value byte
+				if position < len(prefix) {
+					value = prefix[position]
+				} else {
+					value = chunk[position-len(prefix)]
+				}
+				if lowerASCII(value) != lowerASCII(marker[j]) {
+					matched = false
+					break
+				}
+			}
+			if matched {
+				return i
+			}
+		}
+	}
+	if idx := indexFoldASCII(chunk, marker); idx >= 0 {
+		return len(prefix) + idx
+	}
+	return -1
 }
 
 func mutateHTMLProxyBody(body []byte, rewrite bool, prefix string, toolbarHTML string) []byte {
@@ -5893,6 +6164,7 @@ type authCheckPlan struct {
 	abortConnection    bool
 	accessDeniedReason string
 	errorPage          *authCheckErrorPage
+	cacheScope         pb.AuthCacheScope
 }
 
 type authCheckExecution struct {
@@ -5900,7 +6172,211 @@ type authCheckExecution struct {
 	plan  authCheckPlan
 }
 
-func (h *Handler) performAuthCheck(r *http.Request, authConfig models.AuthConfig, clientIP string, accessMode string, requestID string) authCheckPlan {
+type combinedHTTPAuthExecution struct {
+	preflight preflightDecision
+	auth      authCheckExecution
+	handled   bool
+}
+
+func preflightStopsHTTPAuthorization(decision preflightDecision) bool {
+	return decision.deny || decision.accessDeniedReason != "" || decision.redirectLocation != ""
+}
+
+func (h *Handler) cachedCombinedHTTPAuth(r *http.Request, authConfig models.AuthConfig, now time.Time, preflightLookup preflightCacheLookup, canPreflightLookup bool, authLookup authCacheLookup, canAuthLookup bool) (preflightDecision, bool, authCheckExecution, bool) {
+	var preflight preflightDecision
+	preflightHit := false
+	if canPreflightLookup && preflightCacheTTL(authConfig) > 0 {
+		if entry, ok := h.preflightCacheGet(preflightLookup.cacheKey, now); ok {
+			if shouldBypassFNAppNegativePreflightCache(r, entry.decision) {
+				h.preflightCache.mu.Lock()
+				h.preflightCache.deleteEntryLocked(preflightLookup.cacheKey)
+				h.preflightCache.mu.Unlock()
+			} else {
+				preflight = entry.decision
+				preflightHit = true
+			}
+		}
+	}
+
+	authExecution := authCheckExecution{}
+	authHit := false
+	if canAuthLookup && authCacheEnabled(authConfig) {
+		if entry, cacheKey, ok := h.cachedAuthEntry(authLookup, now); ok {
+			if shouldBypassFNAppUnauthorizedAuthCache(r, entry.result) {
+				h.authCache.mu.Lock()
+				h.authCache.deleteEntryLocked(cacheKey)
+				h.authCache.mu.Unlock()
+			} else {
+				authExecution.entry = &entry
+				authHit = true
+			}
+		}
+	}
+	return preflight, preflightHit, authExecution, authHit
+}
+
+func (h *Handler) storeCombinedHTTPAuth(r *http.Request, authConfig models.AuthConfig, response *pb.AuthorizeHttpResponse, execution combinedHTTPAuthExecution, preflightLookup preflightCacheLookup, canPreflightLookup bool, authLookup authCacheLookup, canAuthLookup bool) combinedHTTPAuthExecution {
+	now := time.Now()
+	if canPreflightLookup && response.GetPreflightCacheScope() == pb.AuthCacheScope_AUTH_CACHE_SCOPE_EXACT_REQUEST {
+		if ttl := preflightCacheTTL(authConfig); ttl > 0 && !shouldBypassFNAppNegativePreflightCache(r, execution.preflight) {
+			h.preflightCacheStore(preflightLookup.cacheKey, preflightCacheEntry{
+				decision:    execution.preflight,
+				expiresAt:   now.Add(ttl),
+				identityKey: preflightLookup.identityKey,
+			}, now)
+		}
+	}
+
+	plan := execution.auth.plan
+	if !canAuthLookup || plan.errorPage != nil || len(plan.setCookies) > 0 || shouldBypassFNAppUnauthorizedAuthCache(r, plan.result) {
+		return execution
+	}
+	ttl := authCacheTTL(authConfig, plan.result)
+	if ttl <= 0 {
+		return execution
+	}
+	cacheKey := ""
+	switch response.GetVerifyCacheScope() {
+	case pb.AuthCacheScope_AUTH_CACHE_SCOPE_EXACT_REQUEST:
+		cacheKey = authLookup.cacheKey
+	case pb.AuthCacheScope_AUTH_CACHE_SCOPE_HOST:
+		cacheKey = authLookup.hostCacheKey
+	}
+	if cacheKey == "" {
+		return execution
+	}
+	entry := authCacheEntry{
+		result:           plan.result,
+		setCookies:       copySetCookieHeaders(plan.setCookies),
+		redirectLocation: plan.redirectLocation,
+		abortConnection:  plan.abortConnection,
+		expiresAt:        now.Add(ttl),
+		identityKey:      authLookup.identityKey,
+	}
+	h.authCacheStore(cacheKey, entry, now)
+	execution.auth = authCheckExecution{entry: &entry}
+	return execution
+}
+
+func (h *Handler) executeCombinedHTTPAuth(r *http.Request, authConfig models.AuthConfig, clientIP string, accessMode string, isMatch bool, requestID string, requestAuth *requestAuthContext) (combinedHTTPAuthExecution, bool) {
+	bridge := h.authBridgeManager()
+	if bridge == nil || !bridge.SupportsCapability(rpcbridge.CapabilityAuthorizeHTTPV1) {
+		return combinedHTTPAuthExecution{}, false
+	}
+
+	preflightLookup, canPreflightLookup := buildPreflightCacheLookup(r, clientIP, accessMode, isMatch)
+	authLookup, canAuthLookup := buildAuthCacheLookup(r, clientIP, accessMode)
+	resolveCached := func(callRequest *http.Request, preflight preflightDecision, preflightHit bool, authExecution authCheckExecution, authHit bool) (combinedHTTPAuthExecution, bool) {
+		switch {
+		case preflightHit && (preflightStopsHTTPAuthorization(preflight) || authHit):
+			return combinedHTTPAuthExecution{preflight: preflight, auth: authExecution, handled: true}, true
+		case preflightHit:
+			authExecution = h.executeAuthCheck(callRequest, authConfig, clientIP, accessMode, requestID, requestAuth)
+			return combinedHTTPAuthExecution{preflight: preflight, auth: authExecution, handled: true}, true
+		case authHit:
+			preflight = h.runPreflight(callRequest, authConfig, clientIP, isMatch, accessMode, requestID, requestAuth)
+			return combinedHTTPAuthExecution{preflight: preflight, auth: authExecution, handled: true}, true
+		default:
+			return combinedHTTPAuthExecution{}, false
+		}
+	}
+	preflight, preflightHit, authExecution, authHit := h.cachedCombinedHTTPAuth(r, authConfig, time.Now(), preflightLookup, canPreflightLookup, authLookup, canAuthLookup)
+	if !preflightHit && h.preflightSkipUntilUnixNano.Load() > time.Now().UnixNano() {
+		if !authHit {
+			authExecution = h.executeAuthCheck(r, authConfig, clientIP, accessMode, requestID, requestAuth)
+		}
+		return combinedHTTPAuthExecution{auth: authExecution, handled: true}, true
+	}
+	if preflightHit || authHit {
+		return resolveCached(r, preflight, preflightHit, authExecution, authHit)
+	}
+
+	run := func(callRequest *http.Request) combinedHTTPAuthExecution {
+		if preflight, preflightHit, authExecution, authHit := h.cachedCombinedHTTPAuth(callRequest, authConfig, time.Now(), preflightLookup, canPreflightLookup, authLookup, canAuthLookup); preflightHit || authHit {
+			if !preflightHit && h.preflightSkipUntilUnixNano.Load() > time.Now().UnixNano() {
+				if !authHit {
+					authExecution = h.executeAuthCheck(callRequest, authConfig, clientIP, accessMode, requestID, requestAuth)
+				}
+				return combinedHTTPAuthExecution{auth: authExecution, handled: true}
+			}
+			if execution, resolved := resolveCached(callRequest, preflight, preflightHit, authExecution, authHit); resolved {
+				return execution
+			}
+		}
+		if h.preflightSkipUntilUnixNano.Load() > time.Now().UnixNano() {
+			return combinedHTTPAuthExecution{
+				auth:    h.executeAuthCheck(callRequest, authConfig, clientIP, accessMode, requestID, requestAuth),
+				handled: true,
+			}
+		}
+
+		start := time.Now()
+		ctx, cancel := context.WithTimeout(callRequest.Context(), 5*time.Second)
+		defer cancel()
+		response, err := bridge.AuthorizeHTTP(ctx, &pb.AuthorizeHttpRequest{
+			Context: requestAuth.proto(false),
+			Matched: isMatch,
+			Mode:    pb.HttpAuthMode_HTTP_AUTH_MODE_PREFLIGHT_AND_VERIFY,
+		})
+		if err != nil {
+			if err == rpcbridge.ErrAuthBridgeCapabilityUnsupported {
+				return combinedHTTPAuthExecution{}
+			}
+			cooldownUntil := time.Now().Add(preflightFailureCooldown).UnixNano()
+			h.preflightSkipUntilUnixNano.Store(cooldownUntil)
+			if event := debugProxyEvent("authorize_http_request_failed", requestID); event != nil {
+				event.Str("error", logger.SanitizeLogString(err.Error())).
+					Int64("duration_ms", time.Since(start).Milliseconds()).
+					Send()
+			}
+			return combinedHTTPAuthExecution{auth: canceledAuthCheckExecution(err), handled: true}
+		}
+		h.preflightSkipUntilUnixNano.Store(0)
+		if response.GetPreflight() == nil {
+			return combinedHTTPAuthExecution{auth: canceledAuthCheckExecution(fmt.Errorf("auth bridge returned no preflight response")), handled: true}
+		}
+		execution := combinedHTTPAuthExecution{
+			preflight: h.preflightDecisionFromResponse(response.GetPreflight(), requestID, start),
+			handled:   true,
+		}
+		if preflightStopsHTTPAuthorization(execution.preflight) {
+			return h.storeCombinedHTTPAuth(callRequest, authConfig, response, execution, preflightLookup, canPreflightLookup, authLookup, canAuthLookup)
+		}
+		if response.GetVerify() == nil {
+			execution.auth = canceledAuthCheckExecution(fmt.Errorf("auth bridge returned no verify response"))
+			return execution
+		}
+		execution.auth.plan = h.authCheckPlanFromResponse(callRequest, authConfig, accessMode, requestID, start, response.GetVerify())
+		return h.storeCombinedHTTPAuth(callRequest, authConfig, response, execution, preflightLookup, canPreflightLookup, authLookup, canAuthLookup)
+	}
+
+	useSingleflight := (canPreflightLookup && preflightCacheTTL(authConfig) > 0) || (canAuthLookup && authCacheEnabled(authConfig))
+	if !useSingleflight {
+		execution := run(r)
+		if !execution.handled {
+			return combinedHTTPAuthExecution{}, false
+		}
+		return execution, true
+	}
+
+	sharedRequest := r.WithContext(context.WithoutCancel(r.Context()))
+	key := "authorize-http:" + preflightLookup.cacheKey + ":" + authLookup.cacheKey
+	resultCh := h.authCache.group.DoChan(key, func() (any, error) {
+		return run(sharedRequest), nil
+	})
+	select {
+	case result := <-resultCh:
+		execution, _ := result.Val.(combinedHTTPAuthExecution)
+		if !execution.handled {
+			return combinedHTTPAuthExecution{}, false
+		}
+		return execution, true
+	case <-r.Context().Done():
+		return combinedHTTPAuthExecution{auth: canceledAuthCheckExecution(r.Context().Err()), handled: true}, true
+	}
+}
+
+func (h *Handler) performAuthCheck(r *http.Request, authConfig models.AuthConfig, clientIP string, accessMode string, requestID string, requestAuth *requestAuthContext) authCheckPlan {
 	if strings.TrimSpace(authConfig.AuthURL) == "" {
 		if event := debugProxyEvent("auth_check_missing_auth_url", requestID); event != nil {
 			event.Send()
@@ -5943,11 +6419,31 @@ func (h *Handler) performAuthCheck(r *http.Request, authConfig models.AuthConfig
 			},
 		}
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
-	resp, err := bridge.VerifyAuth(ctx, &pb.VerifyAuthRequest{
-		Context: authContextFromRequest(r, clientIP, accessMode),
-	})
+	var resp *pb.VerifyAuthResponse
+	var err error
+	cacheScope := pb.AuthCacheScope_AUTH_CACHE_SCOPE_EXACT_REQUEST
+	supportsCombined := bridge.SupportsCapability(rpcbridge.CapabilityAuthorizeHTTPV1)
+	if supportsCombined {
+		var combined *pb.AuthorizeHttpResponse
+		combined, err = bridge.AuthorizeHTTP(ctx, &pb.AuthorizeHttpRequest{
+			Context: requestAuth.proto(false),
+			Mode:    pb.HttpAuthMode_HTTP_AUTH_MODE_VERIFY_ONLY,
+		})
+		if err == nil {
+			resp = combined.GetVerify()
+			cacheScope = combined.GetVerifyCacheScope()
+			if resp == nil {
+				err = fmt.Errorf("auth bridge returned no verify response")
+			}
+		}
+	}
+	if !supportsCombined || err == rpcbridge.ErrAuthBridgeCapabilityUnsupported {
+		resp, err = bridge.VerifyAuth(ctx, &pb.VerifyAuthRequest{
+			Context: requestAuth.proto(true),
+		})
+	}
 	if err != nil {
 		if event := debugProxyEvent("auth_check_request_failed", requestID); event != nil {
 			event.Str("transport", "auth_bridge").
@@ -5965,6 +6461,12 @@ func (h *Handler) performAuthCheck(r *http.Request, authConfig models.AuthConfig
 			},
 		}
 	}
+	plan := h.authCheckPlanFromResponse(r, authConfig, accessMode, requestID, start, resp)
+	plan.cacheScope = cacheScope
+	return plan
+}
+
+func (h *Handler) authCheckPlanFromResponse(r *http.Request, authConfig models.AuthConfig, accessMode string, requestID string, start time.Time, resp *pb.VerifyAuthResponse) authCheckPlan {
 	responseHeaders := protoHeadersToHTTP(resp.GetResponseHeaders())
 	setCookies := copySetCookieHeaders(append(copySetCookieHeaders(resp.GetSetCookies()), responseHeaders.Values("Set-Cookie")...))
 	statusCode := int(resp.GetStatus())
@@ -6201,7 +6703,30 @@ func shouldProbeAuthForToolbar(r *http.Request, authConfig models.AuthConfig, po
 		!response.ShouldSuppressToolbarForUserAgent(r.UserAgent())
 }
 
-func (h *Handler) executeAuthCheck(r *http.Request, authConfig models.AuthConfig, clientIP string, accessMode string, requestID string) authCheckExecution {
+func (h *Handler) cachedAuthEntry(lookup authCacheLookup, now time.Time) (authCacheEntry, string, bool) {
+	if entry, ok := h.authCacheGet(lookup.cacheKey, now); ok {
+		return entry, lookup.cacheKey, true
+	}
+	if lookup.hostCacheKey != "" {
+		if entry, ok := h.authCacheGet(lookup.hostCacheKey, now); ok {
+			return entry, lookup.hostCacheKey, true
+		}
+	}
+	return authCacheEntry{}, "", false
+}
+
+func canceledAuthCheckExecution(_ error) authCheckExecution {
+	return authCheckExecution{plan: authCheckPlan{
+		result: authCheckResult{decision: "error"},
+		errorPage: &authCheckErrorPage{
+			code:    errors.CodeProxyAuthFailed,
+			title:   "Authentication Service Unavailable",
+			message: "Authentication Service Unavailable",
+		},
+	}}
+}
+
+func (h *Handler) executeAuthCheck(r *http.Request, authConfig models.AuthConfig, clientIP string, accessMode string, requestID string, requestAuth *requestAuthContext) authCheckExecution {
 	now := time.Now()
 	useCache := authCacheEnabled(authConfig)
 	lookup, canLookup := buildAuthCacheLookup(r, clientIP, accessMode)
@@ -6213,10 +6738,10 @@ func (h *Handler) executeAuthCheck(r *http.Request, authConfig models.AuthConfig
 	}
 
 	if useCache && canLookup {
-		if entry, ok := h.authCacheGet(lookup.cacheKey, now); ok {
+		if entry, cacheKey, ok := h.cachedAuthEntry(lookup, now); ok {
 			if shouldBypassFNAppUnauthorizedAuthCache(r, entry.result) {
 				h.authCache.mu.Lock()
-				h.authCache.deleteEntryLocked(lookup.cacheKey)
+				h.authCache.deleteEntryLocked(cacheKey)
 				h.authCache.mu.Unlock()
 				if event := debugProxyEvent("auth_cache_bypassed", requestID); event != nil {
 					event.Str("reason", "fn_app_unauthorized").Send()
@@ -6233,11 +6758,12 @@ func (h *Handler) executeAuthCheck(r *http.Request, authConfig models.AuthConfig
 			}
 		}
 
-		executionAny, _, _ := h.authCache.group.Do(lookup.cacheKey, func() (any, error) {
-			if entry, ok := h.authCacheGet(lookup.cacheKey, time.Now()); ok {
+		sharedRequest := r.WithContext(context.WithoutCancel(r.Context()))
+		resultCh := h.authCache.group.DoChan(lookup.cacheKey, func() (any, error) {
+			if entry, cacheKey, ok := h.cachedAuthEntry(lookup, time.Now()); ok {
 				if shouldBypassFNAppUnauthorizedAuthCache(r, entry.result) {
 					h.authCache.mu.Lock()
-					h.authCache.deleteEntryLocked(lookup.cacheKey)
+					h.authCache.deleteEntryLocked(cacheKey)
 					h.authCache.mu.Unlock()
 					if event := debugProxyEvent("auth_cache_bypassed", requestID); event != nil {
 						event.Str("reason", "fn_app_unauthorized_singleflight").Send()
@@ -6254,9 +6780,19 @@ func (h *Handler) executeAuthCheck(r *http.Request, authConfig models.AuthConfig
 				}
 			}
 
-			plan := h.performAuthCheck(r, authConfig, clientIP, accessMode, requestID)
+			plan := h.performAuthCheck(sharedRequest, authConfig, clientIP, accessMode, requestID, requestAuth)
 			if plan.errorPage == nil && len(plan.setCookies) == 0 {
 				if ttl := authCacheTTL(authConfig, plan.result); ttl > 0 {
+					cacheKey := ""
+					switch plan.cacheScope {
+					case pb.AuthCacheScope_AUTH_CACHE_SCOPE_EXACT_REQUEST:
+						cacheKey = lookup.cacheKey
+					case pb.AuthCacheScope_AUTH_CACHE_SCOPE_HOST:
+						cacheKey = lookup.hostCacheKey
+					}
+					if cacheKey == "" {
+						return authCheckExecution{plan: plan}, nil
+					}
 					entry := authCacheEntry{
 						result:           plan.result,
 						setCookies:       copySetCookieHeaders(plan.setCookies),
@@ -6266,7 +6802,7 @@ func (h *Handler) executeAuthCheck(r *http.Request, authConfig models.AuthConfig
 						identityKey:      lookup.identityKey,
 					}
 					if !shouldBypassFNAppUnauthorizedAuthCache(r, plan.result) {
-						h.authCacheStore(lookup.cacheKey, entry, time.Now())
+						h.authCacheStore(cacheKey, entry, time.Now())
 						if event := debugProxyEvent("auth_cache_store", requestID); event != nil {
 							event.Str("decision", entry.result.decision).
 								Bool("allowed", entry.result.allowed).
@@ -6281,12 +6817,16 @@ func (h *Handler) executeAuthCheck(r *http.Request, authConfig models.AuthConfig
 
 			return authCheckExecution{plan: plan}, nil
 		})
-
-		execution, _ := executionAny.(authCheckExecution)
-		return execution
+		select {
+		case result := <-resultCh:
+			execution, _ := result.Val.(authCheckExecution)
+			return execution
+		case <-r.Context().Done():
+			return canceledAuthCheckExecution(r.Context().Err())
+		}
 	}
 
-	plan := h.performAuthCheck(r, authConfig, clientIP, accessMode, requestID)
+	plan := h.performAuthCheck(r, authConfig, clientIP, accessMode, requestID, requestAuth)
 	return authCheckExecution{plan: plan}
 }
 
@@ -6315,16 +6855,21 @@ func (h *Handler) applyToolbarAuthCheckPlan(w http.ResponseWriter, r *http.Reque
 	return authCheckResult{allowed: true, decision: "not_required"}
 }
 
-func (h *Handler) checkAuthForToolbar(w http.ResponseWriter, r *http.Request, authConfig models.AuthConfig, clientIP string, requestID string) authCheckResult {
-	execution := h.executeAuthCheck(r, authConfig, clientIP, "", requestID)
+func (h *Handler) checkAuthForToolbar(w http.ResponseWriter, r *http.Request, authConfig models.AuthConfig, clientIP string, requestID string, requestAuth *requestAuthContext) authCheckResult {
+	execution := h.executeAuthCheck(r, authConfig, clientIP, "", requestID, requestAuth)
 	if execution.entry != nil {
 		return h.applyToolbarAuthCacheEntry(w, r, *execution.entry, clientIP)
 	}
 	return h.applyToolbarAuthCheckPlan(w, r, execution.plan, clientIP)
 }
 
-func (h *Handler) checkAuth(w http.ResponseWriter, r *http.Request, authConfig models.AuthConfig, clientIP string, accessMode string, upstreamTarget string, requestID string) authCheckResult {
-	execution := h.executeAuthCheck(r, authConfig, clientIP, accessMode, requestID)
+func (h *Handler) checkAuth(w http.ResponseWriter, r *http.Request, authConfig models.AuthConfig, clientIP string, accessMode string, upstreamTarget string, requestID string, requestAuth *requestAuthContext, prepared *authCheckExecution) authCheckResult {
+	execution := authCheckExecution{}
+	if prepared != nil {
+		execution = *prepared
+	} else {
+		execution = h.executeAuthCheck(r, authConfig, clientIP, accessMode, requestID, requestAuth)
+	}
 	if execution.entry != nil {
 		return h.applyAuthCacheEntry(w, r, *execution.entry, clientIP, upstreamTarget)
 	}

@@ -118,6 +118,19 @@ func TestAuthBridgeGRPCRoundTrip(t *testing.T) {
 	t.Cleanup(func() {
 		_ = stream.CloseSend()
 	})
+	headerErr := make(chan error, 1)
+	go func() {
+		_, err := stream.Header()
+		headerErr <- err
+	}()
+	select {
+	case err := <-headerErr:
+		if err != nil {
+			t.Fatalf("auth bridge initial headers: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("auth bridge did not send initial headers before Ready")
+	}
 
 	waitForConnectedBridge(t, manager)
 	if err := stream.Send(&pb.AuthBridgeEnvelope{

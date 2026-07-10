@@ -103,6 +103,12 @@ func (m *AuthBridgeManager) ConnectAuthBridge(stream pb.AuthBridgeService_Connec
 	if err := CheckInternalToken(stream.Context(), m.token); err != nil {
 		return err
 	}
+	// Tonic waits for the server's initial response headers before it resolves a
+	// bidirectional streaming call. Flush them before waiting for the Rust side's
+	// Ready envelope, otherwise both peers can wait for one another indefinitely.
+	if err := stream.SendHeader(metadata.MD{}); err != nil {
+		return status.Errorf(codes.Unavailable, "send auth bridge initial headers: %v", err)
+	}
 
 	active := m.attachStream(stream)
 

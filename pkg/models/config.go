@@ -1,6 +1,29 @@
 package models
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"strings"
+)
+
+const (
+	HostProtocolModeAuto  = "auto"
+	HostProtocolModeHTTP1 = "http1"
+	HostProtocolModeHTTP2 = "http2"
+)
+
+// NormalizeHostProtocolMode keeps host protocol configuration forward-compatible.
+// Missing and unknown values preserve the historical behavior: prefer HTTP/2 and
+// allow HTTP/1.1 fallback.
+func NormalizeHostProtocolMode(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case HostProtocolModeHTTP1:
+		return HostProtocolModeHTTP1
+	case HostProtocolModeHTTP2:
+		return HostProtocolModeHTTP2
+	default:
+		return HostProtocolModeAuto
+	}
+}
 
 type Rule struct {
 	Path        string `json:"path" example:"/api"`                  // Path prefix to match (e.g., "/api")
@@ -14,6 +37,7 @@ type Rule struct {
 type HostRule struct {
 	Host            string                `json:"host" example:"redis.example.com"`
 	Target          string                `json:"target" example:"http://127.0.0.1:5173"`
+	ProtocolMode    string                `json:"protocol_mode,omitempty" example:"auto"`
 	UseAuth         bool                  `json:"use_auth" example:"true"`
 	AccessMode      string                `json:"access_mode,omitempty" example:"login_first"`
 	SuppressToolbar bool                  `json:"suppress_toolbar,omitempty" example:"false"`

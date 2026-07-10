@@ -10,6 +10,7 @@ import (
 	"go-reauth-proxy/pkg/events"
 	"go-reauth-proxy/pkg/gatewaylog"
 	"go-reauth-proxy/pkg/logger"
+	"go-reauth-proxy/pkg/models"
 	"go-reauth-proxy/pkg/proxy"
 	"go-reauth-proxy/pkg/rpcbridge"
 	"go-reauth-proxy/pkg/stream"
@@ -49,6 +50,97 @@ type proxyStack struct {
 
 	stop     func()
 	rebindCh chan struct{}
+}
+
+type trackedProxyConnState struct {
+	mu         sync.Mutex
+	state      http.ConnState
+	serverName string
+	retiring   bool
+	closing    bool
+}
+
+type proxyConnTracker struct {
+	m sync.Map
+}
+
+type tlsConnectionStateProvider interface {
+	ConnectionState() tls.ConnectionState
+}
+
+func (t *proxyConnTracker) update(c net.Conn, state http.ConnState) {
+	if t == nil || c == nil {
+		return
+	}
+	if state == http.StateClosed || state == http.StateHijacked {
+		t.m.Delete(c)
+		return
+	}
+	value, _ := t.m.LoadOrStore(c, &trackedProxyConnState{})
+	tracked, ok := value.(*trackedProxyConnState)
+	if !ok || tracked == nil {
+		return
+	}
+	serverName := ""
+	if tlsConn, ok := c.(tlsConnectionStateProvider); ok && (state == http.StateActive || state == http.StateIdle) {
+		if current := strings.TrimSpace(tlsConn.ConnectionState().ServerName); current != "" {
+			serverName = strings.ToLower(current)
+		}
+	}
+	tracked.mu.Lock()
+	tracked.state = state
+	if serverName != "" {
+		tracked.serverName = serverName
+	}
+	shouldClose := state == http.StateIdle && tracked.retiring && !tracked.closing
+	if shouldClose {
+		tracked.closing = true
+	}
+	tracked.mu.Unlock()
+	if shouldClose {
+		// Closing a TLS connection can block while close_notify is written. Keep
+		// that I/O outside tracked.mu so retirement scans and other state updates
+		// are never serialized behind a slow peer. ConnState invokes this callback
+		// synchronously, so Close still happens before the idle transition returns.
+		_ = c.Close()
+	}
+}
+
+func (t *proxyConnTracker) retireForServerNames(serverNames []string) {
+	if t == nil {
+		return
+	}
+	closeAll := serverNames == nil
+	filter := make(map[string]struct{}, len(serverNames))
+	for _, serverName := range serverNames {
+		if normalized := strings.ToLower(strings.TrimSpace(serverName)); normalized != "" {
+			filter[normalized] = struct{}{}
+		}
+	}
+	if !closeAll && len(filter) == 0 {
+		return
+	}
+	t.m.Range(func(key, value any) bool {
+		tracked, ok := value.(*trackedProxyConnState)
+		if !ok || tracked == nil {
+			return true
+		}
+		tracked.mu.Lock()
+		if !closeAll {
+			if _, affected := filter[strings.ToLower(strings.TrimSpace(tracked.serverName))]; !affected {
+				tracked.mu.Unlock()
+				return true
+			}
+		}
+		// Do not close an observed-idle connection here: a new request can race
+		// between observing StateIdle and Close. Mark it instead. ConnState calls
+		// update synchronously before a handler starts, so the connection is closed
+		// safely the next time it transitions back to StateIdle. The request-level
+		// 421 guard remains the fallback for that one reuse.
+		tracked.retiring = true
+		tracked.mu.Unlock()
+		return true
+	})
 }
 
 const (
@@ -261,21 +353,57 @@ type proxyTLSCertificateProvider interface {
 	GetCertificate(*tls.ClientHelloInfo) *tls.Certificate
 }
 
+type proxyTLSProtocolProvider interface {
+	GetHostProtocolMode(serverName string) string
+}
+
 func newProxyTLSConfig(provider proxyTLSCertificateProvider) *tls.Config {
-	return &tls.Config{
-		MinVersion: tls.VersionTLS12,
-		NextProtos: []string{"h2", "http/1.1"},
-		GetCertificate: func(info *tls.ClientHelloInfo) (*tls.Certificate, error) {
-			if provider == nil {
-				return nil, fmt.Errorf("SSL not enabled")
-			}
-			cert := provider.GetCertificate(info)
-			if cert == nil {
-				return nil, fmt.Errorf("SSL not enabled")
-			}
-			return cert, nil
-		},
+	getCertificate := func(info *tls.ClientHelloInfo) (*tls.Certificate, error) {
+		if provider == nil {
+			return nil, fmt.Errorf("SSL not enabled")
+		}
+		cert := provider.GetCertificate(info)
+		if cert == nil {
+			return nil, fmt.Errorf("SSL not enabled")
+		}
+		return cert, nil
 	}
+	newLeafConfig := func(nextProtos ...string) *tls.Config {
+		return &tls.Config{
+			MinVersion:     tls.VersionTLS12,
+			NextProtos:     nextProtos,
+			GetCertificate: getCertificate,
+		}
+	}
+
+	// These leaf configs are constructed once and never mutated after they can
+	// be observed by a handshake. GetConfigForClient selects one using the
+	// handler's atomically-published host-rule snapshot.
+	autoConfig := newLeafConfig("h2", "http/1.1")
+	http1Config := newLeafConfig("http/1.1")
+	http2Config := newLeafConfig("h2")
+	protocolProvider, _ := provider.(proxyTLSProtocolProvider)
+	autoConfig.GetConfigForClient = func(info *tls.ClientHelloInfo) (*tls.Config, error) {
+		if protocolProvider == nil {
+			return nil, nil
+		}
+		serverName := ""
+		if info != nil {
+			serverName = info.ServerName
+		}
+		switch models.NormalizeHostProtocolMode(protocolProvider.GetHostProtocolMode(serverName)) {
+		case models.HostProtocolModeHTTP1:
+			return http1Config, nil
+		case models.HostProtocolModeHTTP2:
+			if info == nil || !slices.Contains(info.SupportedProtos, "h2") {
+				return nil, fmt.Errorf("HTTP/2 is required for server name %q", serverName)
+			}
+			return http2Config, nil
+		default:
+			return nil, nil
+		}
+	}
+	return autoConfig
 }
 
 func raiseNoFileLimit() {
@@ -479,39 +607,17 @@ func main() {
 		}),
 	}
 
-	type connTracker struct {
-		m sync.Map
-	}
-
-	closeIdle := func(ct *connTracker) {
-		ct.m.Range(func(key, value any) bool {
-			if state, ok := value.(http.ConnState); ok && state == http.StateIdle {
-				_ = key.(net.Conn).Close()
-			}
-			return true
-		})
-	}
-
-	httpsConns := &connTracker{}
-	httpConns := &connTracker{}
-	httpsServer.ConnState = func(c net.Conn, state http.ConnState) {
-		if state == http.StateClosed || state == http.StateHijacked {
-			httpsConns.m.Delete(c)
-			return
-		}
-		httpsConns.m.Store(c, state)
-	}
-	httpServer.ConnState = func(c net.Conn, state http.ConnState) {
-		if state == http.StateClosed || state == http.StateHijacked {
-			httpConns.m.Delete(c)
-			return
-		}
-		httpConns.m.Store(c, state)
-	}
+	httpsConns := &proxyConnTracker{}
+	httpConns := &proxyConnTracker{}
+	httpsServer.ConnState = httpsConns.update
+	httpServer.ConnState = httpConns.update
 
 	proxyHandler.SetSSLChangeHook(func() {
-		closeIdle(httpsConns)
-		closeIdle(httpConns)
+		httpsConns.retireForServerNames(nil)
+		httpConns.retireForServerNames(nil)
+	})
+	proxyHandler.SetHostProtocolModeChangeHook(func(serverNames []string) {
+		httpsConns.retireForServerNames(serverNames)
 	})
 
 	proxyStack := newProxyStack(*proxyPort, proxyHandler, httpServer, httpsServer)
@@ -530,8 +636,8 @@ func main() {
 	}
 
 	proxyHandler.SetProxyProtocolForceChangeHook(func() {
-		closeIdle(httpsConns)
-		closeIdle(httpConns)
+		httpsConns.retireForServerNames(nil)
+		httpConns.retireForServerNames(nil)
 		proxyStack.RequestRebind()
 	})
 

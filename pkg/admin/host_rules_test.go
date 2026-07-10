@@ -108,6 +108,7 @@ func TestHostRulesAdminPreservesDisabledAndAvailability(t *testing.T) {
 		{
 			"host":"app.example.com",
 			"target":"http://127.0.0.1:8080",
+			"protocol_mode":"http1",
 			"disabled":true,
 			"availability":{"enabled":true,"start_time":"22:00","end_time":"06:00"}
 		}
@@ -131,6 +132,9 @@ func TestHostRulesAdminPreservesDisabledAndAvailability(t *testing.T) {
 	}
 	if !resp.Data[0].Disabled {
 		t.Fatalf("disabled = false, want true")
+	}
+	if resp.Data[0].ProtocolMode != models.HostProtocolModeHTTP1 {
+		t.Fatalf("protocol_mode = %q, want http1", resp.Data[0].ProtocolMode)
 	}
 	if resp.Data[0].Availability == nil ||
 		!resp.Data[0].Availability.Enabled ||

@@ -287,6 +287,7 @@ func (s *Server) handleAddHostRule(w http.ResponseWriter, r *http.Request) {
 	type hostRuleRequest struct {
 		Host            string                       `json:"host"`
 		Target          string                       `json:"target"`
+		ProtocolMode    string                       `json:"protocol_mode"`
 		UseAuth         *bool                        `json:"use_auth"`
 		AccessMode      string                       `json:"access_mode"`
 		SuppressToolbar *bool                        `json:"suppress_toolbar"`
@@ -332,6 +333,7 @@ func (s *Server) handleAddHostRule(w http.ResponseWriter, r *http.Request) {
 		rules = append(rules, models.HostRule{
 			Host:            req.Host,
 			Target:          req.Target,
+			ProtocolMode:    req.ProtocolMode,
 			UseAuth:         req.UseAuth == nil || *req.UseAuth,
 			AccessMode:      req.AccessMode,
 			SuppressToolbar: req.SuppressToolbar != nil && *req.SuppressToolbar,

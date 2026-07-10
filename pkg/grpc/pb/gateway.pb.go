@@ -661,6 +661,7 @@ type HostRule struct {
 	Locations       []*HostLocation        `protobuf:"bytes,11,rep,name=locations,proto3" json:"locations,omitempty"`
 	Disabled        bool                   `protobuf:"varint,12,opt,name=disabled,proto3" json:"disabled,omitempty"`
 	Availability    *HostRuleAvailability  `protobuf:"bytes,13,opt,name=availability,proto3" json:"availability,omitempty"`
+	ProtocolMode    string                 `protobuf:"bytes,14,opt,name=protocol_mode,json=protocolMode,proto3" json:"protocol_mode,omitempty"`
 	unknownFields   protoimpl.UnknownFields
 	sizeCache       protoimpl.SizeCache
 }
@@ -784,6 +785,13 @@ func (x *HostRule) GetAvailability() *HostRuleAvailability {
 		return x.Availability
 	}
 	return nil
+}
+
+func (x *HostRule) GetProtocolMode() string {
+	if x != nil {
+		return x.ProtocolMode
+	}
+	return ""
 }
 
 type StreamRule struct {
@@ -6021,7 +6029,7 @@ const file_fnknock_v1_gateway_proto_rawDesc = "" +
 	"\n" +
 	"strip_path\x18\x04 \x01(\bR\tstripPath\x12!\n" +
 	"\frewrite_html\x18\x05 \x01(\bR\vrewriteHtml\x12\"\n" +
-	"\ruse_root_mode\x18\x06 \x01(\bR\vuseRootMode\"\xe7\x03\n" +
+	"\ruse_root_mode\x18\x06 \x01(\bR\vuseRootMode\"\x8c\x04\n" +
 	"\bHostRule\x12\x12\n" +
 	"\x04host\x18\x01 \x01(\tR\x04host\x12\x16\n" +
 	"\x06target\x18\x02 \x01(\tR\x06target\x12\x19\n" +
@@ -6039,7 +6047,8 @@ const file_fnknock_v1_gateway_proto_rawDesc = "" +
 	" \x01(\v2\x1b.fnknock.v1.BasicAuthConfigR\tbasicAuth\x126\n" +
 	"\tlocations\x18\v \x03(\v2\x18.fnknock.v1.HostLocationR\tlocations\x12\x1a\n" +
 	"\bdisabled\x18\f \x01(\bR\bdisabled\x12D\n" +
-	"\favailability\x18\r \x01(\v2 .fnknock.v1.HostRuleAvailabilityR\favailability\"|\n" +
+	"\favailability\x18\r \x01(\v2 .fnknock.v1.HostRuleAvailabilityR\favailability\x12#\n" +
+	"\rprotocol_mode\x18\x0e \x01(\tR\fprotocolMode\"|\n" +
 	"\n" +
 	"StreamRule\x12\x1a\n" +
 	"\bprotocol\x18\x01 \x01(\tR\bprotocol\x12\x1f\n" +

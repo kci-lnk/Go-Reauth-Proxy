@@ -162,6 +162,7 @@ func hostRulesToProto(rules []models.HostRule) *pb.HostRules {
 		items = append(items, &pb.HostRule{
 			Host:            rule.Host,
 			Target:          rule.Target,
+			ProtocolMode:    rule.ProtocolMode,
 			UseAuth:         rule.UseAuth,
 			AccessMode:      rule.AccessMode,
 			SuppressToolbar: rule.SuppressToolbar,
@@ -190,6 +191,7 @@ func protoToHostRules(req *pb.HostRules) []models.HostRule {
 		rules = append(rules, models.HostRule{
 			Host:            rule.GetHost(),
 			Target:          rule.GetTarget(),
+			ProtocolMode:    rule.GetProtocolMode(),
 			UseAuth:         rule.GetUseAuth(),
 			AccessMode:      rule.GetAccessMode(),
 			SuppressToolbar: rule.GetSuppressToolbar(),

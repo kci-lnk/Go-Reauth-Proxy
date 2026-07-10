@@ -208,9 +208,24 @@ func TestHostRuleJSONOmitsEmptyOptionalFields(t *testing.T) {
 		t.Fatalf("marshal host rule: %v", err)
 	}
 
-	for _, forbidden := range []string{"access_mode", "suppress_toolbar", "preserve_host", "locations"} {
+	for _, forbidden := range []string{"protocol_mode", "access_mode", "suppress_toolbar", "preserve_host", "locations"} {
 		if strings.Contains(string(payload), forbidden) {
 			t.Fatalf("host rule included empty optional field %q: %s", forbidden, payload)
+		}
+	}
+}
+
+func TestNormalizeHostProtocolMode(t *testing.T) {
+	tests := map[string]string{
+		"":           HostProtocolModeAuto,
+		"auto":       HostProtocolModeAuto,
+		" HTTP1 ":    HostProtocolModeHTTP1,
+		"HtTp2":      HostProtocolModeHTTP2,
+		"unexpected": HostProtocolModeAuto,
+	}
+	for input, want := range tests {
+		if got := NormalizeHostProtocolMode(input); got != want {
+			t.Fatalf("NormalizeHostProtocolMode(%q) = %q, want %q", input, got, want)
 		}
 	}
 }

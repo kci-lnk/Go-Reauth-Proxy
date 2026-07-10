@@ -39,6 +39,7 @@ func TestHostRulesProtoRoundTripPreservesLocations(t *testing.T) {
 	input := []models.HostRule{{
 		Host:            "app.example.test",
 		Target:          "http://127.0.0.1:8080",
+		ProtocolMode:    models.HostProtocolModeHTTP1,
 		UseAuth:         true,
 		AccessMode:      "login_first",
 		SuppressToolbar: true,

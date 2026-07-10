@@ -107,6 +107,7 @@ type Handler struct {
 	WAFConfig             models.WAFConfig
 	sslBundle             atomic.Value
 	sslOnChange           atomic.Value
+	protocolModeOnChange  atomic.Value
 	proxyProtocolOnChange atomic.Value
 	requestState          atomic.Value
 
@@ -267,6 +268,7 @@ func debugHostRuleSummaries(rules []models.HostRule) []map[string]any {
 		out = append(out, map[string]any{
 			"host":               logger.SanitizeLogString(rule.Host),
 			"target":             logger.SanitizeURL(rule.Target),
+			"protocol_mode":      models.NormalizeHostProtocolMode(rule.ProtocolMode),
 			"use_auth":           rule.UseAuth,
 			"access_mode":        logger.SanitizeLogString(rule.AccessMode),
 			"suppress_toolbar":   rule.SuppressToolbar,
@@ -472,6 +474,48 @@ func keepFirstDefaultHostRule(rules []models.HostRule) {
 		}
 		rules[i].IsDefault = false
 	}
+}
+
+func changedHostProtocolModes(before, after []models.HostRule) []string {
+	modeMap := func(rules []models.HostRule) map[string]string {
+		modes := make(map[string]string)
+		seen := make(map[string]struct{})
+		for _, rule := range rules {
+			host := normalizeRequestHost(rule.Host)
+			mode := models.NormalizeHostProtocolMode(rule.ProtocolMode)
+			if host == "" {
+				continue
+			}
+			if _, exists := seen[host]; exists {
+				continue
+			}
+			seen[host] = struct{}{}
+			if mode == models.HostProtocolModeAuto {
+				continue
+			}
+			modes[host] = mode
+		}
+		return modes
+	}
+
+	beforeModes := modeMap(before)
+	afterModes := modeMap(after)
+	changed := make([]string, 0)
+	for host, beforeMode := range beforeModes {
+		if afterModes[host] != beforeMode {
+			changed = append(changed, host)
+		}
+	}
+	for host, afterMode := range afterModes {
+		if _, alreadyChecked := beforeModes[host]; alreadyChecked {
+			continue
+		}
+		if beforeModes[host] != afterMode {
+			changed = append(changed, host)
+		}
+	}
+	sort.Strings(changed)
+	return changed
 }
 
 func copyStringMap(values map[string]string) map[string]string {
@@ -1096,6 +1140,33 @@ func shouldRunPreflightForRoute(isSelectRoute bool, isAuthRoute bool, matchedHos
 	return true
 }
 
+func isHTTP1OnlyHostOverHTTP2(r *http.Request, rule *models.HostRule) bool {
+	return r != nil && r.TLS != nil && r.ProtoMajor == 2 && rule != nil &&
+		models.NormalizeHostProtocolMode(rule.ProtocolMode) == models.HostProtocolModeHTTP1
+}
+
+func isHTTP2OnlyHostOverHTTP1(r *http.Request, rule *models.HostRule) bool {
+	return r != nil && r.TLS != nil && r.ProtoMajor == 1 && rule != nil &&
+		models.NormalizeHostProtocolMode(rule.ProtocolMode) == models.HostProtocolModeHTTP2
+}
+
+func serveProtocolMisdirectedRequest(w http.ResponseWriter, r *http.Request, closeConnection bool) {
+	// RFC 9113 requires a client receiving 421 to retry on a different
+	// connection. This lets an authority escape either a coalesced HTTP/2
+	// connection or a keep-alive HTTP/1.x connection negotiated before a hot
+	// protocol-mode update.
+	w.Header().Set("Cache-Control", "no-store")
+	if closeConnection {
+		// Connection is legal on HTTP/1.x only. Mark both sides so net/http closes
+		// the stale TLS connection after writing the response.
+		w.Header().Set("Connection", "close")
+		if r != nil {
+			r.Close = true
+		}
+	}
+	http.Error(w, http.StatusText(http.StatusMisdirectedRequest), http.StatusMisdirectedRequest)
+}
+
 func (h *Handler) abortConnection(w http.ResponseWriter) {
 	rc := http.NewResponseController(w)
 	conn, _, err := rc.Hijack()
@@ -1123,10 +1194,14 @@ func NewHandler(adminPort int, proxyPort int, cfgManager *config.Manager, initia
 	}
 	wafRuntime := proxywaf.NewRuntime(initialCfg.WAF, runtimeDir)
 	wafConfig := wafRuntime.Config()
+	initialHostRules := copyHostRules(initialCfg.HostRules)
+	for i := range initialHostRules {
+		initialHostRules[i].ProtocolMode = models.NormalizeHostProtocolMode(initialHostRules[i].ProtocolMode)
+	}
 
 	h := &Handler{
 		Rules:                initialCfg.Rules,
-		HostRules:            copyHostRules(initialCfg.HostRules),
+		HostRules:            initialHostRules,
 		StreamRules:          initialCfg.StreamRules,
 		DefaultRoute:         initialCfg.DefaultRoute,
 		AuthConfig:           initialCfg.AuthConfig,
@@ -1198,7 +1273,9 @@ func NewHandler(adminPort int, proxyPort int, cfgManager *config.Manager, initia
 	h.gatewayVisibility = visibility
 
 	var emptyHook func()
+	var emptyProtocolModeHook func([]string)
 	h.sslOnChange.Store(emptyHook)
+	h.protocolModeOnChange.Store(emptyProtocolModeHook)
 	h.proxyProtocolOnChange.Store(emptyHook)
 	h.publishRequestSnapshotLocked()
 
@@ -1239,6 +1316,23 @@ func (h *Handler) getSSLChangeHook() func() {
 		return nil
 	}
 	hook, _ := val.(func())
+	return hook
+}
+
+// SetHostProtocolModeChangeHook installs the listener-maintenance callback used
+// after a hot host-rule update. New TLS handshakes see the atomic rule snapshot;
+// the callback lets the server retire idle connections negotiated under the old
+// ALPN policy.
+func (h *Handler) SetHostProtocolModeChangeHook(hook func([]string)) {
+	h.protocolModeOnChange.Store(hook)
+}
+
+func (h *Handler) getHostProtocolModeChangeHook() func([]string) {
+	val := h.protocolModeOnChange.Load()
+	if val == nil {
+		return nil
+	}
+	hook, _ := val.(func([]string))
 	return hook
 }
 
@@ -1304,6 +1398,31 @@ func (h *Handler) saveConfigLocked() error {
 	return nil
 }
 
+// persistHostRulesLocked saves only a candidate host-rule set while the caller
+// holds h.mu. Keeping this update narrowly scoped avoids persisting unrelated
+// runtime fields whose own save may previously have failed. Callers publish the
+// candidate to requestState only after this returns nil.
+func (h *Handler) persistHostRulesLocked(hostRules []models.HostRule) error {
+	if h.configManager == nil {
+		return nil
+	}
+	hostRulesCopy := copyHostRules(hostRules)
+	if err := h.configManager.Update(func(conf *config.AppConfig) error {
+		conf.HostRules = hostRulesCopy
+		return nil
+	}); err != nil {
+		if event := debugProxyEvent("host_rules_save_failed", ""); event != nil {
+			event.Str("error", logger.SanitizeLogString(err.Error())).Send()
+		}
+		log.Printf("Failed to save host rules: %v", err)
+		return err
+	}
+	if event := debugProxyEvent("host_rules_saved", ""); event != nil {
+		event.Int("host_rule_count", len(hostRulesCopy)).Send()
+	}
+	return nil
+}
+
 func (h *Handler) GetProxyProtocolForce() bool {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
@@ -1341,6 +1460,58 @@ func (h *Handler) evaluateReverseProxyThrottleRequest(isAuthRoute bool, matchedH
 		return reverseProxyThrottleDecision{Allowed: true}
 	}
 	return h.reverseProxyThrottle.evaluate(clientIP, now)
+}
+
+func (h *Handler) allowReverseProxyRequest(
+	w http.ResponseWriter,
+	r *http.Request,
+	clientIP string,
+	isAuthRoute bool,
+	matchedHostRule *models.HostRule,
+	matchedHostLocation *models.HostLocation,
+	matchedRule *models.Rule,
+	requestID string,
+) bool {
+	checkedAt := time.Now()
+	decision := h.evaluateReverseProxyThrottleRequest(
+		isAuthRoute,
+		matchedHostRule,
+		matchedHostLocation,
+		matchedRule,
+		clientIP,
+		checkedAt,
+	)
+	routeType := classifyReverseProxyRouteType(r.URL.Path, isAuthRoute, matchedHostRule, matchedHostLocation, matchedRule)
+	if !decision.Allowed {
+		if event := debugProxyEvent("throttle_blocked", requestID); event != nil {
+			event.Str("client_ip", logger.SanitizeLogString(clientIP)).
+				Bool("newly_blocked", decision.NewlyBlocked).
+				Time("blocked_until", decision.BlockedUntil).
+				Str("route_type", routeType).
+				Send()
+		}
+		if decision.NewlyBlocked {
+			h.enqueueGatewayThrottleBlockedEvent(gatewayThrottleBlockedEvent{
+				ClientIP:     clientIP,
+				BlockedUntil: decision.BlockedUntil,
+				Config:       decision.Config,
+				RouteType:    routeType,
+				Host:         r.Host,
+				RequestPath:  r.URL.Path,
+				IsAuthRoute:  isAuthRoute,
+				HappenedAt:   checkedAt,
+			})
+		}
+		suppressAccessLog(w)
+		h.abortConnection(w)
+		return false
+	}
+	if event := debugProxyEvent("throttle_allowed", requestID); event != nil {
+		event.Str("client_ip", logger.SanitizeLogString(clientIP)).
+			Str("route_type", routeType).
+			Send()
+	}
+	return true
 }
 
 func classifyReverseProxyRouteType(requestPath string, isAuthRoute bool, matchedHostRule *models.HostRule, matchedHostLocation *models.HostLocation, matchedRule *models.Rule) string {
@@ -1585,6 +1756,21 @@ func (h *Handler) GetCertificate(info *tls.ClientHelloInfo) *tls.Certificate {
 		return h.GetSSLCertificate()
 	}
 	return h.getSSLBundle().certificateForServerName(info.ServerName)
+}
+
+// GetHostProtocolMode returns the immutable host-rule snapshot used by a new
+// TLS handshake. Unknown SNI names retain the historical auto behavior.
+func (h *Handler) GetHostProtocolMode(serverName string) string {
+	host := normalizeRequestHost(serverName)
+	if host == "" {
+		return models.HostProtocolModeAuto
+	}
+	snapshot := h.snapshotForRequest()
+	rule := snapshot.hostRulesByHost[host]
+	if rule == nil {
+		return models.HostProtocolModeAuto
+	}
+	return models.NormalizeHostProtocolMode(rule.ProtocolMode)
 }
 
 func (h *Handler) HasSSLCertificates() bool {
@@ -2194,6 +2380,7 @@ func (h *Handler) normalizeHostRule(newRule models.HostRule) (models.HostRule, e
 	if err := h.checkSafeTarget(newRule.Target); err != nil {
 		return models.HostRule{}, fmt.Errorf("invalid target: %v", err)
 	}
+	newRule.ProtocolMode = models.NormalizeHostProtocolMode(newRule.ProtocolMode)
 	if newRule.AccessMode == "" {
 		newRule.AccessMode = "login_first"
 	}
@@ -2252,18 +2439,20 @@ func applyBasicAuthInjection(out *http.Request, cfg models.BasicAuthConfig) {
 }
 
 func (h *Handler) AddHostRule(newRule models.HostRule) error {
+	protocolModeMissing := strings.TrimSpace(newRule.ProtocolMode) == ""
 	newRule, err := h.normalizeHostRule(newRule)
 	if err != nil {
 		return err
 	}
 
 	h.mu.Lock()
-	defer h.mu.Unlock()
-
 	updated := false
 	nextRules := make([]models.HostRule, 0, len(h.HostRules)+1)
 	for _, rule := range h.HostRules {
 		if normalizeRequestHost(rule.Host) == newRule.Host && !updated {
+			if protocolModeMissing {
+				newRule.ProtocolMode = models.NormalizeHostProtocolMode(rule.ProtocolMode)
+			}
 			nextRules = append(nextRules, newRule)
 			updated = true
 			continue
@@ -2280,10 +2469,18 @@ func (h *Handler) AddHostRule(newRule models.HostRule) error {
 	} else {
 		keepFirstDefaultHostRule(nextRules)
 	}
+	changedProtocolHosts := changedHostProtocolModes(h.HostRules, nextRules)
+	if err := h.persistHostRulesLocked(nextRules); err != nil {
+		h.mu.Unlock()
+		return err
+	}
 	h.HostRules = nextRules
 	h.publishRequestSnapshotLocked()
-	if err := h.saveConfigLocked(); err != nil {
-		return err
+	hook := h.getHostProtocolModeChangeHook()
+	hostRuleCount := len(nextRules)
+	h.mu.Unlock()
+	if hook != nil && len(changedProtocolHosts) > 0 {
+		hook(changedProtocolHosts)
 	}
 	if event := debugProxyEvent("host_rule_upserted", ""); event != nil {
 		event.Str("host", logger.SanitizeLogString(newRule.Host)).
@@ -2292,7 +2489,7 @@ func (h *Handler) AddHostRule(newRule models.HostRule) error {
 			Bool("use_auth", newRule.UseAuth).
 			Int("location_count", len(newRule.Locations)).
 			Bool("basic_auth_enabled", newRule.BasicAuth.Enabled).
-			Int("host_rule_count", len(h.HostRules)).
+			Int("host_rule_count", hostRuleCount).
 			Send()
 	}
 	return nil
@@ -2300,9 +2497,11 @@ func (h *Handler) AddHostRule(newRule models.HostRule) error {
 
 func (h *Handler) SetHostRules(rules []models.HostRule) error {
 	normalizedRules := make([]models.HostRule, 0, len(rules))
+	protocolModeMissing := make([]bool, 0, len(rules))
 	indexByHost := make(map[string]int, len(rules))
 
 	for _, rule := range rules {
+		modeMissing := strings.TrimSpace(rule.ProtocolMode) == ""
 		normalizedRule, err := h.normalizeHostRule(rule)
 		if err != nil {
 			return err
@@ -2310,21 +2509,47 @@ func (h *Handler) SetHostRules(rules []models.HostRule) error {
 
 		if idx, exists := indexByHost[normalizedRule.Host]; exists {
 			normalizedRules[idx] = normalizedRule
+			protocolModeMissing[idx] = modeMissing
 			continue
 		}
 
 		indexByHost[normalizedRule.Host] = len(normalizedRules)
 		normalizedRules = append(normalizedRules, normalizedRule)
+		protocolModeMissing = append(protocolModeMissing, modeMissing)
 	}
 	keepFirstDefaultHostRule(normalizedRules)
 
 	h.mu.Lock()
-	defer h.mu.Unlock()
-
+	existingModes := make(map[string]string, len(h.HostRules))
+	for _, existingRule := range h.HostRules {
+		host := normalizeRequestHost(existingRule.Host)
+		if host == "" {
+			continue
+		}
+		if _, exists := existingModes[host]; exists {
+			continue
+		}
+		existingModes[host] = models.NormalizeHostProtocolMode(existingRule.ProtocolMode)
+	}
+	for i := range normalizedRules {
+		if !protocolModeMissing[i] {
+			continue
+		}
+		if existingMode, exists := existingModes[normalizedRules[i].Host]; exists {
+			normalizedRules[i].ProtocolMode = existingMode
+		}
+	}
+	changedProtocolHosts := changedHostProtocolModes(h.HostRules, normalizedRules)
+	if err := h.persistHostRulesLocked(normalizedRules); err != nil {
+		h.mu.Unlock()
+		return err
+	}
 	h.HostRules = normalizedRules
 	h.publishRequestSnapshotLocked()
-	if err := h.saveConfigLocked(); err != nil {
-		return err
+	hook := h.getHostProtocolModeChangeHook()
+	h.mu.Unlock()
+	if hook != nil && len(changedProtocolHosts) > 0 {
+		hook(changedProtocolHosts)
 	}
 	if event := debugProxyEvent("host_rules_set", ""); event != nil {
 		event.Int("host_rule_count", len(normalizedRules)).
@@ -2336,12 +2561,18 @@ func (h *Handler) SetHostRules(rules []models.HostRule) error {
 
 func (h *Handler) FlushHostRules() error {
 	h.mu.Lock()
-	defer h.mu.Unlock()
-
-	h.HostRules = make([]models.HostRule, 0)
-	h.publishRequestSnapshotLocked()
-	if err := h.saveConfigLocked(); err != nil {
+	changedProtocolHosts := changedHostProtocolModes(h.HostRules, nil)
+	nextRules := make([]models.HostRule, 0)
+	if err := h.persistHostRulesLocked(nextRules); err != nil {
+		h.mu.Unlock()
 		return err
+	}
+	h.HostRules = nextRules
+	h.publishRequestSnapshotLocked()
+	hook := h.getHostProtocolModeChangeHook()
+	h.mu.Unlock()
+	if hook != nil && len(changedProtocolHosts) > 0 {
+		hook(changedProtocolHosts)
 	}
 	if event := debugProxyEvent("host_rules_flushed", ""); event != nil {
 		event.Send()
@@ -4165,6 +4396,35 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	matchedHostRule := matchHostRule(r, snapshot)
+	http1Required := isHTTP1OnlyHostOverHTTP2(r, matchedHostRule)
+	http2Required := isHTTP2OnlyHostOverHTTP1(r, matchedHostRule)
+	if http1Required || http2Required {
+		if !h.allowReverseProxyRequest(w, r, clientIP, false, matchedHostRule, nil, nil, requestID) {
+			return
+		}
+		metrics.bindHost(h, matchedHostRule.Host)
+		accessEntry.RouteType = "protocol_misdirected"
+		accessEntry.RouteKey = matchedHostRule.Host
+		accessEntry.Upstream = matchedHostRule.Target
+		accessEntry.Matched = true
+		requiredProtocol := models.HostProtocolModeHTTP1
+		if http2Required {
+			requiredProtocol = models.HostProtocolModeHTTP2
+		}
+		accessEntry.AuthDecision = requiredProtocol + "_required"
+		loggedStatusCode = http.StatusMisdirectedRequest
+		if event := debugProxyEvent("protocol_misdirected", requestID); event != nil {
+			event.Str("host", logger.SanitizeLogString(matchedHostRule.Host)).
+				Str("sni", logger.SanitizeLogString(r.TLS.ServerName)).
+				Str("negotiated_protocol", logger.SanitizeLogString(r.TLS.NegotiatedProtocol)).
+				Str("required_protocol", requiredProtocol).
+				Send()
+		}
+		serveProtocolMisdirectedRequest(w, r, http2Required)
+		return
+	}
+
 	if response.IsFaviconPath(r.URL.Path) {
 		accessEntry.RouteType = "favicon"
 		accessEntry.RouteKey = r.URL.Path
@@ -4186,7 +4446,6 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	isSelectRoute := r.URL.Path == "/__select__"
 	isAuthRoute := strings.HasPrefix(r.URL.Path, "/__auth__/")
-	matchedHostRule := matchHostRule(r, snapshot)
 	matchedHostLocation := matchHostLocation(r, matchedHostRule)
 	if matchedHostRule != nil {
 		metrics.bindHost(h, matchedHostRule.Host)
@@ -4280,43 +4539,8 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			}()).
 			Send()
 	}
-	throttleCheckedAt := time.Now()
-	throttleDecision := h.evaluateReverseProxyThrottleRequest(
-		isAuthRoute,
-		matchedHostRule,
-		matchedHostLocation,
-		matchedRule,
-		clientIP,
-		throttleCheckedAt,
-	)
-	if !throttleDecision.Allowed {
-		if event := debugProxyEvent("throttle_blocked", requestID); event != nil {
-			event.Str("client_ip", logger.SanitizeLogString(clientIP)).
-				Bool("newly_blocked", throttleDecision.NewlyBlocked).
-				Time("blocked_until", throttleDecision.BlockedUntil).
-				Str("route_type", classifyReverseProxyRouteType(r.URL.Path, isAuthRoute, matchedHostRule, matchedHostLocation, matchedRule)).
-				Send()
-		}
-		if throttleDecision.NewlyBlocked {
-			h.enqueueGatewayThrottleBlockedEvent(gatewayThrottleBlockedEvent{
-				ClientIP:     clientIP,
-				BlockedUntil: throttleDecision.BlockedUntil,
-				Config:       throttleDecision.Config,
-				RouteType:    classifyReverseProxyRouteType(r.URL.Path, isAuthRoute, matchedHostRule, matchedHostLocation, matchedRule),
-				Host:         r.Host,
-				RequestPath:  r.URL.Path,
-				IsAuthRoute:  isAuthRoute,
-				HappenedAt:   throttleCheckedAt,
-			})
-		}
-		suppressAccessLog(w)
-		h.abortConnection(w)
+	if !h.allowReverseProxyRequest(w, r, clientIP, isAuthRoute, matchedHostRule, matchedHostLocation, matchedRule, requestID) {
 		return
-	}
-	if event := debugProxyEvent("throttle_allowed", requestID); event != nil {
-		event.Str("client_ip", logger.SanitizeLogString(clientIP)).
-			Str("route_type", classifyReverseProxyRouteType(r.URL.Path, isAuthRoute, matchedHostRule, matchedHostLocation, matchedRule)).
-			Send()
 	}
 	wafRouteType, wafRouteKey, wafUpstream := wafRouteContext(r, snapshot, isAuthRoute, matchedHostRule, matchedHostLocation, matchedRule)
 	wafRuntime := h.wafRuntime

@@ -2,6 +2,7 @@ package config
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -103,6 +104,25 @@ func TestManagerLoadPreservesExplicitDisabledReverseProxyThrottle(t *testing.T) 
 	}
 }
 
+func TestManagerLoadNormalizesHostProtocolModes(t *testing.T) {
+	cfg := loadConfigFromJSON(t, `{
+		"host_rules": [
+			{"host":"missing.example.test","target":"http://127.0.0.1:8080"},
+			{"host":"h1.example.test","target":"http://127.0.0.1:8081","protocol_mode":" HTTP1 "},
+			{"host":"invalid.example.test","target":"http://127.0.0.1:8082","protocol_mode":"quic"}
+		]
+	}`)
+	if got := cfg.HostRules[0].ProtocolMode; got != models.HostProtocolModeAuto {
+		t.Fatalf("missing protocol mode = %q, want auto", got)
+	}
+	if got := cfg.HostRules[1].ProtocolMode; got != models.HostProtocolModeHTTP1 {
+		t.Fatalf("HTTP1 protocol mode = %q, want http1", got)
+	}
+	if got := cfg.HostRules[2].ProtocolMode; got != models.HostProtocolModeAuto {
+		t.Fatalf("invalid protocol mode = %q, want auto", got)
+	}
+}
+
 func TestManagerSaveNormalizesNilSlices(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.json")
 	manager := NewManager(path)
@@ -115,6 +135,100 @@ func TestManagerSaveNormalizesNilSlices(t *testing.T) {
 	}
 	if cfg.Rules == nil || cfg.HostRules == nil || cfg.StreamRules == nil || cfg.GeneralBlacklist.Items == nil {
 		t.Fatalf("nil slices remained after Save/Load: %#v", cfg)
+	}
+}
+
+func TestManagerSaveAtomicallyReplacesAndPreservesExistingMode(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.json")
+	if err := os.WriteFile(path, []byte(`{"default_route":"/old"}`), 0o600); err != nil {
+		t.Fatalf("write old config: %v", err)
+	}
+	if err := os.Chmod(path, 0o600); err != nil {
+		t.Fatalf("chmod old config: %v", err)
+	}
+
+	cfg := defaultConfig()
+	cfg.DefaultRoute = "/new"
+	if err := NewManager(path).Save(cfg); err != nil {
+		t.Fatalf("Save() returned error: %v", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read saved config: %v", err)
+	}
+	if !json.Valid(data) || !strings.Contains(string(data), `"default_route": "/new"`) {
+		t.Fatalf("saved config is not the complete replacement: %s", data)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat saved config: %v", err)
+	}
+	if got := info.Mode().Perm(); got != 0o600 {
+		t.Fatalf("saved config mode = %o, want preserved 600", got)
+	}
+	assertNoAtomicConfigTemps(t, dir, path)
+}
+
+func TestWriteFileAtomicallyRenameFailurePreservesExistingFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.json")
+	oldData := []byte(`{"default_route":"/old"}`)
+	newData := []byte(`{"default_route":"/new"}`)
+	if err := os.WriteFile(path, oldData, 0o600); err != nil {
+		t.Fatalf("write old config: %v", err)
+	}
+	if err := os.Chmod(path, 0o600); err != nil {
+		t.Fatalf("chmod old config: %v", err)
+	}
+
+	wantErr := errors.New("forced rename failure")
+	renameCalled := false
+	err := writeFileAtomicallyWithRename(path, newData, 0o644, func(oldPath string, newPath string) error {
+		renameCalled = true
+		if newPath != path || filepath.Dir(oldPath) != dir {
+			t.Fatalf("rename paths = %q -> %q, want same-directory temp -> %q", oldPath, newPath, path)
+		}
+		got, readErr := os.ReadFile(oldPath)
+		if readErr != nil {
+			t.Fatalf("read completed temp file: %v", readErr)
+		}
+		if string(got) != string(newData) {
+			t.Fatalf("temp data = %q, want %q", got, newData)
+		}
+		return wantErr
+	})
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("writeFileAtomicallyWithRename() error = %v, want %v", err, wantErr)
+	}
+	if !renameCalled {
+		t.Fatal("atomic rename was not attempted")
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read old config after failure: %v", err)
+	}
+	if string(got) != string(oldData) {
+		t.Fatalf("old config changed after failed rename: got %q want %q", got, oldData)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat old config after failure: %v", err)
+	}
+	if got := info.Mode().Perm(); got != 0o600 {
+		t.Fatalf("old config mode = %o after failure, want 600", got)
+	}
+	assertNoAtomicConfigTemps(t, dir, path)
+}
+
+func assertNoAtomicConfigTemps(t *testing.T, dir string, path string) {
+	t.Helper()
+	matches, err := filepath.Glob(filepath.Join(dir, "."+filepath.Base(path)+".tmp-*"))
+	if err != nil {
+		t.Fatalf("glob atomic config temps: %v", err)
+	}
+	if len(matches) != 0 {
+		t.Fatalf("atomic config temp files were not cleaned up: %#v", matches)
 	}
 }
 
@@ -236,6 +350,28 @@ func TestManagerLoadRewritesMigratedConfigToDisk(t *testing.T) {
 	}
 	if !strings.Contains(string(data), "auth_cache_ttl_seconds") {
 		t.Fatalf("migrated config was not written to disk: %s", string(data))
+	}
+}
+
+func TestManagerLoadPersistsNormalizedHostProtocolMode(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	raw := `{"host_rules":[{"host":"video.example.test","target":"http://127.0.0.1:8080","protocol_mode":"invalid"}]}`
+	if err := os.WriteFile(path, []byte(raw), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	cfg, err := NewManager(path).Load()
+	if err != nil {
+		t.Fatalf("Load() returned error: %v", err)
+	}
+	if got := cfg.HostRules[0].ProtocolMode; got != models.HostProtocolModeAuto {
+		t.Fatalf("normalized protocol mode = %q, want auto", got)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read config: %v", err)
+	}
+	if !strings.Contains(string(data), `"protocol_mode": "auto"`) {
+		t.Fatalf("normalized protocol mode was not persisted: %s", data)
 	}
 }
 

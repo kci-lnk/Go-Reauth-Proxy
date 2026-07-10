@@ -6,6 +6,7 @@ import (
 	"go-reauth-proxy/pkg/i18n"
 	"go-reauth-proxy/pkg/logger"
 	"go-reauth-proxy/pkg/models"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -149,6 +150,13 @@ func applyDefaults(cfg *AppConfig) bool {
 	if cfg.HostRules == nil {
 		cfg.HostRules = []models.HostRule{}
 		changed = true
+	}
+	for i := range cfg.HostRules {
+		normalized := models.NormalizeHostProtocolMode(cfg.HostRules[i].ProtocolMode)
+		if cfg.HostRules[i].ProtocolMode != normalized {
+			cfg.HostRules[i].ProtocolMode = normalized
+			changed = true
+		}
 	}
 	if cfg.StreamRules == nil {
 		cfg.StreamRules = []models.StreamRule{}
@@ -408,7 +416,70 @@ func (m *Manager) saveUnlocked(cfg *AppConfig) error {
 		return err
 	}
 
-	return os.WriteFile(m.filePath, data, 0644)
+	return writeFileAtomically(m.filePath, data, 0644)
+}
+
+type atomicRenameFunc func(oldPath string, newPath string) error
+
+func writeFileAtomically(path string, data []byte, perm os.FileMode) error {
+	return writeFileAtomicallyWithRename(path, data, perm, os.Rename)
+}
+
+func writeFileAtomicallyWithRename(path string, data []byte, perm os.FileMode, rename atomicRenameFunc) error {
+	dir := filepath.Dir(path)
+	targetPerm := perm
+	if info, err := os.Stat(path); err == nil {
+		// os.WriteFile preserves the mode of an existing file. Preserve that
+		// behavior when replacing the inode so a manually-hardened config does
+		// not become more permissive after the next save.
+		targetPerm = info.Mode().Perm()
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+
+	temp, err := os.CreateTemp(dir, "."+filepath.Base(path)+".tmp-*")
+	if err != nil {
+		return err
+	}
+	tempPath := temp.Name()
+	removeTemp := true
+	defer func() {
+		_ = temp.Close()
+		if removeTemp {
+			_ = os.Remove(tempPath)
+		}
+	}()
+
+	if err := temp.Chmod(targetPerm); err != nil {
+		return err
+	}
+	if n, err := temp.Write(data); err != nil {
+		return err
+	} else if n != len(data) {
+		return io.ErrShortWrite
+	}
+	if err := temp.Sync(); err != nil {
+		return err
+	}
+	if err := temp.Close(); err != nil {
+		return err
+	}
+	if err := rename(tempPath, path); err != nil {
+		return err
+	}
+	removeTemp = false
+
+	// Persist the directory entry update as well as the file contents. Without
+	// this sync, a successful Rename can still disappear after a power loss.
+	directory, err := os.Open(dir)
+	if err != nil {
+		return err
+	}
+	if err := directory.Sync(); err != nil {
+		_ = directory.Close()
+		return err
+	}
+	return directory.Close()
 }
 
 func (m *Manager) Load() (*AppConfig, error) {

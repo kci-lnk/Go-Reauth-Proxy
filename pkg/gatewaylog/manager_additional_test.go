@@ -47,6 +47,7 @@ func TestUpdateConfigNormalizesAndPersistsInMemory(t *testing.T) {
 func TestDailyFileWriterWriteCreatesTodayFile(t *testing.T) {
 	dir := t.TempDir()
 	writer := NewDailyFileWriter(dir, 7)
+	t.Cleanup(func() { _ = writer.Close() })
 	if _, err := writer.Write([]byte("hello\n")); err != nil {
 		t.Fatalf("Write() returned error: %v", err)
 	}

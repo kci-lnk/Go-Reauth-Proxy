@@ -155,6 +155,7 @@ func TestGeneralBlacklistBlockedRequestIsLogged(t *testing.T) {
 			},
 		}),
 	}
+	t.Cleanup(handler.gatewayLogManager.Close)
 	handler.publishRequestSnapshotLocked()
 
 	req := httptest.NewRequest(http.MethodGet, "http://app.example.com/private?q=1", nil)

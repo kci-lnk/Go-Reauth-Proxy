@@ -63,8 +63,12 @@ func TestServerIsClosedConnErrAcceptsLegacyMessage(t *testing.T) {
 func TestProxyStackDesiredHostDefaultsToAllInterfaces(t *testing.T) {
 	handler := newServerTestProxyHandler(t)
 	stack := newProxyStack(0, handler, &http.Server{}, &http.Server{})
-	if got := stack.desiredHost(); got != "0.0.0.0" {
-		t.Fatalf("desiredHost() = %q", got)
+	want := "0.0.0.0"
+	if handler.GetGatewayListenerConfig().Scope == models.GatewayListenerScopeLoopback {
+		want = "127.0.0.1"
+	}
+	if got := stack.desiredHost(); got != want {
+		t.Fatalf("desiredHost() = %q, want platform default %q", got, want)
 	}
 }
 

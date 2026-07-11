@@ -21,6 +21,7 @@ func (failingLoggerWriter) Write([]byte) (int, error) {
 func TestDailyFileWriterAppendsToTodayLog(t *testing.T) {
 	dir := t.TempDir()
 	writer := newDailyFileWriter(dir)
+	t.Cleanup(func() { _ = writer.Close() })
 
 	if _, err := writer.Write([]byte("first\n")); err != nil {
 		t.Fatalf("write first line: %v", err)
@@ -52,6 +53,7 @@ func TestDailyFileWriterEnsureDirFailsWhenBaseIsFile(t *testing.T) {
 
 func TestDailyFileWriterRotateReusesSameDateFile(t *testing.T) {
 	writer := newDailyFileWriter(t.TempDir())
+	t.Cleanup(func() { _ = writer.Close() })
 	if err := writer.ensureDirLocked(); err != nil {
 		t.Fatalf("ensure dir: %v", err)
 	}
@@ -72,6 +74,7 @@ func TestDailyFileWriterRotateReusesSameDateFile(t *testing.T) {
 func TestDailyFileWriterRotateOpensNewDateFile(t *testing.T) {
 	dir := t.TempDir()
 	writer := newDailyFileWriter(dir)
+	t.Cleanup(func() { _ = writer.Close() })
 	if err := writer.ensureDirLocked(); err != nil {
 		t.Fatalf("ensure dir: %v", err)
 	}

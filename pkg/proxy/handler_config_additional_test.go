@@ -523,5 +523,6 @@ func newAdditionalProxyTestHandler(t *testing.T) (*Handler, *config.Manager) {
 		t.Fatalf("Load() returned error: %v", err)
 	}
 	handler := NewHandler(7996, 7999, manager, initialCfg, filepath.Join(t.TempDir(), "logs"), nil)
+	t.Cleanup(handler.gatewayLogManager.Close)
 	return handler, manager
 }

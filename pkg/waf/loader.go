@@ -320,6 +320,9 @@ type updateTargetFilteringFS struct {
 }
 
 func (f updateTargetFilteringFS) Open(name string) (fs.File, error) {
+	// Coraza normalizes directive paths with filepath semantics. On Windows that
+	// can produce backslashes, while io/fs requires slash-separated valid paths.
+	name = filepath.ToSlash(name)
 	if !strings.EqualFold(filepath.Ext(name), ".conf") {
 		return f.root.Open(name)
 	}

@@ -105,6 +105,18 @@ func (w *dailyFileWriter) Write(p []byte) (int, error) {
 	return w.currentFile.Write(p)
 }
 
+func (w *dailyFileWriter) Close() error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.currentFile == nil {
+		return nil
+	}
+	err := w.currentFile.Close()
+	w.currentFile = nil
+	w.currentDate = ""
+	return err
+}
+
 func (w *dailyFileWriter) ensureDirLocked() error {
 	if w.dirReady {
 		return nil
@@ -148,11 +160,19 @@ func (w warnOnceWriter) Write(p []byte) (int, error) {
 	return n, err
 }
 
+func (w warnOnceWriter) Close() error {
+	if closer, ok := w.writer.(interface{ Close() error }); ok {
+		return closer.Close()
+	}
+	return nil
+}
+
 type asyncWriter struct {
 	writer    io.Writer
 	queue     chan []byte
 	flush     chan chan struct{}
 	done      chan struct{}
+	stopped   chan struct{}
 	closeOnce sync.Once
 	closed    atomic.Bool
 	dropped   atomic.Uint64
@@ -167,10 +187,11 @@ func newAsyncWriter(writer io.Writer, queueSize int) *asyncWriter {
 		queueSize = 1
 	}
 	w := &asyncWriter{
-		writer: writer,
-		queue:  make(chan []byte, queueSize),
-		flush:  make(chan chan struct{}),
-		done:   make(chan struct{}),
+		writer:  writer,
+		queue:   make(chan []byte, queueSize),
+		flush:   make(chan chan struct{}),
+		done:    make(chan struct{}),
+		stopped: make(chan struct{}),
 	}
 	go w.run()
 	return w
@@ -228,6 +249,10 @@ func (w *asyncWriter) Close() error {
 		w.closed.Store(true)
 		w.Flush()
 		close(w.done)
+		<-w.stopped
+		if closer, ok := w.writer.(interface{ Close() error }); ok {
+			_ = closer.Close()
+		}
 	})
 	return nil
 }
@@ -240,6 +265,7 @@ func (w *asyncWriter) Dropped() uint64 {
 }
 
 func (w *asyncWriter) run() {
+	defer close(w.stopped)
 	for {
 		select {
 		case p := <-w.queue:

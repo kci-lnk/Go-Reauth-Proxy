@@ -17,9 +17,10 @@ func TestDefaultRulesDirUsesCurrentDirectoryWhenBlank(t *testing.T) {
 }
 
 func TestDefaultRulesDirTrimsRuntimeDirectory(t *testing.T) {
-	got := DefaultRulesDir("  /tmp/runtime  ")
+	runtimeDir := filepath.FromSlash("/tmp/runtime")
+	got := DefaultRulesDir("  " + runtimeDir + "  ")
 
-	if got != filepath.Join("/tmp/runtime", "waf") {
+	if got != filepath.Join(runtimeDir, "waf") {
 		t.Fatalf("default rules dir = %q", got)
 	}
 }
@@ -57,9 +58,10 @@ func TestNormalizeConfigExplicitModeKeepsRequestBodyAccess(t *testing.T) {
 }
 
 func TestNormalizeConfigUsesProvidedDefaultRulesDir(t *testing.T) {
-	cfg := NormalizeConfig(models.WAFConfig{Mode: ModeBlocking}, "/default-rules")
+	defaultRulesDir := filepath.FromSlash("/default-rules")
+	cfg := NormalizeConfig(models.WAFConfig{Mode: ModeBlocking}, defaultRulesDir)
 
-	if cfg.RulesDir != "/default-rules" {
+	if cfg.RulesDir != defaultRulesDir {
 		t.Fatalf("rules dir = %q", cfg.RulesDir)
 	}
 }

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -153,6 +154,9 @@ func TestManagerSaveNormalizesNilSlices(t *testing.T) {
 }
 
 func TestManagerSaveAtomicallyReplacesAndPreservesExistingMode(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows does not expose Unix permission bits")
+	}
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.json")
 	if err := os.WriteFile(path, []byte(`{"default_route":"/old"}`), 0o600); err != nil {
@@ -185,6 +189,9 @@ func TestManagerSaveAtomicallyReplacesAndPreservesExistingMode(t *testing.T) {
 }
 
 func TestWriteFileAtomicallyRenameFailurePreservesExistingFile(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows does not expose Unix permission bits")
+	}
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.json")
 	oldData := []byte(`{"default_route":"/old"}`)

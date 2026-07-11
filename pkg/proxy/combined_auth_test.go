@@ -170,6 +170,7 @@ func TestCombinedAuthPreflightStopDoesNotRequireVerifyResponse(t *testing.T) {
 				if got := recorder.Header().Get("Location"); got != test.location {
 					t.Fatalf("Location = %q, want %q", got, test.location)
 				}
+				assertAuthResponseNoStore(t, recorder.Header())
 			}
 			if got := authorizeCalls.Load(); got != 1 {
 				t.Fatalf("AuthorizeHTTP calls = %d, want 1", got)
@@ -348,6 +349,12 @@ func TestCombinedAuthSetCookieAndNoneScopeDoNotCacheVerify(t *testing.T) {
 				}
 				if recorder.Code != http.StatusOK {
 					t.Fatalf("request %d status = %d; body=%s", i+1, recorder.Code, recorder.Body.String())
+				}
+				if len(test.setCookies) > 0 {
+					if got := recorder.Header().Values("Set-Cookie"); !slices.Equal(got, test.setCookies) {
+						t.Fatalf("request %d Set-Cookie = %#v, want %#v", i+1, got, test.setCookies)
+					}
+					assertAuthResponseNoStore(t, recorder.Header())
 				}
 			}
 

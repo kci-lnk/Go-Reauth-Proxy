@@ -38,8 +38,8 @@ func TestShouldRunPreflightForRouteKeepsLegacyDefault(t *testing.T) {
 	if !shouldRunPreflightForRoute(true, false, nil, nil) {
 		t.Fatalf("select route should run preflight")
 	}
-	if !shouldRunPreflightForRoute(false, true, nil, nil) {
-		t.Fatalf("auth route should run preflight")
+	if shouldRunPreflightForRoute(false, true, nil, nil) {
+		t.Fatalf("auth route should bypass preflight so login and logout remain reachable")
 	}
 	if shouldRunPreflightForRoute(false, false, &models.HostRule{UseAuth: false}, nil) {
 		t.Fatalf("host rule with use_auth=false should skip preflight")
@@ -52,6 +52,41 @@ func TestShouldRunPreflightForRouteKeepsLegacyDefault(t *testing.T) {
 	}
 	if !shouldRunPreflightForRoute(false, false, nil, &models.Rule{UseAuth: true}) {
 		t.Fatalf("path rule with use_auth=true should run preflight")
+	}
+}
+
+func TestShouldDisableAuthResponseCachingNormalizesMountPrefixes(t *testing.T) {
+	for _, requestPath := range []string{
+		"/auth",
+		"/auth/",
+		"/auth/index.html",
+		"/auth/login",
+		"/auth/login/",
+		"/auth/oidc/bind",
+		"/auth/api/auth",
+		"/auth/api/auth/logout",
+		"/__auth__/login",
+		"/__auth__/api/auth/oidc/callback/provider-1",
+	} {
+		t.Run("sensitive "+requestPath, func(t *testing.T) {
+			if !shouldDisableAuthResponseCaching(requestPath) {
+				t.Fatalf("shouldDisableAuthResponseCaching(%q) = false, want true", requestPath)
+			}
+		})
+	}
+
+	for _, requestPath := range []string{
+		"/assets/auth-view-deadbeef.js",
+		"/auth/assets/auth-view-deadbeef.js",
+		"/__auth__/assets/auth-view-deadbeef.js",
+		"/authentication/login",
+		"/authentic/api/auth/logout",
+	} {
+		t.Run("cacheable "+requestPath, func(t *testing.T) {
+			if shouldDisableAuthResponseCaching(requestPath) {
+				t.Fatalf("shouldDisableAuthResponseCaching(%q) = true, want false", requestPath)
+			}
+		})
 	}
 }
 

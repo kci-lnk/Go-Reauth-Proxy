@@ -880,6 +880,10 @@ func (h *Handler) applyAuthCacheEntry(w http.ResponseWriter, r *http.Request, en
 	for _, setCookie := range entry.setCookies {
 		w.Header().Add("Set-Cookie", setCookie)
 	}
+	if len(entry.setCookies) > 0 {
+		applyNoStoreCacheHeaders(w.Header())
+		h.authCacheInvalidateForSetCookieMutation(r, clientIP, entry.setCookies)
+	}
 
 	if entry.result.allowed && entry.result.authenticated {
 		h.markLoggedInActive(r, clientIP, time.Now())
@@ -907,6 +911,7 @@ func (h *Handler) applyAuthCacheEntry(w http.ResponseWriter, r *http.Request, en
 		return entry.result
 	}
 	if entry.redirectLocation != "" {
+		applyNoStoreCacheHeaders(w.Header())
 		http.Redirect(w, r, entry.redirectLocation, http.StatusFound)
 		return entry.result
 	}

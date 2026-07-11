@@ -7,12 +7,30 @@ tasks:
       - task: build
 
   build:
-    desc: "Build gateway binaries for all platforms (macOS ARM64 & Linux AMD64/ARM64/ARM32)"
+    desc: "Build gateway binaries for all supported platforms"
     cmds:
       - task: build:mac
       - task: build:linux
       - task: build:linux-arm64
       - task: build:linux-arm
+      - task: build:windows
+
+  build:windows:
+    desc: "Build the fn-knock gateway for Windows x86_64 (without UPX)"
+    env:
+      GOOS: windows
+      GOARCH: amd64
+      CGO_ENABLED: "0"
+    vars:
+      VERSION: '{{.FN_KNOCK_VERSION | default "2.0.1"}}'
+      COMMIT: '{{.FN_KNOCK_COMMIT | default "unknown"}}'
+    cmds:
+      - cmd: mkdir -p build
+        platforms: [darwin, linux]
+      - cmd: powershell -NoProfile -Command "New-Item -ItemType Directory -Force build | Out-Null"
+        platforms: [windows]
+      - go build -ldflags="-s -w -X go-reauth-proxy/pkg/version.Version={{.VERSION}} -X go-reauth-proxy/pkg/version.Commit={{.COMMIT}}" -trimpath -o build/go-reauth-proxy-windows-amd64.exe ./cmd/server
+      - echo "Built Windows x86_64 binary at build/go-reauth-proxy-windows-amd64.exe"
 
   build:mac:
     desc: "Build the go-reauth-proxy binary for macOS (ARM64)"

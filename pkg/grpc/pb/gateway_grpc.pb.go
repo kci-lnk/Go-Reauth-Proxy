@@ -21,6 +21,9 @@ const _ = grpc.SupportPackageIsVersion9
 
 const (
 	GatewayControlService_GetServerInfo_FullMethodName                    = "/fnknock.v1.GatewayControlService/GetServerInfo"
+	GatewayControlService_GetGatewayListenerConfig_FullMethodName         = "/fnknock.v1.GatewayControlService/GetGatewayListenerConfig"
+	GatewayControlService_SetGatewayListenerConfig_FullMethodName         = "/fnknock.v1.GatewayControlService/SetGatewayListenerConfig"
+	GatewayControlService_RequestShutdown_FullMethodName                  = "/fnknock.v1.GatewayControlService/RequestShutdown"
 	GatewayControlService_GetRules_FullMethodName                         = "/fnknock.v1.GatewayControlService/GetRules"
 	GatewayControlService_SetRules_FullMethodName                         = "/fnknock.v1.GatewayControlService/SetRules"
 	GatewayControlService_FlushRules_FullMethodName                       = "/fnknock.v1.GatewayControlService/FlushRules"
@@ -63,6 +66,11 @@ const (
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
 type GatewayControlServiceClient interface {
 	GetServerInfo(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*ServerInfo, error)
+	GetGatewayListenerConfig(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*GatewayListenerConfig, error)
+	SetGatewayListenerConfig(ctx context.Context, in *GatewayListenerConfig, opts ...grpc.CallOption) (*GatewayListenerConfig, error)
+	// Requests an idempotent graceful process shutdown. The response only
+	// acknowledges the request; shutdown continues asynchronously.
+	RequestShutdown(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*RpcStatus, error)
 	GetRules(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*Rules, error)
 	SetRules(ctx context.Context, in *Rules, opts ...grpc.CallOption) (*Rules, error)
 	FlushRules(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*RpcStatus, error)
@@ -112,6 +120,36 @@ func (c *gatewayControlServiceClient) GetServerInfo(ctx context.Context, in *emp
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(ServerInfo)
 	err := c.cc.Invoke(ctx, GatewayControlService_GetServerInfo_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *gatewayControlServiceClient) GetGatewayListenerConfig(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*GatewayListenerConfig, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GatewayListenerConfig)
+	err := c.cc.Invoke(ctx, GatewayControlService_GetGatewayListenerConfig_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *gatewayControlServiceClient) SetGatewayListenerConfig(ctx context.Context, in *GatewayListenerConfig, opts ...grpc.CallOption) (*GatewayListenerConfig, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GatewayListenerConfig)
+	err := c.cc.Invoke(ctx, GatewayControlService_SetGatewayListenerConfig_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *gatewayControlServiceClient) RequestShutdown(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*RpcStatus, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(RpcStatus)
+	err := c.cc.Invoke(ctx, GatewayControlService_RequestShutdown_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -473,6 +511,11 @@ func (c *gatewayControlServiceClient) SetCommonLocationExemptions(ctx context.Co
 // for forward compatibility.
 type GatewayControlServiceServer interface {
 	GetServerInfo(context.Context, *emptypb.Empty) (*ServerInfo, error)
+	GetGatewayListenerConfig(context.Context, *emptypb.Empty) (*GatewayListenerConfig, error)
+	SetGatewayListenerConfig(context.Context, *GatewayListenerConfig) (*GatewayListenerConfig, error)
+	// Requests an idempotent graceful process shutdown. The response only
+	// acknowledges the request; shutdown continues asynchronously.
+	RequestShutdown(context.Context, *emptypb.Empty) (*RpcStatus, error)
 	GetRules(context.Context, *emptypb.Empty) (*Rules, error)
 	SetRules(context.Context, *Rules) (*Rules, error)
 	FlushRules(context.Context, *emptypb.Empty) (*RpcStatus, error)
@@ -520,6 +563,15 @@ type UnimplementedGatewayControlServiceServer struct{}
 
 func (UnimplementedGatewayControlServiceServer) GetServerInfo(context.Context, *emptypb.Empty) (*ServerInfo, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method GetServerInfo not implemented")
+}
+func (UnimplementedGatewayControlServiceServer) GetGatewayListenerConfig(context.Context, *emptypb.Empty) (*GatewayListenerConfig, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method GetGatewayListenerConfig not implemented")
+}
+func (UnimplementedGatewayControlServiceServer) SetGatewayListenerConfig(context.Context, *GatewayListenerConfig) (*GatewayListenerConfig, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method SetGatewayListenerConfig not implemented")
+}
+func (UnimplementedGatewayControlServiceServer) RequestShutdown(context.Context, *emptypb.Empty) (*RpcStatus, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method RequestShutdown not implemented")
 }
 func (UnimplementedGatewayControlServiceServer) GetRules(context.Context, *emptypb.Empty) (*Rules, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method GetRules not implemented")
@@ -661,6 +713,60 @@ func _GatewayControlService_GetServerInfo_Handler(srv interface{}, ctx context.C
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(GatewayControlServiceServer).GetServerInfo(ctx, req.(*emptypb.Empty))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _GatewayControlService_GetGatewayListenerConfig_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(emptypb.Empty)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(GatewayControlServiceServer).GetGatewayListenerConfig(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: GatewayControlService_GetGatewayListenerConfig_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(GatewayControlServiceServer).GetGatewayListenerConfig(ctx, req.(*emptypb.Empty))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _GatewayControlService_SetGatewayListenerConfig_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GatewayListenerConfig)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(GatewayControlServiceServer).SetGatewayListenerConfig(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: GatewayControlService_SetGatewayListenerConfig_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(GatewayControlServiceServer).SetGatewayListenerConfig(ctx, req.(*GatewayListenerConfig))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _GatewayControlService_RequestShutdown_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(emptypb.Empty)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(GatewayControlServiceServer).RequestShutdown(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: GatewayControlService_RequestShutdown_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(GatewayControlServiceServer).RequestShutdown(ctx, req.(*emptypb.Empty))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -1305,6 +1411,18 @@ var GatewayControlService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "GetServerInfo",
 			Handler:    _GatewayControlService_GetServerInfo_Handler,
+		},
+		{
+			MethodName: "GetGatewayListenerConfig",
+			Handler:    _GatewayControlService_GetGatewayListenerConfig_Handler,
+		},
+		{
+			MethodName: "SetGatewayListenerConfig",
+			Handler:    _GatewayControlService_SetGatewayListenerConfig_Handler,
+		},
+		{
+			MethodName: "RequestShutdown",
+			Handler:    _GatewayControlService_RequestShutdown_Handler,
 		},
 		{
 			MethodName: "GetRules",

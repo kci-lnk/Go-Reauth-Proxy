@@ -260,6 +260,27 @@ func TestAuthBridgeReadyCapabilitiesAndAuthorizeHTTP(t *testing.T) {
 	}
 }
 
+func TestAuthBridgeReadyChangeHookTracksHandshake(t *testing.T) {
+	manager := NewAuthBridgeManager("secret")
+	states := make(chan bool, 3)
+	manager.SetReadyChangeHook(func(ready bool) { states <- ready })
+	if ready := <-states; ready {
+		t.Fatal("new manager reported ready")
+	}
+	active := &authBridgeStream{done: make(chan struct{})}
+	manager.stream.Store(active)
+	manager.handleIncoming(active, &pb.AuthBridgeEnvelope{
+		Payload: &pb.AuthBridgeEnvelope_Ready{Ready: &pb.AuthBridgeReady{}},
+	})
+	if ready := <-states; !ready || !manager.IsReady() {
+		t.Fatal("ready handshake was not published")
+	}
+	manager.detachStream(active)
+	if ready := <-states; ready || manager.IsReady() {
+		t.Fatal("bridge disconnect was not published")
+	}
+}
+
 func TestAuthBridgeLegacyBridgeRejectsCombinedRequest(t *testing.T) {
 	manager := NewAuthBridgeManager("secret")
 	active := manager.attachStream(&blockingAuthBridgeStream{ctx: context.Background()})

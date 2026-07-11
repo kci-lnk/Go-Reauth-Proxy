@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crypto/tls"
 	"errors"
 	"flag"
@@ -18,13 +19,11 @@ import (
 	"net"
 	"net/http"
 	"os"
-	"os/signal"
 	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
 	"github.com/pires/go-proxyproto"
@@ -49,8 +48,17 @@ type proxyStack struct {
 	httpsServer *http.Server
 
 	stop     func()
-	rebindCh chan struct{}
+	rebindCh chan proxyRebindRequest
+	done     chan struct{}
+	stopOnce sync.Once
 }
+
+type proxyRebindRequest struct {
+	host   string
+	result chan error
+}
+
+type proxyServerStarter func(host string) (stop func(), listenAddr string, err error)
 
 type trackedProxyConnState struct {
 	mu         sync.Mutex
@@ -155,12 +163,17 @@ func newProxyStack(proxyPort int, handler *proxy.Handler, httpServer *http.Serve
 		handler:     handler,
 		httpServer:  httpServer,
 		httpsServer: httpsServer,
-		rebindCh:    make(chan struct{}, 1),
+		rebindCh:    make(chan proxyRebindRequest),
+		done:        make(chan struct{}),
 	}
 }
 
 func (s *proxyStack) desiredHost() string {
-	if s.handler.GetProxyProtocolForce() {
+	return s.desiredHostForScope(s.handler.GetGatewayListenerConfig().Scope)
+}
+
+func (s *proxyStack) desiredHostForScope(scope string) string {
+	if s.handler.GetProxyProtocolForce() || scope == models.GatewayListenerScopeLoopback {
 		return "127.0.0.1"
 	}
 	return "0.0.0.0"
@@ -171,23 +184,47 @@ func (s *proxyStack) Start() error {
 		return err
 	}
 	go func() {
-		for range s.rebindCh {
-			if err := s.rebind(); err != nil {
-				log.Printf("Failed to rebind proxy listener: %v", err)
+		for {
+			select {
+			case request := <-s.rebindCh:
+				err := s.rebindToHost(request.host)
+				if err != nil {
+					log.Printf("Failed to rebind proxy listener: %v", err)
+				}
+				request.result <- err
+			case <-s.done:
+				return
 			}
 		}
 	}()
 	return nil
 }
 
-func (s *proxyStack) RequestRebind() {
+func (s *proxyStack) RequestRebind() error {
+	return s.requestRebind(s.desiredHost())
+}
+
+func (s *proxyStack) RequestRebindForScope(scope string) error {
+	return s.requestRebind(s.desiredHostForScope(scope))
+}
+
+func (s *proxyStack) requestRebind(host string) error {
+	result := make(chan error, 1)
 	select {
-	case s.rebindCh <- struct{}{}:
-	default:
+	case <-s.done:
+		return net.ErrClosed
+	case s.rebindCh <- proxyRebindRequest{host: host, result: result}:
+	}
+	select {
+	case <-s.done:
+		return net.ErrClosed
+	case err := <-result:
+		return err
 	}
 }
 
 func (s *proxyStack) Stop() {
+	s.stopOnce.Do(func() { close(s.done) })
 	s.mu.Lock()
 	stop := s.stop
 	s.stop = nil
@@ -203,29 +240,72 @@ func (s *proxyStack) ListenAddr() string {
 	return s.listenAddr
 }
 
+func (s *proxyStack) IsServing() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.stop != nil
+}
+
 func (s *proxyStack) rebind() error {
+	return s.rebindToHost(s.desiredHost())
+}
+
+func (s *proxyStack) rebindToHost(desiredHost string) error {
+	return s.rebindWithStarter(desiredHost, func(host string) (func(), string, error) {
+		return startProxyServers(host, s.proxyPort, s.handler, s.httpServer, s.httpsServer)
+	})
+}
+
+// rebindWithStarter changes a listener scope and restores the previous
+// listener if the new bind fails. Binding wildcard and loopback sockets on the
+// same port cannot be overlapped portably (notably on Windows), so rollback is
+// the only safe way to preserve the live data plane on a failed transition.
+func (s *proxyStack) rebindWithStarter(desiredHost string, start proxyServerStarter) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	desiredHost := s.desiredHost()
 	if s.host == desiredHost && s.stop != nil {
 		return nil
 	}
 
-	if s.stop != nil {
-		s.stop()
+	previousHost := s.host
+	previousStop := s.stop
+	if previousStop != nil {
+		previousStop()
 		s.stop = nil
+		s.host = ""
+		s.listenAddr = ""
 	}
 
-	stop, listenAddr, err := startProxyServers(desiredHost, s.proxyPort, s.handler, s.httpServer, s.httpsServer)
-	if err != nil {
-		return err
+	stop, listenAddr, err := start(desiredHost)
+	if err == nil {
+		s.host = desiredHost
+		s.stop = stop
+		s.listenAddr = listenAddr
+		log.Printf("Reverse Proxy listening on %s", listenAddr)
+		return nil
 	}
-	s.host = desiredHost
-	s.stop = stop
-	s.listenAddr = listenAddr
-	log.Printf("Reverse Proxy listening on %s", listenAddr)
-	return nil
+
+	if previousStop == nil {
+		return fmt.Errorf("bind proxy listener on %s: %w", desiredHost, err)
+	}
+
+	rollbackStop, rollbackAddr, rollbackErr := start(previousHost)
+	if rollbackErr != nil {
+		return fmt.Errorf(
+			"bind proxy listener on %s: %w; restore previous listener on %s: %v",
+			desiredHost,
+			err,
+			previousHost,
+			rollbackErr,
+		)
+	}
+
+	s.host = previousHost
+	s.stop = rollbackStop
+	s.listenAddr = rollbackAddr
+	log.Printf("Reverse Proxy rebind to %s failed; restored listener on %s", desiredHost, rollbackAddr)
+	return fmt.Errorf("bind proxy listener on %s: %w; restored previous listener on %s", desiredHost, err, previousHost)
 }
 
 func isClosedConnErr(err error) bool {
@@ -406,152 +486,228 @@ func newProxyTLSConfig(provider proxyTLSCertificateProvider) *tls.Config {
 	return autoConfig
 }
 
-func raiseNoFileLimit() {
-	target := syscall.Rlimit{
-		Cur: targetNoFileLimit,
-		Max: targetNoFileLimit,
-	}
-	if err := syscall.Setrlimit(syscall.RLIMIT_NOFILE, &target); err == nil {
-		log.Printf("Raised RLIMIT_NOFILE to soft=%d hard=%d", targetNoFileLimit, targetNoFileLimit)
-		return
-	} else {
-		targetErr := err
-		var inherited syscall.Rlimit
-		if getErr := syscall.Getrlimit(syscall.RLIMIT_NOFILE, &inherited); getErr == nil && inherited.Cur < inherited.Max {
-			fallback := syscall.Rlimit{
-				Cur: inherited.Max,
-				Max: inherited.Max,
-			}
-			if setErr := syscall.Setrlimit(syscall.RLIMIT_NOFILE, &fallback); setErr == nil {
-				log.Printf(
-					"Failed to set RLIMIT_NOFILE to %d; raised soft limit to inherited hard limit %d instead: %v",
-					targetNoFileLimit,
-					inherited.Max,
-					targetErr,
-				)
-				return
-			}
-		}
-		log.Printf("Failed to set RLIMIT_NOFILE to %d: %v", targetNoFileLimit, targetErr)
-	}
+type runOptions struct {
+	Context          context.Context
+	AdminPort        int
+	ProxyPort        int
+	ConfigPath       string
+	LogsDir          string
+	WAFDir           string
+	InternalRPCToken string
+	DiagnosticsAddr  string
 }
 
-func main() {
-	logger.Setup()
-	raiseNoFileLimit()
-
-	adminPort := flag.Int("admin-port", 7996, "Port for the Admin API (0 uses config or default 7996, binds to localhost on 127.0.0.1 and ::1)")
-	proxyPort := flag.Int("proxy-port", envPortDefault("GO_REPROXY_PORT", 7999), "Port for the Reverse Proxy (defaults to GO_REPROXY_PORT or 7999; binds to 0.0.0.0/:: or 127.0.0.1/::1 based on proxy_protocol_force)")
-	configFlag := flag.String("c", "", "Path to config file (default: config.json in executable directory)")
-	flag.Parse()
-
-	log.Printf("Starting Go Reauth Proxy Service...")
-
-	execPath, err := os.Executable()
-	if err != nil {
-		logger.Fatalf("Failed to get executable path: %v", err)
-	}
-
-	execDir := filepath.Dir(execPath)
-	if strings.Contains(execDir, "go-build") || strings.Contains(execDir, "T") {
-		pwd, _ := os.Getwd()
-		execDir = pwd
-	}
-
-	var configPath string
-	if *configFlag != "" {
-		configPath = *configFlag
-		if !filepath.IsAbs(configPath) {
-			pwd, err := os.Getwd()
-			if err == nil {
-				configPath = filepath.Join(pwd, configPath)
+func resolveConfigPath(configFlag string) (string, error) {
+	if strings.TrimSpace(configFlag) == "" {
+		execPath, err := os.Executable()
+		if err != nil {
+			return "", fmt.Errorf("get executable path: %w", err)
+		}
+		execDir := filepath.Dir(execPath)
+		if strings.Contains(execDir, "go-build") {
+			if pwd, err := os.Getwd(); err == nil {
+				execDir = pwd
 			}
 		}
-
-		info, err := os.Stat(configPath)
-		if err == nil && info.IsDir() {
-			configPath = filepath.Join(configPath, "config.json")
-		} else if err != nil && os.IsNotExist(err) && strings.HasSuffix(*configFlag, string(os.PathSeparator)) {
-			configPath = filepath.Join(configPath, "config.json")
-		}
-	} else {
-		configPath = filepath.Join(execDir, "config.json")
+		return filepath.Join(execDir, "config.json"), nil
 	}
 
-	configDir := filepath.Dir(configPath)
-	if err := os.MkdirAll(configDir, 0755); err != nil {
-		logger.Fatalf("Failed to create config directory %s: %v", configDir, err)
+	configPath := configFlag
+	if !filepath.IsAbs(configPath) {
+		pwd, err := os.Getwd()
+		if err != nil {
+			return "", fmt.Errorf("get working directory: %w", err)
+		}
+		configPath = filepath.Join(pwd, configPath)
+	}
+	info, err := os.Stat(configPath)
+	if err == nil && info.IsDir() {
+		return filepath.Join(configPath, "config.json"), nil
+	}
+	if err != nil && !os.IsNotExist(err) {
+		return "", err
+	}
+	if os.IsNotExist(err) && strings.HasSuffix(configFlag, string(os.PathSeparator)) {
+		configPath = filepath.Join(configPath, "config.json")
+	}
+	return configPath, nil
+}
+
+func shutdownHTTPServers(parent context.Context, httpServer *http.Server, httpsServer *http.Server) {
+	if parent == nil {
+		parent = context.Background()
+	}
+	ctx, cancel := context.WithTimeout(parent, 10*time.Second)
+	defer cancel()
+	var wg sync.WaitGroup
+	for _, server := range []*http.Server{httpServer, httpsServer} {
+		if server == nil {
+			continue
+		}
+		wg.Add(1)
+		go func(s *http.Server) {
+			defer wg.Done()
+			if err := s.Shutdown(ctx); err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
+				log.Printf("HTTP server graceful shutdown failed: %v", err)
+			}
+		}(server)
+	}
+	wg.Wait()
+}
+
+func run(options runOptions) error {
+	parent := options.Context
+	if parent == nil {
+		parent = context.Background()
+	}
+	ctx, cancel := context.WithCancel(parent)
+	defer cancel()
+
+	if options.ProxyPort <= 0 || options.ProxyPort > 65535 {
+		return fmt.Errorf("proxy port must be between 1 and 65535")
+	}
+	if strings.TrimSpace(options.ConfigPath) == "" {
+		return fmt.Errorf("config path is required")
+	}
+	configDir := filepath.Dir(options.ConfigPath)
+	if err := os.MkdirAll(configDir, 0o755); err != nil {
+		return fmt.Errorf("create config directory %s: %w", configDir, err)
 	}
 	logsDir := gatewaylog.DefaultLogsDir(configDir)
-
-	cfgManager := config.NewManager(configPath)
+	if configured := strings.TrimSpace(options.LogsDir); configured != "" {
+		if !filepath.IsAbs(configured) {
+			return fmt.Errorf("logs directory must be absolute: %s", configured)
+		}
+		logsDir = filepath.Clean(configured)
+	}
+	cfgManager := config.NewManager(options.ConfigPath)
 	initialCfg, err := cfgManager.Load()
 	if err != nil {
-		logger.Fatalf("Failed to load config: %v", err)
+		return fmt.Errorf("load config: %w", err)
+	}
+	if configured := strings.TrimSpace(options.WAFDir); configured != "" {
+		if !filepath.IsAbs(configured) {
+			return fmt.Errorf("WAF directory must be absolute: %s", configured)
+		}
+		configured = filepath.Clean(configured)
+		if initialCfg.WAF.RulesDir != configured {
+			initialCfg.WAF.RulesDir = configured
+			if err := cfgManager.Save(initialCfg); err != nil {
+				return fmt.Errorf("persist managed WAF directory: %w", err)
+			}
+		}
 	}
 
-	resolvedAdminPort := *adminPort
+	resolvedAdminPort := options.AdminPort
 	if resolvedAdminPort <= 0 {
 		resolvedAdminPort = initialCfg.AdminPort
 		if resolvedAdminPort <= 0 {
 			resolvedAdminPort = 7996
 		}
 	}
+	if resolvedAdminPort > 65535 {
+		return fmt.Errorf("admin port must be between 1 and 65535")
+	}
 	logger.SetDebugAdminPortForRedaction(resolvedAdminPort)
 	if event := logger.DebugEvent("server", "startup_config_loaded"); event != nil {
-		event.Str("config_path", logger.SanitizeLogString(configPath)).
+		event.Str("config_path", logger.SanitizeLogString(options.ConfigPath)).
 			Str("runtime_dir", logger.SanitizeLogString(configDir)).
 			Str("gateway_logs_dir", logger.SanitizeLogString(logsDir)).
-			Interface("proxy_port", logger.SanitizePort(*proxyPort)).
+			Interface("proxy_port", logger.SanitizePort(options.ProxyPort)).
 			Int("path_rule_count", len(initialCfg.Rules)).
 			Int("host_rule_count", len(initialCfg.HostRules)).
 			Int("stream_rule_count", len(initialCfg.StreamRules)).
 			Bool("proxy_protocol_force", initialCfg.ProxyProtocolForce).
+			Str("listener_scope", initialCfg.GatewayListener.Scope).
 			Bool("waf_enabled", initialCfg.WAF.Enabled).
 			Send()
 	}
 
-	internalRPCToken, err := rpcbridge.ResolveInternalToken(os.Getenv("FN_KNOCK_INTERNAL_RPC_TOKEN"))
+	internalRPCToken, err := rpcbridge.ResolveInternalToken(options.InternalRPCToken)
 	if err != nil {
-		logger.Fatalf("Internal gRPC token is required: %v", err)
+		return fmt.Errorf("internal gRPC token is required: %w", err)
 	}
-	stopDiagnostics, diagnosticsAddr, err := startDiagnosticsServer(os.Getenv(diagnosticsAddrEnv), internalRPCToken)
+	stopDiagnostics, diagnosticsAddr, err := startDiagnosticsServer(options.DiagnosticsAddr, internalRPCToken)
 	if err != nil {
-		logger.Fatalf("Diagnostics server failed: %v", err)
+		return fmt.Errorf("start diagnostics server: %w", err)
 	}
 	if diagnosticsAddr != "" {
 		log.Printf("Diagnostics server listening on %s", diagnosticsAddr)
 	}
 
+	var (
+		proxyHandler  *proxy.Handler
+		streamManager *stream.Manager
+		grpcServer    *internalGRPCServer
+		proxyStack    *proxyStack
+		httpServer    *http.Server
+		httpsServer   *http.Server
+		shutdownOnce  sync.Once
+	)
+	shutdown := func() {
+		shutdownOnce.Do(func() {
+			shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 15*time.Second)
+			defer shutdownCancel()
+			log.Println("Shutting down...")
+			if event := logger.DebugEvent("server", "shutdown_started"); event != nil {
+				event.Send()
+			}
+			if grpcServer != nil {
+				grpcServer.SetServingStatus(healthGatewayDataplane, false)
+				grpcServer.SetServingStatus(healthGatewayAuthBridge, false)
+			}
+			if proxyStack != nil {
+				proxyStack.Stop()
+			}
+			if streamManager != nil {
+				streamManager.Stop()
+			}
+			shutdownHTTPServers(shutdownCtx, httpServer, httpsServer)
+			if grpcServer != nil {
+				grpcServer.Stop(shutdownCtx)
+			}
+			stopDiagnostics()
+			if proxyHandler != nil {
+				proxyHandler.Close()
+			}
+			if event := logger.DebugEvent("server", "shutdown_completed"); event != nil {
+				event.Send()
+			}
+			logger.FlushDebugLogger()
+		})
+	}
+	defer shutdown()
+
 	systemEventClient := events.NewClient(nil)
 	authBridgeManager := rpcbridge.NewAuthBridgeManager(internalRPCToken)
-	proxyHandler := proxy.NewHandler(resolvedAdminPort, *proxyPort, cfgManager, initialCfg, logsDir, systemEventClient)
+	proxyHandler = proxy.NewHandler(resolvedAdminPort, options.ProxyPort, cfgManager, initialCfg, logsDir, systemEventClient)
 	proxyHandler.SetAuthBridgeManager(authBridgeManager)
 	configuredStreamRules := proxyHandler.GetStreamRules()
 	normalizedStreamRules := configuredStreamRules
-	if validatedStreamRules, err := proxyHandler.ValidateStreamRules(configuredStreamRules); err != nil {
+	if validatedStreamRules, validationErr := proxyHandler.ValidateStreamRules(configuredStreamRules); validationErr != nil {
 		if event := logger.DebugEvent("server", "stream_initial_validation_failed"); event != nil {
-			event.Str("error", logger.SanitizeLogString(err.Error())).
+			event.Str("error", logger.SanitizeLogString(validationErr.Error())).
 				Int("stream_rule_count", len(configuredStreamRules)).
 				Send()
 		}
-		log.Printf("Initial stream rules contain invalid entries and will be loaded in best-effort mode: %v", err)
+		log.Printf("Initial stream rules contain invalid entries and will be loaded in best-effort mode: %v", validationErr)
 	} else {
 		normalizedStreamRules = validatedStreamRules
-		if err := proxyHandler.SetStreamRules(normalizedStreamRules); err != nil {
+		if setErr := proxyHandler.SetStreamRules(normalizedStreamRules); setErr != nil {
 			if event := logger.DebugEvent("server", "stream_initial_normalize_failed"); event != nil {
-				event.Str("error", logger.SanitizeLogString(err.Error())).
+				event.Str("error", logger.SanitizeLogString(setErr.Error())).
 					Int("stream_rule_count", len(normalizedStreamRules)).
 					Send()
 			}
-			log.Printf("Failed to normalize initial stream rules in config manager: %v", err)
+			log.Printf("Failed to normalize initial stream rules in config manager: %v", setErr)
 		}
 	}
-
 	currentConfig := proxyHandler.GetAuthConfig()
-	proxyHandler.SetAuthConfig(currentConfig)
+	if setErr := proxyHandler.SetAuthConfig(currentConfig); setErr != nil {
+		return fmt.Errorf("persist normalized auth config: %w", setErr)
+	}
 
-	streamManager := stream.NewManager(proxyHandler)
+	streamManager = stream.NewManager(proxyHandler)
 	startedStreamRules, startupWarnings := streamManager.ReconcileBestEffort(normalizedStreamRules)
 	for _, warning := range startupWarnings {
 		if event := logger.DebugEvent("server", "stream_startup_warning"); event != nil {
@@ -574,24 +730,23 @@ func main() {
 	}
 
 	adminServer := admin.NewServer(proxyHandler, resolvedAdminPort, cfgManager, initialCfg, streamManager)
-	stopInternalGRPC, err := startInternalGRPCServer(
-		resolvedAdminPort,
-		internalRPCToken,
-		admin.NewGRPCServer(adminServer, internalRPCToken),
-		authBridgeManager,
-	)
+	controlServer := admin.NewGRPCServer(adminServer, internalRPCToken)
+	controlServer.SetShutdownRequest(cancel)
+	grpcServer, err = startInternalGRPCServer(resolvedAdminPort, internalRPCToken, controlServer, authBridgeManager)
 	if err != nil {
-		logger.Fatalf("Internal gRPC server failed: %v", err)
+		return fmt.Errorf("start internal gRPC server: %w", err)
 	}
+	authBridgeManager.SetReadyChangeHook(func(ready bool) {
+		grpcServer.SetServingStatus(healthGatewayAuthBridge, ready)
+	})
 
-	httpsServer := &http.Server{
+	httpsServer = &http.Server{
 		Handler:           proxyHandler,
 		ReadHeaderTimeout: 10 * time.Second,
 		IdleTimeout:       120 * time.Second,
 		TLSConfig:         newProxyTLSConfig(proxyHandler),
 	}
-
-	httpServer := &http.Server{
+	httpServer = &http.Server{
 		ReadHeaderTimeout: 10 * time.Second,
 		IdleTimeout:       120 * time.Second,
 		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -611,51 +766,85 @@ func main() {
 	httpConns := &proxyConnTracker{}
 	httpsServer.ConnState = httpsConns.update
 	httpServer.ConnState = httpConns.update
-
 	proxyHandler.SetSSLChangeHook(func() {
 		httpsConns.retireForServerNames(nil)
 		httpConns.retireForServerNames(nil)
 	})
-	proxyHandler.SetHostProtocolModeChangeHook(func(serverNames []string) {
-		httpsConns.retireForServerNames(serverNames)
-	})
+	proxyHandler.SetHostProtocolModeChangeHook(httpsConns.retireForServerNames)
 
-	proxyStack := newProxyStack(*proxyPort, proxyHandler, httpServer, httpsServer)
+	proxyStack = newProxyStack(options.ProxyPort, proxyHandler, httpServer, httpsServer)
 	if err := proxyStack.Start(); err != nil {
 		if event := logger.DebugEvent("server", "proxy_stack_start_failed"); event != nil {
-			event.Interface("proxy_port", logger.SanitizePort(*proxyPort)).
+			event.Interface("proxy_port", logger.SanitizePort(options.ProxyPort)).
 				Str("error", logger.SanitizeLogString(err.Error())).
 				Send()
 		}
-		logger.Fatalf("Failed to start proxy stack: %v", err)
+		return fmt.Errorf("start proxy stack: %w", err)
 	}
+	grpcServer.SetServingStatus(healthGatewayDataplane, true)
 	if event := logger.DebugEvent("server", "proxy_stack_started"); event != nil {
-		event.Interface("proxy_port", logger.SanitizePort(*proxyPort)).
+		event.Interface("proxy_port", logger.SanitizePort(options.ProxyPort)).
 			Str("listen_addr", logger.SanitizeLogString(proxyStack.ListenAddr())).
 			Send()
 	}
-
+	proxyHandler.SetGatewayListenerConfigChangeHook(func(listener models.GatewayListenerConfig) error {
+		if err := proxyStack.RequestRebindForScope(listener.Scope); err != nil {
+			// A failed rebind may already have restored the prior listener. Reflect
+			// the actual serving state instead of reporting the data plane down
+			// merely because the requested scope could not be applied.
+			grpcServer.SetServingStatus(healthGatewayDataplane, proxyStack.IsServing())
+			log.Printf("Proxy listener scope rebind failed: %v", err)
+			return err
+		}
+		grpcServer.SetServingStatus(healthGatewayDataplane, true)
+		return nil
+	})
 	proxyHandler.SetProxyProtocolForceChangeHook(func() {
 		httpsConns.retireForServerNames(nil)
 		httpConns.retireForServerNames(nil)
-		proxyStack.RequestRebind()
+		if err := proxyStack.RequestRebind(); err != nil {
+			grpcServer.SetServingStatus(healthGatewayDataplane, proxyStack.IsServing())
+			log.Printf("Proxy listener rebind failed: %v", err)
+			return
+		}
+		grpcServer.SetServingStatus(healthGatewayDataplane, true)
 	})
 
-	quit := make(chan os.Signal, 1)
-	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
-	<-quit
+	<-ctx.Done()
+	return nil
+}
 
-	log.Println("Shutting down...")
-	if event := logger.DebugEvent("server", "shutdown_started"); event != nil {
-		event.Send()
+func main() {
+	logger.Setup()
+	raiseNoFileLimit()
+
+	adminPort := flag.Int("admin-port", 7996, "Port for the internal gRPC API (0 uses config or default 7996; loopback only)")
+	proxyPort := flag.Int("proxy-port", envPortDefault("GO_REPROXY_PORT", 7999), "Port for the reverse proxy")
+	configFlag := flag.String("c", "", "Path to config file (default: config.json in executable directory)")
+	logsDir := flag.String("logs-dir", os.Getenv("FN_KNOCK_GATEWAY_LOGS_DIR"), "Absolute directory for gateway request logs")
+	wafDir := flag.String("waf-dir", os.Getenv("FN_KNOCK_GATEWAY_WAF_DIR"), "Absolute directory for WAF rules and state")
+	flag.Parse()
+
+	configPath, err := resolveConfigPath(*configFlag)
+	if err != nil {
+		log.Printf("Resolve config path failed: %v", err)
+		os.Exit(1)
 	}
-	streamManager.Stop()
-	proxyStack.Stop()
-	stopInternalGRPC()
-	stopDiagnostics()
-	proxyHandler.Close()
-	if event := logger.DebugEvent("server", "shutdown_completed"); event != nil {
-		event.Send()
+	ctx, stopSignals := processSignalContext(context.Background())
+	defer stopSignals()
+	log.Printf("Starting Go Reauth Proxy Service...")
+	if err := run(runOptions{
+		Context:          ctx,
+		AdminPort:        *adminPort,
+		ProxyPort:        *proxyPort,
+		ConfigPath:       configPath,
+		LogsDir:          *logsDir,
+		WAFDir:           *wafDir,
+		InternalRPCToken: os.Getenv("FN_KNOCK_INTERNAL_RPC_TOKEN"),
+		DiagnosticsAddr:  os.Getenv(diagnosticsAddrEnv),
+	}); err != nil {
+		log.Printf("Go Reauth Proxy failed: %v", err)
+		logger.FlushDebugLogger()
+		os.Exit(1)
 	}
-	logger.FlushDebugLogger()
 }

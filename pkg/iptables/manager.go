@@ -189,6 +189,20 @@ func iptablesDisabledByEnvironment() bool {
 	}
 }
 
+func (m *Manager) isDisabled() bool {
+	if m.disabled {
+		return true
+	}
+	if platformIptablesSupported() {
+		return false
+	}
+	// A substituted runner is a unit-test seam and never executes the host's
+	// firewall tools. Production managers always use execRunner and are
+	// automatically disabled outside Linux.
+	_, executesHostCommands := m.runner.(execRunner)
+	return executesHostCommands
+}
+
 func normalizeTables(tables []string) []string {
 	out := make([]string, 0, len(tables))
 	seen := map[string]struct{}{}
@@ -216,7 +230,7 @@ func (m *Manager) hasTable(table string) bool {
 }
 
 func (m *Manager) runTable(table string, args ...string) error {
-	if m.disabled {
+	if m.isDisabled() {
 		return errors.New(errors.CodeIptablesCommandError, "iptables is disabled for this runtime")
 	}
 	output, err := m.runner.CombinedOutput(table, args...)
@@ -234,7 +248,7 @@ func (m *Manager) runTable(table string, args ...string) error {
 }
 
 func (m *Manager) runTableOutput(table string, args ...string) (string, error) {
-	if m.disabled {
+	if m.isDisabled() {
 		return "", errors.New(errors.CodeIptablesCommandError, "iptables is disabled for this runtime")
 	}
 	output, err := m.runner.CombinedOutput(table, args...)
@@ -263,7 +277,7 @@ func restoreCommandForTable(table string) string {
 }
 
 func (m *Manager) runTableRestore(table string, input string) error {
-	if m.disabled {
+	if m.isDisabled() {
 		return errors.New(errors.CodeIptablesCommandError, "iptables is disabled for this runtime")
 	}
 	restoreCommand := restoreCommandForTable(table)

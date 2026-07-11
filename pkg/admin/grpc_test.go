@@ -2,12 +2,17 @@ package admin
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"go-reauth-proxy/pkg/config"
 	"go-reauth-proxy/pkg/grpc/pb"
+	"go-reauth-proxy/pkg/models"
 	"go-reauth-proxy/pkg/proxy"
 	"go-reauth-proxy/pkg/rpcbridge"
 
@@ -52,6 +57,81 @@ func TestGatewayControlTypedProxyProtocolRoundTrip(t *testing.T) {
 	}
 	if !got.GetValue() {
 		t.Fatalf("stored proxy protocol force = false, want true")
+	}
+}
+
+func TestGatewayControlServerInfoIncludesCompatibilityMetadata(t *testing.T) {
+	server := newGatewayControlTestServer(t, "secret")
+	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs(rpcbridge.InternalTokenMetadataKey, "secret"))
+	info, err := server.GetServerInfo(ctx, &emptypb.Empty{})
+	if err != nil {
+		t.Fatalf("GetServerInfo: %v", err)
+	}
+	if info.GetVersion() == "" || info.GetOs() != runtime.GOOS || info.GetArch() != runtime.GOARCH {
+		t.Fatalf("unexpected server info: %#v", info)
+	}
+	if info.GetControlApiVersion() != 1 || len(info.GetCapabilities()) == 0 || info.GetCommit() == "" {
+		t.Fatalf("incomplete compatibility metadata: %#v", info)
+	}
+}
+
+func TestGatewayControlListenerConfigRoundTrip(t *testing.T) {
+	server := newGatewayControlTestServer(t, "secret")
+	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs(rpcbridge.InternalTokenMetadataKey, "secret"))
+	set, err := server.SetGatewayListenerConfig(ctx, &pb.GatewayListenerConfig{Scope: "loopback"})
+	if err != nil || set.GetScope() != "loopback" {
+		t.Fatalf("SetGatewayListenerConfig = %#v, %v", set, err)
+	}
+	got, err := server.GetGatewayListenerConfig(ctx, &emptypb.Empty{})
+	if err != nil || got.GetScope() != "loopback" {
+		t.Fatalf("GetGatewayListenerConfig = %#v, %v", got, err)
+	}
+	if _, err := server.SetGatewayListenerConfig(ctx, &pb.GatewayListenerConfig{Scope: "public"}); status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("invalid scope status = %v, want invalid argument", status.Code(err))
+	}
+}
+
+func TestGatewayControlListenerConfigReturnsFailureWhenRuntimeApplyFails(t *testing.T) {
+	server := newGatewayControlTestServer(t, "secret")
+	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs(rpcbridge.InternalTokenMetadataKey, "secret"))
+	previous := server.admin.ProxyHandler.GetGatewayListenerConfig()
+	nextScope := "loopback"
+	if previous.Scope == nextScope {
+		nextScope = "all"
+	}
+	server.admin.ProxyHandler.SetGatewayListenerConfigChangeHook(func(models.GatewayListenerConfig) error {
+		return errors.New("listener port is unavailable")
+	})
+
+	if _, err := server.SetGatewayListenerConfig(ctx, &pb.GatewayListenerConfig{Scope: nextScope}); status.Code(err) != codes.Internal {
+		t.Fatalf("runtime apply failure status = %v, want internal", status.Code(err))
+	}
+	if got := server.admin.ProxyHandler.GetGatewayListenerConfig(); got != previous {
+		t.Fatalf("listener config after failed RPC = %#v, want %#v", got, previous)
+	}
+}
+
+func TestGatewayControlRequestShutdownIsIdempotent(t *testing.T) {
+	server := newGatewayControlTestServer(t, "secret")
+	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs(rpcbridge.InternalTokenMetadataKey, "secret"))
+	var calls atomic.Int32
+	done := make(chan struct{})
+	server.SetShutdownRequest(func() {
+		calls.Add(1)
+		close(done)
+	})
+	for i := 0; i < 3; i++ {
+		if response, err := server.RequestShutdown(ctx, &emptypb.Empty{}); err != nil || !response.GetSuccess() {
+			t.Fatalf("RequestShutdown[%d] = %#v, %v", i, response, err)
+		}
+	}
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("shutdown callback was not invoked")
+	}
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("shutdown callback calls = %d, want 1", got)
 	}
 }
 

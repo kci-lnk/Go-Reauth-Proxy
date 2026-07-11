@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"errors"
 	"path/filepath"
 	"testing"
 	"time"
@@ -34,6 +35,80 @@ func TestSetProxyProtocolForceSkipsHookWhenUnchanged(t *testing.T) {
 	}
 	if calls != 0 {
 		t.Fatalf("hook calls = %d, want 0", calls)
+	}
+}
+
+func TestSetGatewayListenerConfigDoesNotPersistWhenRuntimeApplyFails(t *testing.T) {
+	handler, manager := newAdditionalProxyTestHandler(t)
+	previous := handler.GetGatewayListenerConfig()
+	nextScope := models.GatewayListenerScopeLoopback
+	if previous.Scope == nextScope {
+		nextScope = models.GatewayListenerScopeAll
+	}
+
+	var applied models.GatewayListenerConfig
+	handler.SetGatewayListenerConfigChangeHook(func(candidate models.GatewayListenerConfig) error {
+		applied = candidate
+		if got := handler.GetGatewayListenerConfig(); got != previous {
+			t.Fatalf("runtime hook observed listener config %#v, want previous %#v", got, previous)
+		}
+		return errors.New("listener port is unavailable")
+	})
+
+	err := handler.SetGatewayListenerConfig(models.GatewayListenerConfig{Scope: nextScope})
+	if err == nil {
+		t.Fatal("SetGatewayListenerConfig() succeeded after a failed runtime apply")
+	}
+	if applied.Scope != nextScope {
+		t.Fatalf("runtime hook candidate = %#v, want scope %q", applied, nextScope)
+	}
+	if got := handler.GetGatewayListenerConfig(); got != previous {
+		t.Fatalf("listener config after failed runtime apply = %#v, want %#v", got, previous)
+	}
+	stored, loadErr := manager.Load()
+	if loadErr != nil {
+		t.Fatalf("Load() returned error: %v", loadErr)
+	}
+	if got := stored.GatewayListener; got != previous {
+		t.Fatalf("persisted listener config after failed runtime apply = %#v, want %#v", got, previous)
+	}
+}
+
+func TestSetGatewayListenerConfigPersistsOnlyAfterRuntimeApplySucceeds(t *testing.T) {
+	handler, manager := newAdditionalProxyTestHandler(t)
+	previous := handler.GetGatewayListenerConfig()
+	nextScope := models.GatewayListenerScopeLoopback
+	if previous.Scope == nextScope {
+		nextScope = models.GatewayListenerScopeAll
+	}
+
+	calls := 0
+	handler.SetGatewayListenerConfigChangeHook(func(candidate models.GatewayListenerConfig) error {
+		calls++
+		if candidate.Scope != nextScope {
+			t.Fatalf("runtime hook candidate = %#v, want scope %q", candidate, nextScope)
+		}
+		if got := handler.GetGatewayListenerConfig(); got != previous {
+			t.Fatalf("runtime hook observed listener config %#v, want previous %#v", got, previous)
+		}
+		return nil
+	})
+
+	if err := handler.SetGatewayListenerConfig(models.GatewayListenerConfig{Scope: nextScope}); err != nil {
+		t.Fatalf("SetGatewayListenerConfig() returned error: %v", err)
+	}
+	if calls != 1 {
+		t.Fatalf("runtime hook calls = %d, want 1", calls)
+	}
+	if got := handler.GetGatewayListenerConfig().Scope; got != nextScope {
+		t.Fatalf("listener scope = %q, want %q", got, nextScope)
+	}
+	stored, loadErr := manager.Load()
+	if loadErr != nil {
+		t.Fatalf("Load() returned error: %v", loadErr)
+	}
+	if got := stored.GatewayListener.Scope; got != nextScope {
+		t.Fatalf("persisted listener scope = %q, want %q", got, nextScope)
 	}
 }
 

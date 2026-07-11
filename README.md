@@ -64,6 +64,8 @@ Rust 后端作为客户端连接 `127.0.0.1:${GO_BACKEND_PORT}`，建立长生�
 
 `proxy_protocol_force=true` 时，代理监听地址会从 `0.0.0.0/::` 切换为 `127.0.0.1/::1`，并优先从 `X-Forwarded-For` / `X-Real-IP` 获取客户端 IP。
 
+`gateway_listener.scope` 独立控制代理监听范围，取值为 `loopback` 或 `all`。Windows 新配置默认 `loopback`，其他平台为兼容旧部署默认 `all`；`proxy_protocol_force=true` 始终拥有更高优先级并保持只监听 loopback。
+
 ## 快速开始
 
 ### 1. 环境要求
@@ -122,6 +124,9 @@ FN_KNOCK_INTERNAL_RPC_TOKEN=dev-local-token go run ./cmd/server -proxy-port 7999
   },
   "admin_port": 7996,
   "proxy_protocol_force": false,
+  "gateway_listener": {
+    "scope": "all"
+  },
   "reverse_proxy_throttle": {
     "enabled": true,
     "requests_per_second": 100,
@@ -146,6 +151,7 @@ FN_KNOCK_INTERNAL_RPC_TOKEN=dev-local-token go run ./cmd/server -proxy-port 7999
 - `auth_config.public_https_port`: 可选，显式指定对外暴露的 HTTPS 端口
 - `admin_port`: 内部 gRPC 端口（仅在 `-admin-port=0` 时作为回退）
 - `proxy_protocol_force`: 是否强制按 PROXY protocol 场景处理来源 IP
+- `gateway_listener.scope`: 代理监听范围；Windows 新安装默认 `loopback`，显式允许局域网访问时设置为 `all`
 - `reverse_proxy_throttle`: 反代数据面节流配置，作用于命中 host/path 规则的请求以及 `__auth__` 认证代理路径，不影响 `admin-port`、`/__select__`
 - `reverse_proxy_throttle.enabled`: 是否启用节流
 - `reverse_proxy_throttle.requests_per_second`: 单个客户端 IP 每秒允许的请求数
@@ -252,6 +258,10 @@ Go 会把以下请求上下文放入 typed `AuthContext`：
 - `FirewallService`
 - `AuthBridgeService`
 
+标准 `grpc.health.v1` 服务同时注册并受相同 token 保护，服务名为 `fnknock.gateway.process`、`fnknock.gateway.dataplane` 和 `fnknock.gateway.auth_bridge`。`ServerInfo` 暴露版本、OS/架构、控制协议版本、commit 与 capability；`RequestShutdown` 用于服务监督进程触发幂等优雅退出。
+
+非 Linux 平台仍注册 `FirewallService`，但所有方法统一返回 gRPC `Unimplemented`，并且 `ServerInfo.capabilities` 不包含 `firewall.iptables`。
+
 浏览器管理后台应访问 Rust 后端 HTTP 管理接口，由 Rust 负责把前端 JSON envelope 映射到 Go gRPC 控制面。
 
 ## iptables 说明
@@ -299,11 +309,12 @@ pkg/middleware/       # 日志/CORS 中间件
 ## 开发命令
 
 ```bash
-task build            # 构建 macOS ARM64 + Linux AMD64/ARM64/ARM32
+task build            # 构建 macOS、Linux 与 Windows 目标
 task build:mac
 task build:linux
 task build:linux-arm64
 task build:linux-arm
+task build:windows    # Windows x86_64，CGO=0，不使用 UPX
 task run
 task test
 task docs

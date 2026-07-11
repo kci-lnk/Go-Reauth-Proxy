@@ -42,9 +42,10 @@ type AuthBridgeManager struct {
 
 	token string
 
-	stream  atomic.Pointer[authBridgeStream]
-	nextID  atomic.Uint64
-	pending [authBridgePendingShardCount]authBridgePendingShard
+	stream        atomic.Pointer[authBridgeStream]
+	readyOnChange atomic.Value
+	nextID        atomic.Uint64
+	pending       [authBridgePendingShardCount]authBridgePendingShard
 }
 
 type authBridgeStream struct {
@@ -91,12 +92,38 @@ type authBridgeRecvResult struct {
 
 func NewAuthBridgeManager(token string) *AuthBridgeManager {
 	m := &AuthBridgeManager{token: strings.TrimSpace(token)}
+	var emptyReadyHook func(bool)
+	m.readyOnChange.Store(emptyReadyHook)
 	for i := range m.pending {
 		shard := &m.pending[i]
 		shard.cond = sync.NewCond(shard)
 		shard.calls = make(map[string]*authBridgePendingCall)
 	}
 	return m
+}
+
+// IsReady reports whether the currently active bridge completed its Ready
+// handshake. A connected stream is deliberately not considered ready yet.
+func (m *AuthBridgeManager) IsReady() bool {
+	active := m.stream.Load()
+	return active != nil && active.capabilities.Load() != nil && !active.isClosed()
+}
+
+// SetReadyChangeHook publishes Ready handshake transitions to process-level
+// health reporting. The hook is immediately called with the current state.
+func (m *AuthBridgeManager) SetReadyChangeHook(hook func(bool)) {
+	if hook == nil {
+		hook = func(bool) {}
+	}
+	m.readyOnChange.Store(hook)
+	hook(m.IsReady())
+}
+
+func (m *AuthBridgeManager) notifyReadyChange(ready bool) {
+	value := m.readyOnChange.Load()
+	if hook, ok := value.(func(bool)); ok && hook != nil {
+		hook(ready)
+	}
 }
 
 func (m *AuthBridgeManager) ConnectAuthBridge(stream pb.AuthBridgeService_ConnectAuthBridgeServer) error {
@@ -409,6 +436,9 @@ func (m *AuthBridgeManager) handleIncoming(stream *authBridgeStream, msg *pb.Aut
 	}
 	if ready := msg.GetReady(); ready != nil {
 		stream.setCapabilities(ready)
+		if m.stream.Load() == stream {
+			m.notifyReadyChange(true)
+		}
 		return
 	}
 	m.dispatchResponse(stream, msg)
@@ -436,6 +466,7 @@ func (m *AuthBridgeManager) attachStream(stream pb.AuthBridgeService_ConnectAuth
 		done:      make(chan struct{}),
 	}
 	previous := m.stream.Swap(active)
+	m.notifyReadyChange(false)
 	m.observeQueueDepth(active)
 	go active.writerLoop(m)
 
@@ -448,6 +479,7 @@ func (m *AuthBridgeManager) attachStream(stream pb.AuthBridgeService_ConnectAuth
 
 func (m *AuthBridgeManager) detachStream(stream *authBridgeStream) {
 	if m.stream.CompareAndSwap(stream, nil) {
+		m.notifyReadyChange(false)
 		diagnostics.ObserveAuthBridgeQueueDepth(0)
 		if active := m.stream.Load(); active != nil {
 			m.observeQueueDepth(active)

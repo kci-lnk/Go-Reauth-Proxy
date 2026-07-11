@@ -11,6 +11,28 @@ const (
 	HostProtocolModeHTTP2 = "http2"
 )
 
+const (
+	GatewayListenerScopeLoopback = "loopback"
+	GatewayListenerScopeAll      = "all"
+)
+
+type GatewayListenerConfig struct {
+	Scope string `json:"scope"`
+}
+
+// NormalizeGatewayListenerScope validates and canonicalizes the externally
+// visible listener policy. An empty result means the value is unsupported.
+func NormalizeGatewayListenerScope(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case GatewayListenerScopeLoopback:
+		return GatewayListenerScopeLoopback
+	case GatewayListenerScopeAll:
+		return GatewayListenerScopeAll
+	default:
+		return ""
+	}
+}
+
 // NormalizeHostProtocolMode keeps host protocol configuration forward-compatible.
 // Missing and unknown values preserve the historical behavior: prefer HTTP/2 and
 // allow HTTP/1.1 fallback.

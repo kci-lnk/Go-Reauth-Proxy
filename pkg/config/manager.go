@@ -29,6 +29,7 @@ type AppConfig struct {
 	AuthConfig           models.AuthConfig                 `json:"auth_config"`
 	AdminPort            int                               `json:"admin_port,omitempty"`
 	ProxyProtocolForce   bool                              `json:"proxy_protocol_force,omitempty"`
+	GatewayListener      models.GatewayListenerConfig      `json:"gateway_listener,omitempty"`
 	ReverseProxyThrottle models.ReverseProxyThrottleConfig `json:"reverse_proxy_throttle,omitempty"`
 	Visibility           models.GatewayVisibilityConfig    `json:"visibility,omitempty"`
 	ForwardedHeaders     models.ForwardedHeadersConfig     `json:"forwarded_headers,omitempty"`
@@ -88,6 +89,9 @@ func defaultConfig() *AppConfig {
 		},
 		AdminPort:          7996,
 		ProxyProtocolForce: false,
+		GatewayListener: models.GatewayListenerConfig{
+			Scope: defaultGatewayListenerScope(),
+		},
 		ReverseProxyThrottle: models.ReverseProxyThrottleConfig{
 			Enabled:           true,
 			RequestsPerSecond: defaultReverseProxyThrottleRPS,
@@ -259,6 +263,14 @@ func applyDefaults(cfg *AppConfig) bool {
 		cfg.AdminPort = 7996
 		changed = true
 	}
+	listenerScope := models.NormalizeGatewayListenerScope(cfg.GatewayListener.Scope)
+	if listenerScope == "" {
+		listenerScope = defaultGatewayListenerScope()
+	}
+	if cfg.GatewayListener.Scope != listenerScope {
+		cfg.GatewayListener.Scope = listenerScope
+		changed = true
+	}
 	if cfg.ReverseProxyThrottle.Enabled {
 		if cfg.ReverseProxyThrottle.RequestsPerSecond <= 0 {
 			cfg.ReverseProxyThrottle.RequestsPerSecond = defaultReverseProxyThrottleRPS
@@ -422,7 +434,7 @@ func (m *Manager) saveUnlocked(cfg *AppConfig) error {
 type atomicRenameFunc func(oldPath string, newPath string) error
 
 func writeFileAtomically(path string, data []byte, perm os.FileMode) error {
-	return writeFileAtomicallyWithRename(path, data, perm, os.Rename)
+	return writeFileAtomicallyWithRename(path, data, perm, platformAtomicRename)
 }
 
 func writeFileAtomicallyWithRename(path string, data []byte, perm os.FileMode, rename atomicRenameFunc) error {
@@ -471,15 +483,7 @@ func writeFileAtomicallyWithRename(path string, data []byte, perm os.FileMode, r
 
 	// Persist the directory entry update as well as the file contents. Without
 	// this sync, a successful Rename can still disappear after a power loss.
-	directory, err := os.Open(dir)
-	if err != nil {
-		return err
-	}
-	if err := directory.Sync(); err != nil {
-		_ = directory.Close()
-		return err
-	}
-	return directory.Close()
+	return syncParentDirectory(dir)
 }
 
 func (m *Manager) Load() (*AppConfig, error) {

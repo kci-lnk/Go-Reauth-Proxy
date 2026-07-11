@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"go-reauth-proxy/pkg/config"
+	"go-reauth-proxy/pkg/models"
 	"go-reauth-proxy/pkg/proxy"
 )
 
@@ -75,6 +76,93 @@ func TestProxyStackDesiredHostUsesLoopbackForProxyProtocol(t *testing.T) {
 	stack := newProxyStack(0, handler, &http.Server{}, &http.Server{})
 	if got := stack.desiredHost(); got != "127.0.0.1" {
 		t.Fatalf("desiredHost() = %q", got)
+	}
+}
+
+func TestProxyStackDesiredHostUsesConfiguredListenerScope(t *testing.T) {
+	handler := newServerTestProxyHandler(t)
+	if err := handler.SetGatewayListenerConfig(models.GatewayListenerConfig{Scope: models.GatewayListenerScopeLoopback}); err != nil {
+		t.Fatalf("SetGatewayListenerConfig() returned error: %v", err)
+	}
+	stack := newProxyStack(0, handler, &http.Server{}, &http.Server{})
+	if got := stack.desiredHost(); got != "127.0.0.1" {
+		t.Fatalf("desiredHost() = %q, want loopback", got)
+	}
+	if err := handler.SetGatewayListenerConfig(models.GatewayListenerConfig{Scope: models.GatewayListenerScopeAll}); err != nil {
+		t.Fatalf("SetGatewayListenerConfig(all) returned error: %v", err)
+	}
+	if got := stack.desiredHost(); got != "0.0.0.0" {
+		t.Fatalf("desiredHost() = %q, want all interfaces", got)
+	}
+}
+
+func TestProxyStackDesiredHostForScopeUsesCandidateBeforeItIsPersisted(t *testing.T) {
+	handler := newServerTestProxyHandler(t)
+	currentScope := handler.GetGatewayListenerConfig().Scope
+	candidateScope := models.GatewayListenerScopeLoopback
+	if currentScope == candidateScope {
+		candidateScope = models.GatewayListenerScopeAll
+	}
+	stack := newProxyStack(0, handler, &http.Server{}, &http.Server{})
+	wantCandidateHost := "0.0.0.0"
+	if candidateScope == models.GatewayListenerScopeLoopback {
+		wantCandidateHost = "127.0.0.1"
+	}
+	if got := stack.desiredHostForScope(candidateScope); got != wantCandidateHost {
+		t.Fatalf("candidate host = %q, want %q", got, wantCandidateHost)
+	}
+	wantCurrentHost := "0.0.0.0"
+	if currentScope == models.GatewayListenerScopeLoopback {
+		wantCurrentHost = "127.0.0.1"
+	}
+	if got := stack.desiredHost(); got != wantCurrentHost {
+		t.Fatalf("current persisted host = %q, want %q", got, wantCurrentHost)
+	}
+}
+
+func TestProxyStackRebindRestoresPreviousListenerWhenNewBindFails(t *testing.T) {
+	targetErr := errors.New("new listener port is occupied")
+	previousStopped := false
+	restoredStopped := false
+	stack := &proxyStack{
+		host:       "127.0.0.1",
+		listenAddr: "127.0.0.1:7999",
+		stop: func() {
+			previousStopped = true
+		},
+	}
+
+	var attempts []string
+	err := stack.rebindWithStarter("0.0.0.0", func(host string) (func(), string, error) {
+		attempts = append(attempts, host)
+		switch host {
+		case "0.0.0.0":
+			if !previousStopped {
+				t.Fatal("previous listener was not stopped before attempting the new bind")
+			}
+			return nil, "", targetErr
+		case "127.0.0.1":
+			return func() { restoredStopped = true }, "127.0.0.1:7999", nil
+		default:
+			t.Fatalf("unexpected bind host %q", host)
+			return nil, "", nil
+		}
+	})
+	if !errors.Is(err, targetErr) {
+		t.Fatalf("rebind error = %v, want wrapped %v", err, targetErr)
+	}
+	if got := strings.Join(attempts, ","); got != "0.0.0.0,127.0.0.1" {
+		t.Fatalf("bind attempts = %q, want target then previous host", got)
+	}
+	if !stack.IsServing() {
+		t.Fatal("stack is not serving after restoring the previous listener")
+	}
+	if stack.host != "127.0.0.1" || stack.listenAddr != "127.0.0.1:7999" {
+		t.Fatalf("restored stack = host %q addr %q", stack.host, stack.listenAddr)
+	}
+	stack.stop()
+	if !restoredStopped {
+		t.Fatal("restored listener stop was not retained")
 	}
 }
 

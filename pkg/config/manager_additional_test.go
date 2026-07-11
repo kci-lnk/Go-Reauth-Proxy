@@ -38,8 +38,22 @@ func TestManagerLoadCreatesDefaultConfigFile(t *testing.T) {
 	if cfg.DefaultRoute != "/__select__" || cfg.AdminPort != 7996 || cfg.AuthConfig.AuthPort != 7997 {
 		t.Fatalf("unexpected defaults: %#v", cfg)
 	}
+	if cfg.GatewayListener.Scope != defaultGatewayListenerScope() {
+		t.Fatalf("default listener scope = %q, want %q", cfg.GatewayListener.Scope, defaultGatewayListenerScope())
+	}
 	if _, err := os.Stat(path); err != nil {
 		t.Fatalf("default config was not written: %v", err)
+	}
+}
+
+func TestManagerLoadNormalizesGatewayListenerScope(t *testing.T) {
+	cfg := loadConfigFromJSON(t, `{"gateway_listener":{"scope":" LOOPBACK "}}`)
+	if cfg.GatewayListener.Scope != models.GatewayListenerScopeLoopback {
+		t.Fatalf("normalized listener scope = %q", cfg.GatewayListener.Scope)
+	}
+	cfg = loadConfigFromJSON(t, `{"gateway_listener":{"scope":"public"}}`)
+	if cfg.GatewayListener.Scope != defaultGatewayListenerScope() {
+		t.Fatalf("invalid listener scope = %q, want platform default", cfg.GatewayListener.Scope)
 	}
 }
 

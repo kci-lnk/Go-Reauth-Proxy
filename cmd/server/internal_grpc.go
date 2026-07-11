@@ -8,16 +8,33 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"go-reauth-proxy/pkg/grpc/pb"
 	"go-reauth-proxy/pkg/rpcbridge"
 
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/health"
+	healthpb "google.golang.org/grpc/health/grpc_health_v1"
 )
 
 const internalGRPCMaxMessageSize = 16 << 20
 
-func startInternalGRPCServer(port int, token string, control pb.GatewayControlServiceServer, bridge pb.AuthBridgeServiceServer) (func(), error) {
+const (
+	healthGatewayProcess    = "fnknock.gateway.process"
+	healthGatewayDataplane  = "fnknock.gateway.dataplane"
+	healthGatewayAuthBridge = "fnknock.gateway.auth_bridge"
+)
+
+type internalGRPCServer struct {
+	server    *grpc.Server
+	health    *health.Server
+	listeners []net.Listener
+	wg        sync.WaitGroup
+	stopOnce  sync.Once
+}
+
+func startInternalGRPCServer(port int, token string, control pb.GatewayControlServiceServer, bridge pb.AuthBridgeServiceServer) (*internalGRPCServer, error) {
 	server := grpc.NewServer(
 		grpc.MaxRecvMsgSize(internalGRPCMaxMessageSize),
 		grpc.MaxSendMsgSize(internalGRPCMaxMessageSize),
@@ -34,6 +51,11 @@ func startInternalGRPCServer(port int, token string, control pb.GatewayControlSe
 			return handler(srv, stream)
 		}),
 	)
+	healthServer := health.NewServer()
+	for _, service := range []string{healthGatewayProcess, healthGatewayDataplane, healthGatewayAuthBridge} {
+		healthServer.SetServingStatus(service, healthpb.HealthCheckResponse_NOT_SERVING)
+	}
+	healthpb.RegisterHealthServer(server, healthServer)
 	pb.RegisterGatewayControlServiceServer(server, control)
 	if logs, ok := control.(pb.GatewayLogsServiceServer); ok {
 		pb.RegisterGatewayLogsServiceServer(server, logs)
@@ -50,9 +72,7 @@ func startInternalGRPCServer(port int, token string, control pb.GatewayControlSe
 	if ssl, ok := control.(pb.SslServiceServer); ok {
 		pb.RegisterSslServiceServer(server, ssl)
 	}
-	if firewall, ok := control.(pb.FirewallServiceServer); ok {
-		pb.RegisterFirewallServiceServer(server, firewall)
-	}
+	registerFirewallService(server, control)
 	pb.RegisterAuthBridgeServiceServer(server, bridge)
 
 	listenTargets := []struct {
@@ -85,21 +105,61 @@ func startInternalGRPCServer(port int, token string, control pb.GatewayControlSe
 		return nil, fmt.Errorf("no internal gRPC listeners started on port %d", port)
 	}
 
-	var wg sync.WaitGroup
+	runtimeServer := &internalGRPCServer{
+		server:    server,
+		health:    healthServer,
+		listeners: listeners,
+	}
 	for _, listener := range listeners {
-		wg.Add(1)
+		runtimeServer.wg.Add(1)
 		go func(l net.Listener) {
-			defer wg.Done()
+			defer runtimeServer.wg.Done()
 			if err := server.Serve(l); err != nil {
 				log.Printf("Internal gRPC server stopped on %s: %v", l.Addr().String(), err)
 			}
 		}(listener)
 	}
 	log.Printf("Internal gRPC server listening on %s", strings.Join(listenAddrs, ", "))
+	healthServer.SetServingStatus(healthGatewayProcess, healthpb.HealthCheckResponse_SERVING)
+	return runtimeServer, nil
+}
 
-	stop := func() {
-		server.Stop()
-		wg.Wait()
+func (s *internalGRPCServer) SetServingStatus(service string, serving bool) {
+	if s == nil || s.health == nil {
+		return
 	}
-	return stop, nil
+	status := healthpb.HealthCheckResponse_NOT_SERVING
+	if serving {
+		status = healthpb.HealthCheckResponse_SERVING
+	}
+	s.health.SetServingStatus(service, status)
+}
+
+func (s *internalGRPCServer) Stop(ctx context.Context) {
+	if s == nil {
+		return
+	}
+	s.stopOnce.Do(func() {
+		for _, service := range []string{healthGatewayProcess, healthGatewayDataplane, healthGatewayAuthBridge} {
+			s.health.SetServingStatus(service, healthpb.HealthCheckResponse_NOT_SERVING)
+		}
+		done := make(chan struct{})
+		go func() {
+			s.server.GracefulStop()
+			close(done)
+		}()
+		if ctx == nil {
+			ctx = context.Background()
+		}
+		select {
+		case <-done:
+		case <-ctx.Done():
+			s.server.Stop()
+			<-done
+		case <-time.After(15 * time.Second):
+			s.server.Stop()
+			<-done
+		}
+		s.wg.Wait()
+	})
 }

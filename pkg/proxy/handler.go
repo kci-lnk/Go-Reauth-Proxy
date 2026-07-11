@@ -86,30 +86,33 @@ func (p *proxyBufferPool) Put(buf []byte) {
 var sharedProxyBufferPool = newProxyBufferPool(proxyCopyBufferSize)
 
 type Handler struct {
-	mu                    sync.RWMutex
-	Rules                 []models.Rule
-	HostRules             []models.HostRule
-	StreamRules           []models.StreamRule
-	DefaultRoute          string
-	AuthConfig            models.AuthConfig
-	LoggingConfig         models.LoggingConfig
-	AdminPort             int
-	ProxyPort             int
-	ProxyProtocolForce    bool
-	ReverseProxyThrottle  models.ReverseProxyThrottleConfig
-	GatewayVisibility     models.GatewayVisibilityConfig
-	ForwardedHeaders      models.ForwardedHeadersConfig
-	PreserveHost          models.PreserveHostConfig
-	CrawlerBlocker        models.CrawlerBlockerConfig
-	GatewayPortal         models.GatewayPortalConfig
-	FnosPortIconHijack    models.FnosPortIconHijackConfig
-	GeneralBlacklist      models.GeneralBlacklistConfig
-	WAFConfig             models.WAFConfig
-	sslBundle             atomic.Value
-	sslOnChange           atomic.Value
-	protocolModeOnChange  atomic.Value
-	proxyProtocolOnChange atomic.Value
-	requestState          atomic.Value
+	mu                      sync.RWMutex
+	listenerChangeMu        sync.Mutex
+	Rules                   []models.Rule
+	HostRules               []models.HostRule
+	StreamRules             []models.StreamRule
+	DefaultRoute            string
+	AuthConfig              models.AuthConfig
+	LoggingConfig           models.LoggingConfig
+	AdminPort               int
+	ProxyPort               int
+	ProxyProtocolForce      bool
+	GatewayListener         models.GatewayListenerConfig
+	ReverseProxyThrottle    models.ReverseProxyThrottleConfig
+	GatewayVisibility       models.GatewayVisibilityConfig
+	ForwardedHeaders        models.ForwardedHeadersConfig
+	PreserveHost            models.PreserveHostConfig
+	CrawlerBlocker          models.CrawlerBlockerConfig
+	GatewayPortal           models.GatewayPortalConfig
+	FnosPortIconHijack      models.FnosPortIconHijackConfig
+	GeneralBlacklist        models.GeneralBlacklistConfig
+	WAFConfig               models.WAFConfig
+	sslBundle               atomic.Value
+	sslOnChange             atomic.Value
+	protocolModeOnChange    atomic.Value
+	proxyProtocolOnChange   atomic.Value
+	gatewayListenerOnChange atomic.Value
+	requestState            atomic.Value
 
 	configManager     *config.Manager
 	sslConfig         models.SSLConfig
@@ -1209,6 +1212,7 @@ func NewHandler(adminPort int, proxyPort int, cfgManager *config.Manager, initia
 		AdminPort:            adminPort,
 		ProxyPort:            proxyPort,
 		ProxyProtocolForce:   initialCfg.ProxyProtocolForce,
+		GatewayListener:      initialCfg.GatewayListener,
 		ReverseProxyThrottle: normalizeReverseProxyThrottleConfig(initialCfg.ReverseProxyThrottle),
 		GatewayVisibility:    initialCfg.Visibility,
 		ForwardedHeaders:     normalizedForwardedHeaders,
@@ -1232,6 +1236,9 @@ func NewHandler(adminPort int, proxyPort int, cfgManager *config.Manager, initia
 		systemEventClient:    systemEventClient,
 	}
 	h.GeneralBlacklist = h.generalBlacklist.getConfig()
+	if models.NormalizeGatewayListenerScope(h.GatewayListener.Scope) == "" {
+		h.GatewayListener.Scope = models.GatewayListenerScopeAll
+	}
 	if event := debugProxyEvent("handler_initialized", ""); event != nil {
 		event.Interface("proxy_port", logger.SanitizePort(proxyPort)).
 			Int("path_rule_count", len(h.Rules)).
@@ -1349,6 +1356,23 @@ func (h *Handler) getProxyProtocolForceChangeHook() func() {
 	return hook
 }
 
+// SetGatewayListenerConfigChangeHook installs the runtime transition used when
+// the gateway listener scope changes. The hook runs before the new scope is
+// persisted so callers never receive a successful configuration update for a
+// listener that failed to come up.
+func (h *Handler) SetGatewayListenerConfigChangeHook(hook func(models.GatewayListenerConfig) error) {
+	h.gatewayListenerOnChange.Store(hook)
+}
+
+func (h *Handler) getGatewayListenerConfigChangeHook() func(models.GatewayListenerConfig) error {
+	val := h.gatewayListenerOnChange.Load()
+	if val == nil {
+		return nil
+	}
+	hook, _ := val.(func(models.GatewayListenerConfig) error)
+	return hook
+}
+
 func (h *Handler) saveConfigLocked() error {
 	if h.configManager == nil {
 		return nil
@@ -1368,6 +1392,7 @@ func (h *Handler) saveConfigLocked() error {
 		conf.AuthConfig = h.AuthConfig
 		conf.Logging = h.LoggingConfig
 		conf.ProxyProtocolForce = h.ProxyProtocolForce
+		conf.GatewayListener = h.GatewayListener
 		conf.ReverseProxyThrottle = h.ReverseProxyThrottle
 		conf.Visibility = h.GatewayVisibility
 		conf.ForwardedHeaders = h.ForwardedHeaders
@@ -1396,6 +1421,20 @@ func (h *Handler) saveConfigLocked() error {
 			Send()
 	}
 	return nil
+}
+
+// persistGatewayListenerConfigLocked updates only the listener setting. A
+// listener-scope transition is coordinated with a live rebind, so persisting a
+// broad Handler snapshot here could accidentally commit unrelated state while
+// the runtime transition is in flight.
+func (h *Handler) persistGatewayListenerConfigLocked(listener models.GatewayListenerConfig) error {
+	if h.configManager == nil {
+		return nil
+	}
+	return h.configManager.Update(func(conf *config.AppConfig) error {
+		conf.GatewayListener = listener
+		return nil
+	})
 }
 
 // persistHostRulesLocked saves only a candidate host-rule set while the caller
@@ -1430,6 +1469,9 @@ func (h *Handler) GetProxyProtocolForce() bool {
 }
 
 func (h *Handler) SetProxyProtocolForce(force bool) error {
+	h.listenerChangeMu.Lock()
+	defer h.listenerChangeMu.Unlock()
+
 	h.mu.Lock()
 	changed := h.ProxyProtocolForce != force
 	h.ProxyProtocolForce = force
@@ -1444,6 +1486,67 @@ func (h *Handler) SetProxyProtocolForce(force bool) error {
 		hook()
 	}
 	return saveErr
+}
+
+func (h *Handler) GetGatewayListenerConfig() models.GatewayListenerConfig {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	return h.GatewayListener
+}
+
+func (h *Handler) SetGatewayListenerConfig(listener models.GatewayListenerConfig) error {
+	scope := models.NormalizeGatewayListenerScope(listener.Scope)
+	if scope == "" {
+		return fmt.Errorf("listener scope must be %q or %q", models.GatewayListenerScopeLoopback, models.GatewayListenerScopeAll)
+	}
+	listener.Scope = scope
+
+	// Proxy protocol and listener scope both alter the same bound socket. Keep
+	// their transitions serialized so a successful scope update cannot race a
+	// concurrent proxy-protocol rebind.
+	h.listenerChangeMu.Lock()
+	defer h.listenerChangeMu.Unlock()
+
+	h.mu.RLock()
+	previous := h.GatewayListener
+	changed := previous.Scope != listener.Scope
+	hook := h.getGatewayListenerConfigChangeHook()
+	h.mu.RUnlock()
+	if !changed {
+		return nil
+	}
+
+	if hook != nil {
+		if err := hook(listener); err != nil {
+			return fmt.Errorf("apply gateway listener scope %q: %w", listener.Scope, err)
+		}
+	}
+
+	h.mu.Lock()
+	h.GatewayListener = listener
+	saveErr := h.persistGatewayListenerConfigLocked(listener)
+	if saveErr != nil {
+		h.GatewayListener = previous
+	}
+	h.mu.Unlock()
+	if saveErr != nil {
+		if hook != nil {
+			if rollbackErr := hook(previous); rollbackErr != nil {
+				return fmt.Errorf(
+					"persist gateway listener scope %q: %w; restore runtime listener scope %q: %v",
+					listener.Scope,
+					saveErr,
+					previous.Scope,
+					rollbackErr,
+				)
+			}
+		}
+		return fmt.Errorf("persist gateway listener scope %q: %w", listener.Scope, saveErr)
+	}
+	if event := debugProxyEvent("gateway_listener_scope_set", ""); event != nil {
+		event.Str("scope", listener.Scope).Bool("changed", changed).Send()
+	}
+	return nil
 }
 
 func (h *Handler) evaluateReverseProxyThrottleRequest(isAuthRoute bool, matchedHostRule *models.HostRule, matchedHostLocation *models.HostLocation, matchedRule *models.Rule, clientIP string, now time.Time) reverseProxyThrottleDecision {

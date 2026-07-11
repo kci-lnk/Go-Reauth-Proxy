@@ -25,10 +25,11 @@ const (
 	DebugLogEnv     = "GO_REPROXY_DEBUG_LOG"
 	DebugLogDirEnv  = "GO_REPROXY_DEBUG_LOG_DIR"
 
-	DefaultDebugLogDir       = "/tmp/__fnknock"
 	debugLogQueueSize        = 4096
 	debugLogDropWarnInterval = 30 * time.Second
 )
+
+var DefaultDebugLogDir = filepath.Join(os.TempDir(), "__fnknock")
 
 const debugDateLayout = "2006-01-02"
 

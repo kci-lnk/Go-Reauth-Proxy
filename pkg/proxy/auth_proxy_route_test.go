@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"go-reauth-proxy/pkg/grpc/pb"
 	"go-reauth-proxy/pkg/models"
@@ -78,7 +79,7 @@ func TestAuthLogoutRouteTakesPrecedenceOverHostRule(t *testing.T) {
 	}
 }
 
-func TestAuthLogoutRouteIgnoresScopeDeniedPreflight(t *testing.T) {
+func TestInternalAuthRouteBypassesRedirectingPreflight(t *testing.T) {
 	var preflightHits int32
 	var logoutHits int32
 
@@ -93,12 +94,9 @@ func TestAuthLogoutRouteIgnoresScopeDeniedPreflight(t *testing.T) {
 	}))
 	defer authServer.Close()
 	bridge := testAuthBridge{
-		preflight: func(_ context.Context, in *pb.PreflightAuthRequest) (*pb.PreflightAuthResponse, error) {
+		preflight: func(_ context.Context, _ *pb.PreflightAuthRequest) (*pb.PreflightAuthResponse, error) {
 			atomic.AddInt32(&preflightHits, 1)
-			if got := in.GetContext().GetForwardedPath(); got != "/__auth__/api/auth/logout" {
-				t.Fatalf("X-Forwarded-Path = %q, want /__auth__/api/auth/logout", got)
-			}
-			return &pb.PreflightAuthResponse{AccessDeniedReason: reauthScopeDeniedReason}, nil
+			return &pb.PreflightAuthResponse{RedirectLocation: "/__auth__/login"}, nil
 		},
 	}
 
@@ -139,12 +137,37 @@ func TestAuthLogoutRouteIgnoresScopeDeniedPreflight(t *testing.T) {
 	if body := rec.Body.String(); body != "logged-out" {
 		t.Fatalf("body = %q, want logged-out", body)
 	}
-	if got := atomic.LoadInt32(&preflightHits); got != 1 {
-		t.Fatalf("preflight hits = %d, want 1", got)
+	assertAuthResponseNoStore(t, rec.Header())
+	if got := atomic.LoadInt32(&preflightHits); got != 0 {
+		t.Fatalf("preflight hits = %d, want 0 for internal auth recovery route", got)
 	}
 	if got := atomic.LoadInt32(&logoutHits); got != 1 {
 		t.Fatalf("logout hits = %d, want 1", got)
 	}
+}
+
+func TestInternalAuthLoginCanonicalRedirectIsNoStore(t *testing.T) {
+	handler := &Handler{
+		AuthConfig: models.AuthConfig{
+			AuthPort: 7997,
+			LoginURL: "/#/login",
+		},
+		authCache:      newAuthStateCache(),
+		preflightCache: newPreflightStateCache(),
+	}
+	handler.publishRequestSnapshotLocked()
+
+	request := httptest.NewRequest(http.MethodGet, "https://app.example.com/__auth__/login?redirect_uri=%2Fprivate", nil)
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusFound {
+		t.Fatalf("status = %d, want 302", recorder.Code)
+	}
+	if got := recorder.Header().Get("Location"); got != "/__auth__/?redirect_uri=%2Fprivate#/login" {
+		t.Fatalf("Location = %q, want canonical internal auth view redirect", got)
+	}
+	assertAuthResponseNoStore(t, recorder.Header())
 }
 
 func TestHostRuleAuthVerifyReceivesSessionCookie(t *testing.T) {
@@ -579,5 +602,256 @@ func TestHostRuleVerifyScopeDeniedCacheServesAccessDenied(t *testing.T) {
 
 	if got := atomic.LoadInt32(&verifyHits); got != 1 {
 		t.Fatalf("verify hits = %d, want 1 cached access_denied decision", got)
+	}
+}
+
+func TestExpiredSessionClearCookieRedirectsAndInvalidatesAuthCaches(t *testing.T) {
+	const (
+		clientIP      = "198.51.100.40"
+		expiredCookie = "expired-session"
+		clearCookie   = authSessionCookieName + "=; Path=/; Max-Age=0; HttpOnly; SameSite=Lax"
+		loginRedirect = "https://auth.example.com/login?redirect_uri=https%3A%2F%2Fapp.example.com%2Fprivate"
+	)
+
+	var verifyHits atomic.Int32
+	var targetHits atomic.Int32
+	bridge := testAuthBridge{
+		verify: func(_ context.Context, request *pb.VerifyAuthRequest) (*pb.VerifyAuthResponse, error) {
+			verifyHits.Add(1)
+			if got := request.GetContext().GetCookie(); !strings.Contains(got, authSessionCookieName+"="+expiredCookie) {
+				t.Fatalf("verify Cookie = %q, want expired session", got)
+			}
+			return &pb.VerifyAuthResponse{
+				Success:          false,
+				Status:           http.StatusUnauthorized,
+				Message:          "session expired",
+				SetCookies:       []string{clearCookie},
+				RedirectLocation: loginRedirect,
+			}, nil
+		},
+	}
+
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		targetHits.Add(1)
+		http.Error(w, "target should not be reached", http.StatusTeapot)
+	}))
+	defer target.Close()
+
+	handler := &Handler{
+		HostRules: []models.HostRule{{
+			Host:       "app.example.com",
+			Target:     target.URL,
+			UseAuth:    true,
+			AccessMode: "login_first",
+		}},
+		AuthConfig: models.AuthConfig{
+			AuthURL:          "/api/auth/verify",
+			PreflightURL:     "/api/auth/preflight",
+			AuthCacheTTL:     60,
+			AuthCacheFailTTL: 60,
+		},
+		authBridge:     bridge,
+		authCache:      newAuthStateCache(),
+		preflightCache: newPreflightStateCache(),
+	}
+	handler.publishRequestSnapshotLocked()
+
+	newRequest := func(requestPath string) *http.Request {
+		request := httptest.NewRequest(http.MethodGet, "https://app.example.com"+requestPath, nil)
+		request.RemoteAddr = clientIP + ":43210"
+		request.AddCookie(&http.Cookie{Name: authSessionCookieName, Value: expiredCookie})
+		return request
+	}
+
+	// Seed another request for the same session to prove that the clear-cookie
+	// mutation invalidates both verify and preflight decisions by identity.
+	staleRequest := newRequest("/previous")
+	staleAuthLookup, ok := buildAuthCacheLookup(staleRequest, clientIP, "login_first")
+	if !ok {
+		t.Fatal("stale auth cache lookup was not buildable")
+	}
+	stalePreflightLookup, ok := buildPreflightCacheLookup(staleRequest, clientIP, "login_first", true)
+	if !ok {
+		t.Fatal("stale preflight cache lookup was not buildable")
+	}
+	now := time.Now()
+	handler.authCacheStore(staleAuthLookup.cacheKey, authCacheEntry{
+		result:      authCheckResult{allowed: true, authenticated: true, decision: "passed"},
+		expiresAt:   now.Add(time.Minute),
+		identityKey: staleAuthLookup.identityKey,
+	}, now)
+	handler.preflightCacheStore(stalePreflightLookup.cacheKey, preflightCacheEntry{
+		decision:    preflightDecision{},
+		expiresAt:   now.Add(time.Minute),
+		identityKey: stalePreflightLookup.identityKey,
+	}, now)
+
+	request := newRequest("/private")
+	currentPreflightLookup, ok := buildPreflightCacheLookup(request, clientIP, "login_first", true)
+	if !ok {
+		t.Fatal("current preflight cache lookup was not buildable")
+	}
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusFound {
+		t.Fatalf("status = %d, want 302; body = %s", recorder.Code, recorder.Body.String())
+	}
+	if got := recorder.Header().Get("Location"); got != loginRedirect {
+		t.Fatalf("Location = %q, want %q", got, loginRedirect)
+	}
+	if got := recorder.Header().Values("Set-Cookie"); len(got) != 1 || got[0] != clearCookie {
+		t.Fatalf("Set-Cookie = %#v, want clear cookie %q", got, clearCookie)
+	}
+	assertAuthResponseNoStore(t, recorder.Header())
+	if got := verifyHits.Load(); got != 1 {
+		t.Fatalf("verify hits = %d, want 1", got)
+	}
+	if got := targetHits.Load(); got != 0 {
+		t.Fatalf("target hits = %d, want 0", got)
+	}
+	if _, ok := handler.authCacheGet(staleAuthLookup.cacheKey, time.Now()); ok {
+		t.Fatal("stale verify cache survived the expired-session clear cookie")
+	}
+	if _, ok := handler.preflightCacheGet(stalePreflightLookup.cacheKey, time.Now()); ok {
+		t.Fatal("stale preflight cache survived the expired-session clear cookie")
+	}
+	if _, ok := handler.preflightCacheGet(currentPreflightLookup.cacheKey, time.Now()); ok {
+		t.Fatal("current preflight decision was cached after the session clear cookie")
+	}
+}
+
+func TestCachedAuthRedirectRemainsNoStore(t *testing.T) {
+	var verifyHits atomic.Int32
+	bridge := testAuthBridge{
+		verify: func(context.Context, *pb.VerifyAuthRequest) (*pb.VerifyAuthResponse, error) {
+			verifyHits.Add(1)
+			return &pb.VerifyAuthResponse{
+				Status:           http.StatusUnauthorized,
+				RedirectLocation: "/login",
+			}, nil
+		},
+	}
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "target should not be reached", http.StatusTeapot)
+	}))
+	defer target.Close()
+
+	handler := &Handler{
+		HostRules: []models.HostRule{{
+			Host:       "app.example.com",
+			Target:     target.URL,
+			UseAuth:    true,
+			AccessMode: "login_first",
+		}},
+		AuthConfig: models.AuthConfig{
+			AuthURL:          "/api/auth/verify",
+			PreflightURL:     "/api/auth/preflight",
+			AuthCacheFailTTL: 60,
+		},
+		authBridge:     bridge,
+		authCache:      newAuthStateCache(),
+		preflightCache: newPreflightStateCache(),
+	}
+	handler.publishRequestSnapshotLocked()
+
+	for requestNumber := 1; requestNumber <= 2; requestNumber++ {
+		request := httptest.NewRequest(http.MethodGet, "https://app.example.com/private", nil)
+		request.AddCookie(&http.Cookie{Name: authSessionCookieName, Value: "invalid-session"})
+		recorder := httptest.NewRecorder()
+		handler.ServeHTTP(recorder, request)
+
+		if recorder.Code != http.StatusFound || recorder.Header().Get("Location") != "/login" {
+			t.Fatalf("request %d response = status %d Location %q, want 302 /login", requestNumber, recorder.Code, recorder.Header().Get("Location"))
+		}
+		assertAuthResponseNoStore(t, recorder.Header())
+	}
+	if got := verifyHits.Load(); got != 1 {
+		t.Fatalf("verify hits = %d, want 1 with cached second redirect", got)
+	}
+}
+
+func TestAuthHostSensitiveResponsesAreNoStore(t *testing.T) {
+	authServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "public, max-age=3600")
+		if r.URL.Path == "/assets/session-reset" {
+			w.Header().Add("Set-Cookie", authSessionCookieName+"=; Path=/; Max-Age=0")
+		}
+		_, _ = io.WriteString(w, r.URL.Path)
+	}))
+	defer authServer.Close()
+
+	handler := &Handler{
+		HostRules: []models.HostRule{{
+			Host:            "auth.example.com",
+			Target:          authServer.URL,
+			SuppressToolbar: true,
+		}},
+		AuthConfig: models.AuthConfig{
+			AuthHost: "auth.example.com",
+			AuthPort: testServerPort(t, authServer.URL),
+		},
+		authCache:      newAuthStateCache(),
+		preflightCache: newPreflightStateCache(),
+	}
+	handler.publishRequestSnapshotLocked()
+
+	for _, requestPath := range []string{
+		"/",
+		"/login",
+		"/oidc/bind",
+		"/api/auth/logout",
+		"/api/auth/oidc/callback/provider-1",
+		"/auth/login",
+		"/auth/api/auth/logout",
+		"/__auth__/api/auth/oidc/callback/provider-1",
+	} {
+		t.Run(requestPath, func(t *testing.T) {
+			request := httptest.NewRequest(http.MethodGet, "https://auth.example.com"+requestPath, nil)
+			recorder := httptest.NewRecorder()
+			handler.ServeHTTP(recorder, request)
+
+			if recorder.Code != http.StatusOK {
+				t.Fatalf("status = %d, want 200; body = %s", recorder.Code, recorder.Body.String())
+			}
+			assertAuthResponseNoStore(t, recorder.Header())
+		})
+	}
+
+	for _, requestPath := range []string{
+		"/assets/auth-view-deadbeef.js",
+		"/auth/assets/auth-view-deadbeef.js",
+		"/__auth__/assets/auth-view-deadbeef.js",
+	} {
+		request := httptest.NewRequest(http.MethodGet, "https://auth.example.com"+requestPath, nil)
+		recorder := httptest.NewRecorder()
+		handler.ServeHTTP(recorder, request)
+		if got := recorder.Header().Get("Cache-Control"); got != "public, max-age=3600" {
+			t.Fatalf("static asset %q Cache-Control = %q, want upstream cache policy", requestPath, got)
+		}
+	}
+
+	request := httptest.NewRequest(http.MethodGet, "https://auth.example.com/assets/session-reset", nil)
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, request)
+	if got := recorder.Header().Values("Set-Cookie"); len(got) != 1 {
+		t.Fatalf("session reset Set-Cookie = %#v, want one forwarded cookie", got)
+	}
+	assertAuthResponseNoStore(t, recorder.Header())
+}
+
+func assertAuthResponseNoStore(t *testing.T, headers http.Header) {
+	t.Helper()
+	want := map[string]string{
+		"Cache-Control":     "private, no-store, no-cache, max-age=0, must-revalidate",
+		"Pragma":            "no-cache",
+		"Expires":           "0",
+		"CDN-Cache-Control": "private, no-store",
+		"Surrogate-Control": "no-store",
+	}
+	for name, value := range want {
+		if got := headers.Get(name); got != value {
+			t.Fatalf("%s = %q, want %q", name, got, value)
+		}
 	}
 }

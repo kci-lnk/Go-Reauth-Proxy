@@ -837,7 +837,27 @@ func applyNoStoreCacheHeaders(headers http.Header) {
 
 func shouldDisableAuthResponseCaching(requestPath string) bool {
 	cleanPath := path.Clean(ensureLeadingSlash(strings.TrimSpace(requestPath)))
-	return cleanPath == "/api/auth" || strings.HasPrefix(cleanPath, "/api/auth/")
+	for _, mountPrefix := range []string{"/auth", "/__auth__"} {
+		switch {
+		case cleanPath == mountPrefix:
+			cleanPath = "/"
+		case strings.HasPrefix(cleanPath, mountPrefix+"/"):
+			cleanPath = strings.TrimPrefix(cleanPath, mountPrefix)
+		}
+	}
+	if cleanPath == "/api/auth" || strings.HasPrefix(cleanPath, "/api/auth/") {
+		return true
+	}
+
+	// Authentication view documents contain runtime authentication state and
+	// bootstrap data. Keep fingerprinted static assets cacheable, but never let
+	// a browser, CDN, or reverse proxy reuse an auth page across sessions.
+	switch cleanPath {
+	case "/", "/index.html", "/login", "/logout", "/callback", "/oidc/bind":
+		return true
+	default:
+		return false
+	}
 }
 
 func applyInternalAuthProxyHeaders(req *http.Request, source *http.Request, targetURL *url.URL, clientIP string, authConfig models.AuthConfig) {
@@ -1131,7 +1151,16 @@ func (h *Handler) preflightDecisionFromResponse(resp *pb.PreflightAuthResponse, 
 }
 
 func shouldRunPreflightForRoute(isSelectRoute bool, isAuthRoute bool, matchedHostRule *models.HostRule, matchedRule *models.Rule) bool {
-	if isSelectRoute || isAuthRoute {
+	// The reserved internal auth namespace is the ingress to the authentication
+	// service itself. Applying a consumer-route preflight here recursively asks
+	// the auth service to authenticate its own login/logout/callback endpoints,
+	// which can make recovery unreachable or create a redirect loop. Reverse
+	// proxy throttling, WAF checks, and the auth service's own endpoint checks
+	// still run before/after this decision.
+	if isAuthRoute {
+		return false
+	}
+	if isSelectRoute {
 		return true
 	}
 	if matchedHostRule != nil {
@@ -4769,6 +4798,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 					Str("access_mode", accessMode).
 					Send()
 			}
+			applyNoStoreCacheHeaders(w.Header())
 			http.Redirect(w, r, preflight.redirectLocation, http.StatusFound)
 			return
 		}
@@ -5023,6 +5053,7 @@ func (h *Handler) handleAuthProxyRoute(w http.ResponseWriter, r *http.Request, s
 			proxyPath = "/login"
 		}
 		if redirectTarget := buildInternalAuthLoginRedirect(proxyPath, r.URL.RawQuery); redirectTarget != "" {
+			applyNoStoreCacheHeaders(w.Header())
 			http.Redirect(w, r, redirectTarget, http.StatusFound)
 			return true
 		}
@@ -5054,10 +5085,11 @@ func (h *Handler) handleAuthProxyRoute(w http.ResponseWriter, r *http.Request, s
 		applyInternalAuthProxyHeaders(req, r, targetURL, clientIP, snapshot.authConfig)
 	}
 	proxy.ModifyResponse = func(resp *http.Response) error {
-		if shouldDisableAuthResponseCaching(proxyPath) {
+		setCookies := resp.Header.Values("Set-Cookie")
+		if shouldDisableAuthResponseCaching(proxyPath) || len(setCookies) > 0 {
 			applyNoStoreCacheHeaders(resp.Header)
 		}
-		h.authCacheInvalidateForSetCookieMutation(r, clientIP, resp.Header.Values("Set-Cookie"))
+		h.authCacheInvalidateForSetCookieMutation(r, clientIP, setCookies)
 		return nil
 	}
 
@@ -5456,11 +5488,12 @@ func (h *Handler) proxyToHostLocationTarget(w http.ResponseWriter, r *http.Reque
 	}
 
 	proxy.ModifyResponse = func(resp *http.Response) error {
-		if isAuthHostProxy && shouldDisableAuthResponseCaching(r.URL.Path) {
-			applyNoStoreCacheHeaders(resp.Header)
-		}
 		if isAuthHostProxy {
-			h.authCacheInvalidateForSetCookieMutation(r, clientIP, resp.Header.Values("Set-Cookie"))
+			setCookies := resp.Header.Values("Set-Cookie")
+			if shouldDisableAuthResponseCaching(r.URL.Path) || len(setCookies) > 0 {
+				applyNoStoreCacheHeaders(resp.Header)
+			}
+			h.authCacheInvalidateForSetCookieMutation(r, clientIP, setCookies)
 		}
 		if err := h.maybeRewriteFnosPortIconHijackHTTPResponse(resp, snapshot.hostRules); err != nil {
 			return err
@@ -5616,11 +5649,12 @@ func (h *Handler) proxyToHostTarget(w http.ResponseWriter, r *http.Request, snap
 	}
 
 	proxy.ModifyResponse = func(resp *http.Response) error {
-		if isAuthHostProxy && shouldDisableAuthResponseCaching(r.URL.Path) {
-			applyNoStoreCacheHeaders(resp.Header)
-		}
 		if isAuthHostProxy {
-			h.authCacheInvalidateForSetCookieMutation(r, clientIP, resp.Header.Values("Set-Cookie"))
+			setCookies := resp.Header.Values("Set-Cookie")
+			if shouldDisableAuthResponseCaching(r.URL.Path) || len(setCookies) > 0 {
+				applyNoStoreCacheHeaders(resp.Header)
+			}
+			h.authCacheInvalidateForSetCookieMutation(r, clientIP, setCookies)
 		}
 		if err := h.maybeRewriteFnosPortIconHijackHTTPResponse(resp, snapshot.hostRules); err != nil {
 			return err
@@ -6942,10 +6976,12 @@ func (h *Handler) applyAuthCheckPlan(w http.ResponseWriter, r *http.Request, pla
 		w.Header().Add("Set-Cookie", setCookie)
 	}
 	if len(plan.setCookies) > 0 {
+		applyNoStoreCacheHeaders(w.Header())
 		h.authCacheInvalidateForSetCookieMutation(r, clientIP, plan.setCookies)
 	}
 
 	if plan.errorPage != nil {
+		applyNoStoreCacheHeaders(w.Header())
 		response.HTML(w, r, plan.errorPage.code, plan.errorPage.message, nil)
 		return plan.result
 	}
@@ -6977,6 +7013,7 @@ func (h *Handler) applyAuthCheckPlan(w http.ResponseWriter, r *http.Request, pla
 		return plan.result
 	}
 	if plan.redirectLocation != "" {
+		applyNoStoreCacheHeaders(w.Header())
 		http.Redirect(w, r, plan.redirectLocation, http.StatusFound)
 		return plan.result
 	}
@@ -7161,6 +7198,10 @@ func (h *Handler) applyToolbarAuthCacheEntry(w http.ResponseWriter, r *http.Requ
 	for _, setCookie := range entry.setCookies {
 		w.Header().Add("Set-Cookie", setCookie)
 	}
+	if len(entry.setCookies) > 0 {
+		applyNoStoreCacheHeaders(w.Header())
+		h.authCacheInvalidateForSetCookieMutation(r, clientIP, entry.setCookies)
+	}
 	if entry.result.allowed && entry.result.authenticated {
 		h.markLoggedInActive(r, clientIP, time.Now())
 		return entry.result
@@ -7173,6 +7214,7 @@ func (h *Handler) applyToolbarAuthCheckPlan(w http.ResponseWriter, r *http.Reque
 		w.Header().Add("Set-Cookie", setCookie)
 	}
 	if len(plan.setCookies) > 0 {
+		applyNoStoreCacheHeaders(w.Header())
 		h.authCacheInvalidateForSetCookieMutation(r, clientIP, plan.setCookies)
 	}
 	if plan.result.allowed && plan.result.authenticated {

@@ -39,8 +39,8 @@ func TestManagerLoadCreatesDefaultConfigFile(t *testing.T) {
 	if cfg.DefaultRoute != "/__select__" || cfg.AdminPort != 7996 || cfg.AuthConfig.AuthPort != 7997 {
 		t.Fatalf("unexpected defaults: %#v", cfg)
 	}
-	if cfg.GatewayListener.Scope != defaultGatewayListenerScope() {
-		t.Fatalf("default listener scope = %q, want %q", cfg.GatewayListener.Scope, defaultGatewayListenerScope())
+	if cfg.GatewayListener.Scope != models.GatewayListenerScopeAll {
+		t.Fatalf("default listener scope = %q, want %q", cfg.GatewayListener.Scope, models.GatewayListenerScopeAll)
 	}
 	if _, err := os.Stat(path); err != nil {
 		t.Fatalf("default config was not written: %v", err)

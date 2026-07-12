@@ -5,5 +5,5 @@ package config
 import "go-reauth-proxy/pkg/models"
 
 func defaultGatewayListenerScope() string {
-	return models.GatewayListenerScopeLoopback
+	return models.GatewayListenerScopeAll
 }

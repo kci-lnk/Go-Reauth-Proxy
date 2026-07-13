@@ -12,6 +12,23 @@ const (
 )
 
 const (
+	HostVisibilityModeInherit  = "inherit"
+	HostVisibilityModeCustom   = "custom"
+	HostVisibilityModeDisabled = "disabled"
+)
+
+func NormalizeHostVisibilityMode(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case HostVisibilityModeCustom:
+		return HostVisibilityModeCustom
+	case HostVisibilityModeDisabled:
+		return HostVisibilityModeDisabled
+	default:
+		return HostVisibilityModeInherit
+	}
+}
+
+const (
 	GatewayListenerScopeLoopback = "loopback"
 	GatewayListenerScopeAll      = "all"
 )
@@ -67,10 +84,16 @@ type HostRule struct {
 	IsDefault       bool                  `json:"is_default,omitempty" example:"false"`
 	Disabled        bool                  `json:"disabled,omitempty" example:"false"`
 	Availability    *HostRuleAvailability `json:"availability,omitempty"`
+	Visibility      HostRuleVisibility    `json:"visibility,omitempty"`
 	Title           string                `json:"title,omitempty" example:"Redis"`
 	Favicon         string                `json:"favicon,omitempty" example:"data:image/png;base64,..."`
 	BasicAuth       BasicAuthConfig       `json:"basic_auth,omitempty"`
 	Locations       []HostLocation        `json:"locations,omitempty"`
+}
+
+type HostRuleVisibility struct {
+	Mode  string   `json:"mode,omitempty"`
+	CIDRs []string `json:"cidrs,omitempty"`
 }
 
 type HostRuleAvailability struct {

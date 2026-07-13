@@ -47,6 +47,7 @@ func TestHostRulesProtoRoundTripPreservesLocations(t *testing.T) {
 		IsDefault:       true,
 		Disabled:        true,
 		Availability:    &models.HostRuleAvailability{Enabled: true, StartTime: "22:00", EndTime: "06:00"},
+		Visibility:      models.HostRuleVisibility{Mode: models.HostVisibilityModeCustom, CIDRs: []string{"203.0.113.0/24"}},
 		Title:           "App",
 		Favicon:         "data:image/png;base64,AA",
 		BasicAuth:       models.BasicAuthConfig{Enabled: true, Username: "u", Password: "p"},

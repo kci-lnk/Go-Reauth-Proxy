@@ -112,6 +112,10 @@ func (v *gatewayVisibility) getConfig() models.GatewayVisibilityConfig {
 }
 
 func (v *gatewayVisibility) contains(clientIP string) bool {
+	return v.containsPrefixes(clientIP, nil, false)
+}
+
+func (v *gatewayVisibility) containsPrefixes(clientIP string, override []netip.Prefix, custom bool) bool {
 	if v == nil {
 		return true
 	}
@@ -137,16 +141,59 @@ func (v *gatewayVisibility) contains(clientIP string) bool {
 		return true
 	}
 
-	v.mu.RLock()
-	defer v.mu.RUnlock()
+	prefixes := override
+	if !custom {
+		v.mu.RLock()
+		defer v.mu.RUnlock()
+		prefixes = v.prefixes
+	}
 
-	for _, prefix := range v.prefixes {
+	for _, prefix := range prefixes {
 		if prefix.Contains(addr) {
 			return true
 		}
 	}
 
 	return false
+}
+
+func normalizeHostRuleVisibility(cfg models.HostRuleVisibility) (models.HostRuleVisibility, []netip.Prefix, error) {
+	mode := models.NormalizeHostVisibilityMode(cfg.Mode)
+	prefixes := make([]netip.Prefix, 0, len(cfg.CIDRs))
+	cidrs := make([]string, 0, len(cfg.CIDRs))
+	seen := make(map[string]struct{}, len(cfg.CIDRs))
+	for _, raw := range cfg.CIDRs {
+		value := strings.TrimSpace(raw)
+		if value == "" {
+			continue
+		}
+		prefix, err := netip.ParsePrefix(value)
+		if err != nil {
+			return models.HostRuleVisibility{}, nil, fmt.Errorf("invalid host visibility cidr %q: %w", value, err)
+		}
+		prefix = prefix.Masked()
+		value = prefix.String()
+		if _, exists := seen[value]; exists {
+			continue
+		}
+		seen[value] = struct{}{}
+		cidrs = append(cidrs, value)
+		prefixes = append(prefixes, prefix)
+	}
+	if mode == models.HostVisibilityModeCustom && len(prefixes) == 0 {
+		return models.HostRuleVisibility{}, nil, fmt.Errorf("custom host visibility requires at least one cidr")
+	}
+	return models.HostRuleVisibility{Mode: mode, CIDRs: cidrs}, prefixes, nil
+}
+
+func visibilityPrefixes(cidrs []string) []netip.Prefix {
+	prefixes := make([]netip.Prefix, 0, len(cidrs))
+	for _, cidr := range cidrs {
+		if prefix, err := netip.ParsePrefix(cidr); err == nil {
+			prefixes = append(prefixes, prefix.Masked())
+		}
+	}
+	return prefixes
 }
 
 func isVisibilityExemptAddr(addr netip.Addr) bool {

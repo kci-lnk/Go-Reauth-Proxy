@@ -24,6 +24,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httputil"
+	"net/netip"
 	"net/url"
 	"path"
 	"sort"
@@ -183,6 +184,7 @@ type requestSnapshot struct {
 	rulesByPath        map[string]*models.Rule
 	hostRules          []models.HostRule
 	hostRulesByHost    map[string]*models.HostRule
+	hostVisibility     map[string][]netip.Prefix
 	defaultHostRule    *models.HostRule
 	targets            map[string]reverseProxyTargetRuntime
 	toolbarRules       []models.Rule
@@ -354,6 +356,7 @@ func (h *Handler) buildRequestSnapshotLocked() *requestSnapshot {
 
 	hostRules := copyHostRules(h.HostRules)
 	hostRulesByHost := make(map[string]*models.HostRule, len(hostRules))
+	hostVisibility := make(map[string][]netip.Prefix, len(hostRules))
 	var defaultHostRule *models.HostRule
 	for i := range hostRules {
 		rule := &hostRules[i]
@@ -368,6 +371,9 @@ func (h *Handler) buildRequestSnapshotLocked() *requestSnapshot {
 			continue
 		}
 		hostRulesByHost[host] = rule
+		if rule.Visibility.Mode == models.HostVisibilityModeCustom {
+			hostVisibility[host] = visibilityPrefixes(rule.Visibility.CIDRs)
+		}
 	}
 	var defaultRule *models.Rule
 	if h.DefaultRoute != "" && h.DefaultRoute != "/__select__" {
@@ -384,6 +390,7 @@ func (h *Handler) buildRequestSnapshotLocked() *requestSnapshot {
 		rulesByPath:        rulesByPath,
 		hostRules:          hostRules,
 		hostRulesByHost:    hostRulesByHost,
+		hostVisibility:     hostVisibility,
 		defaultHostRule:    defaultHostRule,
 		targets:            targets,
 		toolbarRules:       toolbarRules,
@@ -452,6 +459,7 @@ func copyHostRules(rules []models.HostRule) []models.HostRule {
 	for i, rule := range rules {
 		copied[i] = rule
 		copied[i].Availability = copyHostRuleAvailability(rule.Availability)
+		copied[i].Visibility.CIDRs = append([]string(nil), rule.Visibility.CIDRs...)
 		copied[i].Locations = copyHostLocations(rule.Locations)
 	}
 	return copied
@@ -2513,6 +2521,11 @@ func (h *Handler) normalizeHostRule(newRule models.HostRule) (models.HostRule, e
 		return models.HostRule{}, fmt.Errorf("invalid target: %v", err)
 	}
 	newRule.ProtocolMode = models.NormalizeHostProtocolMode(newRule.ProtocolMode)
+	visibility, _, err := normalizeHostRuleVisibility(newRule.Visibility)
+	if err != nil {
+		return models.HostRule{}, err
+	}
+	newRule.Visibility = visibility
 	if newRule.AccessMode == "" {
 		newRule.AccessMode = "login_first"
 	}
@@ -2572,6 +2585,7 @@ func applyBasicAuthInjection(out *http.Request, cfg models.BasicAuthConfig) {
 
 func (h *Handler) AddHostRule(newRule models.HostRule) error {
 	protocolModeMissing := strings.TrimSpace(newRule.ProtocolMode) == ""
+	visibilityMissing := strings.TrimSpace(newRule.Visibility.Mode) == "" && len(newRule.Visibility.CIDRs) == 0
 	newRule, err := h.normalizeHostRule(newRule)
 	if err != nil {
 		return err
@@ -2584,6 +2598,10 @@ func (h *Handler) AddHostRule(newRule models.HostRule) error {
 		if normalizeRequestHost(rule.Host) == newRule.Host && !updated {
 			if protocolModeMissing {
 				newRule.ProtocolMode = models.NormalizeHostProtocolMode(rule.ProtocolMode)
+			}
+			if visibilityMissing {
+				newRule.Visibility = rule.Visibility
+				newRule.Visibility.CIDRs = append([]string(nil), rule.Visibility.CIDRs...)
 			}
 			nextRules = append(nextRules, newRule)
 			updated = true
@@ -2630,10 +2648,12 @@ func (h *Handler) AddHostRule(newRule models.HostRule) error {
 func (h *Handler) SetHostRules(rules []models.HostRule) error {
 	normalizedRules := make([]models.HostRule, 0, len(rules))
 	protocolModeMissing := make([]bool, 0, len(rules))
+	visibilityMissing := make([]bool, 0, len(rules))
 	indexByHost := make(map[string]int, len(rules))
 
 	for _, rule := range rules {
 		modeMissing := strings.TrimSpace(rule.ProtocolMode) == ""
+		ruleVisibilityMissing := strings.TrimSpace(rule.Visibility.Mode) == "" && len(rule.Visibility.CIDRs) == 0
 		normalizedRule, err := h.normalizeHostRule(rule)
 		if err != nil {
 			return err
@@ -2642,17 +2662,20 @@ func (h *Handler) SetHostRules(rules []models.HostRule) error {
 		if idx, exists := indexByHost[normalizedRule.Host]; exists {
 			normalizedRules[idx] = normalizedRule
 			protocolModeMissing[idx] = modeMissing
+			visibilityMissing[idx] = ruleVisibilityMissing
 			continue
 		}
 
 		indexByHost[normalizedRule.Host] = len(normalizedRules)
 		normalizedRules = append(normalizedRules, normalizedRule)
 		protocolModeMissing = append(protocolModeMissing, modeMissing)
+		visibilityMissing = append(visibilityMissing, ruleVisibilityMissing)
 	}
 	keepFirstDefaultHostRule(normalizedRules)
 
 	h.mu.Lock()
 	existingModes := make(map[string]string, len(h.HostRules))
+	existingVisibilities := make(map[string]models.HostRuleVisibility, len(h.HostRules))
 	for _, existingRule := range h.HostRules {
 		host := normalizeRequestHost(existingRule.Host)
 		if host == "" {
@@ -2662,13 +2685,20 @@ func (h *Handler) SetHostRules(rules []models.HostRule) error {
 			continue
 		}
 		existingModes[host] = models.NormalizeHostProtocolMode(existingRule.ProtocolMode)
+		visibility := existingRule.Visibility
+		visibility.CIDRs = append([]string(nil), existingRule.Visibility.CIDRs...)
+		existingVisibilities[host] = visibility
 	}
 	for i := range normalizedRules {
-		if !protocolModeMissing[i] {
-			continue
+		if protocolModeMissing[i] {
+			if existingMode, exists := existingModes[normalizedRules[i].Host]; exists {
+				normalizedRules[i].ProtocolMode = existingMode
+			}
 		}
-		if existingMode, exists := existingModes[normalizedRules[i].Host]; exists {
-			normalizedRules[i].ProtocolMode = existingMode
+		if visibilityMissing[i] {
+			if existingVisibility, exists := existingVisibilities[normalizedRules[i].Host]; exists {
+				normalizedRules[i].Visibility = existingVisibility
+			}
 		}
 	}
 	changedProtocolHosts := changedHostProtocolModes(h.HostRules, normalizedRules)
@@ -3204,6 +3234,31 @@ func (h *Handler) IsClientIPVisible(clientIP string) bool {
 		return true
 	}
 	return visibility.contains(clientIP)
+}
+
+func (h *Handler) IsClientIPVisibleForHost(clientIP string, rule *models.HostRule, snapshot requestSnapshot) bool {
+	h.mu.RLock()
+	visibility := h.gatewayVisibility
+	h.mu.RUnlock()
+
+	if visibility == nil {
+		return true
+	}
+	if rule == nil || normalizeRequestHost(rule.Host) == normalizeRequestHost(snapshot.authConfig.AuthHost) {
+		return visibility.contains(clientIP)
+	}
+	if rule.Visibility.Mode == models.HostVisibilityModeDisabled {
+		return true
+	}
+	if rule.Visibility.Mode != models.HostVisibilityModeCustom {
+		return visibility.contains(clientIP)
+	}
+	host := normalizeRequestHost(rule.Host)
+	prefixes, ok := snapshot.hostVisibility[host]
+	if !ok {
+		return visibility.contains(clientIP)
+	}
+	return visibility.containsPrefixes(clientIP, prefixes, true)
 }
 
 func (h *Handler) GetGeneralBlacklistRecordForClientIP(clientIP string) (models.GeneralBlacklistRecord, bool) {
@@ -4516,7 +4571,8 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if !h.IsClientIPVisible(clientIP) {
+	matchedHostRule := matchHostRule(r, snapshot)
+	if !h.IsClientIPVisibleForHost(clientIP, matchedHostRule, snapshot) {
 		accessEntry.RouteType = "visibility"
 		accessEntry.RouteKey = "cidr"
 		accessEntry.AuthDecision = "visibility_denied"
@@ -4528,7 +4584,6 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	matchedHostRule := matchHostRule(r, snapshot)
 	http1Required := isHTTP1OnlyHostOverHTTP2(r, matchedHostRule)
 	http2Required := isHTTP2OnlyHostOverHTTP1(r, matchedHostRule)
 	if http1Required || http2Required {

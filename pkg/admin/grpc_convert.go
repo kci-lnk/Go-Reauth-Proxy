@@ -156,6 +156,23 @@ func protoToHostRuleAvailability(value *pb.HostRuleAvailability) *models.HostRul
 	}
 }
 
+func hostRuleVisibilityToProto(value models.HostRuleVisibility) *pb.HostRuleVisibility {
+	return &pb.HostRuleVisibility{
+		Mode:  value.Mode,
+		Cidrs: append([]string(nil), value.CIDRs...),
+	}
+}
+
+func protoToHostRuleVisibility(value *pb.HostRuleVisibility) models.HostRuleVisibility {
+	if value == nil {
+		return models.HostRuleVisibility{}
+	}
+	return models.HostRuleVisibility{
+		Mode:  value.GetMode(),
+		CIDRs: append([]string(nil), value.GetCidrs()...),
+	}
+}
+
 func hostRulesToProto(rules []models.HostRule) *pb.HostRules {
 	items := make([]*pb.HostRule, 0, len(rules))
 	for _, rule := range rules {
@@ -174,6 +191,7 @@ func hostRulesToProto(rules []models.HostRule) *pb.HostRules {
 			Locations:       hostLocationsToProto(rule.Locations),
 			Disabled:        rule.Disabled,
 			Availability:    hostRuleAvailabilityToProto(rule.Availability),
+			Visibility:      hostRuleVisibilityToProto(rule.Visibility),
 		})
 	}
 	return &pb.HostRules{Items: items}
@@ -203,6 +221,7 @@ func protoToHostRules(req *pb.HostRules) []models.HostRule {
 			Locations:       protoToHostLocations(rule.GetLocations()),
 			Disabled:        rule.GetDisabled(),
 			Availability:    protoToHostRuleAvailability(rule.GetAvailability()),
+			Visibility:      protoToHostRuleVisibility(rule.GetVisibility()),
 		})
 	}
 	return rules

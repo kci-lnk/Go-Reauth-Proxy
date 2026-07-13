@@ -295,6 +295,7 @@ func (s *Server) handleAddHostRule(w http.ResponseWriter, r *http.Request) {
 		IsDefault       bool                         `json:"is_default"`
 		Disabled        *bool                        `json:"disabled"`
 		Availability    *models.HostRuleAvailability `json:"availability"`
+		Visibility      models.HostRuleVisibility    `json:"visibility"`
 		Title           string                       `json:"title"`
 		Favicon         *string                      `json:"favicon"`
 		BasicAuth       models.BasicAuthConfig       `json:"basic_auth"`
@@ -341,6 +342,7 @@ func (s *Server) handleAddHostRule(w http.ResponseWriter, r *http.Request) {
 			IsDefault:       req.IsDefault,
 			Disabled:        req.Disabled != nil && *req.Disabled,
 			Availability:    req.Availability,
+			Visibility:      req.Visibility,
 			Title:           req.Title,
 			Favicon: func() string {
 				if req.Favicon == nil {

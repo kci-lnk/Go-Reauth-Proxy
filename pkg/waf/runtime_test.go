@@ -112,6 +112,34 @@ func TestRuntimeExclusionConfigMatchesDisabledHostAndPath(t *testing.T) {
 	}
 }
 
+func TestRuntimeSetConfigUpdatesDisabledHostsWhileLoaded(t *testing.T) {
+	rulesDir := t.TempDir()
+	writeTestRule(t, rulesDir, `SecRule ARGS:test "@streq attack" "id:1002,phase:2,deny,status:403,msg:'test block',log"`)
+
+	cfg := testConfig(rulesDir, ModeBlocking)
+	cfg.DisabledHosts = []string{"app.example.test"}
+	rt := NewRuntime(cfg, t.TempDir())
+	if _, err := rt.Reload(rt.Config(), "", ""); err != nil {
+		t.Fatalf("reload WAF: %v", err)
+	}
+
+	excluded := httptest.NewRequest("GET", "https://app.example.test/search?test=attack", nil)
+	if decision := rt.Evaluate(excluded, EvaluateContext{}); !decision.Allowed {
+		t.Fatalf("expected disabled host to skip WAF, got %#v", decision)
+	}
+
+	next := rt.Config()
+	next.DisabledHosts = []string{}
+	if _, err := rt.SetConfig(next); err != nil {
+		t.Fatalf("clear disabled hosts: %v", err)
+	}
+
+	checked := httptest.NewRequest("GET", "https://app.example.test/search?test=attack", nil)
+	if decision := rt.Evaluate(checked, EvaluateContext{}); decision.Allowed {
+		t.Fatalf("expected host to return to WAF evaluation, got %#v", decision)
+	}
+}
+
 func TestNormalizeHostMatchesLegacyBehavior(t *testing.T) {
 	cases := []string{
 		"",

@@ -23,6 +23,7 @@ const (
 	GatewayControlService_GetServerInfo_FullMethodName                    = "/fnknock.v1.GatewayControlService/GetServerInfo"
 	GatewayControlService_GetGatewayListenerConfig_FullMethodName         = "/fnknock.v1.GatewayControlService/GetGatewayListenerConfig"
 	GatewayControlService_SetGatewayListenerConfig_FullMethodName         = "/fnknock.v1.GatewayControlService/SetGatewayListenerConfig"
+	GatewayControlService_ResetAllData_FullMethodName                     = "/fnknock.v1.GatewayControlService/ResetAllData"
 	GatewayControlService_RequestShutdown_FullMethodName                  = "/fnknock.v1.GatewayControlService/RequestShutdown"
 	GatewayControlService_GetRules_FullMethodName                         = "/fnknock.v1.GatewayControlService/GetRules"
 	GatewayControlService_SetRules_FullMethodName                         = "/fnknock.v1.GatewayControlService/SetRules"
@@ -68,6 +69,9 @@ type GatewayControlServiceClient interface {
 	GetServerInfo(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*ServerInfo, error)
 	GetGatewayListenerConfig(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*GatewayListenerConfig, error)
 	SetGatewayListenerConfig(ctx context.Context, in *GatewayListenerConfig, opts ...grpc.CallOption) (*GatewayListenerConfig, error)
+	// Resets all user-managed gateway configuration and volatile runtime data
+	// while preserving the process, control port, and installed runtime assets.
+	ResetAllData(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*RpcStatus, error)
 	// Requests an idempotent graceful process shutdown. The response only
 	// acknowledges the request; shutdown continues asynchronously.
 	RequestShutdown(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*RpcStatus, error)
@@ -140,6 +144,16 @@ func (c *gatewayControlServiceClient) SetGatewayListenerConfig(ctx context.Conte
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(GatewayListenerConfig)
 	err := c.cc.Invoke(ctx, GatewayControlService_SetGatewayListenerConfig_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *gatewayControlServiceClient) ResetAllData(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*RpcStatus, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(RpcStatus)
+	err := c.cc.Invoke(ctx, GatewayControlService_ResetAllData_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -513,6 +527,9 @@ type GatewayControlServiceServer interface {
 	GetServerInfo(context.Context, *emptypb.Empty) (*ServerInfo, error)
 	GetGatewayListenerConfig(context.Context, *emptypb.Empty) (*GatewayListenerConfig, error)
 	SetGatewayListenerConfig(context.Context, *GatewayListenerConfig) (*GatewayListenerConfig, error)
+	// Resets all user-managed gateway configuration and volatile runtime data
+	// while preserving the process, control port, and installed runtime assets.
+	ResetAllData(context.Context, *emptypb.Empty) (*RpcStatus, error)
 	// Requests an idempotent graceful process shutdown. The response only
 	// acknowledges the request; shutdown continues asynchronously.
 	RequestShutdown(context.Context, *emptypb.Empty) (*RpcStatus, error)
@@ -569,6 +586,9 @@ func (UnimplementedGatewayControlServiceServer) GetGatewayListenerConfig(context
 }
 func (UnimplementedGatewayControlServiceServer) SetGatewayListenerConfig(context.Context, *GatewayListenerConfig) (*GatewayListenerConfig, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method SetGatewayListenerConfig not implemented")
+}
+func (UnimplementedGatewayControlServiceServer) ResetAllData(context.Context, *emptypb.Empty) (*RpcStatus, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ResetAllData not implemented")
 }
 func (UnimplementedGatewayControlServiceServer) RequestShutdown(context.Context, *emptypb.Empty) (*RpcStatus, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method RequestShutdown not implemented")
@@ -749,6 +769,24 @@ func _GatewayControlService_SetGatewayListenerConfig_Handler(srv interface{}, ct
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(GatewayControlServiceServer).SetGatewayListenerConfig(ctx, req.(*GatewayListenerConfig))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _GatewayControlService_ResetAllData_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(emptypb.Empty)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(GatewayControlServiceServer).ResetAllData(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: GatewayControlService_ResetAllData_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(GatewayControlServiceServer).ResetAllData(ctx, req.(*emptypb.Empty))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -1419,6 +1457,10 @@ var GatewayControlService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "SetGatewayListenerConfig",
 			Handler:    _GatewayControlService_SetGatewayListenerConfig_Handler,
+		},
+		{
+			MethodName: "ResetAllData",
+			Handler:    _GatewayControlService_ResetAllData_Handler,
 		},
 		{
 			MethodName: "RequestShutdown",

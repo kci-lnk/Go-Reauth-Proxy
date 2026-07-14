@@ -1460,6 +1460,129 @@ func (h *Handler) saveConfigLocked() error {
 	return nil
 }
 
+// ResetAllData replaces every user-managed gateway setting with a fresh
+// configuration and clears volatile caches and counters. Runtime wiring such
+// as the active control port and installed WAF directory is supplied by the
+// caller in resetConfig and is therefore preserved.
+func (h *Handler) ResetAllData(resetConfig *config.AppConfig) error {
+	if h == nil {
+		return fmt.Errorf("proxy handler is not initialized")
+	}
+	if resetConfig == nil {
+		return fmt.Errorf("reset config is required")
+	}
+
+	loggingConfig := gatewaylog.NormalizeConfig(resetConfig.Logging)
+	forwardedHeaders, _ := normalizeForwardedHeadersConfig(resetConfig.ForwardedHeaders)
+	preserveHost, _ := normalizePreserveHostConfig(resetConfig.PreserveHost)
+	visibility, err := newGatewayVisibility(resetConfig.Visibility)
+	if err != nil {
+		return fmt.Errorf("normalize reset gateway visibility: %w", err)
+	}
+	sslConfig, err := normalizeSSLConfig(resetConfig.SSL)
+	if err != nil {
+		return fmt.Errorf("normalize reset SSL config: %w", err)
+	}
+	sslBundle, err := newSSLRuntimeBundle(sslConfig)
+	if err != nil {
+		return fmt.Errorf("build reset SSL runtime: %w", err)
+	}
+
+	previousWAF := h.GetWAFConfig()
+	wafConfig := resetConfig.WAF
+	if h.wafRuntime != nil {
+		wafConfig, err = h.wafRuntime.SetConfig(wafConfig)
+		if err != nil {
+			return fmt.Errorf("reset WAF runtime: %w", err)
+		}
+	}
+
+	resetConfig.Rules = []models.Rule{}
+	resetConfig.HostRules = []models.HostRule{}
+	resetConfig.StreamRules = []models.StreamRule{}
+	resetConfig.Logging = loggingConfig
+	resetConfig.ForwardedHeaders = forwardedHeaders
+	resetConfig.PreserveHost = preserveHost
+	resetConfig.Visibility = visibility.getConfig()
+	resetConfig.GeneralBlacklist = models.GeneralBlacklistConfig{Items: []models.GeneralBlacklistRecord{}}
+	resetConfig.WAF = wafConfig
+	resetConfig.SSL = copySSLConfig(sslConfig)
+	resetConfig.SSLCert = ""
+	resetConfig.SSLKey = ""
+	if h.configManager != nil {
+		if err := h.configManager.Save(resetConfig); err != nil {
+			if h.wafRuntime != nil {
+				_, _ = h.wafRuntime.SetConfig(previousWAF)
+			}
+			return fmt.Errorf("persist reset gateway config: %w", err)
+		}
+	}
+
+	reverseProxyThrottle := newReverseProxyThrottle(resetConfig.ReverseProxyThrottle)
+	generalBlacklist := newGeneralBlacklistRuntime(resetConfig.GeneralBlacklist)
+	reverseProxyThrottleExempt := newReverseProxyThrottleExemptIPsRuntime(
+		models.ReverseProxyThrottleExemptIPsRuntime{},
+	)
+	commonLocationExemptions := newCommonLocationExemptionsRuntime(
+		models.CommonLocationExemptionsRuntime{},
+	)
+
+	h.mu.Lock()
+	h.Rules = []models.Rule{}
+	h.HostRules = []models.HostRule{}
+	h.StreamRules = []models.StreamRule{}
+	h.DefaultRoute = resetConfig.DefaultRoute
+	h.AuthConfig = resetConfig.AuthConfig
+	h.LoggingConfig = loggingConfig
+	h.ProxyProtocolForce = resetConfig.ProxyProtocolForce
+	h.GatewayListener = resetConfig.GatewayListener
+	h.ReverseProxyThrottle = resetConfig.ReverseProxyThrottle
+	h.GatewayVisibility = resetConfig.Visibility
+	h.ForwardedHeaders = forwardedHeaders
+	h.PreserveHost = preserveHost
+	h.CrawlerBlocker = resetConfig.CrawlerBlocker
+	h.GatewayPortal = models.NormalizeGatewayPortalConfig(resetConfig.Portal)
+	h.FnosPortIconHijack = resetConfig.FnosPortIconHijack
+	h.GeneralBlacklist = generalBlacklist.getConfig()
+	h.WAFConfig = wafConfig
+	h.sslConfig = copySSLConfig(sslConfig)
+	h.sslBundle.Store(sslBundle)
+	h.reverseProxyThrottle = reverseProxyThrottle
+	h.reverseProxyThrottleExempt = reverseProxyThrottleExempt
+	h.commonLocationExemptions = commonLocationExemptions
+	h.gatewayVisibility = visibility
+	h.generalBlacklist = generalBlacklist
+	h.forwardedHeaders = newForwardedHeadersConfig(forwardedHeaders)
+	h.preserveHost = newPreserveHostConfig(preserveHost)
+	h.publishRequestSnapshotLocked()
+	h.mu.Unlock()
+
+	if h.gatewayLogManager != nil {
+		h.gatewayLogManager.UpdateConfig(loggingConfig)
+	}
+	h.clearAuthCache()
+	h.loggedInActive.Range(func(key, _ any) bool {
+		h.loggedInActive.Delete(key)
+		return true
+	})
+	h.loggedInActiveCount.Store(0)
+	h.trafficTotalIn.Store(0)
+	h.trafficTotalOut.Store(0)
+	h.trafficError5xx.Store(0)
+	h.trafficByHost.Range(func(key, _ any) bool {
+		h.trafficByHost.Delete(key)
+		return true
+	})
+	if hook := h.getSSLChangeHook(); hook != nil {
+		hook()
+	}
+
+	if event := debugProxyEvent("all_data_reset", ""); event != nil {
+		event.Send()
+	}
+	return nil
+}
+
 // persistGatewayListenerConfigLocked updates only the listener setting. A
 // listener-scope transition is coordinated with a live rebind, so persisting a
 // broad Handler snapshot here could accidentally commit unrelated state while
@@ -2901,6 +3024,22 @@ func (h *Handler) DeleteLogDate(date string) (gatewaylog.DeleteResult, error) {
 		return gatewaylog.DeleteResult{}, nil
 	}
 	return h.gatewayLogManager.DeleteDate(date)
+}
+
+func (h *Handler) ClearGatewayLogs() error {
+	if h.gatewayLogManager == nil {
+		return nil
+	}
+	dates, err := h.gatewayLogManager.GetDates()
+	if err != nil {
+		return err
+	}
+	for _, date := range dates.Dates {
+		if _, err := h.gatewayLogManager.DeleteDate(date); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (h *Handler) GetWAFConfig() models.WAFConfig {

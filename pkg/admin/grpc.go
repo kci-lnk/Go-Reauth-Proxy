@@ -97,6 +97,19 @@ func (s *GRPCServer) SetGatewayListenerConfig(ctx context.Context, req *pb.Gatew
 	return &pb.GatewayListenerConfig{Scope: config.Scope}, nil
 }
 
+func (s *GRPCServer) ResetAllData(ctx context.Context, _ *emptypb.Empty) (*pb.RpcStatus, error) {
+	if err := s.checkToken(ctx); err != nil {
+		return nil, err
+	}
+	if s.admin == nil {
+		return nil, status.Error(codes.FailedPrecondition, "admin server is not initialized")
+	}
+	if err := s.admin.ResetAllData(); err != nil {
+		return nil, status.Error(codes.Internal, err.Error())
+	}
+	return rpcOK(), nil
+}
+
 func (s *GRPCServer) RequestShutdown(ctx context.Context, _ *emptypb.Empty) (*pb.RpcStatus, error) {
 	if err := s.checkToken(ctx); err != nil {
 		return nil, err

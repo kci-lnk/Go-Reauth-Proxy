@@ -70,7 +70,7 @@ func TestGatewayControlServerInfoIncludesCompatibilityMetadata(t *testing.T) {
 	if info.GetVersion() == "" || info.GetOs() != runtime.GOOS || info.GetArch() != runtime.GOARCH {
 		t.Fatalf("unexpected server info: %#v", info)
 	}
-	if info.GetControlApiVersion() != 1 || len(info.GetCapabilities()) == 0 || info.GetCommit() == "" {
+	if info.GetControlApiVersion() != 2 || len(info.GetCapabilities()) == 0 || info.GetCommit() == "" {
 		t.Fatalf("incomplete compatibility metadata: %#v", info)
 	}
 }
@@ -108,6 +108,52 @@ func TestGatewayControlListenerConfigReturnsFailureWhenRuntimeApplyFails(t *test
 	}
 	if got := server.admin.ProxyHandler.GetGatewayListenerConfig(); got != previous {
 		t.Fatalf("listener config after failed RPC = %#v, want %#v", got, previous)
+	}
+}
+
+func TestGatewayControlResetAllDataClearsRuntimeAndPersistedConfig(t *testing.T) {
+	server := newGatewayControlTestServer(t, "secret")
+	ctx := authTestContext()
+
+	if _, err := server.SetRules(ctx, &pb.Rules{Items: []*pb.Rule{{Path: "/app", Target: "http://127.0.0.1:8080"}}}); err != nil {
+		t.Fatalf("SetRules: %v", err)
+	}
+	if _, err := server.SetHostRules(ctx, &pb.HostRules{Items: []*pb.HostRule{{Host: "app.example.test", Target: "http://127.0.0.1:8080"}}}); err != nil {
+		t.Fatalf("SetHostRules: %v", err)
+	}
+	if _, err := server.AddGeneralBlacklist(ctx, &pb.IpListRequest{Ips: []string{"203.0.113.10"}, Source: "manual"}); err != nil {
+		t.Fatalf("AddGeneralBlacklist: %v", err)
+	}
+	if _, err := server.SetGatewayVisibility(ctx, &pb.GatewayVisibilityConfig{Enabled: true, Cidrs: []string{"192.0.2.0/24"}}); err != nil {
+		t.Fatalf("SetGatewayVisibility: %v", err)
+	}
+
+	result, err := server.ResetAllData(ctx, &emptypb.Empty{})
+	if err != nil || !result.GetSuccess() {
+		t.Fatalf("ResetAllData = %#v, %v", result, err)
+	}
+	if got := server.admin.ProxyHandler.GetRules(); len(got) != 0 {
+		t.Fatalf("runtime path rules after reset = %#v", got)
+	}
+	if got := server.admin.ProxyHandler.GetHostRules(); len(got) != 0 {
+		t.Fatalf("runtime host rules after reset = %#v", got)
+	}
+	if got := server.admin.ProxyHandler.GetGeneralBlacklist(); len(got.Items) != 0 {
+		t.Fatalf("runtime blacklist after reset = %#v", got)
+	}
+	if got := server.admin.ProxyHandler.GetGatewayVisibility(); got.Enabled || len(got.CIDRs) != 0 {
+		t.Fatalf("runtime visibility after reset = %#v", got)
+	}
+
+	persisted, err := server.admin.ConfigManager.Load()
+	if err != nil {
+		t.Fatalf("Load config after reset: %v", err)
+	}
+	if len(persisted.Rules) != 0 || len(persisted.HostRules) != 0 || len(persisted.StreamRules) != 0 {
+		t.Fatalf("persisted rules after reset = %#v, %#v, %#v", persisted.Rules, persisted.HostRules, persisted.StreamRules)
+	}
+	if len(persisted.GeneralBlacklist.Items) != 0 || len(persisted.SSL.Certificates) != 0 || persisted.SSLCert != "" || persisted.SSLKey != "" {
+		t.Fatalf("persisted security data was not cleared")
 	}
 }
 

@@ -7,4 +7,4 @@ var (
 	Commit  = "unknown"
 )
 
-const ControlAPIVersion uint32 = 1
+const ControlAPIVersion uint32 = 2

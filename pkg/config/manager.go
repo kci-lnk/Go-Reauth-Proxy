@@ -144,6 +144,12 @@ func defaultConfig() *AppConfig {
 	}
 }
 
+// DefaultConfig returns a fresh gateway configuration with no user-managed
+// data. Callers may safely modify the returned value.
+func DefaultConfig() *AppConfig {
+	return defaultConfig()
+}
+
 func applyDefaults(cfg *AppConfig) bool {
 	changed := false
 

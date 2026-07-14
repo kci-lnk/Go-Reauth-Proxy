@@ -323,7 +323,7 @@ func TestFnosPortIconHijackHTTPResponseSkipsLargeServiceList(t *testing.T) {
 	}
 }
 
-func TestFnosPortIconHijackHTTPResponseSkipsUnknownLengthWithoutReading(t *testing.T) {
+func TestFnosPortIconHijackHTTPResponseRewritesUnknownLengthWithinLimit(t *testing.T) {
 	handler := &Handler{
 		FnosPortIconHijack: models.FnosPortIconHijackConfig{Enabled: true},
 	}
@@ -342,15 +342,66 @@ func TestFnosPortIconHijackHTTPResponseSkipsUnknownLengthWithoutReading(t *testi
 	if err != nil {
 		t.Fatalf("rewrite HTTP response returned error: %v", err)
 	}
-	if rc.readCount != 0 {
-		t.Fatalf("readCount = %d, want 0 for unknown-length FNOS response", rc.readCount)
+	if rc.readCount == 0 {
+		t.Fatal("unknown-length FNOS response was not read")
 	}
 	got, err := io.ReadAll(resp.Body)
 	if err != nil {
-		t.Fatalf("read skipped body: %v", err)
+		t.Fatalf("read rewritten body: %v", err)
+	}
+	var decoded struct {
+		Data struct {
+			List []struct {
+				URI struct {
+					Host string `json:"host"`
+					Port string `json:"port"`
+					Path string `json:"path"`
+				} `json:"uri"`
+			} `json:"list"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(got, &decoded); err != nil {
+		t.Fatalf("decode rewritten body: %v", err)
+	}
+	if len(decoded.Data.List) != 1 {
+		t.Fatalf("list length = %d, want 1", len(decoded.Data.List))
+	}
+	if got := decoded.Data.List[0].URI.Host; got != "emby.example.com" {
+		t.Fatalf("host = %q, want emby.example.com", got)
+	}
+	if got := decoded.Data.List[0].URI.Port; got != "7999" {
+		t.Fatalf("port = %q, want 7999", got)
+	}
+	if got := decoded.Data.List[0].URI.Path; got != "" {
+		t.Fatalf("path = %q, want empty string", got)
+	}
+}
+
+func TestFnosPortIconHijackHTTPResponsePreservesUnknownLengthOverLimit(t *testing.T) {
+	handler := &Handler{
+		FnosPortIconHijack: models.FnosPortIconHijackConfig{Enabled: true},
+	}
+	body := []byte(`{"data":{"list":[{"uri":{"host":"","port":"8096","path":"/web/index.html"}}]}}` +
+		strings.Repeat(" ", int(fnosPortIconHijackHTTPBodyLimitBytes)+1))
+	resp := &http.Response{
+		Header:        http.Header{},
+		Body:          io.NopCloser(bytes.NewReader(body)),
+		ContentLength: -1,
+		Request:       httptest.NewRequest(http.MethodGet, "/app-center/v1/service/list", nil),
+	}
+
+	err := handler.maybeRewriteFnosPortIconHijackHTTPResponse(resp, []models.HostRule{
+		{Host: "emby.example.com", Target: "http://127.0.0.1:8096"},
+	})
+	if err != nil {
+		t.Fatalf("rewrite HTTP response returned error: %v", err)
+	}
+	got, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read preserved body: %v", err)
 	}
 	if !bytes.Equal(got, body) {
-		t.Fatal("unknown-length service list body changed despite rewrite skip")
+		t.Fatal("unknown-length service list body changed despite exceeding rewrite limit")
 	}
 }
 

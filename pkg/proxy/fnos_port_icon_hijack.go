@@ -340,9 +340,6 @@ func readFnosPortIconHijackHTTPBody(resp *http.Response, limit int64) ([]byte, b
 	if limit <= 0 {
 		return nil, false, nil
 	}
-	if resp.ContentLength < 0 {
-		return nil, false, nil
-	}
 	if resp.ContentLength > limit {
 		return nil, false, nil
 	}

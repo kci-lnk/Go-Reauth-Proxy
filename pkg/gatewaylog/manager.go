@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"sort"
@@ -431,6 +432,9 @@ func (m *Manager) Log(entry Entry) {
 	if m == nil || m.closed.Load() || !m.enabled.Load() {
 		return
 	}
+	if isLocalhostIPv4Entry(entry) {
+		return
+	}
 	queue := m.logQueue.Load()
 	if queue == nil || m.closed.Load() || !m.enabled.Load() {
 		return
@@ -445,6 +449,28 @@ func (m *Manager) Log(entry Entry) {
 		diagnostics.RecordGatewayLogDrop()
 		m.warnDroppedLogEntry(dropped)
 	}
+}
+
+func isLocalhostIPv4Entry(entry Entry) bool {
+	if remoteIP := strings.TrimSpace(entry.RemoteIP); remoteIP != "" {
+		return isLocalhostIPv4(remoteIP)
+	}
+	return isLocalhostIPv4(entry.RemoteAddr)
+}
+
+func isLocalhostIPv4(value string) bool {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return false
+	}
+
+	if addr, err := netip.ParseAddr(value); err == nil {
+		return addr.Unmap() == netip.AddrFrom4([4]byte{127, 0, 0, 1})
+	}
+	if addrPort, err := netip.ParseAddrPort(value); err == nil {
+		return addrPort.Addr().Unmap() == netip.AddrFrom4([4]byte{127, 0, 0, 1})
+	}
+	return false
 }
 
 func (m *Manager) warnDroppedLogEntry(dropped uint64) {

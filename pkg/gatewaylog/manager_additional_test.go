@@ -161,6 +161,30 @@ func TestManagerLogWritesQueryEntryWhenEnabled(t *testing.T) {
 	}
 }
 
+func TestManagerLogFiltersLocalhostIPv4Entries(t *testing.T) {
+	dir := t.TempDir()
+	manager := NewManager(dir, models.LoggingConfig{Enabled: true})
+	t.Cleanup(manager.Close)
+
+	manager.Log(Entry{Method: "GET", Path: "/local-ip", Status: 200, RemoteIP: "127.0.0.1"})
+	manager.Log(Entry{Method: "GET", Path: "/local-addr", Status: 200, RemoteAddr: "127.0.0.1:12345"})
+	manager.Log(Entry{
+		Method:     "GET",
+		Path:       "/proxied",
+		Status:     200,
+		RemoteIP:   "198.51.100.7",
+		RemoteAddr: "127.0.0.1:12345",
+	})
+
+	result, err := manager.Query("", 1, 20, "", "", "", "", "", "page")
+	if err != nil {
+		t.Fatalf("Query() returned error: %v", err)
+	}
+	if result.Total != 1 || len(result.Items) != 1 || result.Items[0].Path != "/proxied" {
+		t.Fatalf("Query() = %#v, want only proxied external client entry", result)
+	}
+}
+
 func TestManagerLogDropsWhenQueueIsFull(t *testing.T) {
 	manager := &Manager{
 		config: models.LoggingConfig{Enabled: true},

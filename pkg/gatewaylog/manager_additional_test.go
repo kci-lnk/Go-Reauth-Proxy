@@ -161,13 +161,23 @@ func TestManagerLogWritesQueryEntryWhenEnabled(t *testing.T) {
 	}
 }
 
-func TestManagerLogFiltersLocalhostIPv4Entries(t *testing.T) {
+func TestManagerLogFiltersLocalhostIPv4HTTPButKeepsStreamEntries(t *testing.T) {
 	dir := t.TempDir()
 	manager := NewManager(dir, models.LoggingConfig{Enabled: true})
 	t.Cleanup(manager.Close)
 
 	manager.Log(Entry{Method: "GET", Path: "/local-ip", Status: 200, RemoteIP: "127.0.0.1"})
 	manager.Log(Entry{Method: "GET", Path: "/local-addr", Status: 200, RemoteAddr: "127.0.0.1:12345"})
+	manager.Log(Entry{
+		Method:     "STREAM",
+		Protocol:   "tcp",
+		Status:     200,
+		RemoteIP:   "127.0.0.1",
+		RemoteAddr: "127.0.0.1:23456",
+		RouteType:  "stream_rule",
+		RouteKey:   "tcp/3306",
+		Upstream:   "127.0.0.1:3307",
+	})
 	manager.Log(Entry{
 		Method:     "GET",
 		Path:       "/proxied",
@@ -180,8 +190,15 @@ func TestManagerLogFiltersLocalhostIPv4Entries(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Query() returned error: %v", err)
 	}
-	if result.Total != 1 || len(result.Items) != 1 || result.Items[0].Path != "/proxied" {
-		t.Fatalf("Query() = %#v, want only proxied external client entry", result)
+	if result.Total != 2 || len(result.Items) != 2 {
+		t.Fatalf("Query() = %#v, want proxied HTTP and local protocol mapping entries", result)
+	}
+	if result.Items[0].Path != "/proxied" {
+		t.Fatalf("latest Query() entry = %#v, want proxied external client entry", result.Items[0])
+	}
+	streamEntry := result.Items[1]
+	if streamEntry.RouteType != "stream_rule" || streamEntry.RouteKey != "tcp/3306" {
+		t.Fatalf("protocol mapping entry = %#v, want local stream access log", streamEntry)
 	}
 }
 

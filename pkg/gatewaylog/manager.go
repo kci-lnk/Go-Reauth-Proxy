@@ -83,6 +83,8 @@ type Entry struct {
 	WAFAction               string `json:"waf_action,omitempty"`
 	WAFBundle               string `json:"waf_bundle,omitempty"`
 	GeneralBlacklistBlocked bool   `json:"general_blacklist_blocked,omitempty"`
+	AuthRuleGroupID         string `json:"auth_rule_group_id,omitempty"`
+	AuthGrantState          string `json:"auth_grant_state,omitempty"`
 }
 
 type ConfigInfo struct {
@@ -644,6 +646,8 @@ func (m *Manager) writeLogEntry(entry *Entry) {
 		Str("waf_action", entry.WAFAction).
 		Str("waf_bundle", entry.WAFBundle).
 		Bool("general_blacklist_blocked", entry.GeneralBlacklistBlocked).
+		Str("auth_rule_group_id", entry.AuthRuleGroupID).
+		Str("auth_grant_state", entry.AuthGrantState).
 		Send()
 }
 

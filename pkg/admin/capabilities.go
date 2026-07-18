@@ -11,4 +11,7 @@ var commonGatewayCapabilities = []string{
 	"blacklist",
 	"logs",
 	"lifecycle",
+	// Auth bridge capability required before the control plane can enable
+	// host-scoped temporary subdomain-rule grants.
+	"subdomain_rule_grant_v1",
 }

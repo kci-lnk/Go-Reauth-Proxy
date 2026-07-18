@@ -70,7 +70,7 @@ Rust 后端作为客户端连接 `127.0.0.1:${GO_BACKEND_PORT}`，建立长生�
 
 ### 1. 环境要求
 
-- Go `1.25+`（见 `go.mod`）
+- Go `1.26.5+`（见 `go.mod`；模块语言版本仍兼容 Go 1.25）
 - 可选：`task`（推荐）
 - 若使用防火墙 API：Linux + `iptables/ip6tables` + `sudo` 权限
 

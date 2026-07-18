@@ -85,10 +85,33 @@ type HostRule struct {
 	Disabled        bool                  `json:"disabled,omitempty" example:"false"`
 	Availability    *HostRuleAvailability `json:"availability,omitempty"`
 	Visibility      HostRuleVisibility    `json:"visibility,omitempty"`
+	AdvancedAuth    AdvancedAuthConfig    `json:"advanced_auth,omitempty"`
 	Title           string                `json:"title,omitempty" example:"Redis"`
 	Favicon         string                `json:"favicon,omitempty" example:"data:image/png;base64,..."`
 	BasicAuth       BasicAuthConfig       `json:"basic_auth,omitempty"`
 	Locations       []HostLocation        `json:"locations,omitempty"`
+}
+
+type AdvancedAuthConfig struct {
+	Enabled            bool                `json:"enabled,omitempty"`
+	IdleTTLSeconds     int64               `json:"idle_ttl_seconds,omitempty"`
+	MaxLifetimeSeconds int64               `json:"max_lifetime_seconds,omitempty"`
+	PolicyVersion      string              `json:"policy_version,omitempty"`
+	Groups             []AdvancedAuthGroup `json:"groups,omitempty"`
+}
+
+type AdvancedAuthGroup struct {
+	ID         string                  `json:"id"`
+	Conditions []AdvancedAuthCondition `json:"conditions"`
+}
+
+type AdvancedAuthCondition struct {
+	ID       string   `json:"id"`
+	Target   string   `json:"target"`
+	Operator string   `json:"operator"`
+	Name     string   `json:"name,omitempty"`
+	Values   []string `json:"values,omitempty"`
+	CIDRs    []string `json:"cidrs,omitempty"`
 }
 
 type HostRuleVisibility struct {

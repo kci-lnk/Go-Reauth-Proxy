@@ -258,6 +258,7 @@ func buildFnosPortIconHijackWebSocketHeader(r *http.Request, options fnosPortIco
 	out.Host = upstreamURL.Host
 	applyForwardedHeaderPolicy(out, r, options.clientIP, options.omitForwardedHeaders)
 	copyUserAgentHeader(out, r)
+	stripAdvancedAuthGrantCookie(headers)
 	applyUpstreamPrivateIPv4HintHeader(out, options.targetURL)
 	applyPreserveHostPolicy(out, r, options.targetURL, options.preserveHost)
 	applyBasicAuthInjection(out, options.basicAuth)

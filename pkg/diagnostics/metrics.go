@@ -24,6 +24,14 @@ type counters struct {
 	authBridgeQueuePeak  atomic.Uint64
 	authCacheHits        atomic.Uint64
 	authCacheMisses      atomic.Uint64
+	ruleEvaluations      atomic.Uint64
+	ruleMatches          atomic.Uint64
+	grantIssued          atomic.Uint64
+	grantRenewed         atomic.Uint64
+	grantReused          atomic.Uint64
+	grantVersionRejected atomic.Uint64
+	grantRateLimited     atomic.Uint64
+	grantStorageErrors   atomic.Uint64
 	udpQueueDrops        atomic.Uint64
 	gatewayLogDrops      atomic.Uint64
 }
@@ -105,6 +113,44 @@ func RecordAuthCacheMiss() {
 		global.authCacheMisses.Add(1)
 	}
 }
+func RecordSubdomainRuleEvaluation() {
+	if enabled.Load() {
+		global.ruleEvaluations.Add(1)
+	}
+}
+func RecordSubdomainRuleMatch() {
+	if enabled.Load() {
+		global.ruleMatches.Add(1)
+	}
+}
+func RecordSubdomainGrantState(state string) {
+	if !enabled.Load() {
+		return
+	}
+	switch state {
+	case "issued":
+		global.grantIssued.Add(1)
+	case "renewed":
+		global.grantRenewed.Add(1)
+	case "reused":
+		global.grantReused.Add(1)
+	}
+}
+func RecordSubdomainGrantVersionRejected() {
+	if enabled.Load() {
+		global.grantVersionRejected.Add(1)
+	}
+}
+func RecordSubdomainGrantRateLimited() {
+	if enabled.Load() {
+		global.grantRateLimited.Add(1)
+	}
+}
+func RecordSubdomainGrantStorageError() {
+	if enabled.Load() {
+		global.grantStorageErrors.Add(1)
+	}
+}
 func RecordUDPQueueDrop() {
 	if enabled.Load() {
 		global.udpQueueDrops.Add(1)
@@ -128,12 +174,20 @@ type snapshot struct {
 		Latency []histogramBucket `json:"latency_buckets"`
 	} `json:"requests"`
 	Auth struct {
-		BridgeRequests       uint64 `json:"bridge_requests"`
-		BridgeQueueDrops     uint64 `json:"bridge_queue_drops"`
-		BridgeQueueDepth     uint64 `json:"bridge_queue_depth"`
-		BridgeQueueDepthPeak uint64 `json:"bridge_queue_depth_peak"`
-		CacheHits            uint64 `json:"cache_hits"`
-		CacheMisses          uint64 `json:"cache_misses"`
+		BridgeRequests                uint64 `json:"bridge_requests"`
+		BridgeQueueDrops              uint64 `json:"bridge_queue_drops"`
+		BridgeQueueDepth              uint64 `json:"bridge_queue_depth"`
+		BridgeQueueDepthPeak          uint64 `json:"bridge_queue_depth_peak"`
+		CacheHits                     uint64 `json:"cache_hits"`
+		CacheMisses                   uint64 `json:"cache_misses"`
+		SubdomainRuleEvaluations      uint64 `json:"subdomain_rule_evaluations"`
+		SubdomainRuleMatches          uint64 `json:"subdomain_rule_matches"`
+		SubdomainGrantIssued          uint64 `json:"subdomain_grant_issued"`
+		SubdomainGrantRenewed         uint64 `json:"subdomain_grant_renewed"`
+		SubdomainGrantReused          uint64 `json:"subdomain_grant_reused"`
+		SubdomainGrantVersionRejected uint64 `json:"subdomain_grant_version_rejected"`
+		SubdomainGrantRateLimited     uint64 `json:"subdomain_grant_rate_limited"`
+		SubdomainGrantStorageErrors   uint64 `json:"subdomain_grant_storage_errors"`
 	} `json:"auth"`
 	UDP struct {
 		QueueDrops uint64 `json:"queue_drops"`
@@ -176,6 +230,14 @@ func Snapshot() any {
 	result.Auth.BridgeQueueDepthPeak = global.authBridgeQueuePeak.Load()
 	result.Auth.CacheHits = global.authCacheHits.Load()
 	result.Auth.CacheMisses = global.authCacheMisses.Load()
+	result.Auth.SubdomainRuleEvaluations = global.ruleEvaluations.Load()
+	result.Auth.SubdomainRuleMatches = global.ruleMatches.Load()
+	result.Auth.SubdomainGrantIssued = global.grantIssued.Load()
+	result.Auth.SubdomainGrantRenewed = global.grantRenewed.Load()
+	result.Auth.SubdomainGrantReused = global.grantReused.Load()
+	result.Auth.SubdomainGrantVersionRejected = global.grantVersionRejected.Load()
+	result.Auth.SubdomainGrantRateLimited = global.grantRateLimited.Load()
+	result.Auth.SubdomainGrantStorageErrors = global.grantStorageErrors.Load()
 	result.UDP.QueueDrops = global.udpQueueDrops.Load()
 	result.GatewayLog.QueueDrops = global.gatewayLogDrops.Load()
 	var memory runtime.MemStats

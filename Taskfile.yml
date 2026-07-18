@@ -1,5 +1,9 @@
 version: '3'
 
+vars:
+  VERSION: '{{.FN_KNOCK_VERSION | default "2.0.7"}}'
+  COMMIT: '{{.FN_KNOCK_COMMIT | default "unknown"}}'
+
 tasks:
   default:
     desc: "Build gateway binaries"
@@ -21,15 +25,15 @@ tasks:
       GOOS: windows
       GOARCH: amd64
       CGO_ENABLED: "0"
-    vars:
-      VERSION: '{{.FN_KNOCK_VERSION | default "2.0.1"}}'
-      COMMIT: '{{.FN_KNOCK_COMMIT | default "unknown"}}'
     cmds:
       - cmd: mkdir -p build
         platforms: [darwin, linux]
       - cmd: powershell -NoProfile -Command "New-Item -ItemType Directory -Force build | Out-Null"
         platforms: [windows]
       - go build -ldflags="-s -w -X go-reauth-proxy/pkg/version.Version={{.VERSION}} -X go-reauth-proxy/pkg/version.Commit={{.COMMIT}}" -trimpath -o build/go-reauth-proxy-windows-amd64.exe ./cmd/server
+      - task: write:bundle-version
+        vars:
+          BIN: build/go-reauth-proxy-windows-amd64.exe
       - echo "Built Windows x86_64 binary at build/go-reauth-proxy-windows-amd64.exe"
 
   build:mac:
@@ -39,7 +43,10 @@ tasks:
       GOARCH: arm64
     cmds:
       - mkdir -p build
-      - go build -ldflags="-s -w" -trimpath -o build/go-reauth-proxy-darwin-arm64 ./cmd/server
+      - go build -ldflags="-s -w -X go-reauth-proxy/pkg/version.Version={{.VERSION}} -X go-reauth-proxy/pkg/version.Commit={{.COMMIT}}" -trimpath -o build/go-reauth-proxy-darwin-arm64 ./cmd/server
+      - task: write:bundle-version
+        vars:
+          BIN: build/go-reauth-proxy-darwin-arm64
       - echo "Built macOS ARM64 binary at build/go-reauth-proxy-darwin-arm64"
 
   build:linux:
@@ -49,11 +56,14 @@ tasks:
       GOARCH: amd64
     cmds:
       - mkdir -p build
-      - go build -ldflags="-s -w" -trimpath -o build/go-reauth-proxy-linux-amd64 ./cmd/server
+      - go build -ldflags="-s -w -X go-reauth-proxy/pkg/version.Version={{.VERSION}} -X go-reauth-proxy/pkg/version.Commit={{.COMMIT}}" -trimpath -o build/go-reauth-proxy-linux-amd64 ./cmd/server
       - task: maybe:upx
         vars:
           BIN: build/go-reauth-proxy-linux-amd64
           LABEL: Linux AMD64
+      - task: write:bundle-version
+        vars:
+          BIN: build/go-reauth-proxy-linux-amd64
       - echo "Built Linux AMD64 binary at build/go-reauth-proxy-linux-amd64"
 
   build:linux-arm64:
@@ -63,11 +73,14 @@ tasks:
       GOARCH: arm64
     cmds:
       - mkdir -p build
-      - go build -ldflags="-s -w" -trimpath -o build/go-reauth-proxy-linux-arm64 ./cmd/server
+      - go build -ldflags="-s -w -X go-reauth-proxy/pkg/version.Version={{.VERSION}} -X go-reauth-proxy/pkg/version.Commit={{.COMMIT}}" -trimpath -o build/go-reauth-proxy-linux-arm64 ./cmd/server
       - task: maybe:upx
         vars:
           BIN: build/go-reauth-proxy-linux-arm64
           LABEL: Linux ARM64
+      - task: write:bundle-version
+        vars:
+          BIN: build/go-reauth-proxy-linux-arm64
       - echo "Built Linux ARM64 binary at build/go-reauth-proxy-linux-arm64"
 
   build:linux-arm:
@@ -78,12 +91,26 @@ tasks:
       GOARM: "7"
     cmds:
       - mkdir -p build
-      - go build -ldflags="-s -w" -trimpath -o build/go-reauth-proxy-linux-arm ./cmd/server
+      - go build -ldflags="-s -w -X go-reauth-proxy/pkg/version.Version={{.VERSION}} -X go-reauth-proxy/pkg/version.Commit={{.COMMIT}}" -trimpath -o build/go-reauth-proxy-linux-arm ./cmd/server
       - task: maybe:upx
         vars:
           BIN: build/go-reauth-proxy-linux-arm
           LABEL: Linux ARM32
+      - task: write:bundle-version
+        vars:
+          BIN: build/go-reauth-proxy-linux-arm
       - echo "Built Linux ARM32 binary at build/go-reauth-proxy-linux-arm"
+
+  write:bundle-version:
+    internal: true
+    cmds:
+      - cmd: |
+          tmp="{{.BIN}}.version.tmp"
+          printf '%s\n' "{{.VERSION}}" > "${tmp}"
+          mv "${tmp}" "{{.BIN}}.version"
+        platforms: [darwin, linux]
+      - cmd: powershell -NoProfile -Command "Set-Content -Path '{{.BIN}}.version.tmp' -Value '{{.VERSION}}' -NoNewline -Encoding ascii; Move-Item -Force '{{.BIN}}.version.tmp' '{{.BIN}}.version'"
+        platforms: [windows]
 
   maybe:upx:
     internal: true
@@ -125,7 +152,7 @@ tasks:
   run:
     desc: "Run the go-reauth-proxy server (usage: task run -- -proxy-port 8090 -admin-port 8091)"
     cmds:
-      - go run ./cmd/server {{.CLI_ARGS}}
+      - go run -ldflags="-X go-reauth-proxy/pkg/version.Version={{.VERSION}} -X go-reauth-proxy/pkg/version.Commit={{.COMMIT}}" ./cmd/server {{.CLI_ARGS}}
 
   test:
     desc: "Run all tests"

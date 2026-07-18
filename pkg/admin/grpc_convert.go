@@ -173,6 +173,72 @@ func protoToHostRuleVisibility(value *pb.HostRuleVisibility) models.HostRuleVisi
 	}
 }
 
+func advancedAuthToProto(value models.AdvancedAuthConfig) *pb.AdvancedAuthConfig {
+	if !value.Enabled && value.IdleTTLSeconds == 0 && value.MaxLifetimeSeconds == 0 &&
+		value.PolicyVersion == "" && len(value.Groups) == 0 {
+		return nil
+	}
+	groups := make([]*pb.AdvancedAuthGroup, 0, len(value.Groups))
+	for _, group := range value.Groups {
+		conditions := make([]*pb.AdvancedAuthCondition, 0, len(group.Conditions))
+		for _, condition := range group.Conditions {
+			conditions = append(conditions, &pb.AdvancedAuthCondition{
+				Id:       condition.ID,
+				Target:   condition.Target,
+				Operator: condition.Operator,
+				Name:     condition.Name,
+				Values:   append([]string(nil), condition.Values...),
+				Cidrs:    append([]string(nil), condition.CIDRs...),
+			})
+		}
+		groups = append(groups, &pb.AdvancedAuthGroup{Id: group.ID, Conditions: conditions})
+	}
+	return &pb.AdvancedAuthConfig{
+		Enabled:            value.Enabled,
+		IdleTtlSeconds:     value.IdleTTLSeconds,
+		MaxLifetimeSeconds: value.MaxLifetimeSeconds,
+		PolicyVersion:      value.PolicyVersion,
+		Groups:             groups,
+	}
+}
+
+func protoToAdvancedAuth(value *pb.AdvancedAuthConfig) models.AdvancedAuthConfig {
+	if value == nil {
+		return models.AdvancedAuthConfig{}
+	}
+	var groups []models.AdvancedAuthGroup
+	if len(value.GetGroups()) > 0 {
+		groups = make([]models.AdvancedAuthGroup, 0, len(value.GetGroups()))
+	}
+	for _, group := range value.GetGroups() {
+		if group == nil {
+			continue
+		}
+		conditions := make([]models.AdvancedAuthCondition, 0, len(group.GetConditions()))
+		for _, condition := range group.GetConditions() {
+			if condition == nil {
+				continue
+			}
+			conditions = append(conditions, models.AdvancedAuthCondition{
+				ID:       condition.GetId(),
+				Target:   condition.GetTarget(),
+				Operator: condition.GetOperator(),
+				Name:     condition.GetName(),
+				Values:   append([]string(nil), condition.GetValues()...),
+				CIDRs:    append([]string(nil), condition.GetCidrs()...),
+			})
+		}
+		groups = append(groups, models.AdvancedAuthGroup{ID: group.GetId(), Conditions: conditions})
+	}
+	return models.AdvancedAuthConfig{
+		Enabled:            value.GetEnabled(),
+		IdleTTLSeconds:     value.GetIdleTtlSeconds(),
+		MaxLifetimeSeconds: value.GetMaxLifetimeSeconds(),
+		PolicyVersion:      value.GetPolicyVersion(),
+		Groups:             groups,
+	}
+}
+
 func hostRulesToProto(rules []models.HostRule) *pb.HostRules {
 	items := make([]*pb.HostRule, 0, len(rules))
 	for _, rule := range rules {
@@ -192,6 +258,7 @@ func hostRulesToProto(rules []models.HostRule) *pb.HostRules {
 			Disabled:        rule.Disabled,
 			Availability:    hostRuleAvailabilityToProto(rule.Availability),
 			Visibility:      hostRuleVisibilityToProto(rule.Visibility),
+			AdvancedAuth:    advancedAuthToProto(rule.AdvancedAuth),
 		})
 	}
 	return &pb.HostRules{Items: items}
@@ -222,6 +289,7 @@ func protoToHostRules(req *pb.HostRules) []models.HostRule {
 			Disabled:        rule.GetDisabled(),
 			Availability:    protoToHostRuleAvailability(rule.GetAvailability()),
 			Visibility:      protoToHostRuleVisibility(rule.GetVisibility()),
+			AdvancedAuth:    protoToAdvancedAuth(rule.GetAdvancedAuth()),
 		})
 	}
 	return rules
@@ -775,6 +843,8 @@ func logEntryToProto(entry gatewaylog.Entry) *pb.GatewayLogEntry {
 		WafAction:               entry.WAFAction,
 		WafBundle:               entry.WAFBundle,
 		GeneralBlacklistBlocked: entry.GeneralBlacklistBlocked,
+		AuthRuleGroupId:         entry.AuthRuleGroupID,
+		AuthGrantState:          entry.AuthGrantState,
 	}
 }
 

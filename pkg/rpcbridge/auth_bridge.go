@@ -21,12 +21,13 @@ import (
 )
 
 const (
-	InternalTokenMetadataKey    = "x-fn-knock-internal-rpc-token"
-	CapabilityAuthorizeHTTPV1   = "authorize_http_v1"
-	authBridgeSendQueueSize     = 256
-	authBridgePendingShardCount = 64
-	authBridgeRoundTripTimeout  = 5 * time.Second
-	authBridgeCanceledSendGrace = 100 * time.Millisecond
+	InternalTokenMetadataKey       = "x-fn-knock-internal-rpc-token"
+	CapabilityAuthorizeHTTPV1      = "authorize_http_v1"
+	CapabilitySubdomainRuleGrantV1 = "subdomain_rule_grant_v1"
+	authBridgeSendQueueSize        = 256
+	authBridgePendingShardCount    = 64
+	authBridgeRoundTripTimeout     = 5 * time.Second
+	authBridgeCanceledSendGrace    = 100 * time.Millisecond
 )
 
 var (

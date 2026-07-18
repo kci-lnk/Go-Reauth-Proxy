@@ -2,6 +2,8 @@ module go-reauth-proxy
 
 go 1.25.0
 
+toolchain go1.26.5
+
 require (
 	github.com/corazawaf/coraza/v3 v3.7.0
 	github.com/gorilla/mux v1.8.1

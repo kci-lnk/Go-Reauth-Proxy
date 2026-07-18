@@ -113,10 +113,23 @@ func authCacheEnabled(authConfig models.AuthConfig) bool {
 }
 
 func authCacheTTL(authConfig models.AuthConfig, result authCheckResult) time.Duration {
+	if result.allowed && result.cacheMaxAgeSeconds > 0 {
+		if authConfig.AuthCacheTTL <= 0 {
+			return 0
+		}
+		seconds := result.cacheMaxAgeSeconds
+		if seconds > 60 {
+			seconds = 60
+		}
+		if int32(authConfig.AuthCacheTTL) < seconds {
+			seconds = int32(authConfig.AuthCacheTTL)
+		}
+		return time.Duration(seconds) * time.Second
+	}
 	switch {
 	case result.allowed && result.authenticated && authConfig.AuthCacheTTL > 0:
 		return time.Duration(authConfig.AuthCacheTTL) * time.Second
-	case !result.allowed && result.decision != "error" && result.decision != "fn_app_prompt" && authConfig.AuthCacheFailTTL > 0:
+	case !result.allowed && result.decision != "error" && result.decision != "rate_limited" && result.decision != "fn_app_prompt" && authConfig.AuthCacheFailTTL > 0:
 		return time.Duration(authConfig.AuthCacheFailTTL) * time.Second
 	default:
 		return 0
@@ -228,9 +241,13 @@ func buildAuthCacheLookup(r *http.Request, clientIP string, accessMode string) (
 		return authCacheLookup{}, false
 	}
 
-	host := normalizeRequestHost(r.Host)
-	if host == "" {
-		host = normalizeRequestHost(r.Header.Get("X-Forwarded-Host"))
+	host := requestHostForRouting(r)
+	// Include the server-generated policy version in every cache dimension.
+	// This makes a policy rotation (including disabling or deleting a host)
+	// invalidate a previously successful temporary grant immediately instead
+	// of waiting for the 60-second bridge cache cap.
+	if version := advancedAuthPolicyVersionFromRequest(r); version != "" {
+		host += "\x00advanced-auth:" + version
 	}
 
 	cacheKey := authCacheLookupKey(
@@ -262,9 +279,9 @@ func buildPreflightCacheLookup(r *http.Request, clientIP string, accessMode stri
 		return preflightCacheLookup{}, false
 	}
 
-	host := normalizeRequestHost(r.Host)
-	if host == "" {
-		host = normalizeRequestHost(r.Header.Get("X-Forwarded-Host"))
+	host := requestHostForRouting(r)
+	if version := advancedAuthPolicyVersionFromRequest(r); version != "" {
+		host += "\x00advanced-auth:" + version
 	}
 
 	cacheKey := preflightCacheLookupKey(

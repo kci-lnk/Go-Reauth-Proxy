@@ -185,6 +185,7 @@ type requestSnapshot struct {
 	hostRules          []models.HostRule
 	hostRulesByHost    map[string]*models.HostRule
 	hostVisibility     map[string][]netip.Prefix
+	advancedAuth       map[string]*compiledAdvancedAuthPolicy
 	defaultHostRule    *models.HostRule
 	targets            map[string]reverseProxyTargetRuntime
 	toolbarRules       []models.Rule
@@ -224,13 +225,21 @@ func (identity authCredentialIdentity) hasCredential() bool {
 }
 
 type authCheckResult struct {
-	allowed               bool
-	authenticated         bool
-	suppressToolbar       bool
-	decision              string
+	allowed         bool
+	authenticated   bool
+	suppressToolbar bool
+	decision        string
+	// statusCode/retryAfter carry an authentication-service rate limit through
+	// the bridge without treating it as a normal scope denial (which would be
+	// rendered as 403 or redirected to login).
+	statusCode            int
+	retryAfter            string
 	subdomainAccessCustom bool
 	allowedSubdomainHosts map[string]struct{}
 	credentialIdentity    authCredentialIdentity
+	authRuleGroupID       string
+	authGrantState        string
+	cacheMaxAgeSeconds    int32
 }
 
 type authBridgeClient interface {
@@ -357,6 +366,7 @@ func (h *Handler) buildRequestSnapshotLocked() *requestSnapshot {
 	hostRules := copyHostRules(h.HostRules)
 	hostRulesByHost := make(map[string]*models.HostRule, len(hostRules))
 	hostVisibility := make(map[string][]netip.Prefix, len(hostRules))
+	advancedAuth := make(map[string]*compiledAdvancedAuthPolicy, len(hostRules))
 	var defaultHostRule *models.HostRule
 	for i := range hostRules {
 		rule := &hostRules[i]
@@ -373,6 +383,9 @@ func (h *Handler) buildRequestSnapshotLocked() *requestSnapshot {
 		hostRulesByHost[host] = rule
 		if rule.Visibility.Mode == models.HostVisibilityModeCustom {
 			hostVisibility[host] = visibilityPrefixes(rule.Visibility.CIDRs)
+		}
+		if policy, err := compileAdvancedAuthPolicy(rule.AdvancedAuth); err == nil && policy != nil {
+			advancedAuth[host] = policy
 		}
 	}
 	var defaultRule *models.Rule
@@ -391,6 +404,7 @@ func (h *Handler) buildRequestSnapshotLocked() *requestSnapshot {
 		hostRules:          hostRules,
 		hostRulesByHost:    hostRulesByHost,
 		hostVisibility:     hostVisibility,
+		advancedAuth:       advancedAuth,
 		defaultHostRule:    defaultHostRule,
 		targets:            targets,
 		toolbarRules:       toolbarRules,
@@ -460,6 +474,17 @@ func copyHostRules(rules []models.HostRule) []models.HostRule {
 		copied[i] = rule
 		copied[i].Availability = copyHostRuleAvailability(rule.Availability)
 		copied[i].Visibility.CIDRs = append([]string(nil), rule.Visibility.CIDRs...)
+		copied[i].AdvancedAuth.Groups = make([]models.AdvancedAuthGroup, len(rule.AdvancedAuth.Groups))
+		for groupIndex, group := range rule.AdvancedAuth.Groups {
+			copied[i].AdvancedAuth.Groups[groupIndex] = group
+			copied[i].AdvancedAuth.Groups[groupIndex].Conditions = make([]models.AdvancedAuthCondition, len(group.Conditions))
+			for conditionIndex, condition := range group.Conditions {
+				copiedCondition := condition
+				copiedCondition.Values = append([]string(nil), condition.Values...)
+				copiedCondition.CIDRs = append([]string(nil), condition.CIDRs...)
+				copied[i].AdvancedAuth.Groups[groupIndex].Conditions[conditionIndex] = copiedCondition
+			}
+		}
 		copied[i].Locations = copyHostLocations(rule.Locations)
 	}
 	return copied
@@ -712,6 +737,8 @@ func applyAuthCredentialIdentityToLogEntry(entry *gatewaylog.Entry, identity aut
 func applyAuthResultToLogEntry(entry *gatewaylog.Entry, result authCheckResult) {
 	entry.LoggedIn = result.authenticated
 	entry.AuthDecision = result.decision
+	entry.AuthRuleGroupID = result.authRuleGroupID
+	entry.AuthGrantState = result.authGrantState
 	applyAuthCredentialIdentityToLogEntry(entry, result.credentialIdentity)
 }
 
@@ -770,14 +797,18 @@ func newRequestAuthContext(r *http.Request, clientIP string, accessMode string) 
 		return &requestAuthContext{context: &pb.AuthContext{ClientIp: clientIP, AccessMode: accessMode}}
 	}
 	scheme := requestScheme(r)
+	effectiveHost := requestHostForRouting(r)
+	if effectiveHost == "" {
+		effectiveHost = r.Host
+	}
 	return &requestAuthContext{
 		context: &pb.AuthContext{
 			ClientIp:              clientIP,
 			ForwardedFor:          clientIP,
-			ForwardedHost:         r.Host,
+			ForwardedHost:         effectiveHost,
 			ForwardedProto:        scheme,
 			ForwardedPath:         r.URL.RequestURI(),
-			Host:                  r.Host,
+			Host:                  effectiveHost,
 			Scheme:                scheme,
 			Path:                  r.URL.Path,
 			RawQuery:              r.URL.RawQuery,
@@ -1101,9 +1132,10 @@ func (h *Handler) performPreflight(r *http.Request, authConfig models.AuthConfig
 	if supportsCombined {
 		var combined *pb.AuthorizeHttpResponse
 		combined, err = bridge.AuthorizeHTTP(ctx, &pb.AuthorizeHttpRequest{
-			Context: requestAuth.proto(false),
-			Matched: isMatch,
-			Mode:    pb.HttpAuthMode_HTTP_AUTH_MODE_PREFLIGHT_ONLY,
+			Context:            requestAuth.proto(false),
+			Matched:            isMatch,
+			Mode:               pb.HttpAuthMode_HTTP_AUTH_MODE_PREFLIGHT_ONLY,
+			SubdomainRuleMatch: advancedAuthRuleMatchProto(r),
 		})
 		if err == nil {
 			resp = combined.GetPreflight()
@@ -2649,6 +2681,11 @@ func (h *Handler) normalizeHostRule(newRule models.HostRule) (models.HostRule, e
 		return models.HostRule{}, err
 	}
 	newRule.Visibility = visibility
+	advancedAuth, err := normalizeAdvancedAuthConfig(newRule.AdvancedAuth)
+	if err != nil {
+		return models.HostRule{}, err
+	}
+	newRule.AdvancedAuth = advancedAuth
 	if newRule.AccessMode == "" {
 		newRule.AccessMode = "login_first"
 	}
@@ -2799,6 +2836,7 @@ func (h *Handler) SetHostRules(rules []models.HostRule) error {
 	h.mu.Lock()
 	existingModes := make(map[string]string, len(h.HostRules))
 	existingVisibilities := make(map[string]models.HostRuleVisibility, len(h.HostRules))
+	existingAdvancedAuth := make(map[string]models.AdvancedAuthConfig, len(h.HostRules))
 	for _, existingRule := range h.HostRules {
 		host := normalizeRequestHost(existingRule.Host)
 		if host == "" {
@@ -2811,6 +2849,7 @@ func (h *Handler) SetHostRules(rules []models.HostRule) error {
 		visibility := existingRule.Visibility
 		visibility.CIDRs = append([]string(nil), existingRule.Visibility.CIDRs...)
 		existingVisibilities[host] = visibility
+		existingAdvancedAuth[host] = copyAdvancedAuthConfig(existingRule.AdvancedAuth)
 	}
 	for i := range normalizedRules {
 		if protocolModeMissing[i] {
@@ -2821,6 +2860,14 @@ func (h *Handler) SetHostRules(rules []models.HostRule) error {
 		if visibilityMissing[i] {
 			if existingVisibility, exists := existingVisibilities[normalizedRules[i].Host]; exists {
 				normalizedRules[i].Visibility = existingVisibility
+			}
+		}
+		// Host mapping editors predating advanced authentication omit this
+		// field entirely. Preserve an existing policy in that case so an
+		// unrelated host edit cannot silently disable a security boundary.
+		if isEmptyAdvancedAuthConfig(normalizedRules[i].AdvancedAuth) {
+			if existingPolicy, exists := existingAdvancedAuth[normalizedRules[i].Host]; exists && !isEmptyAdvancedAuthConfig(existingPolicy) {
+				normalizedRules[i].AdvancedAuth = existingPolicy
 			}
 		}
 	}
@@ -4643,6 +4690,10 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	r.URL.Path = cleanedPath
 	if originalPath != cleanedPath {
+		// RawPath can retain the pre-normalization dot segments and is used by
+		// RequestURI() when constructing the auth-bridge context. Drop it so
+		// Rust evaluates the same canonical path as the gateway rule engine.
+		r.URL.RawPath = ""
 		if event := debugProxyEvent("path_normalized", requestID); event != nil {
 			event.Str("original_path", logger.SanitizeLogString(originalPath)).
 				Str("cleaned_path", logger.SanitizeLogString(cleanedPath)).
@@ -4917,6 +4968,19 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 					TraceID: decision.TraceID,
 				})
 				return
+			}
+		}
+	}
+	if matchedHostRule != nil && matchedHostRule.UseAuth && !isAuthRoute && !isSelectRoute &&
+		normalizeRequestHost(matchedHostRule.Host) != normalizeRequestHost(snapshot.authConfig.AuthHost) {
+		host := normalizeRequestHost(matchedHostRule.Host)
+		withAdvancedAuthPolicyVersion(r, matchedHostRule.AdvancedAuth.PolicyVersion)
+		if policy := snapshot.advancedAuth[host]; policy != nil {
+			diagnostics.RecordSubdomainRuleEvaluation()
+			if ruleMatch := policy.evaluate(r, clientIP); ruleMatch != nil {
+				diagnostics.RecordSubdomainRuleMatch()
+				ruleMatch.host = host
+				withAdvancedAuthRuleMatch(r, ruleMatch)
 			}
 		}
 	}
@@ -5625,6 +5689,7 @@ func (h *Handler) proxyToHostLocationTarget(w http.ResponseWriter, r *http.Reque
 		Rewrite: func(pr *httputil.ProxyRequest) {
 			applyForwardedHeaderPolicy(pr.Out, pr.In, clientIP, omitForwardedHeaders)
 			copyUserAgentHeader(pr.Out, pr.In)
+			stripAdvancedAuthGrantCookie(pr.Out.Header)
 			pr.SetURL(transportTargetURL)
 			applyBasicAuthInjection(pr.Out, matchedRule.BasicAuth)
 			applyUpstreamPrivateIPv4HintHeader(pr.Out, transportTargetURL)
@@ -5682,6 +5747,7 @@ func (h *Handler) proxyToHostLocationTarget(w http.ResponseWriter, r *http.Reque
 	}
 
 	proxy.ModifyResponse = func(resp *http.Response) error {
+		stripAdvancedAuthGrantSetCookies(resp.Header)
 		if isAuthHostProxy {
 			setCookies := resp.Header.Values("Set-Cookie")
 			if shouldDisableAuthResponseCaching(r.URL.Path) || len(setCookies) > 0 {
@@ -5799,6 +5865,7 @@ func (h *Handler) proxyToHostTarget(w http.ResponseWriter, r *http.Request, snap
 		Rewrite: func(pr *httputil.ProxyRequest) {
 			applyForwardedHeaderPolicy(pr.Out, pr.In, clientIP, omitForwardedHeaders)
 			copyUserAgentHeader(pr.Out, pr.In)
+			stripAdvancedAuthGrantCookie(pr.Out.Header)
 			pr.SetURL(transportTargetURL)
 			applyBasicAuthInjection(pr.Out, matchedRule.BasicAuth)
 			applyUpstreamPrivateIPv4HintHeader(pr.Out, transportTargetURL)
@@ -5843,6 +5910,7 @@ func (h *Handler) proxyToHostTarget(w http.ResponseWriter, r *http.Request, snap
 	}
 
 	proxy.ModifyResponse = func(resp *http.Response) error {
+		stripAdvancedAuthGrantSetCookies(resp.Header)
 		if isAuthHostProxy {
 			setCookies := resp.Header.Values("Set-Cookie")
 			if shouldDisableAuthResponseCaching(r.URL.Path) || len(setCookies) > 0 {
@@ -5946,6 +6014,7 @@ func (h *Handler) proxyToRuleTarget(w http.ResponseWriter, r *http.Request, snap
 		Rewrite: func(pr *httputil.ProxyRequest) {
 			applyForwardedHeaderPolicy(pr.Out, pr.In, clientIP, false)
 			copyUserAgentHeader(pr.Out, pr.In)
+			stripAdvancedAuthGrantCookie(pr.Out.Header)
 			pr.SetURL(transportTargetURL)
 			applyUpstreamPrivateIPv4HintHeader(pr.Out, transportTargetURL)
 			applyPreserveHostPolicy(pr.Out, pr.In, transportTargetURL, preserveHost)
@@ -6003,6 +6072,7 @@ func (h *Handler) proxyToRuleTarget(w http.ResponseWriter, r *http.Request, snap
 	}
 
 	proxy.ModifyResponse = func(resp *http.Response) error {
+		stripAdvancedAuthGrantSetCookies(resp.Header)
 		addProxyPathCookieIfChanged(resp, r, matchedRule.Path)
 		if err := h.maybeRewriteFnosPortIconHijackHTTPResponse(resp, snapshot.hostRules); err != nil {
 			return err
@@ -6869,13 +6939,18 @@ func (h *Handler) executeCombinedHTTPAuth(r *http.Request, authConfig models.Aut
 		ctx, cancel := context.WithTimeout(callRequest.Context(), 5*time.Second)
 		defer cancel()
 		response, err := bridge.AuthorizeHTTP(ctx, &pb.AuthorizeHttpRequest{
-			Context: requestAuth.proto(false),
-			Matched: isMatch,
-			Mode:    pb.HttpAuthMode_HTTP_AUTH_MODE_PREFLIGHT_AND_VERIFY,
+			Context:            requestAuth.proto(false),
+			Matched:            isMatch,
+			Mode:               pb.HttpAuthMode_HTTP_AUTH_MODE_PREFLIGHT_AND_VERIFY,
+			SubdomainRuleMatch: advancedAuthRuleMatchProto(callRequest),
 		})
 		if err != nil {
 			if err == rpcbridge.ErrAuthBridgeCapabilityUnsupported {
 				return combinedHTTPAuthExecution{}
+			}
+			if advancedAuthRuleMatchFromRequest(callRequest) != nil ||
+				strings.Contains(callRequest.Header.Get("Cookie"), advancedAuthGrantCookieName+"=") {
+				diagnostics.RecordSubdomainGrantStorageError()
 			}
 			cooldownUntil := time.Now().Add(preflightFailureCooldown).UnixNano()
 			h.preflightSkipUntilUnixNano.Store(cooldownUntil)
@@ -6905,7 +6980,8 @@ func (h *Handler) executeCombinedHTTPAuth(r *http.Request, authConfig models.Aut
 		return h.storeCombinedHTTPAuth(callRequest, authConfig, response, execution, preflightLookup, canPreflightLookup, authLookup, canAuthLookup)
 	}
 
-	useSingleflight := (canPreflightLookup && preflightCacheTTL(authConfig) > 0) || (canAuthLookup && authCacheEnabled(authConfig))
+	useSingleflight := advancedAuthRuleMatchFromRequest(r) == nil &&
+		((canPreflightLookup && preflightCacheTTL(authConfig) > 0) || (canAuthLookup && authCacheEnabled(authConfig)))
 	if !useSingleflight {
 		execution := run(r)
 		if !execution.handled {
@@ -6964,6 +7040,10 @@ func (h *Handler) performAuthCheck(r *http.Request, authConfig models.AuthConfig
 
 	bridge := h.authBridgeManager()
 	if bridge == nil {
+		if advancedAuthRuleMatchFromRequest(r) != nil ||
+			strings.Contains(r.Header.Get("Cookie"), advancedAuthGrantCookieName+"=") {
+			diagnostics.RecordSubdomainGrantStorageError()
+		}
 		log.Printf("Auth request failed: %v", rpcbridge.ErrAuthBridgeUnavailable)
 		return authCheckPlan{
 			result: authCheckResult{decision: "error"},
@@ -6983,8 +7063,9 @@ func (h *Handler) performAuthCheck(r *http.Request, authConfig models.AuthConfig
 	if supportsCombined {
 		var combined *pb.AuthorizeHttpResponse
 		combined, err = bridge.AuthorizeHTTP(ctx, &pb.AuthorizeHttpRequest{
-			Context: requestAuth.proto(false),
-			Mode:    pb.HttpAuthMode_HTTP_AUTH_MODE_VERIFY_ONLY,
+			Context:            requestAuth.proto(false),
+			Mode:               pb.HttpAuthMode_HTTP_AUTH_MODE_VERIFY_ONLY,
+			SubdomainRuleMatch: advancedAuthRuleMatchProto(r),
 		})
 		if err == nil {
 			resp = combined.GetVerify()
@@ -7000,6 +7081,10 @@ func (h *Handler) performAuthCheck(r *http.Request, authConfig models.AuthConfig
 		})
 	}
 	if err != nil {
+		if advancedAuthRuleMatchFromRequest(r) != nil ||
+			strings.Contains(r.Header.Get("Cookie"), advancedAuthGrantCookieName+"=") {
+			diagnostics.RecordSubdomainGrantStorageError()
+		}
 		if event := debugProxyEvent("auth_check_request_failed", requestID); event != nil {
 			event.Str("transport", "auth_bridge").
 				Str("error", logger.SanitizeLogString(err.Error())).
@@ -7036,14 +7121,26 @@ func (h *Handler) authCheckPlanFromResponse(r *http.Request, authConfig models.A
 	if resp.GetSuccess() {
 		subdomainAccessCustom, allowedSubdomainHosts := parseAllowedSubdomainHosts(responseHeaders)
 		credentialIdentity := parseAuthCredentialIdentity(responseHeaders)
+		isSubdomainRuleGrant := resp.GetGrantKind() == pb.AuthGrantKind_AUTH_GRANT_KIND_SUBDOMAIN_RULE
+		authenticated := true
+		decision := strings.TrimSpace(resp.GetDecision())
+		if isSubdomainRuleGrant {
+			authenticated = resp.GetLoginAuthenticated()
+			diagnostics.RecordSubdomainGrantState(resp.GetAuthGrantState())
+			if decision == "" {
+				decision = "subdomain_rule_allowed"
+			}
+		} else if decision == "" {
+			decision = "passed"
+		}
 		if event := debugProxyEvent("auth_check_end", requestID); event != nil {
 			event.Int("status", statusCode).
 				Bool("success", true).
-				Str("decision", "passed").
+				Str("decision", decision).
 				Str("credential_method", logger.SanitizeLogString(credentialIdentity.credentialMethod)).
 				Str("credential_id", logger.SanitizeLogString(credentialIdentity.credentialID)).
 				Str("linked_totp_id", logger.SanitizeLogString(credentialIdentity.linkedTOTPID)).
-				Bool("suppress_toolbar", resp.GetSuppressToolbar() || strings.EqualFold(responseHeaders.Get("X-Reauth-Access-Mode"), "fnos-share")).
+				Bool("suppress_toolbar", isSubdomainRuleGrant || resp.GetSuppressToolbar() || strings.EqualFold(responseHeaders.Get("X-Reauth-Access-Mode"), "fnos-share")).
 				Bool("subdomain_access_custom", subdomainAccessCustom).
 				Int("allowed_subdomain_hosts", len(allowedSubdomainHosts)).
 				Int("set_cookie_count", len(setCookies)).
@@ -7054,17 +7151,38 @@ func (h *Handler) authCheckPlanFromResponse(r *http.Request, authConfig models.A
 		return authCheckPlan{
 			result: authCheckResult{
 				allowed:               true,
-				authenticated:         true,
-				suppressToolbar:       resp.GetSuppressToolbar() || strings.EqualFold(responseHeaders.Get("X-Reauth-Access-Mode"), "fnos-share"),
-				decision:              "passed",
+				authenticated:         authenticated,
+				suppressToolbar:       isSubdomainRuleGrant || resp.GetSuppressToolbar() || strings.EqualFold(responseHeaders.Get("X-Reauth-Access-Mode"), "fnos-share"),
+				decision:              decision,
 				subdomainAccessCustom: subdomainAccessCustom,
 				allowedSubdomainHosts: allowedSubdomainHosts,
 				credentialIdentity:    credentialIdentity,
+				authRuleGroupID:       resp.GetAuthRuleGroupId(),
+				authGrantState:        resp.GetAuthGrantState(),
+				cacheMaxAgeSeconds:    resp.GetCacheMaxAgeSeconds(),
+			},
+			setCookies: setCookies,
+		}
+	}
+	// A temporary-grant issuance limiter is deliberately fail-closed. Preserve
+	// the bridge's 429 and Retry-After instead of converting it to a login
+	// redirect or the generic access-denied page.
+	if statusCode == http.StatusTooManyRequests {
+		diagnostics.RecordSubdomainGrantRateLimited()
+		retryAfter := strings.TrimSpace(responseHeaders.Get("Retry-After"))
+		return authCheckPlan{
+			result: authCheckResult{
+				decision:   "rate_limited",
+				statusCode: http.StatusTooManyRequests,
+				retryAfter: retryAfter,
 			},
 			setCookies: setCookies,
 		}
 	}
 	authMessage := strings.TrimSpace(resp.GetMessage())
+	if advancedAuthRuleMatchFromRequest(r) != nil {
+		diagnostics.RecordSubdomainGrantVersionRejected()
+	}
 	log.Printf("Auth failed: %s", authMessage)
 	accessDeniedReason := normalizeReauthAccessDeniedReason(resp.GetAccessDeniedReason())
 	if accessDeniedReason == "" {
@@ -7179,9 +7297,22 @@ func (h *Handler) applyAuthCheckPlan(w http.ResponseWriter, r *http.Request, pla
 		response.HTML(w, r, plan.errorPage.code, plan.errorPage.message, nil)
 		return plan.result
 	}
+	if plan.result.statusCode == http.StatusTooManyRequests {
+		applyNoStoreCacheHeaders(w.Header())
+		if retryAfter := strings.TrimSpace(plan.result.retryAfter); retryAfter != "" {
+			w.Header().Set("Retry-After", retryAfter)
+		}
+		http.Error(w, "Too Many Requests", http.StatusTooManyRequests)
+		return plan.result
+	}
 
 	if plan.result.allowed {
-		h.markLoggedInActive(r, clientIP, time.Now())
+		// A subdomain-rule grant is deliberately not a system login. Keep it
+		// out of the active-login tracker so logout, portal state, and any
+		// login-derived policy continue to see logged_in=false.
+		if plan.result.authenticated {
+			h.markLoggedInActive(r, clientIP, time.Now())
+		}
 		return plan.result
 	}
 

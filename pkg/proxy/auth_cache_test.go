@@ -216,6 +216,69 @@ func TestAuthCacheLookupKeysMatchCanonicalHashFields(t *testing.T) {
 	}
 }
 
+func TestAuthCacheLookupsUseEffectiveRoutingHost(t *testing.T) {
+	newRequest := func(host string, forwardedHost string) *http.Request {
+		request := httptest.NewRequest(http.MethodGet, "https://"+host+"/path?q=1", nil)
+		request.AddCookie(&http.Cookie{Name: authSessionCookieName, Value: "session-a"})
+		if forwardedHost != "" {
+			request.Header.Set("X-Forwarded-Host", forwardedHost)
+		}
+		return request
+	}
+
+	forwarded := newRequest("ingress.example.com", "APP.EXAMPLE.COM:443")
+	directTarget := newRequest("app.example.com", "")
+	directIngress := newRequest("ingress.example.com", "")
+
+	forwardedAuth, ok := buildAuthCacheLookup(forwarded, "198.51.100.10", "login_first")
+	if !ok {
+		t.Fatal("forwarded auth cache lookup was not buildable")
+	}
+	directTargetAuth, ok := buildAuthCacheLookup(directTarget, "198.51.100.10", "login_first")
+	if !ok {
+		t.Fatal("direct target auth cache lookup was not buildable")
+	}
+	directIngressAuth, ok := buildAuthCacheLookup(directIngress, "198.51.100.10", "login_first")
+	if !ok {
+		t.Fatal("direct ingress auth cache lookup was not buildable")
+	}
+	if forwardedAuth.cacheKey != directTargetAuth.cacheKey ||
+		forwardedAuth.hostCacheKey != directTargetAuth.hostCacheKey {
+		t.Fatalf("forwarded auth lookup did not use routing host: forwarded=%#v target=%#v", forwardedAuth, directTargetAuth)
+	}
+	if forwardedAuth.cacheKey == directIngressAuth.cacheKey ||
+		forwardedAuth.hostCacheKey == directIngressAuth.hostCacheKey {
+		t.Fatalf("forwarded auth lookup reused request Host dimension: forwarded=%#v ingress=%#v", forwardedAuth, directIngressAuth)
+	}
+
+	forwardedPreflight, ok := buildPreflightCacheLookup(forwarded, "198.51.100.10", "login_first", true)
+	if !ok {
+		t.Fatal("forwarded preflight cache lookup was not buildable")
+	}
+	directTargetPreflight, ok := buildPreflightCacheLookup(directTarget, "198.51.100.10", "login_first", true)
+	if !ok {
+		t.Fatal("direct target preflight cache lookup was not buildable")
+	}
+	directIngressPreflight, ok := buildPreflightCacheLookup(directIngress, "198.51.100.10", "login_first", true)
+	if !ok {
+		t.Fatal("direct ingress preflight cache lookup was not buildable")
+	}
+	if forwardedPreflight.cacheKey != directTargetPreflight.cacheKey {
+		t.Fatalf(
+			"forwarded preflight lookup did not use routing host: forwarded=%#v target=%#v",
+			forwardedPreflight,
+			directTargetPreflight,
+		)
+	}
+	if forwardedPreflight.cacheKey == directIngressPreflight.cacheKey {
+		t.Fatalf(
+			"forwarded preflight lookup reused request Host dimension: forwarded=%#v ingress=%#v",
+			forwardedPreflight,
+			directIngressPreflight,
+		)
+	}
+}
+
 func TestAppendURLRequestURIMatchesURLRequestURI(t *testing.T) {
 	tests := []*url.URL{
 		mustParseURLForTest("https://app.example.com/path?q=1"),

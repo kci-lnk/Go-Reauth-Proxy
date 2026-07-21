@@ -29,6 +29,7 @@ type counters struct {
 	grantIssued          atomic.Uint64
 	grantRenewed         atomic.Uint64
 	grantReused          atomic.Uint64
+	grantTransient       atomic.Uint64
 	grantVersionRejected atomic.Uint64
 	grantRateLimited     atomic.Uint64
 	grantStorageErrors   atomic.Uint64
@@ -134,6 +135,8 @@ func RecordSubdomainGrantState(state string) {
 		global.grantRenewed.Add(1)
 	case "reused":
 		global.grantReused.Add(1)
+	case "transient":
+		global.grantTransient.Add(1)
 	}
 }
 func RecordSubdomainGrantVersionRejected() {
@@ -185,6 +188,7 @@ type snapshot struct {
 		SubdomainGrantIssued          uint64 `json:"subdomain_grant_issued"`
 		SubdomainGrantRenewed         uint64 `json:"subdomain_grant_renewed"`
 		SubdomainGrantReused          uint64 `json:"subdomain_grant_reused"`
+		SubdomainGrantTransient       uint64 `json:"subdomain_grant_transient"`
 		SubdomainGrantVersionRejected uint64 `json:"subdomain_grant_version_rejected"`
 		SubdomainGrantRateLimited     uint64 `json:"subdomain_grant_rate_limited"`
 		SubdomainGrantStorageErrors   uint64 `json:"subdomain_grant_storage_errors"`
@@ -235,6 +239,7 @@ func Snapshot() any {
 	result.Auth.SubdomainGrantIssued = global.grantIssued.Load()
 	result.Auth.SubdomainGrantRenewed = global.grantRenewed.Load()
 	result.Auth.SubdomainGrantReused = global.grantReused.Load()
+	result.Auth.SubdomainGrantTransient = global.grantTransient.Load()
 	result.Auth.SubdomainGrantVersionRejected = global.grantVersionRejected.Load()
 	result.Auth.SubdomainGrantRateLimited = global.grantRateLimited.Load()
 	result.Auth.SubdomainGrantStorageErrors = global.grantStorageErrors.Load()

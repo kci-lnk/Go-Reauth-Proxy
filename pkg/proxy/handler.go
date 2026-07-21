@@ -801,25 +801,36 @@ func newRequestAuthContext(r *http.Request, clientIP string, accessMode string) 
 	if effectiveHost == "" {
 		effectiveHost = r.Host
 	}
+	context := &pb.AuthContext{
+		ClientIp:              clientIP,
+		ForwardedFor:          clientIP,
+		ForwardedHost:         effectiveHost,
+		ForwardedProto:        scheme,
+		ForwardedPath:         r.URL.RequestURI(),
+		Host:                  effectiveHost,
+		Scheme:                scheme,
+		Path:                  r.URL.Path,
+		RawQuery:              r.URL.RawQuery,
+		RequestUri:            r.URL.RequestURI(),
+		Cookie:                r.Header.Get("Cookie"),
+		Authorization:         r.Header.Get("Authorization"),
+		UserAgent:             r.Header.Get("User-Agent"),
+		AccessMode:            accessMode,
+		AccessToken:           r.Header.Get("AccessToken"),
+		AccessTokenHyphenated: r.Header.Get("Access-Token"),
+	}
+	if advancedAuthIsUpgradeRequest(r) {
+		// Combined authorization normally omits the legacy header map. Preserve
+		// only the Upgrade signal so Rust can authorize a matching handshake as
+		// a one-request grant without creating a cookie that a 101 response may
+		// never persist.
+		context.ExtraHeaders = []*pb.Header{{
+			Name:   "Upgrade",
+			Values: append([]string(nil), r.Header.Values("Upgrade")...),
+		}}
+	}
 	return &requestAuthContext{
-		context: &pb.AuthContext{
-			ClientIp:              clientIP,
-			ForwardedFor:          clientIP,
-			ForwardedHost:         effectiveHost,
-			ForwardedProto:        scheme,
-			ForwardedPath:         r.URL.RequestURI(),
-			Host:                  effectiveHost,
-			Scheme:                scheme,
-			Path:                  r.URL.Path,
-			RawQuery:              r.URL.RawQuery,
-			RequestUri:            r.URL.RequestURI(),
-			Cookie:                r.Header.Get("Cookie"),
-			Authorization:         r.Header.Get("Authorization"),
-			UserAgent:             r.Header.Get("User-Agent"),
-			AccessMode:            accessMode,
-			AccessToken:           r.Header.Get("AccessToken"),
-			AccessTokenHyphenated: r.Header.Get("Access-Token"),
-		},
+		context: context,
 		headers: r.Header,
 	}
 }

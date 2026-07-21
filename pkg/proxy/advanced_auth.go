@@ -135,9 +135,8 @@ func copyAdvancedAuthConfig(config models.AdvancedAuthConfig) models.AdvancedAut
 }
 
 type compiledAdvancedAuthGroup struct {
-	id               string
-	conditions       []compiledAdvancedAuthCondition
-	explicitlyAllows map[string]struct{}
+	id         string
+	conditions []compiledAdvancedAuthCondition
 }
 
 type compiledAdvancedAuthCondition struct {
@@ -526,9 +525,8 @@ func compileAdvancedAuthPolicy(config models.AdvancedAuthConfig) (*compiledAdvan
 	}
 	for _, group := range normalized.Groups {
 		compiledGroup := compiledAdvancedAuthGroup{
-			id:               group.ID,
-			conditions:       make([]compiledAdvancedAuthCondition, 0, len(group.Conditions)),
-			explicitlyAllows: make(map[string]struct{}),
+			id:         group.ID,
+			conditions: make([]compiledAdvancedAuthCondition, 0, len(group.Conditions)),
 		}
 		for _, condition := range group.Conditions {
 			compiled := compiledAdvancedAuthCondition{
@@ -541,9 +539,6 @@ func compileAdvancedAuthPolicy(config models.AdvancedAuthConfig) (*compiledAdvan
 				compiled.valueSet = make(map[string]struct{}, len(condition.Values))
 				for _, method := range condition.Values {
 					compiled.valueSet[method] = struct{}{}
-					if condition.Operator == "in" {
-						compiledGroup.explicitlyAllows[method] = struct{}{}
-					}
 				}
 			}
 			if len(condition.CIDRs) > 0 {
@@ -642,7 +637,7 @@ func (policy *compiledAdvancedAuthPolicy) evaluate(request *http.Request, client
 				break
 			}
 		}
-		if !matched || !advancedAuthCanInitiallyIssue(request, group) {
+		if !matched {
 			continue
 		}
 		return &advancedAuthRuleMatch{
@@ -653,27 +648,28 @@ func (policy *compiledAdvancedAuthPolicy) evaluate(request *http.Request, client
 	return nil
 }
 
-func advancedAuthCanInitiallyIssue(request *http.Request, group compiledAdvancedAuthGroup) bool {
-	if request == nil || advancedAuthIsUpgradeRequest(request) {
-		return false
-	}
-	method := strings.ToUpper(request.Method)
-	if method == http.MethodGet || method == http.MethodHead {
-		return true
-	}
-	_, allowed := group.explicitlyAllows[method]
-	return allowed
-}
-
 func advancedAuthIsUpgradeRequest(request *http.Request) bool {
 	if request == nil {
 		return false
 	}
+	connectionUpgrade := false
+	for _, raw := range request.Header.Values("Connection") {
+		for _, token := range strings.Split(raw, ",") {
+			if strings.EqualFold(strings.TrimSpace(token), "upgrade") {
+				connectionUpgrade = true
+				break
+			}
+		}
+	}
+	if !connectionUpgrade {
+		return false
+	}
 	for _, raw := range request.Header.Values("Upgrade") {
 		for _, token := range strings.Split(raw, ",") {
-			// Any Upgrade handshake is excluded from first issuance. Existing
-			// grants may still be used for WebSocket/other upgraded traffic, but
-			// a request with Upgrade must not create a new browser credential.
+			// Matching Upgrade handshakes are forwarded to the auth bridge as
+			// one-request grants. They must be identified even for protocols other
+			// than WebSocket so Rust never relies on a 101 response to persist a
+			// newly created browser credential.
 			if strings.TrimSpace(token) != "" {
 				return true
 			}

@@ -50,6 +50,20 @@ func TestObserveAuthBridgeQueueDepthTracksCurrentAndPeak(t *testing.T) {
 	}
 }
 
+func TestSubdomainGrantTransientStateIsObservable(t *testing.T) {
+	SetEnabled(true)
+	t.Cleanup(func() { SetEnabled(false) })
+	before := global.grantTransient.Load()
+	t.Cleanup(func() { global.grantTransient.Store(before) })
+
+	RecordSubdomainGrantState("transient")
+
+	got := Snapshot().(snapshot)
+	if got.Auth.SubdomainGrantTransient != before+1 {
+		t.Fatalf("transient grants = %d, want %d", got.Auth.SubdomainGrantTransient, before+1)
+	}
+}
+
 func TestDisabledDiagnosticsSkipHotPathCounters(t *testing.T) {
 	SetEnabled(false)
 	before := global.requestTotal.Load()

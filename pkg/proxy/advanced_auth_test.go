@@ -151,7 +151,7 @@ func TestAdvancedAuthSourceNetworkModesRejectAmbiguousInput(t *testing.T) {
 	}
 }
 
-func TestAdvancedAuthMethodAndWebSocketInitialIssueRestrictions(t *testing.T) {
+func TestAdvancedAuthMethodConditionsAndUpgradeAuthorization(t *testing.T) {
 	postPolicy := testAdvancedAuthPolicy(t, []models.AdvancedAuthGroup{{ID: "post", Conditions: []models.AdvancedAuthCondition{
 		{ID: "method", Target: "http_method", Operator: "in", Values: []string{"POST"}},
 	}}})
@@ -161,14 +161,90 @@ func TestAdvancedAuthMethodAndWebSocketInitialIssueRestrictions(t *testing.T) {
 			t.Fatalf("method %s evaluate() = %v, want %v", method, got, want)
 		}
 	}
-	getPolicy := testAdvancedAuthPolicy(t, []models.AdvancedAuthGroup{{ID: "path", Conditions: []models.AdvancedAuthCondition{
+	allMethodsPolicy := testAdvancedAuthPolicy(t, []models.AdvancedAuthGroup{{ID: "path", Conditions: []models.AdvancedAuthCondition{
 		{ID: "path", Target: "url_path", Operator: "prefix", Values: []string{"/"}},
 	}}})
+	for _, method := range []string{http.MethodGet, http.MethodHead, http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete} {
+		request := httptest.NewRequest(method, "https://app.example/", nil)
+		if got := allMethodsPolicy.evaluate(request, "192.0.2.1"); got == nil {
+			t.Fatalf("method %s without an HTTP method condition = nil, want path group", method)
+		}
+	}
 	for _, upgrade := range []string{"h2c, websocket", "h2c"} {
 		upgraded := httptest.NewRequest(http.MethodGet, "https://app.example/", nil)
 		upgraded.Header.Set("Upgrade", upgrade)
-		if got := getPolicy.evaluate(upgraded, "192.0.2.1"); got != nil {
-			t.Fatalf("Upgrade %q initial issue = %#v, want nil", upgrade, got)
+		upgraded.Header.Set("Connection", "keep-alive, Upgrade")
+		if got := allMethodsPolicy.evaluate(upgraded, "192.0.2.1"); got == nil {
+			t.Fatalf("Upgrade %q authorization match = nil, want path group", upgrade)
+		}
+	}
+}
+
+func TestCombinedRequestAuthContextCarriesOnlyUpgradeSignal(t *testing.T) {
+	request := httptest.NewRequest(http.MethodGet, "https://app.example/websocket", nil)
+	request.Header.Set("Upgrade", "websocket")
+	request.Header.Set("Connection", "Upgrade")
+	request.Header.Set("X-Unrelated", "must-not-be-forwarded")
+
+	context := newRequestAuthContext(request, "192.0.2.1", "login_first").proto(false)
+	if got := len(context.GetExtraHeaders()); got != 1 {
+		t.Fatalf("combined ExtraHeaders length = %d, want 1", got)
+	}
+	header := context.GetExtraHeaders()[0]
+	if header.GetName() != "Upgrade" || len(header.GetValues()) != 1 || header.GetValues()[0] != "websocket" {
+		t.Fatalf("combined Upgrade header = %#v", header)
+	}
+}
+
+func TestCombinedRequestAuthContextRejectsIncompleteUpgradeSignal(t *testing.T) {
+	request := httptest.NewRequest(http.MethodGet, "https://app.example/websocket", nil)
+	request.Header.Set("Upgrade", "websocket")
+
+	context := newRequestAuthContext(request, "192.0.2.1", "login_first").proto(false)
+	if got := len(context.GetExtraHeaders()); got != 0 {
+		t.Fatalf("incomplete Upgrade ExtraHeaders length = %d, want 0", got)
+	}
+}
+
+func TestAdvancedAuthUserAgentRuleMatchesTrimAppWebSocket(t *testing.T) {
+	policy := testAdvancedAuthPolicy(t, []models.AdvancedAuthGroup{{
+		ID: "trim-app",
+		Conditions: []models.AdvancedAuthCondition{{
+			ID:       "user-agent",
+			Target:   "request_header",
+			Operator: "contains",
+			Name:     "User-Agent",
+			Values:   []string{"com.trim.app.ios"},
+		}},
+	}})
+	request := httptest.NewRequest(http.MethodGet, "https://fn.example/websocket", nil)
+	request.Header.Set("User-Agent", "Dart/3.10 (dart:io), 1.32.3 (com.trim.app.ios; build:1323019; iOS 26.5.2) Flutter/3.10.9")
+	request.Header.Set("Upgrade", "websocket")
+	request.Header.Set("Connection", "Upgrade")
+
+	match := policy.evaluate(request, "2001:db8::1")
+	if match == nil || match.groupID != "trim-app" {
+		t.Fatalf("Trim App WebSocket match = %#v, want trim-app group", match)
+	}
+}
+
+func TestAdvancedAuthUserAgentRuleMatchesTrimAppMutationMethods(t *testing.T) {
+	policy := testAdvancedAuthPolicy(t, []models.AdvancedAuthGroup{{
+		ID: "trim-app",
+		Conditions: []models.AdvancedAuthCondition{{
+			ID:       "user-agent",
+			Target:   "request_header",
+			Operator: "contains",
+			Name:     "User-Agent",
+			Values:   []string{"com.trim.app.ios"},
+		}},
+	}})
+	for _, method := range []string{http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete} {
+		request := httptest.NewRequest(method, "https://fn.example/v/api/v1/item", nil)
+		request.Header.Set("User-Agent", "1.32.3 (com.trim.app.ios; build:1323019; iOS 26.5.2) Flutter/3.10.9")
+		match := policy.evaluate(request, "2001:db8::1")
+		if match == nil || match.groupID != "trim-app" {
+			t.Fatalf("Trim App %s match = %#v, want trim-app group", method, match)
 		}
 	}
 }

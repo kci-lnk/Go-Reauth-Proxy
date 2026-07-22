@@ -5,7 +5,9 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -13,15 +15,26 @@ import (
 )
 
 const (
-	upstreamPrivateIPv4HeaderName    = "X-Reauth-Upstream-Private-IPv4"
-	upstreamPrivateIPv4CacheTTL      = 30 * time.Second
-	upstreamPrivateIPv4LookupTimeout = 300 * time.Millisecond
+	upstreamPrivateIPv4HeaderName      = "X-Reauth-Upstream-Private-IPv4"
+	upstreamPrivateIPv4CIDRsHeaderName = "X-Reauth-Upstream-Private-IPv4-CIDRs"
+	upstreamDiscoveryProxyTokenHeader  = "X-Reauth-Upstream-Discovery-Proxy-Token"
+	upstreamDiscoveryProxyTokenEnv     = "FN_KNOCK_DISCOVERY_PROXY_TOKEN"
+	upstreamPrivateIPv4CacheTTL        = 30 * time.Second
+	upstreamPrivateIPv4LookupTimeout   = 300 * time.Millisecond
+	upstreamPrivateIPv4MaxCandidates   = 16
 )
 
 var (
 	privateIPv4Detector         = newPreferredPrivateIPv4Detector(upstreamPrivateIPv4CacheTTL, detectPreferredPrivateIPv4)
+	privateIPv4CIDRsDetector    = newPreferredPrivateIPv4Detector(upstreamPrivateIPv4CacheTTL, detectPrivateIPv4CIDRs)
 	hostnamePrivateIPv4Resolver = newCachedPrivateIPv4Resolver(upstreamPrivateIPv4CacheTTL, lookupHostnamePrivateIPv4)
 )
+
+type privateIPv4Candidate struct {
+	interfaceName string
+	address       string
+	prefix        int
+}
 
 type preferredPrivateIPv4Detector struct {
 	ttl        time.Duration
@@ -180,13 +193,24 @@ func applyUpstreamPrivateIPv4HintHeader(out *http.Request, targetURL *url.URL) {
 	if out == nil {
 		return
 	}
-
-	if hint := resolveUpstreamPrivateIPv4Hint(targetURL); hint != "" {
-		out.Header.Set(upstreamPrivateIPv4HeaderName, hint)
+	out.Header.Del(upstreamPrivateIPv4HeaderName)
+	out.Header.Del(upstreamPrivateIPv4CIDRsHeaderName)
+	out.Header.Del(upstreamDiscoveryProxyTokenHeader)
+	if targetURL == nil {
 		return
 	}
 
-	out.Header.Del(upstreamPrivateIPv4HeaderName)
+	if hint := resolveUpstreamPrivateIPv4Hint(targetURL); hint != "" {
+		out.Header.Set(upstreamPrivateIPv4HeaderName, hint)
+	}
+	if isLoopbackOrLocalHostname(normalizeUpstreamHostname(targetURL.Hostname())) {
+		if cidrs := privateIPv4CIDRsDetector.get(); cidrs != "" {
+			out.Header.Set(upstreamPrivateIPv4CIDRsHeaderName, cidrs)
+		}
+		if token := strings.TrimSpace(os.Getenv(upstreamDiscoveryProxyTokenEnv)); len(token) >= 32 {
+			out.Header.Set(upstreamDiscoveryProxyTokenHeader, token)
+		}
+	}
 }
 
 func resolveUpstreamPrivateIPv4Hint(targetURL *url.URL) string {
@@ -234,13 +258,31 @@ func normalizeUpstreamHostname(value string) string {
 }
 
 func detectPreferredPrivateIPv4() string {
+	candidates := listInterfacePrivateIPv4Candidates()
+	return detectPreferredPrivateIPv4FromCandidates(candidates)
+}
+
+func detectPreferredPrivateIPv4FromCandidates(candidates []privateIPv4Candidate) string {
 	for _, remoteAddr := range []string{"1.1.1.1:53", "8.8.8.8:53"} {
-		if ip := detectOutboundPrivateIPv4(remoteAddr); ip != "" {
+		ip := detectOutboundPrivateIPv4(remoteAddr)
+		if candidateContainsPrivateIPv4(candidates, ip) {
 			return ip
 		}
 	}
 
-	return detectInterfacePrivateIPv4()
+	if len(candidates) == 0 {
+		return ""
+	}
+	return candidates[0].address
+}
+
+func candidateContainsPrivateIPv4(candidates []privateIPv4Candidate, address string) bool {
+	for _, candidate := range candidates {
+		if candidate.address == address {
+			return true
+		}
+	}
+	return false
 }
 
 func detectOutboundPrivateIPv4(remoteAddr string) string {
@@ -263,18 +305,49 @@ func detectOutboundPrivateIPv4(remoteAddr string) string {
 	return ip
 }
 
-func detectInterfacePrivateIPv4() string {
+func detectPrivateIPv4CIDRs() string {
+	candidates := listInterfacePrivateIPv4Candidates()
+	return formatPrivateIPv4CIDRs(candidates, detectPreferredPrivateIPv4FromCandidates(candidates))
+}
+
+func formatPrivateIPv4CIDRs(candidates []privateIPv4Candidate, preferred string) string {
+	candidates = append([]privateIPv4Candidate(nil), candidates...)
+	sort.SliceStable(candidates, func(i, j int) bool {
+		leftPreferred := candidates[i].address == preferred
+		rightPreferred := candidates[j].address == preferred
+		if leftPreferred != rightPreferred {
+			return leftPreferred
+		}
+		if candidates[i].interfaceName != candidates[j].interfaceName {
+			return candidates[i].interfaceName < candidates[j].interfaceName
+		}
+		return candidates[i].address < candidates[j].address
+	})
+
+	values := make([]string, 0, len(candidates))
+	for _, candidate := range candidates {
+		values = append(values, candidate.address+"/"+strconv.Itoa(candidate.prefix))
+		if len(values) >= upstreamPrivateIPv4MaxCandidates {
+			break
+		}
+	}
+	return strings.Join(values, ",")
+}
+
+func listInterfacePrivateIPv4Candidates() []privateIPv4Candidate {
 	interfaces, err := net.Interfaces()
 	if err != nil {
-		return ""
+		return nil
 	}
 
 	sort.Slice(interfaces, func(i, j int) bool {
 		return interfaces[i].Name < interfaces[j].Name
 	})
 
+	seen := make(map[string]struct{})
+	candidates := make([]privateIPv4Candidate, 0)
 	for _, iface := range interfaces {
-		if shouldSkipPrivateIPv4Interface(iface.Name) {
+		if iface.Flags&net.FlagUp == 0 || iface.Flags&net.FlagLoopback != 0 || shouldSkipPrivateIPv4Interface(iface.Name) {
 			continue
 		}
 
@@ -285,9 +358,13 @@ func detectInterfacePrivateIPv4() string {
 
 		for _, addr := range addrs {
 			var ip net.IP
+			prefix := 24
 			switch value := addr.(type) {
 			case *net.IPNet:
 				ip = value.IP
+				if ones, bits := value.Mask.Size(); bits == 32 && ones >= 0 && ones <= 32 {
+					prefix = ones
+				}
 			case *net.IPAddr:
 				ip = value.IP
 			default:
@@ -295,13 +372,21 @@ func detectInterfacePrivateIPv4() string {
 			}
 
 			normalized := normalizeIPv4(ip)
-			if isUsablePrivateIPv4(normalized) {
-				return normalized
+			if !isUsablePrivateIPv4(normalized) {
+				continue
 			}
+			if _, ok := seen[normalized]; ok {
+				continue
+			}
+			seen[normalized] = struct{}{}
+			candidates = append(candidates, privateIPv4Candidate{
+				interfaceName: iface.Name,
+				address:       normalized,
+				prefix:        prefix,
+			})
 		}
 	}
-
-	return ""
+	return candidates
 }
 
 func shouldSkipPrivateIPv4Interface(name string) bool {
@@ -313,21 +398,48 @@ func shouldSkipPrivateIPv4Interface(name string) bool {
 	for _, prefix := range []string{
 		"lo",
 		"docker",
-		"br-",
 		"veth",
 		"tailscale",
 		"zt",
 		"tun",
 		"tap",
 		"wg",
+		"gre",
+		"ipip",
+		"sit",
+		"vxlan",
+		"genev",
+		"erspan",
+		"ip6tnl",
+		"ip6gre",
 		"vmnet",
 	} {
 		if strings.HasPrefix(normalized, prefix) {
 			return true
 		}
 	}
+	if isDockerGeneratedBridgeName(normalized) {
+		return true
+	}
 
 	return false
+}
+
+func isDockerGeneratedBridgeName(name string) bool {
+	normalized := strings.TrimSpace(strings.ToLower(name))
+	if !strings.HasPrefix(normalized, "br-") {
+		return false
+	}
+	suffix := strings.TrimPrefix(normalized, "br-")
+	if len(suffix) < 12 || len(suffix) > 64 {
+		return false
+	}
+	for _, char := range suffix {
+		if (char < '0' || char > '9') && (char < 'a' || char > 'f') {
+			return false
+		}
+	}
+	return true
 }
 
 func isLoopbackOrLocalHostname(value string) bool {

@@ -6026,6 +6026,7 @@ func (h *Handler) proxyToRuleTarget(w http.ResponseWriter, r *http.Request, snap
 			applyForwardedHeaderPolicy(pr.Out, pr.In, clientIP, false)
 			copyUserAgentHeader(pr.Out, pr.In)
 			stripAdvancedAuthGrantCookie(pr.Out.Header)
+			scopeDockerAdminPanelRequestCookie(pr.Out, matchedRule.Path)
 			pr.SetURL(transportTargetURL)
 			applyUpstreamPrivateIPv4HintHeader(pr.Out, transportTargetURL)
 			applyPreserveHostPolicy(pr.Out, pr.In, transportTargetURL, preserveHost)
@@ -6084,6 +6085,7 @@ func (h *Handler) proxyToRuleTarget(w http.ResponseWriter, r *http.Request, snap
 
 	proxy.ModifyResponse = func(resp *http.Response) error {
 		stripAdvancedAuthGrantSetCookies(resp.Header)
+		scopeDockerAdminPanelResponseCookie(resp, matchedRule.Path)
 		addProxyPathCookieIfChanged(resp, r, matchedRule.Path)
 		if err := h.maybeRewriteFnosPortIconHijackHTTPResponse(resp, snapshot.hostRules); err != nil {
 			return err

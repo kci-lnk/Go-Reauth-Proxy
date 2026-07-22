@@ -242,6 +242,44 @@ func TestResolveUpstreamPrivateIPv4HintUsesLoopbackDetector(t *testing.T) {
 	}
 }
 
+func TestApplyUpstreamPrivateIPv4HintHeaderAddsCompatibleCIDRListForLoopback(t *testing.T) {
+	oldDetector := privateIPv4Detector
+	oldCIDRsDetector := privateIPv4CIDRsDetector
+	privateIPv4Detector = newPreferredPrivateIPv4Detector(time.Hour, func() string { return "10.0.0.9" })
+	privateIPv4CIDRsDetector = newPreferredPrivateIPv4Detector(time.Hour, func() string {
+		return "10.0.0.9/24,192.168.1.9/24"
+	})
+	defer func() {
+		privateIPv4Detector = oldDetector
+		privateIPv4CIDRsDetector = oldCIDRsDetector
+	}()
+
+	target, _ := url.Parse("http://127.0.0.1:7991")
+	req, _ := http.NewRequest(http.MethodGet, "http://example.test", nil)
+	waitForPrivateIPv4Value(t, func() string {
+		applyUpstreamPrivateIPv4HintHeader(req, target)
+		return req.Header.Get(upstreamPrivateIPv4CIDRsHeaderName)
+	}, "10.0.0.9/24,192.168.1.9/24")
+	if got := req.Header.Get(upstreamPrivateIPv4HeaderName); got != "10.0.0.9" {
+		t.Fatalf("legacy hint = %q", got)
+	}
+}
+
+func TestFormatPrivateIPv4CIDRsRanksPreferredAndPreservesPrefixes(t *testing.T) {
+	candidates := []privateIPv4Candidate{
+		{interfaceName: "wlan0", address: "192.168.50.8", prefix: 24},
+		{interfaceName: "br-lan", address: "10.20.0.5", prefix: 23},
+		{interfaceName: "eth0", address: "172.16.1.9", prefix: 22},
+	}
+	got := formatPrivateIPv4CIDRs(candidates, "172.16.1.9")
+	if got != "172.16.1.9/22,10.20.0.5/23,192.168.50.8/24" {
+		t.Fatalf("CIDR list = %q", got)
+	}
+	if candidates[0].address != "192.168.50.8" {
+		t.Fatal("input candidates were mutated")
+	}
+}
+
 func TestResolveUpstreamPrivateIPv4HintUsesHostnameResolver(t *testing.T) {
 	oldResolver := hostnamePrivateIPv4Resolver
 	resolvedHost := make(chan string, 1)
@@ -375,9 +413,39 @@ func waitForPrivateIPv4Value(t *testing.T, get func() string, want string) {
 func TestApplyUpstreamPrivateIPv4HintHeaderDeletesStaleHint(t *testing.T) {
 	req, _ := http.NewRequest(http.MethodGet, "http://example.test", nil)
 	req.Header.Set(upstreamPrivateIPv4HeaderName, "10.0.0.1")
+	req.Header.Set(upstreamPrivateIPv4CIDRsHeaderName, "10.0.0.1/24")
+	req.Header.Set(upstreamDiscoveryProxyTokenHeader, "client-controlled-token-client-controlled")
 	applyUpstreamPrivateIPv4HintHeader(req, nil)
 	if got := req.Header.Get(upstreamPrivateIPv4HeaderName); got != "" {
 		t.Fatalf("stale hint header = %q", got)
+	}
+	if got := req.Header.Get(upstreamPrivateIPv4CIDRsHeaderName); got != "" {
+		t.Fatalf("stale CIDR hint header = %q", got)
+	}
+	if got := req.Header.Get(upstreamDiscoveryProxyTokenHeader); got != "" {
+		t.Fatalf("stale discovery proxy token = %q", got)
+	}
+}
+
+func TestApplyUpstreamPrivateIPv4HintHeaderUsesConfiguredDiscoveryProxyToken(t *testing.T) {
+	target, err := url.Parse("http://127.0.0.1:7991")
+	if err != nil {
+		t.Fatal(err)
+	}
+	req, _ := http.NewRequest(http.MethodGet, target.String(), nil)
+	req.Header.Set(upstreamDiscoveryProxyTokenHeader, "client-controlled-token-client-controlled")
+
+	t.Setenv(upstreamDiscoveryProxyTokenEnv, "too-short")
+	applyUpstreamPrivateIPv4HintHeader(req, target)
+	if got := req.Header.Get(upstreamDiscoveryProxyTokenHeader); got != "" {
+		t.Fatalf("short discovery proxy token was forwarded: %q", got)
+	}
+
+	const token = "0123456789abcdef0123456789abcdef"
+	t.Setenv(upstreamDiscoveryProxyTokenEnv, token)
+	applyUpstreamPrivateIPv4HintHeader(req, target)
+	if got := req.Header.Get(upstreamDiscoveryProxyTokenHeader); got != token {
+		t.Fatalf("discovery proxy token = %q, want configured token", got)
 	}
 }
 
@@ -390,6 +458,40 @@ func TestShouldSkipPrivateIPv4InterfaceSkipsDocker(t *testing.T) {
 func TestShouldSkipPrivateIPv4InterfaceKeepsEthernet(t *testing.T) {
 	if shouldSkipPrivateIPv4Interface("en0") {
 		t.Fatal("en0 should not be skipped")
+	}
+}
+
+func TestShouldSkipPrivateIPv4InterfaceKeepsOVSBridges(t *testing.T) {
+	for _, name := range []string{"br0", "br-lan", "ovs-system"} {
+		if shouldSkipPrivateIPv4Interface(name) {
+			t.Fatalf("OVS-capable interface %q should not be skipped", name)
+		}
+	}
+}
+
+func TestShouldSkipPrivateIPv4InterfaceSkipsDockerGeneratedBridge(t *testing.T) {
+	for _, name := range []string{"br-0123456789ab", "br-deadbeefcafe1234"} {
+		if !shouldSkipPrivateIPv4Interface(name) {
+			t.Fatalf("Docker-generated bridge %q was not skipped", name)
+		}
+	}
+}
+
+func TestShouldSkipPrivateIPv4InterfaceSkipsTunnelDevices(t *testing.T) {
+	for _, name := range []string{
+		"gre0",
+		"gretap0",
+		"ipip0",
+		"sit0",
+		"vxlan100",
+		"genev_sys_6081",
+		"erspan0",
+		"ip6tnl0",
+		"ip6gre0",
+	} {
+		if !shouldSkipPrivateIPv4Interface(name) {
+			t.Fatalf("tunnel interface %q was not skipped", name)
+		}
 	}
 }
 

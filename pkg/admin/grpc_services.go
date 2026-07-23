@@ -325,6 +325,27 @@ func (s *GRPCServer) SetGatewayPortalConfig(ctx context.Context, req *pb.Gateway
 	return gatewayPortalToProto(cfg), nil
 }
 
+func (s *GRPCServer) GetGatewayUnmatchedRouteConfig(ctx context.Context, _ *emptypb.Empty) (*pb.GatewayUnmatchedRouteConfig, error) {
+	if err := s.checkToken(ctx); err != nil {
+		return nil, err
+	}
+	return gatewayUnmatchedRouteToProto(s.admin.ProxyHandler.GetGatewayUnmatchedRouteConfig()), nil
+}
+
+func (s *GRPCServer) SetGatewayUnmatchedRouteConfig(ctx context.Context, req *pb.GatewayUnmatchedRouteConfig) (*pb.GatewayUnmatchedRouteConfig, error) {
+	if err := s.checkToken(ctx); err != nil {
+		return nil, err
+	}
+	if req == nil {
+		return nil, grpcBadRequest("request is required")
+	}
+	cfg, err := s.admin.ProxyHandler.SetGatewayUnmatchedRouteConfig(protoToGatewayUnmatchedRoute(req))
+	if err != nil {
+		return nil, grpcInternal("failed to set gateway unmatched route config: %v", err)
+	}
+	return gatewayUnmatchedRouteToProto(cfg), nil
+}
+
 func (s *GRPCServer) GetFnosPortIconHijackConfig(ctx context.Context, _ *emptypb.Empty) (*pb.FnosPortIconHijackConfig, error) {
 	if err := s.checkToken(ctx); err != nil {
 		return nil, err

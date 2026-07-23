@@ -22,29 +22,30 @@ const (
 )
 
 type AppConfig struct {
-	Rules                []models.Rule                     `json:"rules"`
-	HostRules            []models.HostRule                 `json:"host_rules,omitempty"`
-	StreamRules          []models.StreamRule               `json:"stream_rules,omitempty"`
-	DefaultRoute         string                            `json:"default_route"`
-	AuthConfig           models.AuthConfig                 `json:"auth_config"`
-	AdminPort            int                               `json:"admin_port,omitempty"`
-	ProxyProtocolForce   bool                              `json:"proxy_protocol_force,omitempty"`
-	GatewayListener      models.GatewayListenerConfig      `json:"gateway_listener,omitempty"`
-	ReverseProxyThrottle models.ReverseProxyThrottleConfig `json:"reverse_proxy_throttle,omitempty"`
-	Visibility           models.GatewayVisibilityConfig    `json:"visibility,omitempty"`
-	ForwardedHeaders     models.ForwardedHeadersConfig     `json:"forwarded_headers,omitempty"`
-	PreserveHost         models.PreserveHostConfig         `json:"preserve_host,omitempty"`
-	CrawlerBlocker       models.CrawlerBlockerConfig       `json:"crawler_blocker,omitempty"`
-	Portal               models.GatewayPortalConfig        `json:"portal,omitempty"`
-	FnosPortIconHijack   models.FnosPortIconHijackConfig   `json:"fnos_port_icon_hijack,omitempty"`
-	IptablesChainName    string                            `json:"iptables_chain_name,omitempty"`
-	Logging              models.LoggingConfig              `json:"logging,omitempty"`
-	GeneralBlacklist     models.GeneralBlacklistConfig     `json:"general_blacklist,omitempty"`
-	WAF                  models.WAFConfig                  `json:"waf,omitempty"`
-	Locale               models.LocaleConfig               `json:"locale,omitempty"`
-	SSL                  models.SSLConfig                  `json:"ssl,omitempty"`
-	SSLCert              string                            `json:"ssl_cert,omitempty"`
-	SSLKey               string                            `json:"ssl_key,omitempty"`
+	Rules                []models.Rule                      `json:"rules"`
+	HostRules            []models.HostRule                  `json:"host_rules,omitempty"`
+	StreamRules          []models.StreamRule                `json:"stream_rules,omitempty"`
+	DefaultRoute         string                             `json:"default_route"`
+	AuthConfig           models.AuthConfig                  `json:"auth_config"`
+	AdminPort            int                                `json:"admin_port,omitempty"`
+	ProxyProtocolForce   bool                               `json:"proxy_protocol_force,omitempty"`
+	GatewayListener      models.GatewayListenerConfig       `json:"gateway_listener,omitempty"`
+	ReverseProxyThrottle models.ReverseProxyThrottleConfig  `json:"reverse_proxy_throttle,omitempty"`
+	Visibility           models.GatewayVisibilityConfig     `json:"visibility,omitempty"`
+	ForwardedHeaders     models.ForwardedHeadersConfig      `json:"forwarded_headers,omitempty"`
+	PreserveHost         models.PreserveHostConfig          `json:"preserve_host,omitempty"`
+	CrawlerBlocker       models.CrawlerBlockerConfig        `json:"crawler_blocker,omitempty"`
+	Portal               models.GatewayPortalConfig         `json:"portal,omitempty"`
+	UnmatchedRoute       models.GatewayUnmatchedRouteConfig `json:"unmatched_route,omitempty"`
+	FnosPortIconHijack   models.FnosPortIconHijackConfig    `json:"fnos_port_icon_hijack,omitempty"`
+	IptablesChainName    string                             `json:"iptables_chain_name,omitempty"`
+	Logging              models.LoggingConfig               `json:"logging,omitempty"`
+	GeneralBlacklist     models.GeneralBlacklistConfig      `json:"general_blacklist,omitempty"`
+	WAF                  models.WAFConfig                   `json:"waf,omitempty"`
+	Locale               models.LocaleConfig                `json:"locale,omitempty"`
+	SSL                  models.SSLConfig                   `json:"ssl,omitempty"`
+	SSLCert              string                             `json:"ssl_cert,omitempty"`
+	SSLKey               string                             `json:"ssl_key,omitempty"`
 }
 
 type Manager struct {
@@ -122,6 +123,9 @@ func defaultConfig() *AppConfig {
 			DisplayStyle: models.GatewayPortalDisplayStyleDomain,
 			ShowAppIcon:  false,
 			IconDragMode: models.GatewayPortalIconDragModeCorners,
+		},
+		UnmatchedRoute: models.GatewayUnmatchedRouteConfig{
+			Behavior: models.GatewayUnmatchedRouteBehaviorErrorPage,
 		},
 		FnosPortIconHijack: models.FnosPortIconHijackConfig{
 			Enabled:   false,
@@ -256,6 +260,11 @@ func applyDefaults(cfg *AppConfig) bool {
 	normalizedPortal := models.NormalizeGatewayPortalConfig(cfg.Portal)
 	if cfg.Portal != normalizedPortal {
 		cfg.Portal = normalizedPortal
+		changed = true
+	}
+	normalizedUnmatchedRoute := models.NormalizeGatewayUnmatchedRouteConfig(cfg.UnmatchedRoute)
+	if cfg.UnmatchedRoute != normalizedUnmatchedRoute {
+		cfg.UnmatchedRoute = normalizedUnmatchedRoute
 		changed = true
 	}
 	normalizedLocale := i18n.NormalizeConfig(i18n.LocaleConfig{DefaultLocale: cfg.Locale.DefaultLocale})

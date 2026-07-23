@@ -456,7 +456,9 @@ func (m *Manager) Log(entry Entry) {
 func isLocalhostIPv4Entry(entry Entry) bool {
 	// Protocol mappings are data-plane traffic. Keep their access records even
 	// when the client connects through loopback (for example via a local tunnel).
-	if entry.RouteType == "stream_rule" {
+	// Unmatched-route resets are security-relevant and must remain observable
+	// during local diagnostics as well.
+	if entry.RouteType == "stream_rule" || entry.RouteType == "unmatched_route_blocked" {
 		return false
 	}
 	if remoteIP := strings.TrimSpace(entry.RemoteIP); remoteIP != "" {

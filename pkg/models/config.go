@@ -378,6 +378,22 @@ func NormalizeGatewayPortalConfig(cfg GatewayPortalConfig) GatewayPortalConfig {
 	return normalized
 }
 
+const (
+	GatewayUnmatchedRouteBehaviorErrorPage       = "error_page"
+	GatewayUnmatchedRouteBehaviorResetConnection = "reset_connection"
+)
+
+type GatewayUnmatchedRouteConfig struct {
+	Behavior string `json:"behavior,omitempty" example:"error_page"`
+}
+
+func NormalizeGatewayUnmatchedRouteConfig(cfg GatewayUnmatchedRouteConfig) GatewayUnmatchedRouteConfig {
+	if cfg.Behavior == GatewayUnmatchedRouteBehaviorResetConnection {
+		return GatewayUnmatchedRouteConfig{Behavior: GatewayUnmatchedRouteBehaviorResetConnection}
+	}
+	return GatewayUnmatchedRouteConfig{Behavior: GatewayUnmatchedRouteBehaviorErrorPage}
+}
+
 type FnosPortIconHijackConfig struct {
 	Enabled   bool   `json:"enabled,omitempty"`
 	UpdatedAt string `json:"updated_at,omitempty"`

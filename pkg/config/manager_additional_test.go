@@ -109,6 +109,45 @@ func TestManagerLoadAppliesMissingReverseProxyThrottleDefaults(t *testing.T) {
 	}
 }
 
+func TestManagerLoadNormalizesGatewayUnmatchedRouteBehavior(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		raw  string
+		want string
+	}{
+		{name: "missing", raw: `{}`, want: models.GatewayUnmatchedRouteBehaviorErrorPage},
+		{name: "invalid", raw: `{"unmatched_route":{"behavior":"drop"}}`, want: models.GatewayUnmatchedRouteBehaviorErrorPage},
+		{name: "reset", raw: `{"unmatched_route":{"behavior":"reset_connection"}}`, want: models.GatewayUnmatchedRouteBehaviorResetConnection},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := loadConfigFromJSON(t, tc.raw)
+			if got := cfg.UnmatchedRoute.Behavior; got != tc.want {
+				t.Fatalf("behavior = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestManagerPersistsGatewayUnmatchedRouteBehavior(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	manager := NewManager(path)
+	cfg, err := manager.Load()
+	if err != nil {
+		t.Fatalf("Load() returned error: %v", err)
+	}
+	cfg.UnmatchedRoute.Behavior = models.GatewayUnmatchedRouteBehaviorResetConnection
+	if err := manager.Save(cfg); err != nil {
+		t.Fatalf("Save() returned error: %v", err)
+	}
+	reloaded, err := manager.Load()
+	if err != nil {
+		t.Fatalf("reload returned error: %v", err)
+	}
+	if got := reloaded.UnmatchedRoute.Behavior; got != models.GatewayUnmatchedRouteBehaviorResetConnection {
+		t.Fatalf("reloaded behavior = %q, want reset_connection", got)
+	}
+}
+
 func TestManagerLoadPreservesExplicitDisabledReverseProxyThrottle(t *testing.T) {
 	cfg := loadConfigFromJSON(t, `{"reverse_proxy_throttle":{"enabled":false}}`)
 	if cfg.ReverseProxyThrottle.Enabled {

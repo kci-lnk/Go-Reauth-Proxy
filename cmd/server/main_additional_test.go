@@ -7,7 +7,9 @@ import (
 	"net/http"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 
 	"go-reauth-proxy/pkg/config"
 	"go-reauth-proxy/pkg/models"
@@ -176,6 +178,82 @@ func TestStartProxyServersBindsEphemeralLoopbackPort(t *testing.T) {
 	defer stop()
 	if !strings.Contains(addr, "127.0.0.1:") && !strings.Contains(addr, "[::1]:") {
 		t.Fatalf("listen addr = %q", addr)
+	}
+}
+
+func TestStartProxyServersResetsUnmatchedHTTP1Connection(t *testing.T) {
+	handler := newServerTestProxyHandler(t)
+	if _, err := handler.SetGatewayUnmatchedRouteConfig(models.GatewayUnmatchedRouteConfig{
+		Behavior: models.GatewayUnmatchedRouteBehaviorResetConnection,
+	}); err != nil {
+		t.Fatalf("SetGatewayUnmatchedRouteConfig() returned error: %v", err)
+	}
+	server := &http.Server{Handler: handler}
+	stop, addr, err := startProxyServers("127.0.0.1", 0, handler, server, &http.Server{})
+	if err != nil {
+		t.Fatalf("startProxyServers() returned error: %v", err)
+	}
+	defer stop()
+
+	conn, err := net.DialTimeout("tcp", firstProxyListenAddr(addr), 2*time.Second)
+	if err != nil {
+		t.Fatalf("dial proxy: %v", err)
+	}
+	defer conn.Close()
+	assertHTTP1ConnectionReset(t, conn)
+}
+
+func TestStartProxyServersResetsUnmatchedTLSHTTP1Connection(t *testing.T) {
+	handler := newServerTestProxyHandler(t)
+	if _, err := handler.SetGatewayUnmatchedRouteConfig(models.GatewayUnmatchedRouteConfig{
+		Behavior: models.GatewayUnmatchedRouteBehaviorResetConnection,
+	}); err != nil {
+		t.Fatalf("SetGatewayUnmatchedRouteConfig() returned error: %v", err)
+	}
+	certificate := newProtocolModeTestCertificate(t)
+	serverTLSConfig := &tls.Config{
+		Certificates: []tls.Certificate{certificate},
+		MinVersion:   tls.VersionTLS12,
+		NextProtos:   []string{"http/1.1"},
+	}
+	httpServer := &http.Server{Handler: handler}
+	httpsServer := &http.Server{Handler: handler, TLSConfig: serverTLSConfig}
+	stop, addr, err := startProxyServers("127.0.0.1", 0, handler, httpServer, httpsServer)
+	if err != nil {
+		t.Fatalf("startProxyServers() returned error: %v", err)
+	}
+	defer stop()
+
+	conn, err := tls.Dial("tcp", firstProxyListenAddr(addr), &tls.Config{
+		InsecureSkipVerify: true,
+		MinVersion:         tls.VersionTLS12,
+		NextProtos:         []string{"http/1.1"},
+	})
+	if err != nil {
+		t.Fatalf("dial TLS proxy: %v", err)
+	}
+	defer conn.Close()
+	if got := conn.ConnectionState().NegotiatedProtocol; got != "http/1.1" {
+		t.Fatalf("negotiated protocol = %q, want http/1.1", got)
+	}
+	assertHTTP1ConnectionReset(t, conn)
+}
+
+func firstProxyListenAddr(value string) string {
+	return strings.Split(value, ", ")[0]
+}
+
+func assertHTTP1ConnectionReset(t *testing.T, conn net.Conn) {
+	t.Helper()
+	if err := conn.SetDeadline(time.Now().Add(2 * time.Second)); err != nil {
+		t.Fatalf("set deadline: %v", err)
+	}
+	if _, err := conn.Write([]byte("GET /private HTTP/1.1\r\nHost: unknown.example.com\r\nConnection: keep-alive\r\n\r\n")); err != nil {
+		t.Fatalf("write request: %v", err)
+	}
+	buffer := make([]byte, 1)
+	if n, err := conn.Read(buffer); n != 0 || !errors.Is(err, syscall.ECONNRESET) {
+		t.Fatalf("read = (%d, %v), want (0, connection reset)", n, err)
 	}
 }
 

@@ -34,6 +34,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/soheilhy/cmux"
 	"golang.org/x/net/http/httpguts"
 
 	"github.com/rs/zerolog"
@@ -105,6 +106,7 @@ type Handler struct {
 	PreserveHost            models.PreserveHostConfig
 	CrawlerBlocker          models.CrawlerBlockerConfig
 	GatewayPortal           models.GatewayPortalConfig
+	GatewayUnmatchedRoute   models.GatewayUnmatchedRouteConfig
 	FnosPortIconHijack      models.FnosPortIconHijackConfig
 	GeneralBlacklist        models.GeneralBlacklistConfig
 	WAFConfig               models.WAFConfig
@@ -194,6 +196,7 @@ type requestSnapshot struct {
 	defaultRule        *models.Rule
 	authConfig         models.AuthConfig
 	gatewayPortal      models.GatewayPortalConfig
+	unmatchedRoute     models.GatewayUnmatchedRouteConfig
 	proxyProtocolForce bool
 }
 
@@ -413,6 +416,7 @@ func (h *Handler) buildRequestSnapshotLocked() *requestSnapshot {
 		defaultRule:        defaultRule,
 		authConfig:         h.AuthConfig,
 		gatewayPortal:      models.NormalizeGatewayPortalConfig(h.GatewayPortal),
+		unmatchedRoute:     models.NormalizeGatewayUnmatchedRouteConfig(h.GatewayUnmatchedRoute),
 		proxyProtocolForce: h.ProxyProtocolForce,
 	}
 }
@@ -1254,13 +1258,53 @@ func (h *Handler) abortConnection(w http.ResponseWriter) {
 	rc := http.NewResponseController(w)
 	conn, _, err := rc.Hijack()
 	if err == nil && conn != nil {
-		if tcpConn, ok := conn.(*net.TCPConn); ok {
+		if tcpConn := unwrapTCPConn(conn); tcpConn != nil {
 			_ = tcpConn.SetLinger(0)
+			_ = tcpConn.Close()
+			return
 		}
-		conn.Close()
+		_ = conn.Close()
 		return
 	}
 	panic(http.ErrAbortHandler)
+}
+
+type netConnUnwrapper interface {
+	NetConn() net.Conn
+}
+
+type rawConnUnwrapper interface {
+	Raw() net.Conn
+}
+
+func unwrapTCPConn(conn net.Conn) *net.TCPConn {
+	// Production HTTP/1 connections can be wrapped by TLS, cmux and the
+	// PROXY-protocol listener. Bound the walk so a faulty wrapper cannot loop.
+	for range 8 {
+		if conn == nil {
+			return nil
+		}
+		if tcpConn, ok := conn.(*net.TCPConn); ok {
+			return tcpConn
+		}
+
+		var next net.Conn
+		switch wrapped := conn.(type) {
+		case netConnUnwrapper:
+			next = wrapped.NetConn()
+		case *cmux.MuxConn:
+			next = wrapped.Conn
+		case rawConnUnwrapper:
+			next = wrapped.Raw()
+		default:
+			return nil
+		}
+		if next == nil || next == conn {
+			return nil
+		}
+		conn = next
+	}
+	return nil
 }
 
 func NewHandler(adminPort int, proxyPort int, cfgManager *config.Manager, initialCfg *config.AppConfig, logsDir string, systemEventClient *events.Client) *Handler {
@@ -1283,37 +1327,38 @@ func NewHandler(adminPort int, proxyPort int, cfgManager *config.Manager, initia
 	}
 
 	h := &Handler{
-		Rules:                initialCfg.Rules,
-		HostRules:            initialHostRules,
-		StreamRules:          initialCfg.StreamRules,
-		DefaultRoute:         initialCfg.DefaultRoute,
-		AuthConfig:           initialCfg.AuthConfig,
-		LoggingConfig:        logConfig,
-		AdminPort:            adminPort,
-		ProxyPort:            proxyPort,
-		ProxyProtocolForce:   initialCfg.ProxyProtocolForce,
-		GatewayListener:      initialCfg.GatewayListener,
-		ReverseProxyThrottle: normalizeReverseProxyThrottleConfig(initialCfg.ReverseProxyThrottle),
-		GatewayVisibility:    initialCfg.Visibility,
-		ForwardedHeaders:     normalizedForwardedHeaders,
-		PreserveHost:         normalizedPreserveHost,
-		CrawlerBlocker:       normalizeCrawlerBlockerConfig(initialCfg.CrawlerBlocker),
-		GatewayPortal:        models.NormalizeGatewayPortalConfig(initialCfg.Portal),
-		FnosPortIconHijack:   initialCfg.FnosPortIconHijack,
-		GeneralBlacklist:     models.GeneralBlacklistConfig{Items: []models.GeneralBlacklistRecord{}},
-		WAFConfig:            wafConfig,
-		configManager:        cfgManager,
-		sslConfig:            copySSLConfig(initialCfg.SSL),
-		gatewayLogManager:    gatewaylog.NewManager(logsDir, logConfig),
-		fnAppMockService:     newFNAppMockServiceFromEnv(),
-		proxyTransport:       newProxyTransport(),
-		authCache:            newAuthStateCache(),
-		preflightCache:       newPreflightStateCache(),
-		generalBlacklist:     newGeneralBlacklistRuntime(initialCfg.GeneralBlacklist),
-		forwardedHeaders:     newForwardedHeadersConfig(normalizedForwardedHeaders),
-		preserveHost:         newPreserveHostConfig(normalizedPreserveHost),
-		wafRuntime:           wafRuntime,
-		systemEventClient:    systemEventClient,
+		Rules:                 initialCfg.Rules,
+		HostRules:             initialHostRules,
+		StreamRules:           initialCfg.StreamRules,
+		DefaultRoute:          initialCfg.DefaultRoute,
+		AuthConfig:            initialCfg.AuthConfig,
+		LoggingConfig:         logConfig,
+		AdminPort:             adminPort,
+		ProxyPort:             proxyPort,
+		ProxyProtocolForce:    initialCfg.ProxyProtocolForce,
+		GatewayListener:       initialCfg.GatewayListener,
+		ReverseProxyThrottle:  normalizeReverseProxyThrottleConfig(initialCfg.ReverseProxyThrottle),
+		GatewayVisibility:     initialCfg.Visibility,
+		ForwardedHeaders:      normalizedForwardedHeaders,
+		PreserveHost:          normalizedPreserveHost,
+		CrawlerBlocker:        normalizeCrawlerBlockerConfig(initialCfg.CrawlerBlocker),
+		GatewayPortal:         models.NormalizeGatewayPortalConfig(initialCfg.Portal),
+		GatewayUnmatchedRoute: models.NormalizeGatewayUnmatchedRouteConfig(initialCfg.UnmatchedRoute),
+		FnosPortIconHijack:    initialCfg.FnosPortIconHijack,
+		GeneralBlacklist:      models.GeneralBlacklistConfig{Items: []models.GeneralBlacklistRecord{}},
+		WAFConfig:             wafConfig,
+		configManager:         cfgManager,
+		sslConfig:             copySSLConfig(initialCfg.SSL),
+		gatewayLogManager:     gatewaylog.NewManager(logsDir, logConfig),
+		fnAppMockService:      newFNAppMockServiceFromEnv(),
+		proxyTransport:        newProxyTransport(),
+		authCache:             newAuthStateCache(),
+		preflightCache:        newPreflightStateCache(),
+		generalBlacklist:      newGeneralBlacklistRuntime(initialCfg.GeneralBlacklist),
+		forwardedHeaders:      newForwardedHeadersConfig(normalizedForwardedHeaders),
+		preserveHost:          newPreserveHostConfig(normalizedPreserveHost),
+		wafRuntime:            wafRuntime,
+		systemEventClient:     systemEventClient,
 	}
 	h.GeneralBlacklist = h.generalBlacklist.getConfig()
 	if models.NormalizeGatewayListenerScope(h.GatewayListener.Scope) == "" {
@@ -1479,6 +1524,7 @@ func (h *Handler) saveConfigLocked() error {
 		conf.PreserveHost = h.PreserveHost
 		conf.CrawlerBlocker = h.CrawlerBlocker
 		conf.Portal = h.GatewayPortal
+		conf.UnmatchedRoute = h.GatewayUnmatchedRoute
 		conf.FnosPortIconHijack = h.FnosPortIconHijack
 		conf.GeneralBlacklist = h.GeneralBlacklist
 		conf.WAF = h.WAFConfig
@@ -1585,6 +1631,7 @@ func (h *Handler) ResetAllData(resetConfig *config.AppConfig) error {
 	h.PreserveHost = preserveHost
 	h.CrawlerBlocker = resetConfig.CrawlerBlocker
 	h.GatewayPortal = models.NormalizeGatewayPortalConfig(resetConfig.Portal)
+	h.GatewayUnmatchedRoute = models.NormalizeGatewayUnmatchedRouteConfig(resetConfig.UnmatchedRoute)
 	h.FnosPortIconHijack = resetConfig.FnosPortIconHijack
 	h.GeneralBlacklist = generalBlacklist.getConfig()
 	h.WAFConfig = wafConfig
@@ -3633,6 +3680,35 @@ func (h *Handler) SetGatewayPortalConfig(cfg models.GatewayPortalConfig) (models
 	return normalized, nil
 }
 
+func (h *Handler) GetGatewayUnmatchedRouteConfig() models.GatewayUnmatchedRouteConfig {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	return models.NormalizeGatewayUnmatchedRouteConfig(h.GatewayUnmatchedRoute)
+}
+
+func (h *Handler) SetGatewayUnmatchedRouteConfig(cfg models.GatewayUnmatchedRouteConfig) (models.GatewayUnmatchedRouteConfig, error) {
+	normalized := models.NormalizeGatewayUnmatchedRouteConfig(cfg)
+
+	h.mu.Lock()
+	previous := h.GatewayUnmatchedRoute
+	h.GatewayUnmatchedRoute = normalized
+	h.publishRequestSnapshotLocked()
+	saveErr := h.saveConfigLocked()
+	if saveErr != nil {
+		h.GatewayUnmatchedRoute = previous
+		h.publishRequestSnapshotLocked()
+	}
+	h.mu.Unlock()
+	if saveErr != nil {
+		return normalized, saveErr
+	}
+	if event := debugProxyEvent("gateway_unmatched_route_config_set", ""); event != nil {
+		event.Str("behavior", normalized.Behavior).Send()
+	}
+
+	return normalized, nil
+}
+
 func (h *Handler) SetFnosPortIconHijackConfig(cfg models.FnosPortIconHijackConfig) (models.FnosPortIconHijackConfig, error) {
 	normalized := models.FnosPortIconHijackConfig{
 		Enabled:   cfg.Enabled,
@@ -4878,7 +4954,9 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		needsSlashRedirect = ""
 	}
 
-	if matchedRule == nil && needsSlashRedirect == "" && matchedHostRule == nil && !isSelectRoute && !isAuthRoute {
+	resetUnmatchedConnection := snapshot.unmatchedRoute.Behavior ==
+		models.GatewayUnmatchedRouteBehaviorResetConnection
+	if !resetUnmatchedConnection && matchedRule == nil && needsSlashRedirect == "" && matchedHostRule == nil && !isSelectRoute && !isAuthRoute {
 		defaultHostRule := snapshot.defaultHostRule
 		if defaultHostRule != nil && !hostRuleAvailableNow(defaultHostRule, start) {
 			defaultHostRule = nil
@@ -4905,6 +4983,21 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	if matchedRule == nil && snapshot.defaultRule != nil {
 		matchedRule = snapshot.defaultRule
+	}
+	if resetUnmatchedConnection && matchedRule == nil && needsSlashRedirect == "" &&
+		matchedHostRule == nil && !isSelectRoute && !isAuthRoute {
+		accessEntry.RouteType = "unmatched_route_blocked"
+		accessEntry.RouteKey = requestHostForRouting(r)
+		accessEntry.AuthDecision = "connection_reset"
+		accessEntry.Matched = false
+		loggedStatusCode = 499
+		if event := debugProxyEvent("unmatched_route_blocked", requestID); event != nil {
+			event.Str("host", logger.SanitizeLogString(accessEntry.RouteKey)).
+				Str("path", logger.SanitizeLogString(r.URL.Path)).
+				Send()
+		}
+		h.abortConnection(w)
+		return
 	}
 	if event := debugProxyEvent("route_match_evaluated", requestID); event != nil {
 		event.Bool("select_route", isSelectRoute).

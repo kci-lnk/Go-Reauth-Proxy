@@ -267,6 +267,45 @@ func TestGatewayControlGatewayPortalRoundTrip(t *testing.T) {
 	}
 }
 
+func TestGatewayControlGatewayUnmatchedRouteRoundTrip(t *testing.T) {
+	server := newGatewayControlTestServer(t, "secret")
+	ctx := authTestContext()
+	got, err := server.SetGatewayUnmatchedRouteConfig(ctx, &pb.GatewayUnmatchedRouteConfig{
+		Behavior: models.GatewayUnmatchedRouteBehaviorResetConnection,
+	})
+	if err != nil {
+		t.Fatalf("SetGatewayUnmatchedRouteConfig() returned error: %v", err)
+	}
+	if got.GetBehavior() != models.GatewayUnmatchedRouteBehaviorResetConnection {
+		t.Fatalf("set response = %#v", got)
+	}
+	reloaded, err := server.GetGatewayUnmatchedRouteConfig(ctx, &emptypb.Empty{})
+	if err != nil {
+		t.Fatalf("GetGatewayUnmatchedRouteConfig() returned error: %v", err)
+	}
+	if reloaded.GetBehavior() != models.GatewayUnmatchedRouteBehaviorResetConnection {
+		t.Fatalf("get response = %#v", reloaded)
+	}
+
+	normalized, err := server.SetGatewayUnmatchedRouteConfig(ctx, &pb.GatewayUnmatchedRouteConfig{
+		Behavior: "invalid",
+	})
+	if err != nil {
+		t.Fatalf("invalid-value SetGatewayUnmatchedRouteConfig() returned error: %v", err)
+	}
+	if normalized.GetBehavior() != models.GatewayUnmatchedRouteBehaviorErrorPage {
+		t.Fatalf("invalid behavior normalized to %q", normalized.GetBehavior())
+	}
+}
+
+func TestGatewayControlSetGatewayUnmatchedRouteRejectsNilRequest(t *testing.T) {
+	server := newGatewayControlTestServer(t, "secret")
+	_, err := server.SetGatewayUnmatchedRouteConfig(authTestContext(), nil)
+	if status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("status = %v, want invalid argument", status.Code(err))
+	}
+}
+
 func TestGatewayControlFnosPortIconHijackRoundTrip(t *testing.T) {
 	server := newGatewayControlTestServer(t, "secret")
 	got, err := server.SetFnosPortIconHijackConfig(authTestContext(), &pb.FnosPortIconHijackConfig{Enabled: true, UpdatedAt: "now"})

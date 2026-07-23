@@ -54,6 +54,8 @@ const (
 	GatewayControlService_SetCrawlerBlockerConfig_FullMethodName          = "/fnknock.v1.GatewayControlService/SetCrawlerBlockerConfig"
 	GatewayControlService_GetGatewayPortalConfig_FullMethodName           = "/fnknock.v1.GatewayControlService/GetGatewayPortalConfig"
 	GatewayControlService_SetGatewayPortalConfig_FullMethodName           = "/fnknock.v1.GatewayControlService/SetGatewayPortalConfig"
+	GatewayControlService_GetGatewayUnmatchedRouteConfig_FullMethodName   = "/fnknock.v1.GatewayControlService/GetGatewayUnmatchedRouteConfig"
+	GatewayControlService_SetGatewayUnmatchedRouteConfig_FullMethodName   = "/fnknock.v1.GatewayControlService/SetGatewayUnmatchedRouteConfig"
 	GatewayControlService_GetFnosPortIconHijackConfig_FullMethodName      = "/fnknock.v1.GatewayControlService/GetFnosPortIconHijackConfig"
 	GatewayControlService_SetFnosPortIconHijackConfig_FullMethodName      = "/fnknock.v1.GatewayControlService/SetFnosPortIconHijackConfig"
 	GatewayControlService_GetReverseProxyThrottleExemptIps_FullMethodName = "/fnknock.v1.GatewayControlService/GetReverseProxyThrottleExemptIps"
@@ -104,6 +106,8 @@ type GatewayControlServiceClient interface {
 	SetCrawlerBlockerConfig(ctx context.Context, in *CrawlerBlockerConfig, opts ...grpc.CallOption) (*CrawlerBlockerConfig, error)
 	GetGatewayPortalConfig(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*GatewayPortalConfig, error)
 	SetGatewayPortalConfig(ctx context.Context, in *GatewayPortalConfig, opts ...grpc.CallOption) (*GatewayPortalConfig, error)
+	GetGatewayUnmatchedRouteConfig(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*GatewayUnmatchedRouteConfig, error)
+	SetGatewayUnmatchedRouteConfig(ctx context.Context, in *GatewayUnmatchedRouteConfig, opts ...grpc.CallOption) (*GatewayUnmatchedRouteConfig, error)
 	GetFnosPortIconHijackConfig(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*FnosPortIconHijackConfig, error)
 	SetFnosPortIconHijackConfig(ctx context.Context, in *FnosPortIconHijackConfig, opts ...grpc.CallOption) (*FnosPortIconHijackConfig, error)
 	GetReverseProxyThrottleExemptIps(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*ReverseProxyThrottleExemptIpsRuntime, error)
@@ -460,6 +464,26 @@ func (c *gatewayControlServiceClient) SetGatewayPortalConfig(ctx context.Context
 	return out, nil
 }
 
+func (c *gatewayControlServiceClient) GetGatewayUnmatchedRouteConfig(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*GatewayUnmatchedRouteConfig, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GatewayUnmatchedRouteConfig)
+	err := c.cc.Invoke(ctx, GatewayControlService_GetGatewayUnmatchedRouteConfig_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *gatewayControlServiceClient) SetGatewayUnmatchedRouteConfig(ctx context.Context, in *GatewayUnmatchedRouteConfig, opts ...grpc.CallOption) (*GatewayUnmatchedRouteConfig, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GatewayUnmatchedRouteConfig)
+	err := c.cc.Invoke(ctx, GatewayControlService_SetGatewayUnmatchedRouteConfig_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *gatewayControlServiceClient) GetFnosPortIconHijackConfig(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*FnosPortIconHijackConfig, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(FnosPortIconHijackConfig)
@@ -562,6 +586,8 @@ type GatewayControlServiceServer interface {
 	SetCrawlerBlockerConfig(context.Context, *CrawlerBlockerConfig) (*CrawlerBlockerConfig, error)
 	GetGatewayPortalConfig(context.Context, *emptypb.Empty) (*GatewayPortalConfig, error)
 	SetGatewayPortalConfig(context.Context, *GatewayPortalConfig) (*GatewayPortalConfig, error)
+	GetGatewayUnmatchedRouteConfig(context.Context, *emptypb.Empty) (*GatewayUnmatchedRouteConfig, error)
+	SetGatewayUnmatchedRouteConfig(context.Context, *GatewayUnmatchedRouteConfig) (*GatewayUnmatchedRouteConfig, error)
 	GetFnosPortIconHijackConfig(context.Context, *emptypb.Empty) (*FnosPortIconHijackConfig, error)
 	SetFnosPortIconHijackConfig(context.Context, *FnosPortIconHijackConfig) (*FnosPortIconHijackConfig, error)
 	GetReverseProxyThrottleExemptIps(context.Context, *emptypb.Empty) (*ReverseProxyThrottleExemptIpsRuntime, error)
@@ -679,6 +705,12 @@ func (UnimplementedGatewayControlServiceServer) GetGatewayPortalConfig(context.C
 }
 func (UnimplementedGatewayControlServiceServer) SetGatewayPortalConfig(context.Context, *GatewayPortalConfig) (*GatewayPortalConfig, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method SetGatewayPortalConfig not implemented")
+}
+func (UnimplementedGatewayControlServiceServer) GetGatewayUnmatchedRouteConfig(context.Context, *emptypb.Empty) (*GatewayUnmatchedRouteConfig, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method GetGatewayUnmatchedRouteConfig not implemented")
+}
+func (UnimplementedGatewayControlServiceServer) SetGatewayUnmatchedRouteConfig(context.Context, *GatewayUnmatchedRouteConfig) (*GatewayUnmatchedRouteConfig, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method SetGatewayUnmatchedRouteConfig not implemented")
 }
 func (UnimplementedGatewayControlServiceServer) GetFnosPortIconHijackConfig(context.Context, *emptypb.Empty) (*FnosPortIconHijackConfig, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method GetFnosPortIconHijackConfig not implemented")
@@ -1331,6 +1363,42 @@ func _GatewayControlService_SetGatewayPortalConfig_Handler(srv interface{}, ctx 
 	return interceptor(ctx, in, info, handler)
 }
 
+func _GatewayControlService_GetGatewayUnmatchedRouteConfig_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(emptypb.Empty)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(GatewayControlServiceServer).GetGatewayUnmatchedRouteConfig(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: GatewayControlService_GetGatewayUnmatchedRouteConfig_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(GatewayControlServiceServer).GetGatewayUnmatchedRouteConfig(ctx, req.(*emptypb.Empty))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _GatewayControlService_SetGatewayUnmatchedRouteConfig_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GatewayUnmatchedRouteConfig)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(GatewayControlServiceServer).SetGatewayUnmatchedRouteConfig(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: GatewayControlService_SetGatewayUnmatchedRouteConfig_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(GatewayControlServiceServer).SetGatewayUnmatchedRouteConfig(ctx, req.(*GatewayUnmatchedRouteConfig))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _GatewayControlService_GetFnosPortIconHijackConfig_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(emptypb.Empty)
 	if err := dec(in); err != nil {
@@ -1581,6 +1649,14 @@ var GatewayControlService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "SetGatewayPortalConfig",
 			Handler:    _GatewayControlService_SetGatewayPortalConfig_Handler,
+		},
+		{
+			MethodName: "GetGatewayUnmatchedRouteConfig",
+			Handler:    _GatewayControlService_GetGatewayUnmatchedRouteConfig_Handler,
+		},
+		{
+			MethodName: "SetGatewayUnmatchedRouteConfig",
+			Handler:    _GatewayControlService_SetGatewayUnmatchedRouteConfig_Handler,
 		},
 		{
 			MethodName: "GetFnosPortIconHijackConfig",

@@ -215,7 +215,7 @@ const toolbarTemplate = `
         }
         .menu-item {
             padding: 10px 16px;
-            color: #4b5563;
+            color: #374151;
             text-decoration: none;
             font-size: 14px;
             border-bottom: 1px solid #f3f4f6;

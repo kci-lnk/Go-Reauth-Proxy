@@ -41,7 +41,7 @@ import (
 )
 
 const (
-	proxyCopyBufferSize      = 32 * 1024
+	proxyCopyBufferSize      = 256 * 1024
 	trafficCounterFlushBytes = 1024 * 1024
 )
 
@@ -5455,7 +5455,7 @@ func (h *Handler) handleAuthProxyRoute(w http.ResponseWriter, r *http.Request, s
 		return nil
 	}
 
-	proxy.ServeHTTP(w, r)
+	serveReverseProxyWithResponseCoalescing(proxy, w, r)
 	return true
 }
 
@@ -5922,7 +5922,7 @@ func (h *Handler) proxyToHostLocationTarget(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	proxy.ServeHTTP(w, r)
+	serveReverseProxyWithResponseCoalescing(proxy, w, r)
 }
 
 func (h *Handler) proxyToHostTarget(w http.ResponseWriter, r *http.Request, snapshot requestSnapshot, matchedRule models.HostRule, clientIP string, authResult authCheckResult, requestID string) {
@@ -6073,7 +6073,7 @@ func (h *Handler) proxyToHostTarget(w http.ResponseWriter, r *http.Request, snap
 		return
 	}
 
-	proxy.ServeHTTP(w, r)
+	serveReverseProxyWithResponseCoalescing(proxy, w, r)
 }
 
 func (h *Handler) proxyToRuleTarget(w http.ResponseWriter, r *http.Request, snapshot requestSnapshot, matchedRule models.Rule, clientIP string, authResult authCheckResult, requestID string) {
@@ -6234,7 +6234,7 @@ func (h *Handler) proxyToRuleTarget(w http.ResponseWriter, r *http.Request, snap
 		return
 	}
 
-	proxy.ServeHTTP(w, r)
+	serveReverseProxyWithResponseCoalescing(proxy, w, r)
 }
 
 var (

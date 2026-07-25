@@ -288,6 +288,8 @@ func (s *Server) handleAddHostRule(w http.ResponseWriter, r *http.Request) {
 		Host            string                       `json:"host"`
 		Target          string                       `json:"target"`
 		ProtocolMode    string                       `json:"protocol_mode"`
+		GroupID         *string                      `json:"group_id"`
+		GroupName       *string                      `json:"group_name"`
 		UseAuth         *bool                        `json:"use_auth"`
 		AccessMode      string                       `json:"access_mode"`
 		SuppressToolbar *bool                        `json:"suppress_toolbar"`
@@ -332,18 +334,31 @@ func (s *Server) handleAddHostRule(w http.ResponseWriter, r *http.Request) {
 		}
 
 		rules = append(rules, models.HostRule{
-			Host:            req.Host,
-			Target:          req.Target,
-			ProtocolMode:    req.ProtocolMode,
-			UseAuth:         req.UseAuth == nil || *req.UseAuth,
-			AccessMode:      req.AccessMode,
-			SuppressToolbar: req.SuppressToolbar != nil && *req.SuppressToolbar,
-			PreserveHost:    req.PreserveHost == nil || *req.PreserveHost,
-			IsDefault:       req.IsDefault,
-			Disabled:        req.Disabled != nil && *req.Disabled,
-			Availability:    req.Availability,
-			Visibility:      req.Visibility,
-			Title:           req.Title,
+			Host:         req.Host,
+			Target:       req.Target,
+			ProtocolMode: req.ProtocolMode,
+			GroupID: func() string {
+				if req.GroupID == nil {
+					return ""
+				}
+				return *req.GroupID
+			}(),
+			GroupName: func() string {
+				if req.GroupName == nil {
+					return ""
+				}
+				return *req.GroupName
+			}(),
+			GroupMetadataSet: req.GroupID != nil || req.GroupName != nil,
+			UseAuth:          req.UseAuth == nil || *req.UseAuth,
+			AccessMode:       req.AccessMode,
+			SuppressToolbar:  req.SuppressToolbar != nil && *req.SuppressToolbar,
+			PreserveHost:     req.PreserveHost == nil || *req.PreserveHost,
+			IsDefault:        req.IsDefault,
+			Disabled:         req.Disabled != nil && *req.Disabled,
+			Availability:     req.Availability,
+			Visibility:       req.Visibility,
+			Title:            req.Title,
 			Favicon: func() string {
 				if req.Favicon == nil {
 					return ""

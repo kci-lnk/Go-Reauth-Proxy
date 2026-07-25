@@ -253,3 +253,34 @@ func TestSelectRouteFiltersUnavailableHostRules(t *testing.T) {
 		t.Fatalf("body included disabled host: %s", body)
 	}
 }
+
+func TestToolbarHostRulesApplyAvailabilityAndAuthScopeBeforeGrouping(t *testing.T) {
+	now := time.Date(2026, 1, 1, 12, 0, 0, 0, time.Local)
+	rules := []models.HostRule{
+		{
+			Host:      "allowed.example.com",
+			GroupID:   "media",
+			GroupName: "Media",
+		},
+		{
+			Host:      "denied.example.com",
+			GroupID:   "private",
+			GroupName: "Private",
+		},
+		{
+			Host:      "disabled.example.com",
+			GroupID:   "media",
+			GroupName: "Media",
+			Disabled:  true,
+		},
+	}
+	filtered := filterAvailableHostRulesByAuthScope(rules, authCheckResult{
+		subdomainAccessCustom: true,
+		allowedSubdomainHosts: map[string]struct{}{
+			"allowed.example.com": {},
+		},
+	}, now)
+	if len(filtered) != 1 || filtered[0].Host != "allowed.example.com" {
+		t.Fatalf("filtered toolbar rules = %#v", filtered)
+	}
+}

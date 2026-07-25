@@ -11,6 +11,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/emptypb"
 )
 
@@ -85,6 +86,58 @@ func TestGatewayControlHostRulesRoundTrip(t *testing.T) {
 	}
 	if mode := got.GetItems()[0].GetProtocolMode(); mode != "http1" {
 		t.Fatalf("legacy update reset protocol mode to %q, want http1", mode)
+	}
+}
+
+func TestGatewayControlLegacyHostRuleUpdatePreservesGroupsAndExplicitEmptyClears(t *testing.T) {
+	server := newGatewayControlTestServer(t, "secret")
+	ctx := authTestContext()
+	groupID := "11111111-1111-4111-8111-111111111111"
+	groupName := "Media"
+	baseRule := func() *pb.HostRule {
+		return &pb.HostRule{
+			Host:    "app.example.test",
+			Target:  "http://127.0.0.1:8080",
+			UseAuth: true,
+		}
+	}
+
+	grouped := baseRule()
+	grouped.GroupId = proto.String(groupID)
+	grouped.GroupName = proto.String(groupName)
+	if _, err := server.SetHostRules(ctx, &pb.HostRules{Items: []*pb.HostRule{grouped}}); err != nil {
+		t.Fatalf("grouped SetHostRules() returned error: %v", err)
+	}
+	if _, err := server.SetHostRules(ctx, &pb.HostRules{Items: []*pb.HostRule{baseRule()}}); err != nil {
+		t.Fatalf("legacy SetHostRules() returned error: %v", err)
+	}
+	preserved, err := server.GetHostRules(ctx, &emptypb.Empty{})
+	if err != nil {
+		t.Fatalf("GetHostRules() after legacy update returned error: %v", err)
+	}
+	if got := preserved.GetItems()[0]; got.GetGroupId() != groupID || got.GetGroupName() != groupName {
+		t.Fatalf("legacy update cleared group metadata: %#v", got)
+	}
+	persisted, err := server.admin.ConfigManager.Load()
+	if err != nil {
+		t.Fatalf("Load() after legacy update returned error: %v", err)
+	}
+	if got := persisted.HostRules[0]; got.GroupID != groupID || got.GroupName != groupName {
+		t.Fatalf("persisted group metadata = %#v", got)
+	}
+
+	flat := baseRule()
+	flat.GroupId = proto.String("")
+	flat.GroupName = proto.String("")
+	if _, err := server.SetHostRules(ctx, &pb.HostRules{Items: []*pb.HostRule{flat}}); err != nil {
+		t.Fatalf("explicit flat SetHostRules() returned error: %v", err)
+	}
+	cleared, err := server.GetHostRules(ctx, &emptypb.Empty{})
+	if err != nil {
+		t.Fatalf("GetHostRules() after explicit clear returned error: %v", err)
+	}
+	if got := cleared.GetItems()[0]; got.GetGroupId() != "" || got.GetGroupName() != "" {
+		t.Fatalf("explicit empty group metadata was not cleared: %#v", got)
 	}
 }
 

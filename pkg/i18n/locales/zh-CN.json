@@ -13,6 +13,7 @@
   "gateway.selectTitle": "选择访问入口",
   "gateway.selectDescription": "请选择一个已配置的代理入口继续访问。",
   "gateway.routesEmpty": "暂无可用路由。",
+  "gateway.ungrouped": "未分组",
   "gateway.logout": "退出登录",
   "gateway.logoutConfirmTitle": "退出登录",
   "gateway.logoutConfirmMessage": "确定要退出当前登录状态吗？",

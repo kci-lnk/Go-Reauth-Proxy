@@ -133,21 +133,23 @@ func appendJSONString(buf []byte, value string) []byte {
 }
 
 type pageData struct {
-	Title         string
-	Message       string
-	Year          int
-	ShowBack      bool
-	Version       string
-	BodyClass     string
-	Rules         []models.Rule
-	HostRules     []models.HostRule
-	GatewayPortal models.GatewayPortalConfig
-	ToolbarHTML   template.HTML
-	RequestHost   string
-	RequestPath   string
-	Detail        string
-	HTMLLang      string
-	Labels        map[string]string
+	Title             string
+	Message           string
+	Year              int
+	ShowBack          bool
+	Version           string
+	BodyClass         string
+	Rules             []models.Rule
+	HostRules         []models.HostRule
+	HostRuleGroups    []hostRuleGroupView
+	HasHostRuleGroups bool
+	GatewayPortal     models.GatewayPortalConfig
+	ToolbarHTML       template.HTML
+	RequestHost       string
+	RequestPath       string
+	Detail            string
+	HTMLLang          string
+	Labels            map[string]string
 }
 
 const baseStyle = `

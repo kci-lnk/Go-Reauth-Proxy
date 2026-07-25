@@ -1,6 +1,7 @@
 package admin
 
 import (
+	"strings"
 	"time"
 
 	"go-reauth-proxy/pkg/gatewaylog"
@@ -9,6 +10,7 @@ import (
 	"go-reauth-proxy/pkg/models"
 	"go-reauth-proxy/pkg/proxy"
 	proxywaf "go-reauth-proxy/pkg/waf"
+	"google.golang.org/protobuf/proto"
 )
 
 func rpcOK() *pb.RpcStatus {
@@ -242,7 +244,7 @@ func protoToAdvancedAuth(value *pb.AdvancedAuthConfig) models.AdvancedAuthConfig
 func hostRulesToProto(rules []models.HostRule) *pb.HostRules {
 	items := make([]*pb.HostRule, 0, len(rules))
 	for _, rule := range rules {
-		items = append(items, &pb.HostRule{
+		item := &pb.HostRule{
 			Host:            rule.Host,
 			Target:          rule.Target,
 			ProtocolMode:    rule.ProtocolMode,
@@ -259,7 +261,14 @@ func hostRulesToProto(rules []models.HostRule) *pb.HostRules {
 			Availability:    hostRuleAvailabilityToProto(rule.Availability),
 			Visibility:      hostRuleVisibilityToProto(rule.Visibility),
 			AdvancedAuth:    advancedAuthToProto(rule.AdvancedAuth),
-		})
+		}
+		if rule.GroupMetadataSet || strings.TrimSpace(rule.GroupID) != "" {
+			item.GroupId = proto.String(rule.GroupID)
+		}
+		if rule.GroupMetadataSet || strings.TrimSpace(rule.GroupName) != "" {
+			item.GroupName = proto.String(rule.GroupName)
+		}
+		items = append(items, item)
 	}
 	return &pb.HostRules{Items: items}
 }
@@ -274,22 +283,25 @@ func protoToHostRules(req *pb.HostRules) []models.HostRule {
 			continue
 		}
 		rules = append(rules, models.HostRule{
-			Host:            rule.GetHost(),
-			Target:          rule.GetTarget(),
-			ProtocolMode:    rule.GetProtocolMode(),
-			UseAuth:         rule.GetUseAuth(),
-			AccessMode:      rule.GetAccessMode(),
-			SuppressToolbar: rule.GetSuppressToolbar(),
-			PreserveHost:    rule.GetPreserveHost(),
-			IsDefault:       rule.GetIsDefault(),
-			Title:           rule.GetTitle(),
-			Favicon:         rule.GetFavicon(),
-			BasicAuth:       protoToBasicAuth(rule.GetBasicAuth()),
-			Locations:       protoToHostLocations(rule.GetLocations()),
-			Disabled:        rule.GetDisabled(),
-			Availability:    protoToHostRuleAvailability(rule.GetAvailability()),
-			Visibility:      protoToHostRuleVisibility(rule.GetVisibility()),
-			AdvancedAuth:    protoToAdvancedAuth(rule.GetAdvancedAuth()),
+			Host:             rule.GetHost(),
+			Target:           rule.GetTarget(),
+			ProtocolMode:     rule.GetProtocolMode(),
+			GroupID:          rule.GetGroupId(),
+			GroupName:        rule.GetGroupName(),
+			GroupMetadataSet: rule.GroupId != nil || rule.GroupName != nil,
+			UseAuth:          rule.GetUseAuth(),
+			AccessMode:       rule.GetAccessMode(),
+			SuppressToolbar:  rule.GetSuppressToolbar(),
+			PreserveHost:     rule.GetPreserveHost(),
+			IsDefault:        rule.GetIsDefault(),
+			Title:            rule.GetTitle(),
+			Favicon:          rule.GetFavicon(),
+			BasicAuth:        protoToBasicAuth(rule.GetBasicAuth()),
+			Locations:        protoToHostLocations(rule.GetLocations()),
+			Disabled:         rule.GetDisabled(),
+			Availability:     protoToHostRuleAvailability(rule.GetAvailability()),
+			Visibility:       protoToHostRuleVisibility(rule.GetVisibility()),
+			AdvancedAuth:     protoToAdvancedAuth(rule.GetAdvancedAuth()),
 		})
 	}
 	return rules

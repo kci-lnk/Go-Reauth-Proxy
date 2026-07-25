@@ -226,6 +226,37 @@ const selectStyle = `
     gap: 1rem;
     align-items: stretch;
   }
+  .route-groups {
+    grid-column: 1 / -1;
+    display: flex;
+    flex-direction: column;
+    gap: 1.5rem;
+  }
+  .route-group {
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+  }
+  .route-group-header {
+    display: flex;
+    align-items: center;
+    gap: 0.625rem;
+    padding: 0 0.25rem;
+  }
+  .route-group-title {
+    font-size: 1rem;
+    font-weight: 700;
+    color: var(--foreground);
+  }
+  .route-group-count {
+    min-width: 1.5rem;
+    padding: 0.125rem 0.5rem;
+    border-radius: 999px;
+    background: var(--card-strong);
+    color: var(--muted-foreground);
+    font-size: 0.75rem;
+    text-align: center;
+  }
 
   .route-card {
     display: flex;
@@ -493,6 +524,45 @@ const selectContent = `
 
 	<div class="routes-grid">
 		{{if .HostRules}}
+			{{if .HasHostRuleGroups}}
+			<div class="route-groups">
+				{{range .HostRuleGroups}}
+				<section class="route-group" data-group-id="{{.ID}}">
+					<div class="route-group-header">
+						<h2 class="route-group-title">{{.Name}}</h2>
+						<span class="route-group-count">{{len .Rules}}</span>
+					</div>
+					<div class="routes-grid">
+						{{range .Rules}}
+						<a href="/" data-host="{{.Host}}" class="route-card host-route-card">
+							<div class="route-main">
+								{{with hostFaviconURL . $.GatewayPortal}}
+								<span class="route-icon-shell"><img class="route-icon-img" src="{{.}}" alt=""></span>
+								{{else}}
+								<span class="route-icon-shell">
+									<svg class="route-icon-fallback" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+										<circle cx="12" cy="12" r="10"/>
+										<path d="M2 12h20"/>
+										<path d="M12 2a15.3 15.3 0 0 1 0 20"/>
+										<path d="M12 2a15.3 15.3 0 0 0 0 20"/>
+									</svg>
+								</span>
+								{{end}}
+								<div class="route-copy">
+									<div class="route-path">{{hostDisplayLabel . $.GatewayPortal}}</div>
+									<div class="route-target">{{.Target}}</div>
+								</div>
+							</div>
+							<svg class="route-arrow" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+								<polyline points="9 18 15 12 9 6"/>
+							</svg>
+						</a>
+						{{end}}
+					</div>
+				</section>
+				{{end}}
+			</div>
+			{{else}}
 			{{range .HostRules}}
 			<a href="/" data-host="{{.Host}}" class="route-card host-route-card">
 				<div class="route-main">
@@ -517,6 +587,7 @@ const selectContent = `
 					<polyline points="9 18 15 12 9 6"/>
 				</svg>
 			</a>
+			{{end}}
 			{{end}}
 		{{else if .Rules}}
 			{{range .Rules}}
@@ -613,6 +684,10 @@ func SelectPageWithPrefilteredRoutes(w http.ResponseWriter, r *http.Request, fil
 
 func selectPageWithFilteredRoutes(w http.ResponseWriter, r *http.Request, filteredRules []models.Rule, filteredHostRules []models.HostRule, portalConfig models.GatewayPortalConfig) {
 	locale := i18n.ResolveRequestLocale(r)
+	hostRuleGroups, hasHostRuleGroups := buildHostRuleGroupViews(
+		filteredHostRules,
+		i18n.T(locale, "gateway.ungrouped"),
+	)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Content-Language", locale)
 	w.WriteHeader(http.StatusOK)
@@ -628,16 +703,18 @@ func selectPageWithFilteredRoutes(w http.ResponseWriter, r *http.Request, filter
 	}
 
 	data := pageData{
-		Title:         i18n.T(locale, "gateway.selectTitle"),
-		Year:          time.Now().Year(),
-		Version:       version.Version,
-		BodyClass:     "select-page",
-		Rules:         filteredRules,
-		HostRules:     filteredHostRules,
-		GatewayPortal: models.NormalizeGatewayPortalConfig(portalConfig),
-		ToolbarHTML:   template.HTML(toolbarHTML),
-		HTMLLang:      i18n.T(locale, "gateway.htmlLang"),
-		Labels:        gatewayLabels(locale),
+		Title:             i18n.T(locale, "gateway.selectTitle"),
+		Year:              time.Now().Year(),
+		Version:           version.Version,
+		BodyClass:         "select-page",
+		Rules:             filteredRules,
+		HostRules:         filteredHostRules,
+		HostRuleGroups:    hostRuleGroups,
+		HasHostRuleGroups: hasHostRuleGroups,
+		GatewayPortal:     models.NormalizeGatewayPortalConfig(portalConfig),
+		ToolbarHTML:       template.HTML(toolbarHTML),
+		HTMLLang:          i18n.T(locale, "gateway.htmlLang"),
+		Labels:            gatewayLabels(locale),
 	}
 
 	_ = selectTmpl.ExecuteTemplate(w, "layout", data)

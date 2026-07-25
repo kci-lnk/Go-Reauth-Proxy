@@ -13,6 +13,7 @@
   "gateway.selectTitle": "진입점 선택",
   "gateway.selectDescription": "계속하려면 구성된 프록시 진입점을 선택하세요.",
   "gateway.routesEmpty": "사용 가능한 라우트가 없습니다.",
+  "gateway.ungrouped": "미분류",
   "gateway.logout": "로그아웃",
   "gateway.logoutConfirmTitle": "로그아웃",
   "gateway.logoutConfirmMessage": "현재 로그인 상태에서 로그아웃하시겠습니까?",

@@ -983,6 +983,8 @@ type HostRule struct {
 	ProtocolMode    string                 `protobuf:"bytes,14,opt,name=protocol_mode,json=protocolMode,proto3" json:"protocol_mode,omitempty"`
 	Visibility      *HostRuleVisibility    `protobuf:"bytes,15,opt,name=visibility,proto3" json:"visibility,omitempty"`
 	AdvancedAuth    *AdvancedAuthConfig    `protobuf:"bytes,16,opt,name=advanced_auth,json=advancedAuth,proto3" json:"advanced_auth,omitempty"`
+	GroupId         *string                `protobuf:"bytes,17,opt,name=group_id,json=groupId,proto3,oneof" json:"group_id,omitempty"`
+	GroupName       *string                `protobuf:"bytes,18,opt,name=group_name,json=groupName,proto3,oneof" json:"group_name,omitempty"`
 	unknownFields   protoimpl.UnknownFields
 	sizeCache       protoimpl.SizeCache
 }
@@ -1127,6 +1129,20 @@ func (x *HostRule) GetAdvancedAuth() *AdvancedAuthConfig {
 		return x.AdvancedAuth
 	}
 	return nil
+}
+
+func (x *HostRule) GetGroupId() string {
+	if x != nil && x.GroupId != nil {
+		return *x.GroupId
+	}
+	return ""
+}
+
+func (x *HostRule) GetGroupName() string {
+	if x != nil && x.GroupName != nil {
+		return *x.GroupName
+	}
+	return ""
 }
 
 type StreamRule struct {
@@ -6662,7 +6678,7 @@ const file_fnknock_v1_gateway_proto_rawDesc = "" +
 	"\n" +
 	"strip_path\x18\x04 \x01(\bR\tstripPath\x12!\n" +
 	"\frewrite_html\x18\x05 \x01(\bR\vrewriteHtml\x12\"\n" +
-	"\ruse_root_mode\x18\x06 \x01(\bR\vuseRootMode\"\x91\x05\n" +
+	"\ruse_root_mode\x18\x06 \x01(\bR\vuseRootMode\"\xf1\x05\n" +
 	"\bHostRule\x12\x12\n" +
 	"\x04host\x18\x01 \x01(\tR\x04host\x12\x16\n" +
 	"\x06target\x18\x02 \x01(\tR\x06target\x12\x19\n" +
@@ -6685,7 +6701,12 @@ const file_fnknock_v1_gateway_proto_rawDesc = "" +
 	"\n" +
 	"visibility\x18\x0f \x01(\v2\x1e.fnknock.v1.HostRuleVisibilityR\n" +
 	"visibility\x12C\n" +
-	"\radvanced_auth\x18\x10 \x01(\v2\x1e.fnknock.v1.AdvancedAuthConfigR\fadvancedAuth\"|\n" +
+	"\radvanced_auth\x18\x10 \x01(\v2\x1e.fnknock.v1.AdvancedAuthConfigR\fadvancedAuth\x12\x1e\n" +
+	"\bgroup_id\x18\x11 \x01(\tH\x00R\agroupId\x88\x01\x01\x12\"\n" +
+	"\n" +
+	"group_name\x18\x12 \x01(\tH\x01R\tgroupName\x88\x01\x01B\v\n" +
+	"\t_group_idB\r\n" +
+	"\v_group_name\"|\n" +
 	"\n" +
 	"StreamRule\x12\x1a\n" +
 	"\bprotocol\x18\x01 \x01(\tR\bprotocol\x12\x1f\n" +
@@ -7624,6 +7645,7 @@ func file_fnknock_v1_gateway_proto_init() {
 	if File_fnknock_v1_gateway_proto != nil {
 		return
 	}
+	file_fnknock_v1_gateway_proto_msgTypes[12].OneofWrappers = []any{}
 	file_fnknock_v1_gateway_proto_msgTypes[82].OneofWrappers = []any{
 		(*AuthBridgeEnvelope_Ready)(nil),
 		(*AuthBridgeEnvelope_VerifyAuthRequest)(nil),

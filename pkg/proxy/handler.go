@@ -2734,6 +2734,8 @@ func (h *Handler) normalizeHostRule(newRule models.HostRule) (models.HostRule, e
 		return models.HostRule{}, fmt.Errorf("invalid target: %v", err)
 	}
 	newRule.ProtocolMode = models.NormalizeHostProtocolMode(newRule.ProtocolMode)
+	newRule.GroupID = strings.TrimSpace(newRule.GroupID)
+	newRule.GroupName = strings.TrimSpace(newRule.GroupName)
 	visibility, _, err := normalizeHostRuleVisibility(newRule.Visibility)
 	if err != nil {
 		return models.HostRule{}, err
@@ -2804,6 +2806,9 @@ func applyBasicAuthInjection(out *http.Request, cfg models.BasicAuthConfig) {
 func (h *Handler) AddHostRule(newRule models.HostRule) error {
 	protocolModeMissing := strings.TrimSpace(newRule.ProtocolMode) == ""
 	visibilityMissing := strings.TrimSpace(newRule.Visibility.Mode) == "" && len(newRule.Visibility.CIDRs) == 0
+	groupMetadataMissing := !newRule.GroupMetadataSet &&
+		strings.TrimSpace(newRule.GroupID) == "" &&
+		strings.TrimSpace(newRule.GroupName) == ""
 	newRule, err := h.normalizeHostRule(newRule)
 	if err != nil {
 		return err
@@ -2820,6 +2825,10 @@ func (h *Handler) AddHostRule(newRule models.HostRule) error {
 			if visibilityMissing {
 				newRule.Visibility = rule.Visibility
 				newRule.Visibility.CIDRs = append([]string(nil), rule.Visibility.CIDRs...)
+			}
+			if groupMetadataMissing {
+				newRule.GroupID = rule.GroupID
+				newRule.GroupName = rule.GroupName
 			}
 			nextRules = append(nextRules, newRule)
 			updated = true
@@ -2867,11 +2876,15 @@ func (h *Handler) SetHostRules(rules []models.HostRule) error {
 	normalizedRules := make([]models.HostRule, 0, len(rules))
 	protocolModeMissing := make([]bool, 0, len(rules))
 	visibilityMissing := make([]bool, 0, len(rules))
+	groupMetadataMissing := make([]bool, 0, len(rules))
 	indexByHost := make(map[string]int, len(rules))
 
 	for _, rule := range rules {
 		modeMissing := strings.TrimSpace(rule.ProtocolMode) == ""
 		ruleVisibilityMissing := strings.TrimSpace(rule.Visibility.Mode) == "" && len(rule.Visibility.CIDRs) == 0
+		ruleGroupMetadataMissing := !rule.GroupMetadataSet &&
+			strings.TrimSpace(rule.GroupID) == "" &&
+			strings.TrimSpace(rule.GroupName) == ""
 		normalizedRule, err := h.normalizeHostRule(rule)
 		if err != nil {
 			return err
@@ -2881,6 +2894,7 @@ func (h *Handler) SetHostRules(rules []models.HostRule) error {
 			normalizedRules[idx] = normalizedRule
 			protocolModeMissing[idx] = modeMissing
 			visibilityMissing[idx] = ruleVisibilityMissing
+			groupMetadataMissing[idx] = ruleGroupMetadataMissing
 			continue
 		}
 
@@ -2888,6 +2902,7 @@ func (h *Handler) SetHostRules(rules []models.HostRule) error {
 		normalizedRules = append(normalizedRules, normalizedRule)
 		protocolModeMissing = append(protocolModeMissing, modeMissing)
 		visibilityMissing = append(visibilityMissing, ruleVisibilityMissing)
+		groupMetadataMissing = append(groupMetadataMissing, ruleGroupMetadataMissing)
 	}
 	keepFirstDefaultHostRule(normalizedRules)
 
@@ -2895,6 +2910,7 @@ func (h *Handler) SetHostRules(rules []models.HostRule) error {
 	existingModes := make(map[string]string, len(h.HostRules))
 	existingVisibilities := make(map[string]models.HostRuleVisibility, len(h.HostRules))
 	existingAdvancedAuth := make(map[string]models.AdvancedAuthConfig, len(h.HostRules))
+	existingGroups := make(map[string][2]string, len(h.HostRules))
 	for _, existingRule := range h.HostRules {
 		host := normalizeRequestHost(existingRule.Host)
 		if host == "" {
@@ -2908,6 +2924,7 @@ func (h *Handler) SetHostRules(rules []models.HostRule) error {
 		visibility.CIDRs = append([]string(nil), existingRule.Visibility.CIDRs...)
 		existingVisibilities[host] = visibility
 		existingAdvancedAuth[host] = copyAdvancedAuthConfig(existingRule.AdvancedAuth)
+		existingGroups[host] = [2]string{existingRule.GroupID, existingRule.GroupName}
 	}
 	for i := range normalizedRules {
 		if protocolModeMissing[i] {
@@ -2918,6 +2935,12 @@ func (h *Handler) SetHostRules(rules []models.HostRule) error {
 		if visibilityMissing[i] {
 			if existingVisibility, exists := existingVisibilities[normalizedRules[i].Host]; exists {
 				normalizedRules[i].Visibility = existingVisibility
+			}
+		}
+		if groupMetadataMissing[i] {
+			if existingGroup, exists := existingGroups[normalizedRules[i].Host]; exists {
+				normalizedRules[i].GroupID = existingGroup[0]
+				normalizedRules[i].GroupName = existingGroup[1]
 			}
 		}
 		// Host mapping editors predating advanced authentication omit this
@@ -5390,6 +5413,10 @@ func filterSelectHostRulesByAuthScope(hostRules []models.HostRule, authResult au
 	return filtered
 }
 
+func filterAvailableHostRulesByAuthScope(hostRules []models.HostRule, authResult authCheckResult, now time.Time) []models.HostRule {
+	return filterSelectHostRulesByAuthScope(filterAvailableHostRules(hostRules, now), authResult)
+}
+
 func (h *Handler) handleSelectRoute(w http.ResponseWriter, r *http.Request, snapshot requestSnapshot, clientIP string, requestID string, requestAuth *requestAuthContext, prepared *authCheckExecution) authCheckResult {
 	authResult := h.checkAuth(w, r, snapshot.authConfig, clientIP, "", "", requestID, requestAuth, prepared)
 	if !authResult.allowed {
@@ -5402,12 +5429,11 @@ func (h *Handler) handleSelectRoute(w http.ResponseWriter, r *http.Request, snap
 	}
 
 	applyNoStoreCacheHeaders(w.Header())
-	availableHostRules := filterAvailableHostRules(snapshot.toolbarHostRules, time.Now())
 	response.SelectPageWithPrefilteredRoutes(
 		w,
 		r,
 		snapshot.toolbarRules,
-		filterSelectHostRulesByAuthScope(availableHostRules, authResult),
+		filterAvailableHostRulesByAuthScope(snapshot.toolbarHostRules, authResult, time.Now()),
 		snapshot.gatewayPortal,
 	)
 	return authResult
@@ -5920,7 +5946,7 @@ func (h *Handler) proxyToHostLocationTarget(w http.ResponseWriter, r *http.Reque
 				return response.GenerateToolbarWithPrefilteredHostsForRequest(
 					r,
 					snapshot.toolbarRules,
-					filterAvailableHostRules(snapshot.toolbarHostRules, time.Now()),
+					filterAvailableHostRulesByAuthScope(snapshot.toolbarHostRules, authResult, time.Now()),
 					r.URL.Path,
 					matchedRule.Host,
 					snapshot.authConfig.AuthHost,
@@ -6071,7 +6097,7 @@ func (h *Handler) proxyToHostTarget(w http.ResponseWriter, r *http.Request, snap
 				return response.GenerateToolbarWithPrefilteredHostsForRequest(
 					r,
 					snapshot.toolbarRules,
-					filterAvailableHostRules(snapshot.toolbarHostRules, time.Now()),
+					filterAvailableHostRulesByAuthScope(snapshot.toolbarHostRules, authResult, time.Now()),
 					r.URL.Path,
 					matchedRule.Host,
 					snapshot.authConfig.AuthHost,

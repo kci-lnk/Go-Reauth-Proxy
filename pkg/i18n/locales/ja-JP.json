@@ -13,6 +13,7 @@
   "gateway.selectTitle": "アクセスポータルを選択",
   "gateway.selectDescription": "アクセスを続けるには、設定されたプロキシ エントランスを選択してください。",
   "gateway.routesEmpty": "現在ご利用可能な路線はありません。",
+  "gateway.ungrouped": "未分類",
   "gateway.logout": "ログアウト",
   "gateway.logoutConfirmTitle": "ログアウト",
   "gateway.logoutConfirmMessage": "現在のログイン状態からログアウトしてもよろしいですか?",

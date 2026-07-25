@@ -13,6 +13,7 @@
   "gateway.selectTitle": "Select an entry",
   "gateway.selectDescription": "Choose a configured proxy entry to continue.",
   "gateway.routesEmpty": "No routes available.",
+  "gateway.ungrouped": "Ungrouped",
   "gateway.logout": "Logout",
   "gateway.logoutConfirmTitle": "Logout",
   "gateway.logoutConfirmMessage": "Are you sure you want to logout?",

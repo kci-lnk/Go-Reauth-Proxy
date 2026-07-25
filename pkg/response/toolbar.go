@@ -27,6 +27,7 @@ const toolbarTemplate = `
     var iconDragMode = toolbarData.icon_drag_mode === 'free' ? 'free' : 'corners';
     var cornerPositionStorageKey = 'reauth_proxy_toolbar_pos';
     var freePositionStorageKey = 'reauth_proxy_toolbar_free_pos';
+    var groupCollapseStorageKey = 'reauth_proxy_toolbar_groups_collapsed';
     var toolbarMargin = 20;
     var fabSize = 44;
 
@@ -278,6 +279,80 @@ const toolbarTemplate = `
             background: #fff;
             border-bottom: 1px solid #f3f4f6;
         }
+        .menu-group {
+            border-bottom: 1px solid #f3f4f6;
+        }
+        .menu-group:last-child {
+            border-bottom: none;
+        }
+        .menu-group-header {
+            width: 100%;
+            min-height: 38px;
+            padding: 8px 12px;
+            border: 0;
+            background: #f9fafb;
+            color: #374151;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            cursor: pointer;
+            text-align: left;
+            font-size: 12px;
+            font-weight: 600;
+        }
+        .menu-group-header:hover {
+            background: #f3f4f6;
+        }
+        .menu-group-chevron {
+            display: block;
+            width: 16px;
+            height: 16px;
+            flex: 0 0 16px;
+            align-self: center;
+            transform-origin: 8px 8px;
+            transition: transform 0.22s cubic-bezier(0.2, 0.8, 0.2, 1);
+        }
+        .menu-group:not(.collapsed) .menu-group-chevron {
+            transform: rotate(90deg);
+        }
+        .menu-group-title {
+            min-width: 0;
+            flex: 1 1 auto;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .menu-group-count {
+            color: #6b7280;
+            font-size: 11px;
+            font-weight: 500;
+        }
+        .menu-group-items {
+            display: grid;
+            grid-template-rows: 1fr;
+            opacity: 1;
+            transform: translateY(0);
+            transition:
+                grid-template-rows 0.22s cubic-bezier(0.2, 0.8, 0.2, 1),
+                opacity 0.16s ease,
+                transform 0.22s cubic-bezier(0.2, 0.8, 0.2, 1);
+        }
+        .menu-group-items-inner {
+            min-height: 0;
+            overflow: hidden;
+        }
+        .menu-group.collapsed .menu-group-items {
+            grid-template-rows: 0fr;
+            opacity: 0;
+            transform: translateY(-4px);
+            pointer-events: none;
+        }
+        @media (prefers-reduced-motion: reduce) {
+            .menu-group-chevron,
+            .menu-group-items {
+                transition: none;
+            }
+        }
         .menu-scroll {
             flex: 1 1 auto;
             min-height: 0;
@@ -502,12 +577,138 @@ const toolbarTemplate = `
 	    menuScroll.appendChild(empty);
 	}
 
+	function readGroupCollapseState() {
+	    var raw = safeGetStoredItem(groupCollapseStorageKey);
+	    if (!raw) return {};
+	    try {
+	        var value = JSON.parse(raw);
+	        return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+	    } catch (err) {
+	        return {};
+	    }
+	}
+
+	function createGroupChevronIcon() {
+	    var svgNamespace = 'http://www.w3.org/2000/svg';
+	    var icon = document.createElementNS(svgNamespace, 'svg');
+	    icon.setAttribute('class', 'menu-group-chevron');
+	    icon.setAttribute('viewBox', '0 0 16 16');
+	    icon.setAttribute('aria-hidden', 'true');
+	    icon.setAttribute('focusable', 'false');
+	    var path = document.createElementNS(svgNamespace, 'path');
+	    path.setAttribute('d', 'M5.75 3.5L10.25 8L5.75 12.5');
+	    path.setAttribute('fill', 'none');
+	    path.setAttribute('stroke', 'currentColor');
+	    path.setAttribute('stroke-width', '1.75');
+	    path.setAttribute('stroke-linecap', 'round');
+	    path.setAttribute('stroke-linejoin', 'round');
+	    icon.appendChild(path);
+	    return icon;
+	}
+
+	function appendGroupedHostRules(hostRules) {
+	    var grouped = [];
+	    var indexes = {};
+	    var ungrouped = [];
+	    var hasEffectiveGroup = false;
+	    for (var i = 0; i < hostRules.length; i++) {
+	        var rule = hostRules[i] || {};
+	        var groupId = asString(rule.group_id).trim();
+	        var groupName = asString(rule.group_name).trim();
+	        if (!groupId || !groupName) {
+	            ungrouped.push(rule);
+	            continue;
+	        }
+	        hasEffectiveGroup = true;
+	        if (indexes[groupId] === undefined) {
+	            indexes[groupId] = grouped.length;
+	            grouped.push({id: groupId, name: groupName, rules: []});
+	        }
+	        grouped[indexes[groupId]].rules.push(rule);
+	    }
+	    if (!hasEffectiveGroup) return false;
+	    if (ungrouped.length > 0) {
+	        grouped.push({
+	            id: '__ungrouped__',
+	            name: label('ungrouped', 'Ungrouped'),
+	            rules: ungrouped
+	        });
+	    }
+
+	    var collapseState = readGroupCollapseState();
+	    for (var groupIndex = 0; groupIndex < grouped.length; groupIndex++) {
+	        var group = grouped[groupIndex];
+	        var active = false;
+	        for (var activeIndex = 0; activeIndex < group.rules.length; activeIndex++) {
+	            if (isActiveHost(group.rules[activeIndex].host, toolbarData.current_host)) {
+	                active = true;
+	                break;
+	            }
+	        }
+	        var hasSavedPreference = typeof collapseState[group.id] === 'boolean';
+	        var collapsed = hasSavedPreference ? collapseState[group.id] : !active;
+	        var section = document.createElement('div');
+	        section.className = 'menu-group' + (collapsed ? ' collapsed' : '');
+	        var header = document.createElement('button');
+	        header.type = 'button';
+	        header.className = 'menu-group-header';
+	        header.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
+	        var chevron = createGroupChevronIcon();
+	        var title = document.createElement('span');
+	        title.className = 'menu-group-title';
+	        title.textContent = group.name;
+	        var count = document.createElement('span');
+	        count.className = 'menu-group-count';
+	        count.textContent = String(group.rules.length);
+	        header.appendChild(chevron);
+	        header.appendChild(title);
+	        header.appendChild(count);
+	        var items = document.createElement('div');
+	        items.className = 'menu-group-items';
+	        items.id = 'menu-group-items-' + groupIndex;
+	        items.setAttribute('aria-hidden', collapsed ? 'true' : 'false');
+	        if (collapsed) items.setAttribute('inert', '');
+	        header.setAttribute('aria-controls', items.id);
+	        var itemsInner = document.createElement('div');
+	        itemsInner.className = 'menu-group-items-inner';
+	        for (var itemIndex = 0; itemIndex < group.rules.length; itemIndex++) {
+	            var item = group.rules[itemIndex];
+	            var host = asString(item.host);
+	            var itemLabel = asString(item.label) || host;
+	            var icon = toolbarData.show_app_icon ? asString(item.favicon) : '';
+	            var link = createMenuLink(itemLabel, '/', 'host-link', isActiveHost(host, toolbarData.current_host), icon);
+	            link.setAttribute('data-host', host);
+	            itemsInner.appendChild(link);
+	        }
+	        items.appendChild(itemsInner);
+	        header.addEventListener('click', (function(groupID, node, button, content) {
+	            return function() {
+	                var nextCollapsed = !node.classList.contains('collapsed');
+	                node.classList.toggle('collapsed', nextCollapsed);
+	                button.setAttribute('aria-expanded', nextCollapsed ? 'false' : 'true');
+	                content.setAttribute('aria-hidden', nextCollapsed ? 'true' : 'false');
+	                if (nextCollapsed) content.setAttribute('inert', '');
+	                else content.removeAttribute('inert');
+	                collapseState[groupID] = nextCollapsed;
+	                safeSetStoredItem(groupCollapseStorageKey, JSON.stringify(collapseState));
+	            };
+	        })(group.id, section, header, items));
+	        section.appendChild(header);
+	        section.appendChild(items);
+	        menuScroll.appendChild(section);
+	    }
+	    return true;
+	}
+
 	function populateMenu() {
 	    if (!menuScroll) return;
 	    var hostRules = Array.isArray(toolbarData.host_rules) ? toolbarData.host_rules : [];
 	    var rules = Array.isArray(toolbarData.rules) ? toolbarData.rules : [];
 
 	    if (hostRules.length > 0) {
+	        if (appendGroupedHostRules(hostRules)) {
+	            return;
+	        }
 	        for (var i = 0; i < hostRules.length; i++) {
 	            var host = asString(hostRules[i].host);
 	            var label = asString(hostRules[i].label) || host;
@@ -916,6 +1117,7 @@ type toolbarLabels struct {
 	Confirm            string `json:"confirm"`
 	Go                 string `json:"go"`
 	NoRoutesConfigured string `json:"noRoutesConfigured"`
+	Ungrouped          string `json:"ungrouped"`
 }
 
 func ShouldSuppressToolbarForUserAgent(userAgent string) bool {
@@ -1118,6 +1320,7 @@ func GenerateToolbarWithPrefilteredHostsForLocale(locale string, filteredRules [
 		Confirm:            i18n.T(locale, "gateway.confirm"),
 		Go:                 i18n.T(locale, "gateway.go"),
 		NoRoutesConfigured: i18n.T(locale, "gateway.noRoutesConfigured"),
+		Ungrouped:          i18n.T(locale, "gateway.ungrouped"),
 	}
 	return renderToolbarTemplateData(filteredRules, filteredHostRules, currentPath, currentHost, normalizedExcludedHost, normalizedPortal, labels)
 }
@@ -1162,6 +1365,14 @@ func writeToolbarPayloadJSON(b *strings.Builder, rules []models.Rule, hostRules 
 			b.WriteString(`,"favicon":`)
 			writeJSONString(b, favicon)
 		}
+		if strings.TrimSpace(rule.GroupID) != "" {
+			b.WriteString(`,"group_id":`)
+			writeJSONString(b, rule.GroupID)
+		}
+		if strings.TrimSpace(rule.GroupName) != "" {
+			b.WriteString(`,"group_name":`)
+			writeJSONString(b, rule.GroupName)
+		}
 		b.WriteByte('}')
 		renderedHostRules++
 	}
@@ -1188,6 +1399,8 @@ func writeToolbarPayloadJSON(b *strings.Builder, rules []models.Rule, hostRules 
 	writeJSONString(b, labels.Go)
 	b.WriteString(`,"noRoutesConfigured":`)
 	writeJSONString(b, labels.NoRoutesConfigured)
+	b.WriteString(`,"ungrouped":`)
+	writeJSONString(b, labels.Ungrouped)
 	b.WriteString(`}}`)
 }
 
@@ -1196,6 +1409,7 @@ func estimateToolbarPayloadSize(rules []models.Rule, hostRules []models.HostRule
 		len(portalConfig.IconDragMode) +
 		len(labels.Logout) + len(labels.LogoutTitle) + len(labels.LogoutMessage) +
 		len(labels.Cancel) + len(labels.Confirm) + len(labels.Go) + len(labels.NoRoutesConfigured)
+	size += len(labels.Ungrouped)
 	for _, rule := range rules {
 		size += len(rule.Path) + 16
 	}
@@ -1203,7 +1417,7 @@ func estimateToolbarPayloadSize(rules []models.Rule, hostRules []models.HostRule
 		if toolbarHostMatchesExcludedNormalized(rule.Host, normalizedExcludedHost) {
 			continue
 		}
-		size += len(rule.Host) + len(rule.Title) + len(gatewayPortalHostFavicon(rule, portalConfig)) + 36
+		size += len(rule.Host) + len(rule.Title) + len(rule.GroupID) + len(rule.GroupName) + len(gatewayPortalHostFavicon(rule, portalConfig)) + 64
 	}
 	return size
 }

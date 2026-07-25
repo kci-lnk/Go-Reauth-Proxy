@@ -348,6 +348,87 @@ func TestHostRuleWithoutAuthSkipsPreflight(t *testing.T) {
 	}
 }
 
+func TestSelectRouteRequiresConfiguredAuthentication(t *testing.T) {
+	handler := &Handler{}
+	handler.publishRequestSnapshotLocked()
+
+	req := httptest.NewRequest(http.MethodGet, "http://gateway.example.com/__select__", nil)
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500; body = %s", rec.Code, rec.Body.String())
+	}
+	if body := rec.Body.String(); strings.Contains(body, `class="select-page"`) {
+		t.Fatalf("select page was rendered without configured authentication: %s", body)
+	}
+}
+
+func TestSelectRouteRedirectsWithoutLoginState(t *testing.T) {
+	tests := []struct {
+		name       string
+		verify     *pb.VerifyAuthResponse
+		grantValue string
+	}{
+		{
+			name:   "anonymous",
+			verify: &pb.VerifyAuthResponse{Success: false, Status: http.StatusUnauthorized},
+		},
+		{
+			name: "temporary grant is not a login",
+			verify: &pb.VerifyAuthResponse{
+				Success:            true,
+				Status:             http.StatusOK,
+				GrantKind:          pb.AuthGrantKind_AUTH_GRANT_KIND_SUBDOMAIN_RULE,
+				LoginAuthenticated: false,
+			},
+			grantValue: "temporary-grant",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			bridge := testAuthBridge{
+				verify: func(context.Context, *pb.VerifyAuthRequest) (*pb.VerifyAuthResponse, error) {
+					return test.verify, nil
+				},
+			}
+			handler := &Handler{
+				AuthConfig: models.AuthConfig{
+					AuthURL:      "/api/auth/verify",
+					LoginURL:     "/login",
+					PreflightURL: "/api/auth/preflight",
+				},
+				authBridge:     bridge,
+				authCache:      newAuthStateCache(),
+				preflightCache: newPreflightStateCache(),
+			}
+			handler.publishRequestSnapshotLocked()
+
+			req := httptest.NewRequest(http.MethodGet, "http://gateway.example.com/__select__", nil)
+			if test.grantValue != "" {
+				req.AddCookie(&http.Cookie{Name: advancedAuthGrantCookieName, Value: test.grantValue})
+			}
+			rec := httptest.NewRecorder()
+
+			handler.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusFound {
+				t.Fatalf("status = %d, want 302; body = %s", rec.Code, rec.Body.String())
+			}
+			location := rec.Header().Get("Location")
+			if !strings.HasPrefix(location, "/__auth__/login?") ||
+				!strings.Contains(location, "redirect_uri=http%3A%2F%2Fgateway.example.com%2F__select__") {
+				t.Fatalf("Location = %q, want login redirect back to /__select__", location)
+			}
+			if body := rec.Body.String(); strings.Contains(body, `class="select-page"`) {
+				t.Fatalf("select page was rendered without login state: %s", body)
+			}
+		})
+	}
+}
+
 func TestSelectRouteFiltersHostRulesByCredentialScope(t *testing.T) {
 	var verifyHits int32
 
@@ -407,6 +488,9 @@ func TestSelectRouteFiltersHostRulesByCredentialScope(t *testing.T) {
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200; body = %s", rec.Code, rec.Body.String())
+	}
+	if cacheControl := rec.Header().Get("Cache-Control"); !strings.Contains(cacheControl, "no-store") {
+		t.Fatalf("Cache-Control = %q, want authenticated select page to be non-cacheable", cacheControl)
 	}
 	body := rec.Body.String()
 	if !strings.Contains(body, "app.example.com") {

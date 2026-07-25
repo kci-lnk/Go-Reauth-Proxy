@@ -296,6 +296,10 @@ func buildPageData(r *http.Request, rules []models.Rule) pageData {
 }
 
 func HTML(w http.ResponseWriter, r *http.Request, code int, message string, rules []models.Rule) {
+	HTMLWithSelectLink(w, r, code, message, rules, false)
+}
+
+func HTMLWithSelectLink(w http.ResponseWriter, r *http.Request, code int, message string, rules []models.Rule, showSelectLink bool) {
 	locale := i18n.ResolveRequestLocale(r)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Content-Language", locale)
@@ -303,10 +307,15 @@ func HTML(w http.ResponseWriter, r *http.Request, code int, message string, rule
 	httpStatus := mapHTTPStatus(code)
 	w.WriteHeader(httpStatus)
 
+	if !showSelectLink {
+		// Route navigation belongs to authenticated users. Dropping the rules
+		// here also prevents the toolbar from bypassing the same guard.
+		rules = nil
+	}
 	data := buildPageData(r, rules)
 	data.Title = strconv.Itoa(code)
 	data.Message = message
-	data.ShowBack = true
+	data.ShowBack = showSelectLink
 
 	_ = errorTmpl.ExecuteTemplate(w, "layout", data)
 }
@@ -325,16 +334,20 @@ func Welcome(w http.ResponseWriter, r *http.Request, rules []models.Rule) {
 	_ = errorTmpl.ExecuteTemplate(w, "layout", data)
 }
 
-func RouteNotFound(w http.ResponseWriter, r *http.Request, rules []models.Rule) {
+func RouteNotFound(w http.ResponseWriter, r *http.Request, rules []models.Rule, showSelectLink bool) {
 	locale := i18n.ResolveRequestLocale(r)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Content-Language", locale)
+	w.Header().Set("Cache-Control", "private, no-store")
 	w.WriteHeader(http.StatusNotFound)
 
+	if !showSelectLink {
+		rules = nil
+	}
 	data := buildPageData(r, rules)
 	data.Title = i18n.T(locale, "gateway.routeNotFoundTitle")
 	data.Message = i18n.T(locale, "gateway.routeNotFoundMessage")
-	data.ShowBack = len(rules) > 0
+	data.ShowBack = showSelectLink && len(rules) > 0
 
 	_ = routeNotFoundTmpl.ExecuteTemplate(w, "layout", data)
 }

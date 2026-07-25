@@ -5192,7 +5192,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if isSelectRoute {
 		accessEntry.RouteType = "select"
 		accessEntry.RouteKey = r.URL.Path
-		accessEntry.AuthRequired = snapshot.authConfig.AuthURL != ""
+		accessEntry.AuthRequired = true
 		authResult := h.handleSelectRoute(w, r, snapshot, clientIP, requestID, requestAuth, preparedAuth)
 		applyAuthResultToLogEntry(&accessEntry, authResult)
 		if event := debugProxyEvent("select_route_served", requestID); event != nil {
@@ -5278,7 +5278,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			case models.HostLocationActionProxy:
 				h.proxyToHostLocationTarget(w, r, snapshot, *matchedHostRule, *matchedHostLocation, clientIP, authResult, requestID)
 			default:
-				response.HTML(w, r, errors.CodeProxyTargetInvalid, "Invalid host location configuration", snapshot.rules)
+				response.HTMLWithSelectLink(w, r, errors.CodeProxyTargetInvalid, "Invalid host location configuration", snapshot.rules, authResult.authenticated)
 			}
 			return
 		}
@@ -5297,10 +5297,22 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		accessEntry.RouteType = "not_found"
 		accessEntry.RouteKey = r.URL.Path
 		accessEntry.AuthDecision = "not_required"
-		if event := debugProxyEvent("route_not_found", requestID); event != nil {
-			event.Str("path", logger.SanitizeLogString(r.URL.Path)).Send()
+		authResult := authCheckResult{allowed: true, decision: "not_required"}
+		if r.URL.Path != "/" &&
+			strings.TrimSpace(snapshot.authConfig.AuthURL) != "" &&
+			requestHasExplicitAuthIdentity(r) {
+			if requestAuth == nil {
+				requestAuth = newRequestAuthContext(r, clientIP, "")
+			}
+			authResult = h.checkAuthForToolbar(w, r, snapshot.authConfig, clientIP, requestID, requestAuth)
+			applyAuthResultToLogEntry(&accessEntry, authResult)
 		}
-		h.handleNoMatchRoute(w, r, snapshot, clientIP)
+		if event := debugProxyEvent("route_not_found", requestID); event != nil {
+			event.Str("path", logger.SanitizeLogString(r.URL.Path)).
+				Bool("authenticated", authResult.authenticated).
+				Send()
+		}
+		h.handleNoMatchRoute(w, r, snapshot, authResult.authenticated)
 		return
 	}
 	accessEntry.RouteType = "path_rule"
@@ -5377,23 +5389,26 @@ func filterSelectHostRulesByAuthScope(hostRules []models.HostRule, authResult au
 }
 
 func (h *Handler) handleSelectRoute(w http.ResponseWriter, r *http.Request, snapshot requestSnapshot, clientIP string, requestID string, requestAuth *requestAuthContext, prepared *authCheckExecution) authCheckResult {
-	availableHostRules := filterAvailableHostRules(snapshot.toolbarHostRules, time.Now())
-	if snapshot.authConfig.AuthURL != "" {
-		authResult := h.checkAuth(w, r, snapshot.authConfig, clientIP, "", "", requestID, requestAuth, prepared)
-		if !authResult.allowed {
-			return authResult
-		}
-		response.SelectPageWithPrefilteredRoutes(
-			w,
-			r,
-			snapshot.toolbarRules,
-			filterSelectHostRulesByAuthScope(availableHostRules, authResult),
-			snapshot.gatewayPortal,
-		)
+	authResult := h.checkAuth(w, r, snapshot.authConfig, clientIP, "", "", requestID, requestAuth, prepared)
+	if !authResult.allowed {
 		return authResult
 	}
-	response.SelectPageWithPrefilteredRoutes(w, r, snapshot.toolbarRules, availableHostRules, snapshot.gatewayPortal)
-	return authCheckResult{allowed: true, decision: "not_required"}
+	if !authResult.authenticated {
+		applyNoStoreCacheHeaders(w.Header())
+		http.Redirect(w, r, authLoginRedirectLocation(snapshot.authConfig, r), http.StatusFound)
+		return authCheckResult{decision: "redirected"}
+	}
+
+	applyNoStoreCacheHeaders(w.Header())
+	availableHostRules := filterAvailableHostRules(snapshot.toolbarHostRules, time.Now())
+	response.SelectPageWithPrefilteredRoutes(
+		w,
+		r,
+		snapshot.toolbarRules,
+		filterSelectHostRulesByAuthScope(availableHostRules, authResult),
+		snapshot.gatewayPortal,
+	)
+	return authResult
 }
 
 func (h *Handler) handleAuthProxyRoute(w http.ResponseWriter, r *http.Request, snapshot requestSnapshot, clientIP string) bool {
@@ -5716,7 +5731,7 @@ func longestPathRuleMatch(requestPath string, snapshot requestSnapshot) (*models
 	return nil, 0
 }
 
-func (h *Handler) handleNoMatchRoute(w http.ResponseWriter, r *http.Request, snapshot requestSnapshot, clientIP string) {
+func (h *Handler) handleNoMatchRoute(w http.ResponseWriter, r *http.Request, snapshot requestSnapshot, authenticated bool) {
 	if r.URL.Path == "/" {
 		if len(snapshot.rules) == 0 && len(snapshot.hostRules) == 0 {
 			response.Welcome(w, r, nil)
@@ -5727,7 +5742,7 @@ func (h *Handler) handleNoMatchRoute(w http.ResponseWriter, r *http.Request, sna
 			return
 		}
 	}
-	response.RouteNotFound(w, r, snapshot.rules)
+	response.RouteNotFound(w, r, snapshot.rules, authenticated)
 }
 
 func serveHostLocationResponse(w http.ResponseWriter, location models.HostLocation) {
@@ -5757,7 +5772,7 @@ func (h *Handler) proxyToHostLocationTarget(w http.ResponseWriter, r *http.Reque
 				Str("error", logger.SanitizeLogString(targetRuntime.err.Error())).
 				Send()
 		}
-		response.HTML(w, r, errors.CodeProxyTargetInvalid, "Invalid target URL configuration", snapshot.rules)
+		response.HTMLWithSelectLink(w, r, errors.CodeProxyTargetInvalid, "Invalid target URL configuration", snapshot.rules, authResult.authenticated)
 		return
 	}
 	targetURL := targetRuntime.targetURL
@@ -5846,7 +5861,7 @@ func (h *Handler) proxyToHostLocationTarget(w http.ResponseWriter, r *http.Reque
 					Send()
 			}
 			log.Printf("Host location proxy error: %v", err)
-			response.HTML(w, r, errors.CodeProxyTimeout, "Upstream unavailable: "+err.Error(), h.GetRules())
+			response.HTMLWithSelectLink(w, r, errors.CodeProxyTimeout, "Upstream unavailable: "+err.Error(), snapshot.rules, authResult.authenticated)
 		},
 	}
 
@@ -5935,7 +5950,7 @@ func (h *Handler) proxyToHostTarget(w http.ResponseWriter, r *http.Request, snap
 				Str("error", logger.SanitizeLogString(targetRuntime.err.Error())).
 				Send()
 		}
-		response.HTML(w, r, errors.CodeProxyTargetInvalid, "Invalid target URL configuration", snapshot.rules)
+		response.HTMLWithSelectLink(w, r, errors.CodeProxyTargetInvalid, "Invalid target URL configuration", snapshot.rules, authResult.authenticated)
 		return
 	}
 	targetURL := targetRuntime.targetURL
@@ -6009,7 +6024,7 @@ func (h *Handler) proxyToHostTarget(w http.ResponseWriter, r *http.Request, snap
 					Send()
 			}
 			log.Printf("Host proxy error: %v", err)
-			response.HTML(w, r, errors.CodeProxyTimeout, "Upstream unavailable: "+err.Error(), h.GetRules())
+			response.HTMLWithSelectLink(w, r, errors.CodeProxyTimeout, "Upstream unavailable: "+err.Error(), snapshot.rules, authResult.authenticated)
 		},
 	}
 
@@ -6086,7 +6101,7 @@ func (h *Handler) proxyToRuleTarget(w http.ResponseWriter, r *http.Request, snap
 				Str("error", logger.SanitizeLogString(targetRuntime.err.Error())).
 				Send()
 		}
-		response.HTML(w, r, errors.CodeProxyTargetInvalid, "Invalid target URL configuration", snapshot.rules)
+		response.HTMLWithSelectLink(w, r, errors.CodeProxyTargetInvalid, "Invalid target URL configuration", snapshot.rules, authResult.authenticated)
 		return
 	}
 	targetURL := targetRuntime.targetURL
@@ -6172,7 +6187,7 @@ func (h *Handler) proxyToRuleTarget(w http.ResponseWriter, r *http.Request, snap
 					Send()
 			}
 			log.Printf("Proxy error: %v", err)
-			response.HTML(w, r, errors.CodeProxyTimeout, "Upstream unavailable: "+err.Error(), h.GetRules())
+			response.HTMLWithSelectLink(w, r, errors.CodeProxyTimeout, "Upstream unavailable: "+err.Error(), snapshot.rules, authResult.authenticated)
 		},
 	}
 
@@ -7354,6 +7369,26 @@ func (h *Handler) authCheckPlanFromResponse(r *http.Request, authConfig models.A
 		}
 	}
 
+	loginURL := authLoginRedirectLocation(authConfig, r)
+
+	if event := debugProxyEvent("auth_check_end", requestID); event != nil {
+		event.Int("status", statusCode).
+			Bool("success", false).
+			Str("decision", "redirected").
+			Str("redirect_location", logger.SanitizeURL(loginURL)).
+			Str("message", logger.SanitizeLogString(authMessage)).
+			Int("set_cookie_count", len(setCookies)).
+			Int64("duration_ms", time.Since(start).Milliseconds()).
+			Send()
+	}
+	return authCheckPlan{
+		result:           authCheckResult{decision: "redirected"},
+		setCookies:       setCookies,
+		redirectLocation: loginURL,
+	}
+}
+
+func authLoginRedirectLocation(authConfig models.AuthConfig, r *http.Request) string {
 	originalURL := buildPublicRequestURL(r, authConfig, "")
 	if originalURL == nil {
 		originalURL = &url.URL{
@@ -7371,22 +7406,7 @@ func (h *Handler) authCheckPlanFromResponse(r *http.Request, authConfig models.A
 		q.Set("redirect_uri", originalURL.String())
 		loginURL.RawQuery = q.Encode()
 	}
-
-	if event := debugProxyEvent("auth_check_end", requestID); event != nil {
-		event.Int("status", statusCode).
-			Bool("success", false).
-			Str("decision", "redirected").
-			Str("redirect_location", logger.SanitizeURL(loginURL.String())).
-			Str("message", logger.SanitizeLogString(authMessage)).
-			Int("set_cookie_count", len(setCookies)).
-			Int64("duration_ms", time.Since(start).Milliseconds()).
-			Send()
-	}
-	return authCheckPlan{
-		result:           authCheckResult{decision: "redirected"},
-		setCookies:       setCookies,
-		redirectLocation: loginURL.String(),
-	}
+	return loginURL.String()
 }
 
 func (h *Handler) applyAuthCheckPlan(w http.ResponseWriter, r *http.Request, plan authCheckPlan, clientIP string, upstreamTarget string) authCheckResult {

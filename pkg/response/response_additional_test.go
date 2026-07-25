@@ -235,6 +235,32 @@ func TestHTMLSetsContentLanguageFromRequest(t *testing.T) {
 	}
 }
 
+func TestHTMLHidesSelectLinkByDefault(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "http://gateway.example.test/app", nil)
+	rec := httptest.NewRecorder()
+
+	HTML(rec, req, proxyerrors.CodeProxyTimeout, "upstream timeout", []models.Rule{{Path: "/app"}})
+
+	body := rec.Body.String()
+	if strings.Contains(body, "/__select__") {
+		t.Fatalf("anonymous error page should not include select link: %s", body)
+	}
+	if strings.Contains(body, "reauth-proxy-toolbar") {
+		t.Fatalf("anonymous error page should not include route toolbar: %s", body)
+	}
+}
+
+func TestHTMLWithSelectLinkShowsLinkForAuthenticatedRequest(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "http://gateway.example.test/app", nil)
+	rec := httptest.NewRecorder()
+
+	HTMLWithSelectLink(rec, req, proxyerrors.CodeProxyTimeout, "upstream timeout", nil, true)
+
+	if body := rec.Body.String(); !strings.Contains(body, "/__select__") {
+		t.Fatalf("authenticated error page should include select link: %s", body)
+	}
+}
+
 func TestWelcomeDoesNotShowBackLink(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "http://gateway.example.test/", nil)
 	rec := httptest.NewRecorder()
@@ -246,25 +272,29 @@ func TestWelcomeDoesNotShowBackLink(t *testing.T) {
 	}
 }
 
-func TestRouteNotFoundShowsBackLinkWhenRulesExist(t *testing.T) {
+func TestRouteNotFoundShowsBackLinkForAuthenticatedRequest(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "http://gateway.example.test/missing", nil)
 	rec := httptest.NewRecorder()
 
-	RouteNotFound(rec, req, []models.Rule{{Path: "/app"}})
+	RouteNotFound(rec, req, []models.Rule{{Path: "/app"}}, true)
 
 	if rec.Code != http.StatusNotFound || !strings.Contains(rec.Body.String(), "/__select__") {
 		t.Fatalf("unexpected route-not-found page: status=%d body=%s", rec.Code, rec.Body.String())
 	}
+	if cacheControl := rec.Header().Get("Cache-Control"); !strings.Contains(cacheControl, "no-store") {
+		t.Fatalf("Cache-Control = %q, want no-store", cacheControl)
+	}
 }
 
-func TestRouteNotFoundHidesBackLinkWhenRulesEmpty(t *testing.T) {
+func TestRouteNotFoundHidesNavigationForAnonymousRequest(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "http://gateway.example.test/missing", nil)
 	rec := httptest.NewRecorder()
 
-	RouteNotFound(rec, req, nil)
+	RouteNotFound(rec, req, []models.Rule{{Path: "/private-app"}}, false)
 
-	if strings.Contains(rec.Body.String(), "/__select__") {
-		t.Fatalf("route-not-found should not include select link without rules: %s", rec.Body.String())
+	body := rec.Body.String()
+	if strings.Contains(body, "/__select__") || strings.Contains(body, "/private-app") || strings.Contains(body, "reauth-proxy-toolbar") {
+		t.Fatalf("anonymous route-not-found page exposed protected navigation: %s", body)
 	}
 }
 

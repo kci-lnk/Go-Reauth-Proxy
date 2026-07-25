@@ -22,6 +22,7 @@ import (
 	"github.com/soheilhy/cmux"
 
 	"go-reauth-proxy/pkg/config"
+	"go-reauth-proxy/pkg/grpc/pb"
 	"go-reauth-proxy/pkg/models"
 	"go-reauth-proxy/pkg/response"
 )
@@ -179,7 +180,7 @@ func TestResetConnectionPreservesExplicitAndBuiltInRoutes(t *testing.T) {
 		{name: "slash redirect", target: "http://unknown.example.com/app", wantStatus: http.StatusMovedPermanently},
 		{name: "favicon", target: "http://unknown.example.com/__assets__/favicon/favicon-16x16.png", wantStatus: http.StatusOK},
 		{name: "toolbar asset", target: "http://unknown.example.com" + response.ToolbarAssetPath(), wantStatus: http.StatusOK},
-		{name: "select page", target: "http://unknown.example.com/__select__", wantStatus: http.StatusOK},
+		{name: "select page requires auth", target: "http://unknown.example.com/__select__", wantStatus: http.StatusInternalServerError},
 		{name: "auth entry", target: "http://unknown.example.com/__auth__/status", wantStatus: http.StatusInternalServerError},
 		{name: "crawler robots", target: "http://unknown.example.com/robots.txt", wantStatus: http.StatusOK},
 	}
@@ -191,6 +192,84 @@ func TestResetConnectionPreservesExplicitAndBuiltInRoutes(t *testing.T) {
 			handler.ServeHTTP(rec, req)
 			if rec.Code != tc.wantStatus {
 				t.Fatalf("status = %d, want %d; body=%q", rec.Code, tc.wantStatus, rec.Body.String())
+			}
+		})
+	}
+}
+
+func TestRouteNotFoundNavigationRequiresAuthenticatedIdentity(t *testing.T) {
+	tests := []struct {
+		name           string
+		cookie         *http.Cookie
+		wantNavigation bool
+		wantVerifyHits int
+	}{
+		{name: "anonymous"},
+		{
+			name: "temporary grant is not a login",
+			cookie: &http.Cookie{
+				Name:  advancedAuthGrantCookieName,
+				Value: "temporary-grant",
+			},
+		},
+		{
+			name: "authenticated session",
+			cookie: &http.Cookie{
+				Name:  authSessionCookieName,
+				Value: "ok",
+			},
+			wantNavigation: true,
+			wantVerifyHits: 1,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			verifyHits := 0
+			handler := &Handler{
+				Rules: []models.Rule{{
+					Path:   "/private-app",
+					Target: "http://127.0.0.1:8080",
+				}},
+				AuthConfig: models.AuthConfig{
+					AuthURL:      "/api/auth/verify",
+					PreflightURL: "/api/auth/preflight",
+				},
+				authBridge: testAuthBridge{
+					verify: func(context.Context, *pb.VerifyAuthRequest) (*pb.VerifyAuthResponse, error) {
+						verifyHits++
+						return &pb.VerifyAuthResponse{Success: true, Status: http.StatusOK}, nil
+					},
+				},
+				authCache:      newAuthStateCache(),
+				preflightCache: newPreflightStateCache(),
+			}
+			handler.publishRequestSnapshotLocked()
+
+			req := httptest.NewRequest(http.MethodGet, "http://gateway.example.com/missing", nil)
+			if test.cookie != nil {
+				req.AddCookie(test.cookie)
+			}
+			rec := httptest.NewRecorder()
+
+			handler.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusNotFound {
+				t.Fatalf("status = %d, want 404; body = %s", rec.Code, rec.Body.String())
+			}
+			if verifyHits != test.wantVerifyHits {
+				t.Fatalf("verify hits = %d, want %d", verifyHits, test.wantVerifyHits)
+			}
+			if cacheControl := rec.Header().Get("Cache-Control"); !strings.Contains(cacheControl, "no-store") {
+				t.Fatalf("Cache-Control = %q, want no-store", cacheControl)
+			}
+
+			body := rec.Body.String()
+			hasNavigation := strings.Contains(body, "/__select__") ||
+				strings.Contains(body, "/private-app") ||
+				strings.Contains(body, "reauth-proxy-toolbar")
+			if hasNavigation != test.wantNavigation {
+				t.Fatalf("protected navigation presence = %v, want %v; body = %s", hasNavigation, test.wantNavigation, body)
 			}
 		})
 	}

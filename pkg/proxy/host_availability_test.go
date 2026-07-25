@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -8,6 +9,7 @@ import (
 	"time"
 
 	"go-reauth-proxy/pkg/gatewaylog"
+	"go-reauth-proxy/pkg/grpc/pb"
 	"go-reauth-proxy/pkg/models"
 )
 
@@ -221,10 +223,22 @@ func TestSelectRouteFiltersUnavailableHostRules(t *testing.T) {
 			{Host: "active.example.com", Target: "http://127.0.0.1:8080"},
 			{Host: "disabled.example.com", Target: "http://127.0.0.1:8081", Disabled: true},
 		},
+		AuthConfig: models.AuthConfig{
+			AuthURL:      "/api/auth/verify",
+			PreflightURL: "/api/auth/preflight",
+		},
+		authBridge: testAuthBridge{
+			verify: func(context.Context, *pb.VerifyAuthRequest) (*pb.VerifyAuthResponse, error) {
+				return &pb.VerifyAuthResponse{Success: true, Status: http.StatusOK}, nil
+			},
+		},
+		authCache:      newAuthStateCache(),
+		preflightCache: newPreflightStateCache(),
 	}
 	handler.publishRequestSnapshotLocked()
 
 	req := httptest.NewRequest(http.MethodGet, "http://gateway.example.com/__select__", nil)
+	req.AddCookie(&http.Cookie{Name: authSessionCookieName, Value: "ok"})
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 

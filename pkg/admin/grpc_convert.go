@@ -479,14 +479,20 @@ func protoToGatewayPortal(cfg *pb.GatewayPortalConfig) models.GatewayPortalConfi
 }
 
 func gatewayUnmatchedRouteToProto(cfg models.GatewayUnmatchedRouteConfig) *pb.GatewayUnmatchedRouteConfig {
-	return &pb.GatewayUnmatchedRouteConfig{Behavior: cfg.Behavior}
+	return &pb.GatewayUnmatchedRouteConfig{
+		Behavior:            cfg.Behavior,
+		UpstreamErrorDetail: cfg.UpstreamErrorDetail,
+	}
 }
 
 func protoToGatewayUnmatchedRoute(cfg *pb.GatewayUnmatchedRouteConfig) models.GatewayUnmatchedRouteConfig {
 	if cfg == nil {
 		return models.GatewayUnmatchedRouteConfig{}
 	}
-	return models.GatewayUnmatchedRouteConfig{Behavior: cfg.GetBehavior()}
+	return models.GatewayUnmatchedRouteConfig{
+		Behavior:            cfg.GetBehavior(),
+		UpstreamErrorDetail: cfg.GetUpstreamErrorDetail(),
+	}
 }
 
 func fnosPortIconHijackToProto(cfg models.FnosPortIconHijackConfig) *pb.FnosPortIconHijackConfig {

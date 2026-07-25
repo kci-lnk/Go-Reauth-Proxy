@@ -271,19 +271,22 @@ func TestGatewayControlGatewayUnmatchedRouteRoundTrip(t *testing.T) {
 	server := newGatewayControlTestServer(t, "secret")
 	ctx := authTestContext()
 	got, err := server.SetGatewayUnmatchedRouteConfig(ctx, &pb.GatewayUnmatchedRouteConfig{
-		Behavior: models.GatewayUnmatchedRouteBehaviorResetConnection,
+		Behavior:            models.GatewayUnmatchedRouteBehaviorResetConnection,
+		UpstreamErrorDetail: models.GatewayUpstreamErrorDetailMore,
 	})
 	if err != nil {
 		t.Fatalf("SetGatewayUnmatchedRouteConfig() returned error: %v", err)
 	}
-	if got.GetBehavior() != models.GatewayUnmatchedRouteBehaviorResetConnection {
+	if got.GetBehavior() != models.GatewayUnmatchedRouteBehaviorResetConnection ||
+		got.GetUpstreamErrorDetail() != models.GatewayUpstreamErrorDetailMore {
 		t.Fatalf("set response = %#v", got)
 	}
 	reloaded, err := server.GetGatewayUnmatchedRouteConfig(ctx, &emptypb.Empty{})
 	if err != nil {
 		t.Fatalf("GetGatewayUnmatchedRouteConfig() returned error: %v", err)
 	}
-	if reloaded.GetBehavior() != models.GatewayUnmatchedRouteBehaviorResetConnection {
+	if reloaded.GetBehavior() != models.GatewayUnmatchedRouteBehaviorResetConnection ||
+		reloaded.GetUpstreamErrorDetail() != models.GatewayUpstreamErrorDetailMore {
 		t.Fatalf("get response = %#v", reloaded)
 	}
 
@@ -295,6 +298,9 @@ func TestGatewayControlGatewayUnmatchedRouteRoundTrip(t *testing.T) {
 	}
 	if normalized.GetBehavior() != models.GatewayUnmatchedRouteBehaviorErrorPage {
 		t.Fatalf("invalid behavior normalized to %q", normalized.GetBehavior())
+	}
+	if normalized.GetUpstreamErrorDetail() != models.GatewayUpstreamErrorDetailLess {
+		t.Fatalf("missing upstream error detail normalized to %q", normalized.GetUpstreamErrorDetail())
 	}
 }
 

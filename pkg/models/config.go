@@ -381,17 +381,28 @@ func NormalizeGatewayPortalConfig(cfg GatewayPortalConfig) GatewayPortalConfig {
 const (
 	GatewayUnmatchedRouteBehaviorErrorPage       = "error_page"
 	GatewayUnmatchedRouteBehaviorResetConnection = "reset_connection"
+	GatewayUpstreamErrorDetailLess               = "less"
+	GatewayUpstreamErrorDetailMore               = "more"
 )
 
 type GatewayUnmatchedRouteConfig struct {
-	Behavior string `json:"behavior,omitempty" example:"error_page"`
+	Behavior            string `json:"behavior,omitempty" example:"error_page"`
+	UpstreamErrorDetail string `json:"upstream_error_detail,omitempty" example:"less"`
 }
 
 func NormalizeGatewayUnmatchedRouteConfig(cfg GatewayUnmatchedRouteConfig) GatewayUnmatchedRouteConfig {
+	behavior := GatewayUnmatchedRouteBehaviorErrorPage
 	if cfg.Behavior == GatewayUnmatchedRouteBehaviorResetConnection {
-		return GatewayUnmatchedRouteConfig{Behavior: GatewayUnmatchedRouteBehaviorResetConnection}
+		behavior = GatewayUnmatchedRouteBehaviorResetConnection
 	}
-	return GatewayUnmatchedRouteConfig{Behavior: GatewayUnmatchedRouteBehaviorErrorPage}
+	upstreamErrorDetail := GatewayUpstreamErrorDetailLess
+	if cfg.UpstreamErrorDetail == GatewayUpstreamErrorDetailMore {
+		upstreamErrorDetail = GatewayUpstreamErrorDetailMore
+	}
+	return GatewayUnmatchedRouteConfig{
+		Behavior:            behavior,
+		UpstreamErrorDetail: upstreamErrorDetail,
+	}
 }
 
 type FnosPortIconHijackConfig struct {

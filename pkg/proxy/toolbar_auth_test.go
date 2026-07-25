@@ -263,6 +263,34 @@ func TestUnavailablePublicHostHidesSelectLinkWithoutAuthenticatedIdentity(t *tes
 	if body := rec.Body.String(); strings.Contains(body, "/__select__") {
 		t.Fatalf("anonymous upstream error included select link: %s", body)
 	}
+	targetAddress := strings.TrimPrefix(targetURL, "http://")
+	if body := rec.Body.String(); strings.Contains(body, targetAddress) ||
+		strings.Contains(body, "connection refused") {
+		t.Fatalf("default upstream error exposed connection details: %s", body)
+	}
+}
+
+func TestUnavailablePublicHostCanShowConnectionDetailsForTroubleshooting(t *testing.T) {
+	target := newToolbarHTMLTarget(t)
+	targetURL := target.URL
+	target.Close()
+
+	handler := newPublicHostToolbarHandler(targetURL, testAuthBridge{})
+	handler.GatewayUnmatchedRoute.UpstreamErrorDetail = models.GatewayUpstreamErrorDetailMore
+	handler.publishRequestSnapshotLocked()
+	req := httptest.NewRequest(http.MethodGet, "http://public.example.com/", nil)
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusGatewayTimeout {
+		t.Fatalf("status = %d, want 504; body = %s", rec.Code, rec.Body.String())
+	}
+	targetAddress := strings.TrimPrefix(targetURL, "http://")
+	if body := rec.Body.String(); !strings.Contains(body, targetAddress) ||
+		!strings.Contains(body, "connection refused") {
+		t.Fatalf("detailed upstream error omitted connection details: %s", body)
+	}
 }
 
 func TestUnavailablePublicHostShowsSelectLinkForAuthenticatedIdentity(t *testing.T) {

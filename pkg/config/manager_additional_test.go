@@ -128,6 +128,25 @@ func TestManagerLoadNormalizesGatewayUnmatchedRouteBehavior(t *testing.T) {
 	}
 }
 
+func TestManagerLoadNormalizesGatewayUpstreamErrorDetail(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		raw  string
+		want string
+	}{
+		{name: "missing", raw: `{}`, want: models.GatewayUpstreamErrorDetailLess},
+		{name: "invalid", raw: `{"unmatched_route":{"upstream_error_detail":"debug"}}`, want: models.GatewayUpstreamErrorDetailLess},
+		{name: "more", raw: `{"unmatched_route":{"upstream_error_detail":"more"}}`, want: models.GatewayUpstreamErrorDetailMore},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := loadConfigFromJSON(t, tc.raw)
+			if got := cfg.UnmatchedRoute.UpstreamErrorDetail; got != tc.want {
+				t.Fatalf("upstream error detail = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestManagerPersistsGatewayUnmatchedRouteBehavior(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.json")
 	manager := NewManager(path)
@@ -136,6 +155,7 @@ func TestManagerPersistsGatewayUnmatchedRouteBehavior(t *testing.T) {
 		t.Fatalf("Load() returned error: %v", err)
 	}
 	cfg.UnmatchedRoute.Behavior = models.GatewayUnmatchedRouteBehaviorResetConnection
+	cfg.UnmatchedRoute.UpstreamErrorDetail = models.GatewayUpstreamErrorDetailMore
 	if err := manager.Save(cfg); err != nil {
 		t.Fatalf("Save() returned error: %v", err)
 	}
@@ -145,6 +165,9 @@ func TestManagerPersistsGatewayUnmatchedRouteBehavior(t *testing.T) {
 	}
 	if got := reloaded.UnmatchedRoute.Behavior; got != models.GatewayUnmatchedRouteBehaviorResetConnection {
 		t.Fatalf("reloaded behavior = %q, want reset_connection", got)
+	}
+	if got := reloaded.UnmatchedRoute.UpstreamErrorDetail; got != models.GatewayUpstreamErrorDetailMore {
+		t.Fatalf("reloaded upstream error detail = %q, want more", got)
 	}
 }
 

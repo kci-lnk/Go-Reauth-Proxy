@@ -1746,10 +1746,11 @@ func (x *GatewayPortalConfig) GetIconDragMode() string {
 }
 
 type GatewayUnmatchedRouteConfig struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Behavior      string                 `protobuf:"bytes,1,opt,name=behavior,proto3" json:"behavior,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state               protoimpl.MessageState `protogen:"open.v1"`
+	Behavior            string                 `protobuf:"bytes,1,opt,name=behavior,proto3" json:"behavior,omitempty"`
+	UpstreamErrorDetail string                 `protobuf:"bytes,2,opt,name=upstream_error_detail,json=upstreamErrorDetail,proto3" json:"upstream_error_detail,omitempty"`
+	unknownFields       protoimpl.UnknownFields
+	sizeCache           protoimpl.SizeCache
 }
 
 func (x *GatewayUnmatchedRouteConfig) Reset() {
@@ -1785,6 +1786,13 @@ func (*GatewayUnmatchedRouteConfig) Descriptor() ([]byte, []int) {
 func (x *GatewayUnmatchedRouteConfig) GetBehavior() string {
 	if x != nil {
 		return x.Behavior
+	}
+	return ""
+}
+
+func (x *GatewayUnmatchedRouteConfig) GetUpstreamErrorDetail() string {
+	if x != nil {
+		return x.UpstreamErrorDetail
 	}
 	return ""
 }
@@ -6736,9 +6744,10 @@ const file_fnknock_v1_gateway_proto_rawDesc = "" +
 	"\aenabled\x18\x01 \x01(\bR\aenabled\x12#\n" +
 	"\rdisplay_style\x18\x02 \x01(\tR\fdisplayStyle\x12\"\n" +
 	"\rshow_app_icon\x18\x03 \x01(\bR\vshowAppIcon\x12$\n" +
-	"\x0eicon_drag_mode\x18\x04 \x01(\tR\ficonDragMode\"9\n" +
+	"\x0eicon_drag_mode\x18\x04 \x01(\tR\ficonDragMode\"m\n" +
 	"\x1bGatewayUnmatchedRouteConfig\x12\x1a\n" +
-	"\bbehavior\x18\x01 \x01(\tR\bbehavior\"S\n" +
+	"\bbehavior\x18\x01 \x01(\tR\bbehavior\x122\n" +
+	"\x15upstream_error_detail\x18\x02 \x01(\tR\x13upstreamErrorDetail\"S\n" +
 	"\x18FnosPortIconHijackConfig\x12\x18\n" +
 	"\aenabled\x18\x01 \x01(\bR\aenabled\x12\x1d\n" +
 	"\n" +

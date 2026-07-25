@@ -51,12 +51,18 @@ func TestGatewayUnmatchedRouteConfigPersistsRestartsAndResets(t *testing.T) {
 	if got := restarted.GetGatewayUnmatchedRouteConfig().Behavior; got != models.GatewayUnmatchedRouteBehaviorResetConnection {
 		t.Fatalf("restarted behavior = %q, want reset_connection", got)
 	}
+	if got := restarted.GetGatewayUnmatchedRouteConfig().UpstreamErrorDetail; got != models.GatewayUpstreamErrorDetailLess {
+		t.Fatalf("restarted upstream error detail = %q, want less", got)
+	}
 
 	if err := restarted.ResetAllData(config.DefaultConfig()); err != nil {
 		t.Fatalf("ResetAllData: %v", err)
 	}
 	if got := restarted.GetGatewayUnmatchedRouteConfig().Behavior; got != models.GatewayUnmatchedRouteBehaviorErrorPage {
 		t.Fatalf("reset behavior = %q, want error_page", got)
+	}
+	if got := restarted.GetGatewayUnmatchedRouteConfig().UpstreamErrorDetail; got != models.GatewayUpstreamErrorDetailLess {
+		t.Fatalf("reset upstream error detail = %q, want less", got)
 	}
 }
 
@@ -452,5 +458,23 @@ func TestGatewayUnmatchedRouteErrorPageRemainsDefault(t *testing.T) {
 	handler.ServeHTTP(rec, req)
 	if rec.Code == 0 {
 		t.Fatal("legacy unmatched route did not return an HTTP response")
+	}
+}
+
+func TestUpstreamUnavailableMessageHidesDetailsByDefault(t *testing.T) {
+	err := errors.New("dial tcp 127.0.0.1:16601: connect: connection refused")
+	if got := upstreamUnavailableMessage(models.GatewayUnmatchedRouteConfig{}, err); got != "Upstream unavailable" {
+		t.Fatalf("message = %q, want redacted message", got)
+	}
+}
+
+func TestUpstreamUnavailableMessageCanShowMoreForTroubleshooting(t *testing.T) {
+	err := errors.New("dial tcp 127.0.0.1:16601: connect: connection refused")
+	cfg := models.GatewayUnmatchedRouteConfig{
+		UpstreamErrorDetail: models.GatewayUpstreamErrorDetailMore,
+	}
+	got := upstreamUnavailableMessage(cfg, err)
+	if !strings.Contains(got, "127.0.0.1:16601") || !strings.Contains(got, "connection refused") {
+		t.Fatalf("message = %q, want detailed upstream error", got)
 	}
 }

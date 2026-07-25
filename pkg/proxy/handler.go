@@ -3703,7 +3703,9 @@ func (h *Handler) SetGatewayUnmatchedRouteConfig(cfg models.GatewayUnmatchedRout
 		return normalized, saveErr
 	}
 	if event := debugProxyEvent("gateway_unmatched_route_config_set", ""); event != nil {
-		event.Str("behavior", normalized.Behavior).Send()
+		event.Str("behavior", normalized.Behavior).
+			Str("upstream_error_detail", normalized.UpstreamErrorDetail).
+			Send()
 	}
 
 	return normalized, nil
@@ -5745,6 +5747,14 @@ func (h *Handler) handleNoMatchRoute(w http.ResponseWriter, r *http.Request, sna
 	response.RouteNotFound(w, r, snapshot.rules, authenticated)
 }
 
+func upstreamUnavailableMessage(cfg models.GatewayUnmatchedRouteConfig, err error) string {
+	normalized := models.NormalizeGatewayUnmatchedRouteConfig(cfg)
+	if normalized.UpstreamErrorDetail == models.GatewayUpstreamErrorDetailMore && err != nil {
+		return "Upstream unavailable: " + err.Error()
+	}
+	return "Upstream unavailable"
+}
+
 func serveHostLocationResponse(w http.ResponseWriter, location models.HostLocation) {
 	for name, value := range location.Response.Headers {
 		w.Header().Set(name, value)
@@ -5861,7 +5871,7 @@ func (h *Handler) proxyToHostLocationTarget(w http.ResponseWriter, r *http.Reque
 					Send()
 			}
 			log.Printf("Host location proxy error: %v", err)
-			response.HTMLWithSelectLink(w, r, errors.CodeProxyTimeout, "Upstream unavailable: "+err.Error(), snapshot.rules, authResult.authenticated)
+			response.HTMLWithSelectLink(w, r, errors.CodeProxyTimeout, upstreamUnavailableMessage(snapshot.unmatchedRoute, err), snapshot.rules, authResult.authenticated)
 		},
 	}
 
@@ -6024,7 +6034,7 @@ func (h *Handler) proxyToHostTarget(w http.ResponseWriter, r *http.Request, snap
 					Send()
 			}
 			log.Printf("Host proxy error: %v", err)
-			response.HTMLWithSelectLink(w, r, errors.CodeProxyTimeout, "Upstream unavailable: "+err.Error(), snapshot.rules, authResult.authenticated)
+			response.HTMLWithSelectLink(w, r, errors.CodeProxyTimeout, upstreamUnavailableMessage(snapshot.unmatchedRoute, err), snapshot.rules, authResult.authenticated)
 		},
 	}
 
@@ -6187,7 +6197,7 @@ func (h *Handler) proxyToRuleTarget(w http.ResponseWriter, r *http.Request, snap
 					Send()
 			}
 			log.Printf("Proxy error: %v", err)
-			response.HTMLWithSelectLink(w, r, errors.CodeProxyTimeout, "Upstream unavailable: "+err.Error(), snapshot.rules, authResult.authenticated)
+			response.HTMLWithSelectLink(w, r, errors.CodeProxyTimeout, upstreamUnavailableMessage(snapshot.unmatchedRoute, err), snapshot.rules, authResult.authenticated)
 		},
 	}
 

@@ -125,7 +125,8 @@ func defaultConfig() *AppConfig {
 			IconDragMode: models.GatewayPortalIconDragModeCorners,
 		},
 		UnmatchedRoute: models.GatewayUnmatchedRouteConfig{
-			Behavior: models.GatewayUnmatchedRouteBehaviorErrorPage,
+			Behavior:            models.GatewayUnmatchedRouteBehaviorErrorPage,
+			UpstreamErrorDetail: models.GatewayUpstreamErrorDetailLess,
 		},
 		FnosPortIconHijack: models.FnosPortIconHijackConfig{
 			Enabled:   false,

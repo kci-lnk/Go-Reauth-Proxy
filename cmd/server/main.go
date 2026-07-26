@@ -636,13 +636,14 @@ func run(options runOptions) error {
 	}
 
 	var (
-		proxyHandler  *proxy.Handler
-		streamManager *stream.Manager
-		grpcServer    *internalGRPCServer
-		proxyStack    *proxyStack
-		httpServer    *http.Server
-		httpsServer   *http.Server
-		shutdownOnce  sync.Once
+		proxyHandler       *proxy.Handler
+		streamManager      *stream.Manager
+		fnosConnectIngress *proxy.FnosConnectIngress
+		grpcServer         *internalGRPCServer
+		proxyStack         *proxyStack
+		httpServer         *http.Server
+		httpsServer        *http.Server
+		shutdownOnce       sync.Once
 	)
 	shutdown := func() {
 		shutdownOnce.Do(func() {
@@ -661,6 +662,11 @@ func run(options runOptions) error {
 			}
 			if streamManager != nil {
 				streamManager.Stop()
+			}
+			if fnosConnectIngress != nil {
+				if err := fnosConnectIngress.Close(); err != nil {
+					log.Printf("Failed to stop FN Connect ingress: %v", err)
+				}
 			}
 			shutdownHTTPServers(shutdownCtx, httpServer, httpsServer)
 			if grpcServer != nil {
@@ -682,6 +688,7 @@ func run(options runOptions) error {
 	authBridgeManager := rpcbridge.NewAuthBridgeManager(internalRPCToken)
 	proxyHandler = proxy.NewHandler(resolvedAdminPort, options.ProxyPort, cfgManager, initialCfg, logsDir, systemEventClient)
 	proxyHandler.SetAuthBridgeManager(authBridgeManager)
+	fnosConnectIngress = proxy.NewFnosConnectIngress(proxyHandler)
 	configuredStreamRules := proxyHandler.GetStreamRules()
 	normalizedStreamRules := configuredStreamRules
 	if validatedStreamRules, validationErr := proxyHandler.ValidateStreamRules(configuredStreamRules); validationErr != nil {
@@ -729,7 +736,7 @@ func run(options runOptions) error {
 		)
 	}
 
-	adminServer := admin.NewServer(proxyHandler, resolvedAdminPort, cfgManager, initialCfg, streamManager)
+	adminServer := admin.NewServer(proxyHandler, resolvedAdminPort, cfgManager, initialCfg, streamManager, fnosConnectIngress)
 	controlServer := admin.NewGRPCServer(adminServer, internalRPCToken)
 	controlServer.SetShutdownRequest(cancel)
 	grpcServer, err = startInternalGRPCServer(resolvedAdminPort, internalRPCToken, controlServer, authBridgeManager)

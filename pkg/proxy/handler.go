@@ -4795,6 +4795,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}()
 
 	snapshot := h.snapshotForRequest()
+	fnosConnect := fnosConnectContext(r)
 	originalPath := r.URL.Path
 	cleanedPath := path.Clean(r.URL.Path)
 	if strings.HasSuffix(r.URL.Path, "/") && cleanedPath != "/" {
@@ -4813,7 +4814,11 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	clientIP = resolveClientIP(r, snapshot.authConfig, snapshot.proxyProtocolForce)
+	if fnosConnect != nil {
+		clientIP = fnosConnectClientIP(r)
+	} else {
+		clientIP = resolveClientIP(r, snapshot.authConfig, snapshot.proxyProtocolForce)
+	}
 	accessEntry.RemoteIP = clientIP
 	if event := debugProxyEvent("client_ip_resolved", requestID); event != nil {
 		event.Str("client_ip", logger.SanitizeLogString(clientIP)).
@@ -4827,7 +4832,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	crawlerBlocker := h.GetCrawlerBlockerConfig()
-	if crawlerBlocker.Enabled {
+	if fnosConnect == nil && crawlerBlocker.Enabled {
 		if isCrawlerBlockerRobotsPath(r.URL.Path) {
 			accessEntry.RouteType = "crawler_blocker"
 			accessEntry.RouteKey = crawlerBlockerRobotsPath
@@ -4874,6 +4879,9 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	matchedHostRule := matchHostRule(r, snapshot)
+	if fnosConnect != nil {
+		matchedHostRule = &fnosConnect.hostRule
+	}
 	if !h.IsClientIPVisibleForHost(clientIP, matchedHostRule, snapshot) {
 		accessEntry.RouteType = "visibility"
 		accessEntry.RouteKey = "cidr"
@@ -4914,7 +4922,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if response.IsFaviconPath(r.URL.Path) {
+	if fnosConnect == nil && response.IsFaviconPath(r.URL.Path) {
 		accessEntry.RouteType = "favicon"
 		accessEntry.RouteKey = r.URL.Path
 		accessEntry.Matched = true
@@ -4925,7 +4933,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if response.IsToolbarAssetPath(r.URL.Path) {
+	if fnosConnect == nil && response.IsToolbarAssetPath(r.URL.Path) {
 		accessEntry.RouteType = "toolbar_asset"
 		accessEntry.RouteKey = r.URL.Path
 		accessEntry.Matched = true
@@ -4933,8 +4941,8 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	isSelectRoute := r.URL.Path == "/__select__"
-	isAuthRoute := strings.HasPrefix(r.URL.Path, "/__auth__/")
+	isSelectRoute := fnosConnect == nil && r.URL.Path == "/__select__"
+	isAuthRoute := fnosConnect == nil && strings.HasPrefix(r.URL.Path, "/__auth__/")
 	matchedHostLocation := matchHostLocation(r, matchedHostRule)
 	if matchedHostRule != nil {
 		metrics.bindHost(h, matchedHostRule.Host)
@@ -5048,7 +5056,14 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if !h.allowReverseProxyRequest(w, r, clientIP, isAuthRoute, matchedHostRule, matchedHostLocation, matchedRule, requestID) {
 		return
 	}
-	wafRouteType, wafRouteKey, wafUpstream := wafRouteContext(r, snapshot, isAuthRoute, matchedHostRule, matchedHostLocation, matchedRule)
+	wafRouteType, wafRouteKey, wafUpstream := wafRouteContextForRequest(
+		r,
+		snapshot,
+		isAuthRoute,
+		matchedHostRule,
+		matchedHostLocation,
+		matchedRule,
+	)
 	wafRuntime := h.wafRuntime
 	if wafRuntime != nil && wafRuntime.Active() {
 		h.mu.RLock()
@@ -5247,6 +5262,10 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		accessEntry.RouteType = "host_rule"
 		accessEntry.RouteKey = matchedHostRule.Host
 		accessEntry.Upstream = matchedHostRule.Target
+		if fnosConnect != nil {
+			accessEntry.RouteType = fnosConnectRouteKey
+			accessEntry.RouteKey = fnosConnectRouteKey
+		}
 		authUpstreamTarget := matchedHostRule.Target
 		toolbarProbeTarget := matchedHostRule.Target
 		if matchedHostLocation != nil {
@@ -5999,6 +6018,12 @@ func (h *Handler) proxyToHostTarget(w http.ResponseWriter, r *http.Request, snap
 	targetSupportsHTMLFeatures := targetRuntime.supportsHTMLFeatures
 	omitForwardedHeaders := h.shouldOmitForwardedHeaders(transportTargetURL)
 	preserveHost := matchedRule.PreserveHost && !h.shouldOmitPreserveHost(transportTargetURL)
+	if fnosConnectContext(r) != nil {
+		// Relay-provided client identity and the original Host are part of the
+		// FN Connect protocol boundary, not a user host-rule preference.
+		omitForwardedHeaders = false
+		preserveHost = true
+	}
 	gatewayPortalEnabled := snapshot.gatewayPortal.Enabled
 	suppressToolbarForUA := response.ShouldSuppressToolbarForUserAgent(r.UserAgent())
 	toolbarCandidate := targetSupportsHTMLFeatures && gatewayPortalEnabled && authResult.authenticated && !matchedRule.SuppressToolbar && !authResult.suppressToolbar && !suppressToolbarForUA
@@ -6019,13 +6044,18 @@ func (h *Handler) proxyToHostTarget(w http.ResponseWriter, r *http.Request, snap
 		BufferPool: sharedProxyBufferPool,
 		Rewrite: func(pr *httputil.ProxyRequest) {
 			applyForwardedHeaderPolicy(pr.Out, pr.In, clientIP, omitForwardedHeaders)
+			if fnosConnectContext(pr.In) != nil {
+				applyFnosConnectForwardedHeaders(pr.Out, pr.In, clientIP)
+			}
 			copyUserAgentHeader(pr.Out, pr.In)
 			stripAdvancedAuthGrantCookie(pr.Out.Header)
 			pr.SetURL(transportTargetURL)
 			applyBasicAuthInjection(pr.Out, matchedRule.BasicAuth)
 			applyUpstreamPrivateIPv4HintHeader(pr.Out, transportTargetURL)
 			applyPreserveHostPolicy(pr.Out, pr.In, transportTargetURL, preserveHost)
-			h.maybePrepareFnosPortIconHijackHTTPProxyRequest(pr.Out)
+			if fnosConnectContext(pr.In) == nil {
+				h.maybePrepareFnosPortIconHijackHTTPProxyRequest(pr.Out)
+			}
 
 			if !preserveHost {
 				if origin := pr.In.Header.Get("Origin"); origin != "" {
@@ -6073,8 +6103,10 @@ func (h *Handler) proxyToHostTarget(w http.ResponseWriter, r *http.Request, snap
 			}
 			h.authCacheInvalidateForSetCookieMutation(r, clientIP, setCookies)
 		}
-		if err := h.maybeRewriteFnosPortIconHijackHTTPResponse(resp, snapshot.hostRules); err != nil {
-			return err
+		if fnosConnectContext(r) == nil {
+			if err := h.maybeRewriteFnosPortIconHijackHTTPResponse(resp, snapshot.hostRules); err != nil {
+				return err
+			}
 		}
 
 		needsToolbar := toolbarCandidate
@@ -6110,7 +6142,7 @@ func (h *Handler) proxyToHostTarget(w http.ResponseWriter, r *http.Request, snap
 		})
 	}
 
-	if h.maybeProxyFnosPortIconHijackWebSocket(w, r, fnosPortIconHijackWebSocketOptions{
+	if fnosConnectContext(r) == nil && h.maybeProxyFnosPortIconHijackWebSocket(w, r, fnosPortIconHijackWebSocketOptions{
 		targetURL:            transportTargetURL,
 		hostRules:            snapshot.hostRules,
 		clientIP:             clientIP,

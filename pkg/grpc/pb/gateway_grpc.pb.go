@@ -58,6 +58,8 @@ const (
 	GatewayControlService_SetGatewayUnmatchedRouteConfig_FullMethodName   = "/fnknock.v1.GatewayControlService/SetGatewayUnmatchedRouteConfig"
 	GatewayControlService_GetFnosPortIconHijackConfig_FullMethodName      = "/fnknock.v1.GatewayControlService/GetFnosPortIconHijackConfig"
 	GatewayControlService_SetFnosPortIconHijackConfig_FullMethodName      = "/fnknock.v1.GatewayControlService/SetFnosPortIconHijackConfig"
+	GatewayControlService_GetFnosConnectIngressStatus_FullMethodName      = "/fnknock.v1.GatewayControlService/GetFnosConnectIngressStatus"
+	GatewayControlService_SetFnosConnectIngressConfig_FullMethodName      = "/fnknock.v1.GatewayControlService/SetFnosConnectIngressConfig"
 	GatewayControlService_GetReverseProxyThrottleExemptIps_FullMethodName = "/fnknock.v1.GatewayControlService/GetReverseProxyThrottleExemptIps"
 	GatewayControlService_SetReverseProxyThrottleExemptIps_FullMethodName = "/fnknock.v1.GatewayControlService/SetReverseProxyThrottleExemptIps"
 	GatewayControlService_GetCommonLocationExemptions_FullMethodName      = "/fnknock.v1.GatewayControlService/GetCommonLocationExemptions"
@@ -110,6 +112,8 @@ type GatewayControlServiceClient interface {
 	SetGatewayUnmatchedRouteConfig(ctx context.Context, in *GatewayUnmatchedRouteConfig, opts ...grpc.CallOption) (*GatewayUnmatchedRouteConfig, error)
 	GetFnosPortIconHijackConfig(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*FnosPortIconHijackConfig, error)
 	SetFnosPortIconHijackConfig(ctx context.Context, in *FnosPortIconHijackConfig, opts ...grpc.CallOption) (*FnosPortIconHijackConfig, error)
+	GetFnosConnectIngressStatus(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*FnosConnectIngressStatus, error)
+	SetFnosConnectIngressConfig(ctx context.Context, in *FnosConnectIngressConfig, opts ...grpc.CallOption) (*FnosConnectIngressStatus, error)
 	GetReverseProxyThrottleExemptIps(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*ReverseProxyThrottleExemptIpsRuntime, error)
 	SetReverseProxyThrottleExemptIps(ctx context.Context, in *ReverseProxyThrottleExemptIpsRuntime, opts ...grpc.CallOption) (*ReverseProxyThrottleExemptIpsRuntime, error)
 	GetCommonLocationExemptions(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*CommonLocationExemptionsRuntime, error)
@@ -504,6 +508,26 @@ func (c *gatewayControlServiceClient) SetFnosPortIconHijackConfig(ctx context.Co
 	return out, nil
 }
 
+func (c *gatewayControlServiceClient) GetFnosConnectIngressStatus(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*FnosConnectIngressStatus, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(FnosConnectIngressStatus)
+	err := c.cc.Invoke(ctx, GatewayControlService_GetFnosConnectIngressStatus_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *gatewayControlServiceClient) SetFnosConnectIngressConfig(ctx context.Context, in *FnosConnectIngressConfig, opts ...grpc.CallOption) (*FnosConnectIngressStatus, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(FnosConnectIngressStatus)
+	err := c.cc.Invoke(ctx, GatewayControlService_SetFnosConnectIngressConfig_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *gatewayControlServiceClient) GetReverseProxyThrottleExemptIps(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*ReverseProxyThrottleExemptIpsRuntime, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(ReverseProxyThrottleExemptIpsRuntime)
@@ -590,6 +614,8 @@ type GatewayControlServiceServer interface {
 	SetGatewayUnmatchedRouteConfig(context.Context, *GatewayUnmatchedRouteConfig) (*GatewayUnmatchedRouteConfig, error)
 	GetFnosPortIconHijackConfig(context.Context, *emptypb.Empty) (*FnosPortIconHijackConfig, error)
 	SetFnosPortIconHijackConfig(context.Context, *FnosPortIconHijackConfig) (*FnosPortIconHijackConfig, error)
+	GetFnosConnectIngressStatus(context.Context, *emptypb.Empty) (*FnosConnectIngressStatus, error)
+	SetFnosConnectIngressConfig(context.Context, *FnosConnectIngressConfig) (*FnosConnectIngressStatus, error)
 	GetReverseProxyThrottleExemptIps(context.Context, *emptypb.Empty) (*ReverseProxyThrottleExemptIpsRuntime, error)
 	SetReverseProxyThrottleExemptIps(context.Context, *ReverseProxyThrottleExemptIpsRuntime) (*ReverseProxyThrottleExemptIpsRuntime, error)
 	GetCommonLocationExemptions(context.Context, *emptypb.Empty) (*CommonLocationExemptionsRuntime, error)
@@ -717,6 +743,12 @@ func (UnimplementedGatewayControlServiceServer) GetFnosPortIconHijackConfig(cont
 }
 func (UnimplementedGatewayControlServiceServer) SetFnosPortIconHijackConfig(context.Context, *FnosPortIconHijackConfig) (*FnosPortIconHijackConfig, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method SetFnosPortIconHijackConfig not implemented")
+}
+func (UnimplementedGatewayControlServiceServer) GetFnosConnectIngressStatus(context.Context, *emptypb.Empty) (*FnosConnectIngressStatus, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method GetFnosConnectIngressStatus not implemented")
+}
+func (UnimplementedGatewayControlServiceServer) SetFnosConnectIngressConfig(context.Context, *FnosConnectIngressConfig) (*FnosConnectIngressStatus, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method SetFnosConnectIngressConfig not implemented")
 }
 func (UnimplementedGatewayControlServiceServer) GetReverseProxyThrottleExemptIps(context.Context, *emptypb.Empty) (*ReverseProxyThrottleExemptIpsRuntime, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method GetReverseProxyThrottleExemptIps not implemented")
@@ -1435,6 +1467,42 @@ func _GatewayControlService_SetFnosPortIconHijackConfig_Handler(srv interface{},
 	return interceptor(ctx, in, info, handler)
 }
 
+func _GatewayControlService_GetFnosConnectIngressStatus_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(emptypb.Empty)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(GatewayControlServiceServer).GetFnosConnectIngressStatus(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: GatewayControlService_GetFnosConnectIngressStatus_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(GatewayControlServiceServer).GetFnosConnectIngressStatus(ctx, req.(*emptypb.Empty))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _GatewayControlService_SetFnosConnectIngressConfig_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(FnosConnectIngressConfig)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(GatewayControlServiceServer).SetFnosConnectIngressConfig(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: GatewayControlService_SetFnosConnectIngressConfig_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(GatewayControlServiceServer).SetFnosConnectIngressConfig(ctx, req.(*FnosConnectIngressConfig))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _GatewayControlService_GetReverseProxyThrottleExemptIps_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(emptypb.Empty)
 	if err := dec(in); err != nil {
@@ -1665,6 +1733,14 @@ var GatewayControlService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "SetFnosPortIconHijackConfig",
 			Handler:    _GatewayControlService_SetFnosPortIconHijackConfig_Handler,
+		},
+		{
+			MethodName: "GetFnosConnectIngressStatus",
+			Handler:    _GatewayControlService_GetFnosConnectIngressStatus_Handler,
+		},
+		{
+			MethodName: "SetFnosConnectIngressConfig",
+			Handler:    _GatewayControlService_SetFnosConnectIngressConfig_Handler,
 		},
 		{
 			MethodName: "GetReverseProxyThrottleExemptIps",

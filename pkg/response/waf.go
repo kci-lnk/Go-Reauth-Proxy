@@ -15,7 +15,7 @@ type WAFBlockPageOptions struct {
 const wafBlockedContent = `
 {{define "content"}}
 <div class="text-center px-5 max-w-md">
-	<img src="/__assets__/favicon/android-chrome-512x512.png" alt="Logo" style="width:64px;height:64px;margin:0 auto 1.25rem;display:block;border-radius:16px;">
+	<img src="{{.InlineLogoDataURL}}" alt="Logo" style="width:64px;height:64px;margin:0 auto 1.25rem;display:block;border-radius:16px;">
 	<h1 class="text-4xl font-semibold tracking-tight mb-4">{{.Title}}</h1>
 	<p class="text-lg text-gray-600 mb-8">{{.Message}}</p>
 	<div style="margin:0 auto 2rem;max-width:28rem;text-align:left;border:1px solid #e5e7eb;padding:1rem 1.25rem;background:#fafafa;">
@@ -59,6 +59,8 @@ func WAFBlocked(w http.ResponseWriter, r *http.Request, opts WAFBlockPageOptions
 	data := buildPageData(r, nil)
 	data.Title = i18n.T(locale, "gateway.wafBlockedTitle")
 	data.Message = i18n.T(locale, "gateway.wafBlockedMessage")
+	data.InlineIconDataURL = inlinePageIconDataURL
+	data.InlineLogoDataURL = inlinePageLogoDataURL
 	data.RequestPath = opts.TraceID
 	if data.RequestPath == "" {
 		data.RequestPath = strconv.Itoa(status)

@@ -154,6 +154,12 @@ func TestWAFBlockedHTMLResponse(t *testing.T) {
 		!strings.Contains(body, "waf_html_trace") {
 		t.Fatalf("expected title and trace in HTML body: %s", body)
 	}
+	if strings.Contains(body, "/__assets__/") {
+		t.Fatalf("WAF block page must not depend on gateway asset requests: %s", body)
+	}
+	if got := strings.Count(body, "data:image/png;base64,"); got != 2 {
+		t.Fatalf("expected embedded page icon and logo, got %d data URLs", got)
+	}
 }
 
 func TestWAFBlockedHTMLResponseUsesGlobalDefaultLocale(t *testing.T) {
@@ -180,5 +186,17 @@ func TestWAFBlockedHTMLResponseUsesGlobalDefaultLocale(t *testing.T) {
 		!strings.Contains(body, "Access denied by security policy.") ||
 		!strings.Contains(body, "waf_en_trace") {
 		t.Fatalf("expected English WAF body: %s", body)
+	}
+}
+
+func TestEmbeddedFaviconDataURLOnlyAcceptsEmbeddedImages(t *testing.T) {
+	if got := embeddedFaviconDataURL("/__assets__/favicon/favicon-32x32.png"); !strings.HasPrefix(string(got), "data:image/png;base64,") {
+		t.Fatalf("unexpected embedded favicon data URL: %q", got)
+	}
+	if got := embeddedFaviconDataURL("/__assets__/favicon/site.webmanifest"); got != "" {
+		t.Fatalf("manifest must not be exposed as an image data URL: %q", got)
+	}
+	if got := embeddedFaviconDataURL("/__assets__/favicon/missing.png"); got != "" {
+		t.Fatalf("unknown favicon path must not produce a data URL: %q", got)
 	}
 }

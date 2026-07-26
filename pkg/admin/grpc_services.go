@@ -367,6 +367,51 @@ func (s *GRPCServer) SetFnosPortIconHijackConfig(ctx context.Context, req *pb.Fn
 	return fnosPortIconHijackToProto(cfg), nil
 }
 
+func (s *GRPCServer) GetFnosConnectIngressStatus(ctx context.Context, _ *emptypb.Empty) (*pb.FnosConnectIngressStatus, error) {
+	if err := s.checkToken(ctx); err != nil {
+		return nil, err
+	}
+	return s.fnosConnectIngressStatus()
+}
+
+func (s *GRPCServer) SetFnosConnectIngressConfig(ctx context.Context, req *pb.FnosConnectIngressConfig) (*pb.FnosConnectIngressStatus, error) {
+	if err := s.checkToken(ctx); err != nil {
+		return nil, err
+	}
+	if req == nil {
+		return nil, grpcBadRequest("request is required")
+	}
+	if s.admin == nil || s.admin.FnosConnectIngress == nil {
+		return nil, status.Error(codes.Unavailable, "FN Connect ingress is unavailable")
+	}
+	if req.GetEnabled() && (req.GetUpstreamHttpPort() < 1 || req.GetUpstreamHttpPort() > 65535) {
+		return nil, grpcBadRequest("upstream_http_port must be between 1 and 65535")
+	}
+	if _, err := s.admin.FnosConnectIngress.Apply(req.GetEnabled(), int(req.GetUpstreamHttpPort())); err != nil {
+		return nil, grpcInternal("failed to apply FN Connect ingress config: %v", err)
+	}
+	return s.fnosConnectIngressStatus()
+}
+
+func (s *GRPCServer) fnosConnectIngressStatus() (*pb.FnosConnectIngressStatus, error) {
+	if s.admin == nil || s.admin.FnosConnectIngress == nil {
+		return nil, status.Error(codes.Unavailable, "FN Connect ingress is unavailable")
+	}
+	current := s.admin.FnosConnectIngress.Status()
+	waf := s.admin.ProxyHandler.GetWAFStatus()
+	return &pb.FnosConnectIngressStatus{
+		Enabled:          current.Enabled,
+		ListenerActive:   current.ListenerActive,
+		ListenPort:       int32(current.ListenPort),
+		UpstreamHttpPort: int32(current.UpstreamHTTPPort),
+		Ipv4Active:       current.IPv4Active,
+		Ipv6Active:       current.IPv6Active,
+		WafActive:        waf.Enabled && waf.Loaded && !strings.EqualFold(waf.Mode, "off"),
+		WafMode:          waf.Mode,
+		LastError:        current.LastError,
+	}, nil
+}
+
 func (s *GRPCServer) GetReverseProxyThrottleExemptIps(ctx context.Context, _ *emptypb.Empty) (*pb.ReverseProxyThrottleExemptIpsRuntime, error) {
 	if err := s.checkToken(ctx); err != nil {
 		return nil, err

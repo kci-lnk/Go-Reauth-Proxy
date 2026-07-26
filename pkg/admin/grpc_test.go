@@ -232,6 +232,47 @@ func TestGatewayControlSaveErrorPropagates(t *testing.T) {
 	}
 }
 
+func TestGatewayControlFnosConnectIngressIsAuthenticatedAndValidatesPorts(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "config.json")
+	cfgManager := config.NewManager(configPath)
+	initialCfg, err := cfgManager.Load()
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	proxyHandler := proxy.NewHandler(7996, 7999, cfgManager, initialCfg, filepath.Join(t.TempDir(), "logs"), nil)
+	ingress := proxy.NewFnosConnectIngress(proxyHandler)
+	defer ingress.Close()
+	server := NewGRPCServer(
+		NewServer(proxyHandler, 7996, cfgManager, initialCfg, nil, ingress),
+		"secret",
+	)
+
+	if _, err := server.GetFnosConnectIngressStatus(context.Background(), &emptypb.Empty{}); status.Code(err) != codes.Unauthenticated {
+		t.Fatalf("unauthenticated status = %v, want unauthenticated", status.Code(err))
+	}
+	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs(rpcbridge.InternalTokenMetadataKey, "secret"))
+	if _, err := server.SetFnosConnectIngressConfig(ctx, &pb.FnosConnectIngressConfig{Enabled: true}); status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("invalid port status = %v, want invalid argument", status.Code(err))
+	}
+	got, err := server.SetFnosConnectIngressConfig(ctx, &pb.FnosConnectIngressConfig{
+		Enabled:          true,
+		UpstreamHttpPort: 19122,
+	})
+	if err != nil {
+		t.Fatalf("enable ingress: %v", err)
+	}
+	if !got.GetListenerActive() || !got.GetIpv4Active() || !got.GetIpv6Active() || got.GetListenPort() == 0 {
+		t.Fatalf("unexpected ingress status: %#v", got)
+	}
+	disabled, err := server.SetFnosConnectIngressConfig(ctx, &pb.FnosConnectIngressConfig{})
+	if err != nil {
+		t.Fatalf("disable ingress: %v", err)
+	}
+	if disabled.GetEnabled() || disabled.GetListenerActive() {
+		t.Fatalf("ingress remained active: %#v", disabled)
+	}
+}
+
 func newGatewayControlTestServer(t *testing.T, token string) *GRPCServer {
 	t.Helper()
 	configPath := filepath.Join(t.TempDir(), "config.json")

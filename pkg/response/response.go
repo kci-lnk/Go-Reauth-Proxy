@@ -150,6 +150,8 @@ type pageData struct {
 	Detail            string
 	HTMLLang          string
 	Labels            map[string]string
+	InlineIconDataURL template.URL
+	InlineLogoDataURL template.URL
 }
 
 const baseStyle = `
@@ -165,10 +167,14 @@ const baseTemplate = `
 <head>
 	<meta charset="UTF-8">
 	<meta name="viewport" content="width=device-width, initial-scale=1.0">
+	{{if .InlineIconDataURL}}
+	<link rel="icon" type="image/png" sizes="32x32" href="{{.InlineIconDataURL}}">
+	{{else}}
 	<link rel="apple-touch-icon" sizes="180x180" href="/__assets__/favicon/apple-touch-icon.png">
 	<link rel="icon" type="image/png" sizes="32x32" href="/__assets__/favicon/favicon-32x32.png">
 	<link rel="icon" type="image/png" sizes="16x16" href="/__assets__/favicon/favicon-16x16.png">
 	<link rel="manifest" href="/__assets__/favicon/site.webmanifest">
+	{{end}}
 	<title>{{.Title}} - Go Reauth Proxy</title>
 	<style>` + baseStyle + `</style>
 </head>

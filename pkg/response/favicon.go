@@ -2,6 +2,8 @@ package response
 
 import (
 	"embed"
+	"encoding/base64"
+	"html/template"
 	"io/fs"
 	"mime"
 	"net/http"
@@ -20,6 +22,27 @@ var faviconFiles = map[string]string{
 	"/__assets__/favicon/android-chrome-192x192.png": "static/favicon/android-chrome-192x192.png",
 	"/__assets__/favicon/android-chrome-512x512.png": "static/favicon/android-chrome-512x512.png",
 	"/__assets__/favicon/site.webmanifest":           "static/favicon/site.webmanifest",
+}
+
+var (
+	inlinePageIconDataURL = embeddedFaviconDataURL("/__assets__/favicon/favicon-32x32.png")
+	inlinePageLogoDataURL = embeddedFaviconDataURL("/__assets__/favicon/android-chrome-192x192.png")
+)
+
+func embeddedFaviconDataURL(path string) template.URL {
+	embeddedPath, ok := faviconFiles[path]
+	if !ok {
+		return ""
+	}
+	data, err := fs.ReadFile(faviconFS, embeddedPath)
+	if err != nil {
+		return ""
+	}
+	contentType := mime.TypeByExtension(filepath.Ext(embeddedPath))
+	if contentType == "" || !strings.HasPrefix(contentType, "image/") {
+		return ""
+	}
+	return template.URL("data:" + contentType + ";base64," + base64.StdEncoding.EncodeToString(data))
 }
 
 // IsFaviconPath checks if the given URL path is a favicon-related static file.

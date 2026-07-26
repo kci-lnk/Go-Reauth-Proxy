@@ -26,11 +26,12 @@ import (
 const adminJSONBodyLimitBytes int64 = 1 << 20
 
 type Server struct {
-	ProxyHandler    *proxy.Handler
-	IptablesHandler *iptables.Handler
-	StreamManager   *stream.Manager
-	ConfigManager   *config.Manager
-	Port            int
+	ProxyHandler       *proxy.Handler
+	IptablesHandler    *iptables.Handler
+	StreamManager      *stream.Manager
+	FnosConnectIngress *proxy.FnosConnectIngress
+	ConfigManager      *config.Manager
+	Port               int
 }
 
 type ServerInfo struct {
@@ -58,7 +59,7 @@ type authConfigPatch struct {
 type reverseProxyThrottleExemptIPsRuntimeResponse = models.ReverseProxyThrottleExemptIPsRuntime
 type commonLocationExemptionsRuntimeResponse = models.CommonLocationExemptionsRuntime
 
-func NewServer(handler *proxy.Handler, port int, cfgManager *config.Manager, initialCfg *config.AppConfig, streamManager *stream.Manager) *Server {
+func NewServer(handler *proxy.Handler, port int, cfgManager *config.Manager, initialCfg *config.AppConfig, streamManager *stream.Manager, fnosConnectIngress ...*proxy.FnosConnectIngress) *Server {
 	iptablesChainName := "REAUTH_FW"
 	if initialCfg != nil && initialCfg.IptablesChainName != "" {
 		iptablesChainName = initialCfg.IptablesChainName
@@ -71,13 +72,17 @@ func NewServer(handler *proxy.Handler, port int, cfgManager *config.Manager, ini
 	})
 	iptablesHandler := iptables.NewHandler(iptablesManager, cfgManager)
 
-	return &Server{
+	server := &Server{
 		ProxyHandler:    handler,
 		IptablesHandler: iptablesHandler,
 		StreamManager:   streamManager,
 		ConfigManager:   cfgManager,
 		Port:            port,
 	}
+	if len(fnosConnectIngress) > 0 {
+		server.FnosConnectIngress = fnosConnectIngress[0]
+	}
+	return server
 }
 
 func iptablesDisabledByEnvironment() bool {

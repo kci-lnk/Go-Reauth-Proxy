@@ -47,6 +47,20 @@ func TestGatewayPortalConfigPreservesExplicitDisabledValue(t *testing.T) {
 	}
 }
 
+func TestNewGatewayPortalConfigPreservesExplicitDisabledValue(t *testing.T) {
+	cfg := NewGatewayPortalConfig(false, GatewayPortalDisplayStyleTitle, true, GatewayPortalIconDragModeFree)
+
+	normalized := NormalizeGatewayPortalConfig(cfg)
+	if normalized.Enabled {
+		t.Fatalf("explicitly disabled gateway portal config normalized to enabled: %+v", normalized)
+	}
+	if normalized.DisplayStyle != GatewayPortalDisplayStyleTitle ||
+		!normalized.ShowAppIcon ||
+		normalized.IconDragMode != GatewayPortalIconDragModeFree {
+		t.Fatalf("gateway portal fields were not preserved: %+v", normalized)
+	}
+}
+
 func TestGatewayPortalConfigPreservesFreeIconDragMode(t *testing.T) {
 	var cfg GatewayPortalConfig
 	if err := json.Unmarshal([]byte(`{"icon_drag_mode":"free"}`), &cfg); err != nil {

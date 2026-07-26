@@ -482,12 +482,12 @@ func protoToGatewayPortal(cfg *pb.GatewayPortalConfig) models.GatewayPortalConfi
 	if cfg == nil {
 		return models.GatewayPortalConfig{}
 	}
-	return models.GatewayPortalConfig{
-		Enabled:      cfg.GetEnabled(),
-		DisplayStyle: cfg.GetDisplayStyle(),
-		ShowAppIcon:  cfg.GetShowAppIcon(),
-		IconDragMode: cfg.GetIconDragMode(),
-	}
+	return models.NewGatewayPortalConfig(
+		cfg.GetEnabled(),
+		cfg.GetDisplayStyle(),
+		cfg.GetShowAppIcon(),
+		cfg.GetIconDragMode(),
+	)
 }
 
 func gatewayUnmatchedRouteToProto(cfg models.GatewayUnmatchedRouteConfig) *pb.GatewayUnmatchedRouteConfig {

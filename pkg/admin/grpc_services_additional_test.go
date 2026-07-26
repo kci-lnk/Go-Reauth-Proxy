@@ -320,6 +320,30 @@ func TestGatewayControlGatewayPortalRoundTrip(t *testing.T) {
 	}
 }
 
+func TestGatewayControlGatewayPortalPreservesDisabled(t *testing.T) {
+	server := newGatewayControlTestServer(t, "secret")
+	got, err := server.SetGatewayPortalConfig(authTestContext(), &pb.GatewayPortalConfig{
+		Enabled:      false,
+		DisplayStyle: models.GatewayPortalDisplayStyleTitle,
+		IconDragMode: models.GatewayPortalIconDragModeFree,
+		ShowAppIcon:  true,
+	})
+	if err != nil {
+		t.Fatalf("SetGatewayPortalConfig() returned error: %v", err)
+	}
+	if got.GetEnabled() {
+		t.Fatalf("gateway portal was re-enabled: %#v", got)
+	}
+
+	stored, err := server.GetGatewayPortalConfig(authTestContext(), &emptypb.Empty{})
+	if err != nil {
+		t.Fatalf("GetGatewayPortalConfig() returned error: %v", err)
+	}
+	if stored.GetEnabled() {
+		t.Fatalf("stored gateway portal was re-enabled: %#v", stored)
+	}
+}
+
 func TestGatewayControlGatewayUnmatchedRouteRoundTrip(t *testing.T) {
 	server := newGatewayControlTestServer(t, "secret")
 	ctx := authTestContext()

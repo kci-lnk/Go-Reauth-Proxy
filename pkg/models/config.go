@@ -333,6 +333,18 @@ type GatewayPortalConfig struct {
 	enabledSet   bool
 }
 
+// NewGatewayPortalConfig builds a portal config whose enabled value was
+// explicitly supplied by a caller rather than inferred from a legacy payload.
+func NewGatewayPortalConfig(enabled bool, displayStyle string, showAppIcon bool, iconDragMode string) GatewayPortalConfig {
+	return GatewayPortalConfig{
+		Enabled:      enabled,
+		DisplayStyle: displayStyle,
+		ShowAppIcon:  showAppIcon,
+		IconDragMode: iconDragMode,
+		enabledSet:   true,
+	}
+}
+
 func (cfg *GatewayPortalConfig) UnmarshalJSON(data []byte) error {
 	var raw struct {
 		Enabled      *bool  `json:"enabled"`

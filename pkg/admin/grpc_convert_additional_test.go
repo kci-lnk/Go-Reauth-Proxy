@@ -140,9 +140,20 @@ func TestCrawlerBlockerProtoRoundTrip(t *testing.T) {
 }
 
 func TestGatewayPortalProtoRoundTrip(t *testing.T) {
-	input := models.GatewayPortalConfig{Enabled: true, DisplayStyle: "title", ShowAppIcon: true, IconDragMode: "free"}
+	input := models.NewGatewayPortalConfig(true, "title", true, "free")
 	if got := protoToGatewayPortal(gatewayPortalToProto(input)); !reflect.DeepEqual(got, input) {
 		t.Fatalf("round trip = %#v", got)
+	}
+}
+
+func TestGatewayPortalProtoRoundTripPreservesDisabled(t *testing.T) {
+	input := models.NewGatewayPortalConfig(false, "title", true, "free")
+	got := protoToGatewayPortal(gatewayPortalToProto(input))
+	if !reflect.DeepEqual(got, input) {
+		t.Fatalf("round trip = %#v, want %#v", got, input)
+	}
+	if models.NormalizeGatewayPortalConfig(got).Enabled {
+		t.Fatalf("disabled portal normalized to enabled after proto round trip: %#v", got)
 	}
 }
 

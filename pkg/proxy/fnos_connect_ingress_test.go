@@ -232,6 +232,76 @@ func TestFnosConnectIngressRejectsInvalidPortAndNonLoopbackPeer(t *testing.T) {
 	}
 }
 
+func TestFnosConnectIngressAcceptsOnlyVerifiedDirectRedirect(t *testing.T) {
+	var seenClientIP string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seenClientIP = r.Header.Get("X-Real-IP")
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer upstream.Close()
+
+	ingress := NewFnosConnectIngress(newFnosConnectTestHandler())
+	defer ingress.Close()
+	status, err := ingress.Apply(true, fnosTestServerPort(t, upstream.URL))
+	if err != nil {
+		t.Fatalf("enable ingress: %v", err)
+	}
+
+	request := func(originalPort int, originalErr error) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodGet, "http://nas.example.test/", nil)
+		req.RemoteAddr = "[2001:db8::25]:4242"
+		req.Header.Set("X-Forwarded-For", "198.51.100.99")
+		req.Header.Set("X-Real-IP", "198.51.100.98")
+		req = req.WithContext(context.WithValue(
+			req.Context(),
+			fnosConnectConnMetadataKey{},
+			fnosConnectConnMetadata{
+				originalPort:   originalPort,
+				originalDstErr: originalErr,
+			},
+		))
+		recorder := httptest.NewRecorder()
+		ingress.serveHTTP(recorder, req)
+		return recorder
+	}
+
+	if got := request(status.ListenPort, nil).Code; got != http.StatusForbidden {
+		t.Fatalf("direct listener-port request status = %d, want 403", got)
+	}
+	if got := request(status.UpstreamHTTPPort, errors.New("missing conntrack state")).Code; got != http.StatusForbidden {
+		t.Fatalf("unverified redirected request status = %d, want 403", got)
+	}
+	if got := request(status.UpstreamHTTPPort, nil).Code; got != http.StatusNoContent {
+		t.Fatalf("verified redirected request status = %d, want 204", got)
+	}
+	if seenClientIP != "2001:db8::25" {
+		t.Fatalf("direct client IP = %q, want socket peer", seenClientIP)
+	}
+}
+
+func TestFnosConnectIngressBindsWildcardDualStackListeners(t *testing.T) {
+	var addresses []string
+	listen := func(network, address string) (net.Listener, error) {
+		addresses = append(addresses, network+" "+address)
+		return net.Listen(network, address)
+	}
+	ingress := newFnosConnectIngressWithListener(newFnosConnectTestHandler(), listen)
+	defer ingress.Close()
+	status, err := ingress.Apply(true, 5666)
+	if err != nil {
+		t.Fatalf("enable ingress: %v", err)
+	}
+	if len(addresses) != 2 {
+		t.Fatalf("listen addresses = %#v", addresses)
+	}
+	if addresses[0] != "tcp4 0.0.0.0:0" {
+		t.Fatalf("IPv4 listen address = %q", addresses[0])
+	}
+	if addresses[1] != "tcp6 "+net.JoinHostPort("::", strconv.Itoa(status.ListenPort)) {
+		t.Fatalf("IPv6 listen address = %q", addresses[1])
+	}
+}
+
 func TestFnosConnectIngressRollsBackIPv4WhenIPv6BindFails(t *testing.T) {
 	var ipv4Address string
 	listen := func(network, address string) (net.Listener, error) {
@@ -343,8 +413,19 @@ func TestFnosConnectClientIPHeaderFallbacks(t *testing.T) {
 	}
 }
 
+func TestFnosConnectClientIPDoesNotTrustDirectPeerHeaders(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "http://localhost/", nil)
+	req.RemoteAddr = "203.0.113.77:34567"
+	req.Header.Set("X-Forwarded-For", "198.51.100.5")
+	req.Header.Set("X-Real-IP", "198.51.100.6")
+	if got := fnosConnectClientIP(req); got != "203.0.113.77" {
+		t.Fatalf("direct client IP = %q, want socket peer", got)
+	}
+}
+
 func TestFnosConnectForwardedHeadersOnlyTrustHTTPProtocols(t *testing.T) {
 	in := httptest.NewRequest(http.MethodGet, "http://listener.internal/", nil)
+	in.RemoteAddr = "127.0.0.1:34567"
 	in.Host = "nas.example.test"
 	in.Header.Set("X-Forwarded-Host", "relay.example.test, ignored.example.test")
 	in.Header.Set("X-Forwarded-Proto", "javascript")
@@ -364,6 +445,33 @@ func TestFnosConnectForwardedHeadersOnlyTrustHTTPProtocols(t *testing.T) {
 	}
 	if got := out.Header.Get("X-Forwarded-Proto"); got != "http" {
 		t.Fatalf("X-Forwarded-Proto = %q, want listener scheme fallback", got)
+	}
+}
+
+func TestFnosConnectForwardedHeadersIgnoreDirectPeerOverrides(t *testing.T) {
+	in := httptest.NewRequest(http.MethodGet, "http://listener.internal/", nil)
+	in.RemoteAddr = "203.0.113.77:34567"
+	in.Host = "nas.example.test"
+	in.Header.Set("X-Forwarded-Host", "attacker.example.test")
+	in.Header.Set("X-Forwarded-Proto", "https")
+	in.Header.Set("X-Forwarded-Port", "443")
+	in.Header.Set("Forwarded", "for=198.51.100.9;proto=https")
+	out := in.Clone(in.Context())
+	out.Header = in.Header.Clone()
+
+	applyFnosConnectForwardedHeaders(out, in, "203.0.113.77")
+
+	if got := out.Header.Get("X-Forwarded-Host"); got != "nas.example.test" {
+		t.Fatalf("direct forwarded host = %q, want request host", got)
+	}
+	if got := out.Header.Get("X-Forwarded-Proto"); got != "http" {
+		t.Fatalf("direct forwarded protocol = %q, want socket scheme", got)
+	}
+	if got := out.Header.Get("X-Forwarded-Port"); got != "" {
+		t.Fatalf("direct forwarded port override was retained: %q", got)
+	}
+	if got := out.Header.Get("Forwarded"); got != "" {
+		t.Fatalf("direct standardized Forwarded override was retained: %q", got)
 	}
 }
 

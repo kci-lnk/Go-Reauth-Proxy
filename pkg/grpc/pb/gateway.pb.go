@@ -6608,9 +6608,9 @@ func (*AuthBridgeEnvelope_AuthorizeHttpRequest) isAuthBridgeEnvelope_Payload() {
 
 func (*AuthBridgeEnvelope_AuthorizeHttpResponse) isAuthBridgeEnvelope_Payload() {}
 
-// FnosConnectIngressConfig controls the private loopback-only HTTP ingress
-// used by the fnOS Connect relay. The listener port is intentionally allocated
-// by the gateway and returned through FnosConnectIngressStatus.
+// FnosConnectIngressConfig controls the protected HTTP ingress used by fnOS
+// Connect relay and direct P2P traffic. The listener port is intentionally
+// allocated by the gateway and returned through FnosConnectIngressStatus.
 type FnosConnectIngressConfig struct {
 	state            protoimpl.MessageState `protogen:"open.v1"`
 	Enabled          bool                   `protobuf:"varint,1,opt,name=enabled,proto3" json:"enabled,omitempty"`

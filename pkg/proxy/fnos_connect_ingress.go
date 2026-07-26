@@ -25,10 +25,19 @@ type fnosConnectRequestContext struct {
 
 type fnosConnectRequestContextKey struct{}
 
-// FnosConnectIngressStatus is a snapshot of the private FN Connect listener.
-// The Rust control plane uses the listener port to build cgroup-scoped
-// iptables/ip6tables rules; it never exposes this listener on a non-loopback
-// address.
+type fnosConnectConnMetadata struct {
+	loopback       bool
+	originalPort   int
+	originalDstErr error
+}
+
+type fnosConnectConnMetadataKey struct{}
+
+type fnosConnectOriginalDstFunc func(net.Conn) (int, error)
+
+// FnosConnectIngressStatus is a snapshot of the protected FN Connect listener.
+// The Rust control plane uses the listener port to build cgroup-scoped OUTPUT
+// redirects for relay traffic and PREROUTING redirects for direct P2P traffic.
 type FnosConnectIngressStatus struct {
 	Enabled          bool
 	ListenerActive   bool
@@ -41,17 +50,21 @@ type FnosConnectIngressStatus struct {
 
 type fnosConnectListenFunc func(network, address string) (net.Listener, error)
 
-// FnosConnectIngress owns a dual-stack loopback-only HTTP ingress. Requests
-// enter the regular Handler pipeline through a synthetic, auth-free host rule,
-// so WAF, throttling, blacklist checks, traffic counters and access logs stay
-// consistent with ordinary reverse-proxy traffic.
+// FnosConnectIngress owns a protected dual-stack HTTP ingress. Loopback peers
+// carry fnOS relay traffic. Non-loopback peers are accepted only when Linux
+// reports that their connection was redirected from the configured fnOS HTTP
+// port, so the random listener port is not a second public entry point.
+// Requests enter the regular Handler pipeline through a synthetic, auth-free
+// host rule, keeping WAF, throttling, blacklist checks, traffic counters and
+// access logs consistent with ordinary reverse-proxy traffic.
 type FnosConnectIngress struct {
-	mu       sync.Mutex
-	handler  *Handler
-	listen   fnosConnectListenFunc
-	server   *http.Server
-	listener []net.Listener
-	status   FnosConnectIngressStatus
+	mu          sync.Mutex
+	handler     *Handler
+	listen      fnosConnectListenFunc
+	originalDst fnosConnectOriginalDstFunc
+	server      *http.Server
+	listener    []net.Listener
+	status      FnosConnectIngressStatus
 }
 
 func NewFnosConnectIngress(handler *Handler) *FnosConnectIngress {
@@ -62,7 +75,11 @@ func newFnosConnectIngressWithListener(handler *Handler, listen fnosConnectListe
 	if listen == nil {
 		listen = net.Listen
 	}
-	return &FnosConnectIngress{handler: handler, listen: listen}
+	return &FnosConnectIngress{
+		handler:     handler,
+		listen:      listen,
+		originalDst: fnosConnectOriginalDestinationPort,
+	}
 }
 
 func (i *FnosConnectIngress) Status() FnosConnectIngressStatus {
@@ -107,19 +124,19 @@ func (i *FnosConnectIngress) Apply(enabled bool, upstreamHTTPPort int) (FnosConn
 	var err error
 	var ipv6Err error
 	for attempt := 0; attempt < fnosConnectBindMaxAttempts; attempt++ {
-		ipv4, err = i.listen("tcp4", "127.0.0.1:0")
+		ipv4, err = i.listen("tcp4", "0.0.0.0:0")
 		if err != nil {
-			i.status.LastError = fmt.Sprintf("bind IPv4 loopback listener: %v", err)
+			i.status.LastError = fmt.Sprintf("bind IPv4 FN Connect listener: %v", err)
 			return i.status, errors.New(i.status.LastError)
 		}
 		tcpAddr, ok := ipv4.Addr().(*net.TCPAddr)
 		if !ok || tcpAddr.Port < 1 || tcpAddr.Port > 65535 {
 			_ = ipv4.Close()
-			i.status.LastError = "bind IPv4 loopback listener returned an invalid TCP address"
+			i.status.LastError = "bind IPv4 FN Connect listener returned an invalid TCP address"
 			return i.status, errors.New(i.status.LastError)
 		}
 		port = tcpAddr.Port
-		ipv6, ipv6Err = i.listen("tcp6", net.JoinHostPort("::1", strconv.Itoa(port)))
+		ipv6, ipv6Err = i.listen("tcp6", net.JoinHostPort("::", strconv.Itoa(port)))
 		if ipv6Err == nil {
 			break
 		}
@@ -129,7 +146,7 @@ func (i *FnosConnectIngress) Apply(enabled bool, upstreamHTTPPort int) (FnosConn
 	if ipv6 == nil {
 		i.status = FnosConnectIngressStatus{
 			LastError: fmt.Sprintf(
-				"bind IPv6 loopback listener after %d attempts: %v",
+				"bind IPv6 FN Connect listener after %d attempts: %v",
 				fnosConnectBindMaxAttempts,
 				ipv6Err,
 			),
@@ -139,6 +156,13 @@ func (i *FnosConnectIngress) Apply(enabled bool, upstreamHTTPPort int) (FnosConn
 
 	server := &http.Server{
 		Handler: http.HandlerFunc(i.serveHTTP),
+		ConnContext: func(ctx context.Context, conn net.Conn) context.Context {
+			return context.WithValue(
+				ctx,
+				fnosConnectConnMetadataKey{},
+				i.connectionMetadata(conn),
+			)
+		},
 		// FN Connect carries browser and websocket traffic. Keep header limits
 		// bounded while allowing upgraded connections to remain open.
 		ReadHeaderTimeout: 10 * time.Second,
@@ -191,17 +215,38 @@ func (i *FnosConnectIngress) recordError(err error) (FnosConnectIngressStatus, e
 	return i.status, err
 }
 
-func (i *FnosConnectIngress) serveHTTP(w http.ResponseWriter, r *http.Request) {
-	host, _, err := net.SplitHostPort(strings.TrimSpace(r.RemoteAddr))
-	if err != nil || !net.ParseIP(host).IsLoopback() {
-		http.Error(w, "FN Connect ingress only accepts loopback traffic", http.StatusForbidden)
-		return
+func (i *FnosConnectIngress) connectionMetadata(conn net.Conn) fnosConnectConnMetadata {
+	metadata := fnosConnectConnMetadata{}
+	if conn == nil {
+		metadata.originalDstErr = errors.New("FN Connect connection is unavailable")
+		return metadata
 	}
+	metadata.loopback = clientAddressIsLoopback(conn.RemoteAddr().String())
+	if metadata.loopback {
+		return metadata
+	}
+	if i.originalDst == nil {
+		metadata.originalDstErr = errors.New("FN Connect original destination resolver is unavailable")
+		return metadata
+	}
+	metadata.originalPort, metadata.originalDstErr = i.originalDst(conn)
+	return metadata
+}
 
+func (i *FnosConnectIngress) serveHTTP(w http.ResponseWriter, r *http.Request) {
 	i.mu.Lock()
 	port := i.status.UpstreamHTTPPort
 	active := i.status.ListenerActive && i.status.Enabled
 	i.mu.Unlock()
+
+	loopback := clientAddressIsLoopback(r.RemoteAddr)
+	if !loopback {
+		metadata, ok := r.Context().Value(fnosConnectConnMetadataKey{}).(fnosConnectConnMetadata)
+		if !ok || metadata.loopback || metadata.originalDstErr != nil || metadata.originalPort != port {
+			http.Error(w, "FN Connect ingress requires a verified redirected connection", http.StatusForbidden)
+			return
+		}
+	}
 	if !active || port < 1 || port > 65535 {
 		http.Error(w, "FN Connect ingress is not active", http.StatusServiceUnavailable)
 		return
@@ -253,11 +298,13 @@ func fnosConnectClientIP(r *http.Request) string {
 	if r == nil {
 		return ""
 	}
-	if ip := firstForwardedClientIP(r.Header.Get("X-Forwarded-For")); ip != "" {
-		return ip
-	}
-	if ip := normalizeIPAddress(r.Header.Get("X-Real-IP")); ip != "" {
-		return ip
+	if clientAddressIsLoopback(r.RemoteAddr) {
+		if ip := firstForwardedClientIP(r.Header.Get("X-Forwarded-For")); ip != "" {
+			return ip
+		}
+		if ip := normalizeIPAddress(r.Header.Get("X-Real-IP")); ip != "" {
+			return ip
+		}
 	}
 	return normalizeClientIP(r.RemoteAddr)
 }
@@ -266,20 +313,49 @@ func applyFnosConnectForwardedHeaders(out, in *http.Request, clientIP string) {
 	if out == nil || in == nil {
 		return
 	}
+	loopback := clientAddressIsLoopback(in.RemoteAddr)
+	if !loopback {
+		for name := range out.Header {
+			normalized := strings.ToLower(strings.TrimSpace(name))
+			if normalized == "forwarded" || strings.HasPrefix(normalized, "x-forwarded-") {
+				out.Header.Del(name)
+			}
+		}
+	}
 	out.Header.Set("X-Real-IP", clientIP)
 	out.Header.Set("X-Forwarded-For", clientIP)
 
-	forwardedHost := strings.TrimSpace(firstForwardedValue(in.Header.Get("X-Forwarded-Host")))
-	if forwardedHost == "" {
-		forwardedHost = in.Host
+	forwardedHost := in.Host
+	if loopback {
+		if trusted := strings.TrimSpace(firstForwardedValue(in.Header.Get("X-Forwarded-Host"))); trusted != "" {
+			forwardedHost = trusted
+		}
 	}
 	out.Header.Set("X-Forwarded-Host", forwardedHost)
 
-	forwardedProto := strings.ToLower(strings.TrimSpace(firstForwardedValue(in.Header.Get("X-Forwarded-Proto"))))
-	if forwardedProto != "http" && forwardedProto != "https" {
-		forwardedProto = requestScheme(in)
+	forwardedProto := directRequestScheme(in)
+	if loopback {
+		if trusted := strings.ToLower(strings.TrimSpace(firstForwardedValue(in.Header.Get("X-Forwarded-Proto")))); trusted == "http" || trusted == "https" {
+			forwardedProto = trusted
+		}
 	}
 	out.Header.Set("X-Forwarded-Proto", forwardedProto)
+}
+
+func clientAddressIsLoopback(remoteAddr string) bool {
+	host, _, err := net.SplitHostPort(strings.TrimSpace(remoteAddr))
+	if err != nil {
+		return false
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
+func directRequestScheme(request *http.Request) string {
+	if request != nil && request.TLS != nil {
+		return "https"
+	}
+	return "http"
 }
 
 func wafRouteContextForRequest(

@@ -323,6 +323,9 @@ const (
 
 	GatewayPortalIconDragModeCorners = "corners"
 	GatewayPortalIconDragModeFree    = "free"
+
+	GatewayPortalVersionV1 = "v1"
+	GatewayPortalVersionV2 = "v2"
 )
 
 type GatewayPortalConfig struct {
@@ -330,17 +333,19 @@ type GatewayPortalConfig struct {
 	DisplayStyle string `json:"display_style,omitempty" example:"domain"`
 	ShowAppIcon  bool   `json:"show_app_icon,omitempty" example:"false"`
 	IconDragMode string `json:"icon_drag_mode,omitempty" example:"corners"`
+	Version      string `json:"version,omitempty" example:"v1"`
 	enabledSet   bool
 }
 
 // NewGatewayPortalConfig builds a portal config whose enabled value was
 // explicitly supplied by a caller rather than inferred from a legacy payload.
-func NewGatewayPortalConfig(enabled bool, displayStyle string, showAppIcon bool, iconDragMode string) GatewayPortalConfig {
+func NewGatewayPortalConfig(enabled bool, displayStyle string, showAppIcon bool, iconDragMode string, version string) GatewayPortalConfig {
 	return GatewayPortalConfig{
 		Enabled:      enabled,
 		DisplayStyle: displayStyle,
 		ShowAppIcon:  showAppIcon,
 		IconDragMode: iconDragMode,
+		Version:      version,
 		enabledSet:   true,
 	}
 }
@@ -351,6 +356,7 @@ func (cfg *GatewayPortalConfig) UnmarshalJSON(data []byte) error {
 		DisplayStyle string `json:"display_style"`
 		ShowAppIcon  bool   `json:"show_app_icon"`
 		IconDragMode string `json:"icon_drag_mode"`
+		Version      string `json:"version"`
 	}
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return err
@@ -365,6 +371,7 @@ func (cfg *GatewayPortalConfig) UnmarshalJSON(data []byte) error {
 	cfg.DisplayStyle = raw.DisplayStyle
 	cfg.ShowAppIcon = raw.ShowAppIcon
 	cfg.IconDragMode = raw.IconDragMode
+	cfg.Version = raw.Version
 	return nil
 }
 
@@ -382,6 +389,12 @@ func NormalizeGatewayPortalConfig(cfg GatewayPortalConfig) GatewayPortalConfig {
 				return GatewayPortalIconDragModeFree
 			}
 			return GatewayPortalIconDragModeCorners
+		}(),
+		Version: func() string {
+			if cfg.Version == GatewayPortalVersionV2 {
+				return GatewayPortalVersionV2
+			}
+			return GatewayPortalVersionV1
 		}(),
 		enabledSet: true,
 	}

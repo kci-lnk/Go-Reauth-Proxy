@@ -311,11 +311,11 @@ func TestGatewayControlCrawlerBlockerRoundTrip(t *testing.T) {
 
 func TestGatewayControlGatewayPortalRoundTrip(t *testing.T) {
 	server := newGatewayControlTestServer(t, "secret")
-	got, err := server.SetGatewayPortalConfig(authTestContext(), &pb.GatewayPortalConfig{Enabled: true, DisplayStyle: models.GatewayPortalDisplayStyleTitle, IconDragMode: models.GatewayPortalIconDragModeFree, ShowAppIcon: true})
+	got, err := server.SetGatewayPortalConfig(authTestContext(), &pb.GatewayPortalConfig{Enabled: true, DisplayStyle: models.GatewayPortalDisplayStyleTitle, IconDragMode: models.GatewayPortalIconDragModeFree, ShowAppIcon: true, Version: models.GatewayPortalVersionV2})
 	if err != nil {
 		t.Fatalf("SetGatewayPortalConfig() returned error: %v", err)
 	}
-	if got.GetDisplayStyle() != models.GatewayPortalDisplayStyleTitle || got.GetIconDragMode() != models.GatewayPortalIconDragModeFree {
+	if got.GetDisplayStyle() != models.GatewayPortalDisplayStyleTitle || got.GetIconDragMode() != models.GatewayPortalIconDragModeFree || got.GetVersion() != models.GatewayPortalVersionV2 {
 		t.Fatalf("portal = %#v", got)
 	}
 }
@@ -327,6 +327,7 @@ func TestGatewayControlGatewayPortalPreservesDisabled(t *testing.T) {
 		DisplayStyle: models.GatewayPortalDisplayStyleTitle,
 		IconDragMode: models.GatewayPortalIconDragModeFree,
 		ShowAppIcon:  true,
+		Version:      models.GatewayPortalVersionV2,
 	})
 	if err != nil {
 		t.Fatalf("SetGatewayPortalConfig() returned error: %v", err)

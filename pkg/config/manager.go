@@ -123,6 +123,7 @@ func defaultConfig() *AppConfig {
 			DisplayStyle: models.GatewayPortalDisplayStyleDomain,
 			ShowAppIcon:  false,
 			IconDragMode: models.GatewayPortalIconDragModeCorners,
+			Version:      models.GatewayPortalVersionV1,
 		},
 		UnmatchedRoute: models.GatewayUnmatchedRouteConfig{
 			Behavior:            models.GatewayUnmatchedRouteBehaviorErrorPage,

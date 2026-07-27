@@ -1086,10 +1086,14 @@ const toolbarFaviconMaxBytes = 128 * 1024
 const toolbarRuntimeDataExpression = `(window.__REAUTH_PROXY_TOOLBAR_DATA__ || {})`
 
 var (
-	toolbarTemplatePrefix string
-	toolbarTemplateSuffix string
-	toolbarRuntime        []byte
-	toolbarAssetPath      string
+	toolbarTemplatePrefix   string
+	toolbarTemplateSuffix   string
+	toolbarRuntime          []byte
+	toolbarAssetPath        string
+	toolbarV2TemplatePrefix string
+	toolbarV2TemplateSuffix string
+	toolbarV2Runtime        []byte
+	toolbarV2AssetPath      string
 )
 
 func init() {
@@ -1107,6 +1111,7 @@ func init() {
 	toolbarAssetPath = "/__assets__/toolbar/toolbar." + hex.EncodeToString(digest[:]) + ".js"
 	toolbarTemplatePrefix = `<script id="reauth-proxy-toolbar-loader">window.__REAUTH_PROXY_TOOLBAR_DATA__=`
 	toolbarTemplateSuffix = `;(function(d){var s=d.createElement("script");s.src="` + toolbarAssetPath + `";s.defer=true;(d.head||d.documentElement).appendChild(s);})(document);</script>`
+	initToolbarV2Runtime()
 }
 
 type toolbarLabels struct {
@@ -1118,6 +1123,11 @@ type toolbarLabels struct {
 	Go                 string `json:"go"`
 	NoRoutesConfigured string `json:"noRoutesConfigured"`
 	Ungrouped          string `json:"ungrouped"`
+	Applications       string `json:"applications"`
+	All                string `json:"all"`
+	MoreActions        string `json:"moreActions"`
+	Close              string `json:"close"`
+	Current            string `json:"current"`
 }
 
 func ShouldSuppressToolbarForUserAgent(userAgent string) bool {
@@ -1321,16 +1331,27 @@ func GenerateToolbarWithPrefilteredHostsForLocale(locale string, filteredRules [
 		Go:                 i18n.T(locale, "gateway.go"),
 		NoRoutesConfigured: i18n.T(locale, "gateway.noRoutesConfigured"),
 		Ungrouped:          i18n.T(locale, "gateway.ungrouped"),
+		Applications:       i18n.T(locale, "gateway.applications"),
+		All:                i18n.T(locale, "gateway.all"),
+		MoreActions:        i18n.T(locale, "gateway.moreActions"),
+		Close:              i18n.T(locale, "gateway.close"),
+		Current:            i18n.T(locale, "gateway.current"),
 	}
 	return renderToolbarTemplateData(filteredRules, filteredHostRules, currentPath, currentHost, normalizedExcludedHost, normalizedPortal, labels)
 }
 
 func renderToolbarTemplateData(rules []models.Rule, hostRules []models.HostRule, currentPath string, currentHost string, normalizedExcludedHost string, portalConfig models.GatewayPortalConfig, labels toolbarLabels) string {
+	templatePrefix := toolbarTemplatePrefix
+	templateSuffix := toolbarTemplateSuffix
+	if portalConfig.Version == models.GatewayPortalVersionV2 {
+		templatePrefix = toolbarV2TemplatePrefix
+		templateSuffix = toolbarV2TemplateSuffix
+	}
 	var b strings.Builder
-	b.Grow(len(toolbarTemplatePrefix) + estimateToolbarPayloadSize(rules, hostRules, currentPath, currentHost, normalizedExcludedHost, portalConfig, labels) + len(toolbarTemplateSuffix))
-	b.WriteString(toolbarTemplatePrefix)
+	b.Grow(len(templatePrefix) + estimateToolbarPayloadSize(rules, hostRules, currentPath, currentHost, normalizedExcludedHost, portalConfig, labels) + len(templateSuffix))
+	b.WriteString(templatePrefix)
 	writeToolbarPayloadJSON(&b, rules, hostRules, currentPath, currentHost, normalizedExcludedHost, portalConfig, labels)
-	b.WriteString(toolbarTemplateSuffix)
+	b.WriteString(templateSuffix)
 	return b.String()
 }
 
@@ -1401,6 +1422,16 @@ func writeToolbarPayloadJSON(b *strings.Builder, rules []models.Rule, hostRules 
 	writeJSONString(b, labels.NoRoutesConfigured)
 	b.WriteString(`,"ungrouped":`)
 	writeJSONString(b, labels.Ungrouped)
+	b.WriteString(`,"applications":`)
+	writeJSONString(b, labels.Applications)
+	b.WriteString(`,"all":`)
+	writeJSONString(b, labels.All)
+	b.WriteString(`,"moreActions":`)
+	writeJSONString(b, labels.MoreActions)
+	b.WriteString(`,"close":`)
+	writeJSONString(b, labels.Close)
+	b.WriteString(`,"current":`)
+	writeJSONString(b, labels.Current)
 	b.WriteString(`}}`)
 }
 
@@ -1409,7 +1440,8 @@ func estimateToolbarPayloadSize(rules []models.Rule, hostRules []models.HostRule
 		len(portalConfig.IconDragMode) +
 		len(labels.Logout) + len(labels.LogoutTitle) + len(labels.LogoutMessage) +
 		len(labels.Cancel) + len(labels.Confirm) + len(labels.Go) + len(labels.NoRoutesConfigured)
-	size += len(labels.Ungrouped)
+	size += len(labels.Ungrouped) + len(labels.Applications) + len(labels.All) +
+		len(labels.MoreActions) + len(labels.Close) + len(labels.Current)
 	for _, rule := range rules {
 		size += len(rule.Path) + 16
 	}

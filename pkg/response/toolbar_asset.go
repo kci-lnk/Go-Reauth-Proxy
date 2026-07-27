@@ -14,9 +14,18 @@ func ToolbarAssetPath() string {
 	return toolbarAssetPath
 }
 
+// ToolbarAssetPathForVersion returns the content-addressed runtime URL for a
+// normalized portal version.
+func ToolbarAssetPathForVersion(version string) string {
+	if version == "v2" {
+		return toolbarV2AssetPath
+	}
+	return toolbarAssetPath
+}
+
 // IsToolbarAssetPath reports whether path names the current toolbar runtime.
 func IsToolbarAssetPath(requestPath string) bool {
-	return requestPath == toolbarAssetPath
+	return requestPath == toolbarAssetPath || requestPath == toolbarV2AssetPath
 }
 
 // ServeToolbarAsset serves the immutable, content-addressed toolbar runtime.
@@ -33,5 +42,11 @@ func ServeToolbarAsset(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/javascript; charset=utf-8")
 	w.Header().Set("Cache-Control", toolbarAssetCacheControl)
 	w.Header().Set("X-Content-Type-Options", "nosniff")
-	http.ServeContent(w, r, path.Base(toolbarAssetPath), time.Time{}, bytes.NewReader(toolbarRuntime))
+	runtimePath := toolbarAssetPath
+	runtimeBody := toolbarRuntime
+	if r.URL.Path == toolbarV2AssetPath {
+		runtimePath = toolbarV2AssetPath
+		runtimeBody = toolbarV2Runtime
+	}
+	http.ServeContent(w, r, path.Base(runtimePath), time.Time{}, bytes.NewReader(runtimeBody))
 }

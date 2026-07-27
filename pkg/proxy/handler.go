@@ -4113,6 +4113,7 @@ func (h *Handler) SetGatewayPortalConfig(cfg models.GatewayPortalConfig) (models
 		event.Bool("enabled", normalized.Enabled).
 			Str("display_style", logger.SanitizeLogString(normalized.DisplayStyle)).
 			Str("icon_drag_mode", logger.SanitizeLogString(normalized.IconDragMode)).
+			Str("version", logger.SanitizeLogString(normalized.Version)).
 			Bool("show_app_icon", normalized.ShowAppIcon).
 			Send()
 	}

@@ -141,7 +141,8 @@ func TestGatewayPortalConfigZeroValueNormalizesToEnabledDomainCorners(t *testing
 
 	if !normalized.Enabled ||
 		normalized.DisplayStyle != GatewayPortalDisplayStyleDomain ||
-		normalized.IconDragMode != GatewayPortalIconDragModeCorners {
+		normalized.IconDragMode != GatewayPortalIconDragModeCorners ||
+		normalized.Version != GatewayPortalVersionV1 {
 		t.Fatalf("unexpected normalized zero portal config: %#v", normalized)
 	}
 }

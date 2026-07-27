@@ -1699,6 +1699,7 @@ type GatewayPortalConfig struct {
 	DisplayStyle  string                 `protobuf:"bytes,2,opt,name=display_style,json=displayStyle,proto3" json:"display_style,omitempty"`
 	ShowAppIcon   bool                   `protobuf:"varint,3,opt,name=show_app_icon,json=showAppIcon,proto3" json:"show_app_icon,omitempty"`
 	IconDragMode  string                 `protobuf:"bytes,4,opt,name=icon_drag_mode,json=iconDragMode,proto3" json:"icon_drag_mode,omitempty"`
+	Version       string                 `protobuf:"bytes,5,opt,name=version,proto3" json:"version,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1757,6 +1758,13 @@ func (x *GatewayPortalConfig) GetShowAppIcon() bool {
 func (x *GatewayPortalConfig) GetIconDragMode() string {
 	if x != nil {
 		return x.IconDragMode
+	}
+	return ""
+}
+
+func (x *GatewayPortalConfig) GetVersion() string {
+	if x != nil {
+		return x.Version
 	}
 	return ""
 }
@@ -6947,12 +6955,13 @@ const file_fnknock_v1_gateway_proto_rawDesc = "" +
 	"\x14CrawlerBlockerConfig\x12\x18\n" +
 	"\aenabled\x18\x01 \x01(\bR\aenabled\x12\x1d\n" +
 	"\n" +
-	"updated_at\x18\x02 \x01(\tR\tupdatedAt\"\x9e\x01\n" +
+	"updated_at\x18\x02 \x01(\tR\tupdatedAt\"\xb8\x01\n" +
 	"\x13GatewayPortalConfig\x12\x18\n" +
 	"\aenabled\x18\x01 \x01(\bR\aenabled\x12#\n" +
 	"\rdisplay_style\x18\x02 \x01(\tR\fdisplayStyle\x12\"\n" +
 	"\rshow_app_icon\x18\x03 \x01(\bR\vshowAppIcon\x12$\n" +
-	"\x0eicon_drag_mode\x18\x04 \x01(\tR\ficonDragMode\"m\n" +
+	"\x0eicon_drag_mode\x18\x04 \x01(\tR\ficonDragMode\x12\x18\n" +
+	"\aversion\x18\x05 \x01(\tR\aversion\"m\n" +
 	"\x1bGatewayUnmatchedRouteConfig\x12\x1a\n" +
 	"\bbehavior\x18\x01 \x01(\tR\bbehavior\x122\n" +
 	"\x15upstream_error_detail\x18\x02 \x01(\tR\x13upstreamErrorDetail\"S\n" +

@@ -48,7 +48,7 @@ func TestGatewayPortalConfigPreservesExplicitDisabledValue(t *testing.T) {
 }
 
 func TestNewGatewayPortalConfigPreservesExplicitDisabledValue(t *testing.T) {
-	cfg := NewGatewayPortalConfig(false, GatewayPortalDisplayStyleTitle, true, GatewayPortalIconDragModeFree)
+	cfg := NewGatewayPortalConfig(false, GatewayPortalDisplayStyleTitle, true, GatewayPortalIconDragModeFree, GatewayPortalVersionV2)
 
 	normalized := NormalizeGatewayPortalConfig(cfg)
 	if normalized.Enabled {
@@ -56,8 +56,25 @@ func TestNewGatewayPortalConfigPreservesExplicitDisabledValue(t *testing.T) {
 	}
 	if normalized.DisplayStyle != GatewayPortalDisplayStyleTitle ||
 		!normalized.ShowAppIcon ||
-		normalized.IconDragMode != GatewayPortalIconDragModeFree {
+		normalized.IconDragMode != GatewayPortalIconDragModeFree ||
+		normalized.Version != GatewayPortalVersionV2 {
 		t.Fatalf("gateway portal fields were not preserved: %+v", normalized)
+	}
+}
+
+func TestGatewayPortalConfigVersionDefaultsToV1AndPreservesV2(t *testing.T) {
+	var legacy GatewayPortalConfig
+	if err := json.Unmarshal([]byte(`{"display_style":"title"}`), &legacy); err != nil {
+		t.Fatalf("unmarshal legacy gateway portal config: %v", err)
+	}
+	if got := NormalizeGatewayPortalConfig(legacy).Version; got != GatewayPortalVersionV1 {
+		t.Fatalf("legacy version = %q, want v1", got)
+	}
+	if got := NormalizeGatewayPortalConfig(GatewayPortalConfig{Version: "future"}).Version; got != GatewayPortalVersionV1 {
+		t.Fatalf("invalid version = %q, want v1", got)
+	}
+	if got := NormalizeGatewayPortalConfig(GatewayPortalConfig{Version: GatewayPortalVersionV2}).Version; got != GatewayPortalVersionV2 {
+		t.Fatalf("v2 version = %q, want v2", got)
 	}
 }
 

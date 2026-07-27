@@ -1,10 +1,11 @@
 package events
 
 const (
-	FnEventGatewayThrottleBlocked  = "FN_EVENT_GATEWAY_THROTTLE_BLOCKED"
-	FnEventLevelWarn               = "WARN"
-	SystemEventSourceGoReauthProxy = "GO_REAUTH_PROXY"
-	SystemEventSubjectKindIP       = "IP"
+	FnEventGatewayThrottleBlocked   = "FN_EVENT_GATEWAY_THROTTLE_BLOCKED"
+	FnEventGatewayVisibilityBlocked = "FN_EVENT_GATEWAY_VISIBILITY_BLOCKED"
+	FnEventLevelWarn                = "WARN"
+	SystemEventSourceGoReauthProxy  = "GO_REAUTH_PROXY"
+	SystemEventSubjectKindIP        = "IP"
 )
 
 type SystemEventSubject struct {
@@ -34,4 +35,18 @@ type GatewayThrottleBlockedPayload struct {
 	Host              string `json:"host,omitempty"`
 	Path              string `json:"path,omitempty"`
 	IsAuthRoute       bool   `json:"is_auth_route"`
+}
+
+type GatewayVisibilityBlockedPayload struct {
+	IP              string `json:"ip"`
+	BlockedAt       string `json:"blocked_at"`
+	Method          string `json:"method,omitempty"`
+	Scheme          string `json:"scheme,omitempty"`
+	Host            string `json:"host,omitempty"`
+	Path            string `json:"path,omitempty"`
+	RouteType       string `json:"route_type,omitempty"`
+	RouteKey        string `json:"route_key,omitempty"`
+	VisibilityScope string `json:"visibility_scope"`
+	VisibilityMode  string `json:"visibility_mode"`
+	Status          int    `json:"status"`
 }

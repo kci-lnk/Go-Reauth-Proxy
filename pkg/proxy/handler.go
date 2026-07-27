@@ -149,6 +149,9 @@ type Handler struct {
 	wafRuntime                 *proxywaf.Runtime
 	systemEventClient          *events.Client
 	throttleEventQueue         chan gatewayThrottleBlockedEvent
+	visibilityEventQueue       chan gatewayVisibilityBlockedEvent
+	visibilityDropped          atomic.Uint64
+	visibilityDropWarnNano     atomic.Int64
 }
 
 func (h *Handler) SetAuthBridgeManager(manager *rpcbridge.AuthBridgeManager) {
@@ -1635,6 +1638,7 @@ func NewHandler(adminPort int, proxyPort int, cfgManager *config.Manager, initia
 		}
 	}
 	h.startGatewayThrottleEventWorker()
+	h.startGatewayVisibilityEventWorker()
 	return h
 }
 
@@ -2219,6 +2223,119 @@ func (h *Handler) emitGatewayThrottleBlockedEvent(args gatewayThrottleBlockedEve
 	})
 	if err != nil {
 		log.Printf("Failed to publish gateway throttle event for %s: %v", normalizedIP, err)
+	}
+}
+
+const (
+	gatewayVisibilityEventQueueSize        = 64
+	gatewayVisibilityEventDedupeKey        = "gateway-visibility:global"
+	gatewayVisibilityEventDedupeTTLSeconds = 60
+	gatewayVisibilityDropLogInterval       = time.Minute
+)
+
+type gatewayVisibilityBlockedEvent struct {
+	ClientIP        string
+	BlockedAt       time.Time
+	Method          string
+	Scheme          string
+	Host            string
+	Path            string
+	RouteType       string
+	RouteKey        string
+	VisibilityScope string
+	VisibilityMode  string
+}
+
+func (h *Handler) startGatewayVisibilityEventWorker() {
+	if h == nil || h.systemEventClient == nil {
+		return
+	}
+	if h.visibilityEventQueue == nil {
+		h.visibilityEventQueue = make(chan gatewayVisibilityBlockedEvent, gatewayVisibilityEventQueueSize)
+	}
+	go func(queue <-chan gatewayVisibilityBlockedEvent) {
+		for event := range queue {
+			h.emitGatewayVisibilityBlockedEvent(event)
+		}
+	}(h.visibilityEventQueue)
+}
+
+func (h *Handler) enqueueGatewayVisibilityBlockedEvent(event gatewayVisibilityBlockedEvent) {
+	if h == nil || h.systemEventClient == nil || h.visibilityEventQueue == nil {
+		return
+	}
+	select {
+	case h.visibilityEventQueue <- event:
+	default:
+		dropped, shouldLog := h.recordDroppedGatewayVisibilityEvent(time.Now())
+		if shouldLog {
+			log.Printf("Gateway visibility event queue full; dropped %d events", dropped)
+		}
+	}
+}
+
+func (h *Handler) recordDroppedGatewayVisibilityEvent(now time.Time) (uint64, bool) {
+	if h == nil {
+		return 0, false
+	}
+	dropped := h.visibilityDropped.Add(1)
+	nowNano := now.UnixNano()
+	for {
+		last := h.visibilityDropWarnNano.Load()
+		if last > 0 && nowNano-last < int64(gatewayVisibilityDropLogInterval) {
+			return dropped, false
+		}
+		if h.visibilityDropWarnNano.CompareAndSwap(last, nowNano) {
+			return dropped, true
+		}
+	}
+}
+
+func (h *Handler) emitGatewayVisibilityBlockedEvent(args gatewayVisibilityBlockedEvent) {
+	client := h.systemEventClient
+	if client == nil {
+		return
+	}
+
+	normalizedIP := normalizeClientIP(args.ClientIP)
+	if normalizedIP == "" {
+		normalizedIP = strings.TrimSpace(args.ClientIP)
+	}
+	if normalizedIP == "" {
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	err := client.Publish(ctx, 0, events.SystemEventPublishInput{
+		Type:             events.FnEventGatewayVisibilityBlocked,
+		Source:           events.SystemEventSourceGoReauthProxy,
+		Level:            events.FnEventLevelWarn,
+		HappenedAt:       args.BlockedAt.UTC().Format(time.RFC3339Nano),
+		DedupeKey:        gatewayVisibilityEventDedupeKey,
+		DedupeTTLSeconds: gatewayVisibilityEventDedupeTTLSeconds,
+		Subject: &events.SystemEventSubject{
+			Kind: events.SystemEventSubjectKindIP,
+			ID:   normalizedIP,
+		},
+		Tags: []string{"gateway", "visibility", "security"},
+		Payload: events.GatewayVisibilityBlockedPayload{
+			IP:              normalizedIP,
+			BlockedAt:       args.BlockedAt.UTC().Format(time.RFC3339Nano),
+			Method:          args.Method,
+			Scheme:          args.Scheme,
+			Host:            args.Host,
+			Path:            args.Path,
+			RouteType:       args.RouteType,
+			RouteKey:        args.RouteKey,
+			VisibilityScope: args.VisibilityScope,
+			VisibilityMode:  args.VisibilityMode,
+			Status:          499,
+		},
+	})
+	if err != nil {
+		log.Printf("Failed to publish gateway visibility event for %s: %v", normalizedIP, err)
 	}
 }
 
@@ -3743,6 +3860,91 @@ func (h *Handler) IsClientIPVisibleForHost(clientIP string, rule *models.HostRul
 	return visibility.containsPrefixes(clientIP, prefixes, true)
 }
 
+func gatewayVisibilityPolicyContext(rule *models.HostRule, snapshot requestSnapshot) (string, string) {
+	if rule == nil || normalizeRequestHost(rule.Host) == normalizeRequestHost(snapshot.authConfig.AuthHost) {
+		return "gateway", models.HostVisibilityModeInherit
+	}
+	if models.NormalizeHostVisibilityMode(rule.Visibility.Mode) == models.HostVisibilityModeCustom {
+		return "host", models.HostVisibilityModeCustom
+	}
+	return "gateway", models.HostVisibilityModeInherit
+}
+
+func gatewayVisibilityRouteContext(r *http.Request, snapshot requestSnapshot, rule *models.HostRule, fnosConnect bool) (string, string) {
+	if fnosConnect {
+		return fnosConnectRouteKey, fnosConnectRouteKey
+	}
+	requestPath := ""
+	if r != nil && r.URL != nil {
+		requestPath = r.URL.Path
+	}
+	isAuthRoute := strings.HasPrefix(requestPath, "/__auth__/")
+	if isAuthRoute {
+		return "auth_proxy", requestPath
+	}
+	if requestPath == "/__select__" {
+		return "select", requestPath
+	}
+
+	matchedHostLocation := matchHostLocation(r, rule)
+	if rule != nil {
+		matchedHostLocation, _, _ = enforceReservedFnosShareRoute(
+			requestPath,
+			snapshot,
+			rule,
+			matchedHostLocation,
+			nil,
+			"",
+		)
+		if matchedHostLocation != nil {
+			return "host_location", hostLocationRouteKey(rule, matchedHostLocation)
+		}
+		return "host_rule", rule.Host
+	}
+
+	var matchedRule *models.Rule
+	needsSlashRedirect := ""
+	if r != nil && r.URL != nil {
+		matchedRule, needsSlashRedirect = matchRule(r, snapshot)
+		_, matchedRule, needsSlashRedirect = enforceReservedFnosShareRoute(
+			requestPath,
+			snapshot,
+			nil,
+			nil,
+			matchedRule,
+			needsSlashRedirect,
+		)
+	}
+	if matchedRule != nil {
+		return "path_rule", matchedRule.Path
+	}
+	if needsSlashRedirect != "" {
+		return "slash_redirect", needsSlashRedirect
+	}
+
+	resetUnmatchedConnection := snapshot.unmatchedRoute.Behavior ==
+		models.GatewayUnmatchedRouteBehaviorResetConnection
+	if !resetUnmatchedConnection && r != nil {
+		defaultHostRule := snapshot.defaultHostRule
+		if defaultHostRule != nil && !hostRuleAvailableNow(defaultHostRule, time.Now()) {
+			defaultHostRule = nil
+		}
+		if buildDefaultHostRuleRedirectURL(r, defaultHostRule) != "" {
+			return "default_host_redirect", defaultHostRule.Host
+		}
+	}
+	if snapshot.defaultRule != nil && !isReservedFnosSharePath(snapshot.defaultRule.Path) {
+		return "path_rule", snapshot.defaultRule.Path
+	}
+	if resetUnmatchedConnection && r != nil {
+		return "unmatched_route_blocked", requestHostForRouting(r)
+	}
+	if r != nil {
+		return "not_found", requestHostForRouting(r)
+	}
+	return "not_found", ""
+}
+
 func (h *Handler) GetGeneralBlacklistRecordForClientIP(clientIP string) (models.GeneralBlacklistRecord, bool) {
 	h.mu.RLock()
 	runtime := h.generalBlacklist
@@ -5102,8 +5304,25 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		accessEntry.RouteKey = "cidr"
 		accessEntry.AuthDecision = "visibility_denied"
 		loggedStatusCode = 499
+		visibilityScope, visibilityMode := gatewayVisibilityPolicyContext(matchedHostRule, snapshot)
+		routeType, routeKey := gatewayVisibilityRouteContext(r, snapshot, matchedHostRule, fnosConnect != nil)
+		h.enqueueGatewayVisibilityBlockedEvent(gatewayVisibilityBlockedEvent{
+			ClientIP:        clientIP,
+			BlockedAt:       time.Now(),
+			Method:          r.Method,
+			Scheme:          requestScheme(r),
+			Host:            r.Host,
+			Path:            r.URL.Path,
+			RouteType:       routeType,
+			RouteKey:        routeKey,
+			VisibilityScope: visibilityScope,
+			VisibilityMode:  visibilityMode,
+		})
 		if event := debugProxyEvent("visibility_denied", requestID); event != nil {
-			event.Str("client_ip", logger.SanitizeLogString(clientIP)).Send()
+			event.Str("client_ip", logger.SanitizeLogString(clientIP)).
+				Str("visibility_scope", visibilityScope).
+				Str("visibility_mode", visibilityMode).
+				Send()
 		}
 		h.abortConnection(w)
 		return

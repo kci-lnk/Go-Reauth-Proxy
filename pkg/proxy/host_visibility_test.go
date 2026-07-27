@@ -1,11 +1,17 @@
 package proxy
 
 import (
+	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"reflect"
+	"strconv"
 	"testing"
+	"time"
 
+	"go-reauth-proxy/pkg/events"
 	"go-reauth-proxy/pkg/models"
 )
 
@@ -337,5 +343,579 @@ func TestCustomHostVisibilityDenialKeeps499AndAccessLogBehavior(t *testing.T) {
 	entry := result.Items[0]
 	if entry.Status != 499 || entry.RouteType != "visibility" || entry.AuthDecision != "visibility_denied" {
 		t.Fatalf("visibility access log = %#v", entry)
+	}
+}
+
+func TestGatewayVisibilityPolicyContextUsesEffectivePolicy(t *testing.T) {
+	snapshot := requestSnapshot{
+		authConfig: models.AuthConfig{AuthHost: "auth.example.test"},
+	}
+	cases := []struct {
+		name      string
+		rule      *models.HostRule
+		wantScope string
+		wantMode  string
+	}{
+		{name: "unmatched", wantScope: "gateway", wantMode: models.HostVisibilityModeInherit},
+		{
+			name:      "inherited host",
+			rule:      &models.HostRule{Host: "app.example.test", Visibility: models.HostRuleVisibility{Mode: models.HostVisibilityModeInherit}},
+			wantScope: "gateway",
+			wantMode:  models.HostVisibilityModeInherit,
+		},
+		{
+			name:      "custom host",
+			rule:      &models.HostRule{Host: "app.example.test", Visibility: models.HostRuleVisibility{Mode: models.HostVisibilityModeCustom}},
+			wantScope: "host",
+			wantMode:  models.HostVisibilityModeCustom,
+		},
+		{
+			name:      "auth host ignores custom mode",
+			rule:      &models.HostRule{Host: "AUTH.EXAMPLE.TEST", Visibility: models.HostRuleVisibility{Mode: models.HostVisibilityModeCustom}},
+			wantScope: "gateway",
+			wantMode:  models.HostVisibilityModeInherit,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			scope, mode := gatewayVisibilityPolicyContext(tc.rule, snapshot)
+			if scope != tc.wantScope || mode != tc.wantMode {
+				t.Fatalf("policy context = (%q, %q), want (%q, %q)", scope, mode, tc.wantScope, tc.wantMode)
+			}
+		})
+	}
+}
+
+func TestGatewayVisibilityRouteContextCoversGatewayEntrypoints(t *testing.T) {
+	hostRule := &models.HostRule{Host: "app.example.test"}
+	cases := []struct {
+		name      string
+		request   *http.Request
+		snapshot  requestSnapshot
+		rule      *models.HostRule
+		fnConnect bool
+		wantType  string
+		wantKey   string
+	}{
+		{
+			name:     "host rule",
+			request:  httptest.NewRequest(http.MethodGet, "https://app.example.test/private", nil),
+			rule:     hostRule,
+			wantType: "host_rule",
+			wantKey:  "app.example.test",
+		},
+		{
+			name:    "host location",
+			request: httptest.NewRequest(http.MethodGet, "https://app.example.test/api/private", nil),
+			rule: &models.HostRule{
+				Host: "app.example.test",
+				Locations: []models.HostLocation{{
+					Path:  "/api",
+					Match: models.HostLocationMatchPrefix,
+				}},
+			},
+			wantType: "host_location",
+			wantKey:  "app.example.test /api",
+		},
+		{
+			name:     "path rule",
+			request:  httptest.NewRequest(http.MethodGet, "https://gateway.example.test/apps/private", nil),
+			snapshot: requestSnapshot{rules: []models.Rule{{Path: "/apps", Target: "http://127.0.0.1:8080"}}},
+			wantType: "path_rule",
+			wantKey:  "/apps",
+		},
+		{
+			name:     "path rule slash redirect",
+			request:  httptest.NewRequest(http.MethodGet, "https://gateway.example.test/apps", nil),
+			snapshot: requestSnapshot{rules: []models.Rule{{Path: "/apps", Target: "http://127.0.0.1:8080"}}},
+			wantType: "slash_redirect",
+			wantKey:  "/apps/",
+		},
+		{
+			name:     "default path rule",
+			request:  httptest.NewRequest(http.MethodGet, "https://gateway.example.test/private", nil),
+			snapshot: requestSnapshot{defaultRule: &models.Rule{Path: "/", Target: "http://127.0.0.1:8080"}},
+			wantType: "path_rule",
+			wantKey:  "/",
+		},
+		{
+			name:    "default host redirect",
+			request: httptest.NewRequest(http.MethodGet, "https://missing.example.test/private", nil),
+			snapshot: requestSnapshot{
+				defaultHostRule: &models.HostRule{Host: "default.example.test", Target: "http://127.0.0.1:8080"},
+			},
+			wantType: "default_host_redirect",
+			wantKey:  "default.example.test",
+		},
+		{
+			name:    "reset unmatched route",
+			request: httptest.NewRequest(http.MethodGet, "https://missing.example.test/private", nil),
+			snapshot: requestSnapshot{
+				unmatchedRoute: models.GatewayUnmatchedRouteConfig{
+					Behavior: models.GatewayUnmatchedRouteBehaviorResetConnection,
+				},
+			},
+			wantType: "unmatched_route_blocked",
+			wantKey:  "missing.example.test",
+		},
+		{
+			name:     "auth route",
+			request:  httptest.NewRequest(http.MethodGet, "https://auth.example.test/__auth__/login", nil),
+			rule:     &models.HostRule{Host: "auth.example.test"},
+			wantType: "auth_proxy",
+			wantKey:  "/__auth__/login",
+		},
+		{
+			name:      "fn connect",
+			request:   httptest.NewRequest(http.MethodGet, "http://127.0.0.1/private", nil),
+			rule:      &models.HostRule{Host: fnosConnectRouteKey},
+			fnConnect: true,
+			wantType:  fnosConnectRouteKey,
+			wantKey:   fnosConnectRouteKey,
+		},
+		{
+			name:     "unmatched",
+			request:  httptest.NewRequest(http.MethodGet, "https://missing.example.test/private", nil),
+			wantType: "not_found",
+			wantKey:  "missing.example.test",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			routeType, routeKey := gatewayVisibilityRouteContext(tc.request, tc.snapshot, tc.rule, tc.fnConnect)
+			if routeType != tc.wantType || routeKey != tc.wantKey {
+				t.Fatalf("route context = (%q, %q), want (%q, %q)", routeType, routeKey, tc.wantType, tc.wantKey)
+			}
+		})
+	}
+}
+
+func TestVisibilityDenialsEnqueueEffectivePolicyAndRouteContext(t *testing.T) {
+	cases := []struct {
+		name          string
+		requestURL    string
+		globalCIDRs   []string
+		hostRules     []models.HostRule
+		pathRules     []models.Rule
+		authHost      string
+		fnConnect     bool
+		wantScope     string
+		wantMode      string
+		wantRouteType string
+		wantRouteKey  string
+	}{
+		{
+			name:          "global",
+			requestURL:    "https://missing.example.test/private",
+			globalCIDRs:   []string{"8.8.8.0/24"},
+			wantScope:     "gateway",
+			wantMode:      models.HostVisibilityModeInherit,
+			wantRouteType: "not_found",
+			wantRouteKey:  "missing.example.test",
+		},
+		{
+			name:        "inherited host",
+			requestURL:  "https://inherit.example.test/private",
+			globalCIDRs: []string{"8.8.8.0/24"},
+			hostRules: []models.HostRule{{
+				Host:       "inherit.example.test",
+				Target:     "http://127.0.0.1:8080",
+				Visibility: models.HostRuleVisibility{Mode: models.HostVisibilityModeInherit},
+			}},
+			wantScope:     "gateway",
+			wantMode:      models.HostVisibilityModeInherit,
+			wantRouteType: "host_rule",
+			wantRouteKey:  "inherit.example.test",
+		},
+		{
+			name:        "custom host",
+			requestURL:  "https://custom.example.test/private",
+			globalCIDRs: []string{"1.1.1.0/24"},
+			hostRules: []models.HostRule{{
+				Host:       "custom.example.test",
+				Target:     "http://127.0.0.1:8080",
+				Visibility: models.HostRuleVisibility{Mode: models.HostVisibilityModeCustom, CIDRs: []string{"8.8.8.0/24"}},
+			}},
+			wantScope:     "host",
+			wantMode:      models.HostVisibilityModeCustom,
+			wantRouteType: "host_rule",
+			wantRouteKey:  "custom.example.test",
+		},
+		{
+			name:        "host location",
+			requestURL:  "https://location.example.test/api/private",
+			globalCIDRs: []string{"8.8.8.0/24"},
+			hostRules: []models.HostRule{{
+				Host:   "location.example.test",
+				Target: "http://127.0.0.1:8080",
+				Locations: []models.HostLocation{{
+					Path:   "/api",
+					Match:  models.HostLocationMatchPrefix,
+					Action: models.HostLocationActionProxy,
+					Target: "http://127.0.0.1:8081",
+				}},
+			}},
+			wantScope:     "gateway",
+			wantMode:      models.HostVisibilityModeInherit,
+			wantRouteType: "host_location",
+			wantRouteKey:  "location.example.test /api",
+		},
+		{
+			name:        "path rule",
+			requestURL:  "https://gateway.example.test/apps/private",
+			globalCIDRs: []string{"8.8.8.0/24"},
+			pathRules: []models.Rule{{
+				Path:   "/apps",
+				Target: "http://127.0.0.1:8080",
+			}},
+			wantScope:     "gateway",
+			wantMode:      models.HostVisibilityModeInherit,
+			wantRouteType: "path_rule",
+			wantRouteKey:  "/apps",
+		},
+		{
+			name:        "auth host",
+			requestURL:  "https://auth.example.test/__auth__/login",
+			globalCIDRs: []string{"8.8.8.0/24"},
+			authHost:    "auth.example.test",
+			hostRules: []models.HostRule{{
+				Host:       "auth.example.test",
+				Target:     "http://127.0.0.1:8080",
+				Visibility: models.HostRuleVisibility{Mode: models.HostVisibilityModeCustom, CIDRs: []string{"1.1.1.0/24"}},
+			}},
+			wantScope:     "gateway",
+			wantMode:      models.HostVisibilityModeInherit,
+			wantRouteType: "auth_proxy",
+			wantRouteKey:  "/__auth__/login",
+		},
+		{
+			name:          "fn connect",
+			requestURL:    "http://localhost/private",
+			globalCIDRs:   []string{"8.8.8.0/24"},
+			fnConnect:     true,
+			wantScope:     "gateway",
+			wantMode:      models.HostVisibilityModeInherit,
+			wantRouteType: fnosConnectRouteKey,
+			wantRouteKey:  fnosConnectRouteKey,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			handler, _ := newAdditionalProxyTestHandler(t)
+			if err := handler.SetGatewayVisibility(models.GatewayVisibilityConfig{
+				Enabled: true,
+				CIDRs:   tc.globalCIDRs,
+			}); err != nil {
+				t.Fatalf("SetGatewayVisibility() returned error: %v", err)
+			}
+			if tc.authHost != "" {
+				if err := handler.SetAuthConfig(models.AuthConfig{AuthHost: tc.authHost}); err != nil {
+					t.Fatalf("SetAuthConfig() returned error: %v", err)
+				}
+			}
+			if len(tc.hostRules) > 0 {
+				if err := handler.SetHostRules(tc.hostRules); err != nil {
+					t.Fatalf("SetHostRules() returned error: %v", err)
+				}
+			}
+			if len(tc.pathRules) > 0 {
+				if err := handler.SetRules(tc.pathRules); err != nil {
+					t.Fatalf("SetRules() returned error: %v", err)
+				}
+			}
+			handler.systemEventClient = events.NewClient(nil)
+			handler.visibilityEventQueue = make(chan gatewayVisibilityBlockedEvent, 1)
+
+			req := httptest.NewRequest(http.MethodGet, tc.requestURL, nil)
+			if tc.fnConnect {
+				req.RemoteAddr = "127.0.0.1:4567"
+				req.Header.Set("X-Forwarded-For", "1.1.1.7")
+				ingress := &fnosConnectRequestContext{hostRule: models.HostRule{
+					Host:   fnosConnectRouteKey,
+					Target: "http://127.0.0.1:5666",
+				}}
+				req = req.WithContext(context.WithValue(req.Context(), fnosConnectRequestContextKey{}, ingress))
+			} else {
+				req.RemoteAddr = "1.1.1.7:4567"
+			}
+			rec := newHijackableResponseRecorder()
+			defer rec.Close()
+			handler.ServeHTTP(rec, req)
+
+			select {
+			case event := <-handler.visibilityEventQueue:
+				if event.ClientIP != "1.1.1.7" ||
+					event.VisibilityScope != tc.wantScope ||
+					event.VisibilityMode != tc.wantMode ||
+					event.RouteType != tc.wantRouteType ||
+					event.RouteKey != tc.wantRouteKey {
+					t.Fatalf("visibility event = %#v", event)
+				}
+			default:
+				t.Fatal("visibility denial did not enqueue an audit event")
+			}
+		})
+	}
+}
+
+func TestGatewayVisibilityEventQueueFullDoesNotBlock(t *testing.T) {
+	handler := &Handler{
+		systemEventClient:    events.NewClient(nil),
+		visibilityEventQueue: make(chan gatewayVisibilityBlockedEvent, 1),
+	}
+	handler.visibilityEventQueue <- gatewayVisibilityBlockedEvent{ClientIP: "203.0.113.1"}
+
+	done := make(chan struct{})
+	go func() {
+		handler.enqueueGatewayVisibilityBlockedEvent(gatewayVisibilityBlockedEvent{ClientIP: "203.0.113.2"})
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("full visibility event queue blocked the request path")
+	}
+	if dropped := handler.visibilityDropped.Load(); dropped != 1 {
+		t.Fatalf("dropped visibility events = %d, want 1", dropped)
+	}
+	firstWarn := handler.visibilityDropWarnNano.Load()
+	if firstWarn == 0 {
+		t.Fatal("queue overflow did not record the first warning timestamp")
+	}
+	_, shouldLog := handler.recordDroppedGatewayVisibilityEvent(time.Unix(0, firstWarn).Add(time.Second))
+	if shouldLog {
+		t.Fatal("queue overflow warning was not rate limited")
+	}
+}
+
+func TestUnavailableSystemEventEndpointDoesNotBlockVisibilityDenial(t *testing.T) {
+	publishStarted := make(chan struct{}, 1)
+	releasePublish := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		select {
+		case publishStarted <- struct{}{}:
+		default:
+		}
+		<-releasePublish
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer server.Close()
+	defer close(releasePublish)
+
+	serverURL, err := url.Parse(server.URL)
+	if err != nil {
+		t.Fatalf("parse server URL: %v", err)
+	}
+	port, err := strconv.Atoi(serverURL.Port())
+	if err != nil {
+		t.Fatalf("parse server port: %v", err)
+	}
+	t.Setenv("BACKEND_PORT", strconv.Itoa(port))
+
+	handler, _ := newAdditionalProxyTestHandler(t)
+	if err := handler.SetGatewayVisibility(models.GatewayVisibilityConfig{
+		Enabled: true,
+		CIDRs:   []string{"8.8.8.0/24"},
+	}); err != nil {
+		t.Fatalf("SetGatewayVisibility() returned error: %v", err)
+	}
+	handler.systemEventClient = events.NewClient(server.Client())
+	handler.visibilityEventQueue = make(chan gatewayVisibilityBlockedEvent, gatewayVisibilityEventQueueSize)
+	handler.startGatewayVisibilityEventWorker()
+	handler.enqueueGatewayVisibilityBlockedEvent(gatewayVisibilityBlockedEvent{
+		ClientIP:  "203.0.113.1",
+		BlockedAt: time.Now(),
+	})
+
+	select {
+	case <-publishStarted:
+	case <-time.After(time.Second):
+		t.Fatal("visibility event worker did not reach the stalled endpoint")
+	}
+	for i := 0; i < cap(handler.visibilityEventQueue); i++ {
+		handler.visibilityEventQueue <- gatewayVisibilityBlockedEvent{
+			ClientIP:  "203.0.113.2",
+			BlockedAt: time.Now(),
+		}
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "https://missing.example.test/private", nil)
+	req.RemoteAddr = "203.0.113.3:4567"
+	rec := newHijackableResponseRecorder()
+	defer rec.Close()
+	startedAt := time.Now()
+	handler.ServeHTTP(rec, req)
+	if elapsed := time.Since(startedAt); elapsed >= 500*time.Millisecond {
+		t.Fatalf("visibility denial waited for the stalled event endpoint: %v", elapsed)
+	}
+	if dropped := handler.visibilityDropped.Load(); dropped != 1 {
+		t.Fatalf("dropped visibility events = %d, want 1", dropped)
+	}
+}
+
+func TestVisibilityDenialEnqueuesAuditEventWithoutChangingResponse(t *testing.T) {
+	handler, _ := newAdditionalProxyTestHandler(t)
+	if _, err := handler.SetLoggingConfig(models.LoggingConfig{Enabled: true, MaxDays: 1}); err != nil {
+		t.Fatalf("SetLoggingConfig() returned error: %v", err)
+	}
+	if err := handler.SetGatewayVisibility(models.GatewayVisibilityConfig{
+		Enabled: true,
+		CIDRs:   []string{"8.8.8.0/24"},
+	}); err != nil {
+		t.Fatalf("SetGatewayVisibility() returned error: %v", err)
+	}
+	if err := handler.SetHostRules([]models.HostRule{{
+		Host:       "custom.example.test",
+		Target:     "http://127.0.0.1:8080",
+		Visibility: models.HostRuleVisibility{Mode: models.HostVisibilityModeCustom, CIDRs: []string{"1.1.1.0/24"}},
+	}}); err != nil {
+		t.Fatalf("SetHostRules() returned error: %v", err)
+	}
+	handler.systemEventClient = events.NewClient(nil)
+	handler.visibilityEventQueue = make(chan gatewayVisibilityBlockedEvent, 1)
+
+	req := httptest.NewRequest(http.MethodPost, "https://custom.example.test/private?token=secret", nil)
+	req.RemoteAddr = "8.8.8.8:4567"
+	rec := newHijackableResponseRecorder()
+	defer rec.Close()
+	handler.ServeHTTP(rec, req)
+
+	select {
+	case event := <-handler.visibilityEventQueue:
+		if event.ClientIP != "8.8.8.8" ||
+			event.Method != http.MethodPost ||
+			event.Scheme != "https" ||
+			event.Host != "custom.example.test" ||
+			event.Path != "/private" ||
+			event.RouteType != "host_rule" ||
+			event.RouteKey != "custom.example.test" ||
+			event.VisibilityScope != "host" ||
+			event.VisibilityMode != models.HostVisibilityModeCustom {
+			t.Fatalf("visibility event = %#v", event)
+		}
+	default:
+		t.Fatal("visibility denial did not enqueue an audit event")
+	}
+
+	result, err := handler.QueryLogEntries("", 1, 20, "visibility_denied", "", "", "", "", "page")
+	if err != nil {
+		t.Fatalf("QueryLogEntries() returned error: %v", err)
+	}
+	if len(result.Items) != 1 || result.Items[0].Status != 499 {
+		t.Fatalf("visibility access log = %#v", result.Items)
+	}
+}
+
+func TestAllowedVisibilityRequestDoesNotEnqueueAuditEvent(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer upstream.Close()
+
+	handler, _ := newAdditionalProxyTestHandler(t)
+	if err := handler.SetGatewayVisibility(models.GatewayVisibilityConfig{
+		Enabled: true,
+		CIDRs:   []string{"8.8.8.0/24"},
+	}); err != nil {
+		t.Fatalf("SetGatewayVisibility() returned error: %v", err)
+	}
+	if err := handler.SetHostRules([]models.HostRule{{
+		Host:   "visible.example.test",
+		Target: upstream.URL,
+	}}); err != nil {
+		t.Fatalf("SetHostRules() returned error: %v", err)
+	}
+	handler.systemEventClient = events.NewClient(nil)
+	handler.visibilityEventQueue = make(chan gatewayVisibilityBlockedEvent, 1)
+
+	req := httptest.NewRequest(http.MethodGet, "http://visible.example.test/", nil)
+	req.RemoteAddr = "8.8.8.8:4567"
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("response status = %d, want %d", rec.Code, http.StatusNoContent)
+	}
+	select {
+	case event := <-handler.visibilityEventQueue:
+		t.Fatalf("allowed request enqueued visibility event %#v", event)
+	default:
+	}
+}
+
+func TestEmitGatewayVisibilityBlockedEventPublishesSafePayload(t *testing.T) {
+	published := make(chan events.SystemEventPublishInput, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/internal/system-events" {
+			t.Errorf("request path = %q", r.URL.Path)
+		}
+		var input events.SystemEventPublishInput
+		if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+			t.Errorf("decode event: %v", err)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		published <- input
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+	serverURL, err := url.Parse(server.URL)
+	if err != nil {
+		t.Fatalf("parse server URL: %v", err)
+	}
+	port, err := strconv.Atoi(serverURL.Port())
+	if err != nil {
+		t.Fatalf("parse server port: %v", err)
+	}
+	t.Setenv("BACKEND_PORT", strconv.Itoa(port))
+
+	handler := &Handler{systemEventClient: events.NewClient(server.Client())}
+	blockedAt := time.Date(2026, 7, 27, 10, 11, 12, 0, time.UTC)
+	handler.emitGatewayVisibilityBlockedEvent(gatewayVisibilityBlockedEvent{
+		ClientIP:        "203.0.113.8:54321",
+		BlockedAt:       blockedAt,
+		Method:          http.MethodGet,
+		Scheme:          "https",
+		Host:            "app.example.test",
+		Path:            "/private",
+		RouteType:       "host_rule",
+		RouteKey:        "app.example.test",
+		VisibilityScope: "gateway",
+		VisibilityMode:  models.HostVisibilityModeInherit,
+	})
+
+	select {
+	case input := <-published:
+		if input.Type != events.FnEventGatewayVisibilityBlocked ||
+			input.Source != events.SystemEventSourceGoReauthProxy ||
+			input.Level != events.FnEventLevelWarn ||
+			input.DedupeKey != gatewayVisibilityEventDedupeKey ||
+			input.DedupeTTLSeconds != gatewayVisibilityEventDedupeTTLSeconds {
+			t.Fatalf("event envelope = %#v", input)
+		}
+		if !reflect.DeepEqual(input.Tags, []string{"gateway", "visibility", "security"}) {
+			t.Fatalf("event tags = %#v", input.Tags)
+		}
+		payload, ok := input.Payload.(map[string]any)
+		if !ok {
+			t.Fatalf("payload type = %T", input.Payload)
+		}
+		if payload["ip"] != "203.0.113.8" ||
+			payload["host"] != "app.example.test" ||
+			payload["path"] != "/private" ||
+			payload["visibility_scope"] != "gateway" ||
+			payload["visibility_mode"] != models.HostVisibilityModeInherit ||
+			payload["status"] != float64(499) {
+			t.Fatalf("event payload = %#v", payload)
+		}
+		if _, exists := payload["request_uri"]; exists {
+			t.Fatalf("event payload leaked request URI: %#v", payload)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("visibility event was not published")
 	}
 }

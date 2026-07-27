@@ -47,6 +47,8 @@ func TestToolbarV2RuntimeKeepsFixedDesktopScaleAndCoversTabletViewport(t *testin
 		"grid-template-columns: repeat(7, minmax(0, 1fr))",
 		"width: 60px",
 		"font-size: 12px",
+		".app-icon-shell.has-image",
+		"object-fit: contain",
 		"@media (max-width: 768px)",
 	} {
 		if !strings.Contains(runtime, expected) {

@@ -351,9 +351,17 @@ button, a {
     background: var(--icon-fill, #61748a);
     box-shadow: 0 6px 13px rgba(27, 45, 53, 0.2);
 }
+.app-icon-shell.has-image {
+    overflow: visible;
+    border-radius: 0;
+    box-shadow: none;
+}
 .app-link:hover .app-icon-shell {
     transform: scale(1.055);
     box-shadow: 0 10px 20px rgba(27, 45, 53, 0.22);
+}
+.app-link:hover .app-icon-shell.has-image {
+    box-shadow: none;
 }
 .app-icon-shell::after {
     content: none;
@@ -364,7 +372,7 @@ button, a {
     width: 100%;
     height: 100%;
     display: block;
-    object-fit: cover;
+    object-fit: contain;
 }
 .app-icon-letter {
     position: relative;

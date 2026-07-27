@@ -24,12 +24,28 @@ func TestCombinedAuthCapabilityUsesOneRequestForProtectedPathAndHost(t *testing.
 			var authorizeCalls atomic.Int32
 			var preflightCalls atomic.Int32
 			var verifyCalls atomic.Int32
+			var expectedRoutedUpstream string
+			var expectedRoutedUpstreamHost string
 			bridge := testAuthBridge{
 				supports: true,
 				authorize: func(_ context.Context, request *pb.AuthorizeHttpRequest) (*pb.AuthorizeHttpResponse, error) {
 					authorizeCalls.Add(1)
 					if request.GetMode() != pb.HttpAuthMode_HTTP_AUTH_MODE_PREFLIGHT_AND_VERIFY {
 						t.Errorf("AuthorizeHTTP mode = %s, want PREFLIGHT_AND_VERIFY", request.GetMode())
+					}
+					if request.GetContext().RoutedUpstream == nil {
+						t.Error("AuthorizeHTTP routed_upstream presence = false, want true")
+					} else if got := request.GetContext().GetRoutedUpstream(); got != expectedRoutedUpstream {
+						t.Errorf("AuthorizeHTTP routed_upstream = %q, want %q", got, expectedRoutedUpstream)
+					}
+					if request.GetContext().RoutedUpstreamHost == nil {
+						t.Error("AuthorizeHTTP routed_upstream_host presence = false, want true")
+					} else if got := request.GetContext().GetRoutedUpstreamHost(); got != expectedRoutedUpstreamHost {
+						t.Errorf("AuthorizeHTTP routed_upstream_host = %q, want %q", got, expectedRoutedUpstreamHost)
+					}
+					if request.GetContext().RoutedUpstreamRouteId == nil ||
+						request.GetContext().GetRoutedUpstreamRouteId() == "" {
+						t.Error("AuthorizeHTTP routed_upstream_route_id must be present and non-empty")
 					}
 					return successfulCombinedAuthResponse(request.GetMode(), pb.AuthCacheScope_AUTH_CACHE_SCOPE_NONE, pb.AuthCacheScope_AUTH_CACHE_SCOPE_NONE, nil), nil
 				},
@@ -45,8 +61,14 @@ func TestCombinedAuthCapabilityUsesOneRequestForProtectedPathAndHost(t *testing.
 
 			target := newCombinedAuthTestTarget(t, nil)
 			defer target.Close()
+			expectedRoutedUpstream = target.URL
 			handler := newCombinedAuthTestHandler(target.URL, bridge, routeKind, 0)
-			recorder, recovered := serveCombinedAuthTestRequest(handler, newCombinedAuthTestRequest(routeKind, "/protected/resource"))
+			request := newCombinedAuthTestRequest(routeKind, "/protected/resource")
+			expectedRoutedUpstreamHost = request.Host
+			if routeKind == "host" {
+				expectedRoutedUpstreamHost = target.Listener.Addr().String()
+			}
+			recorder, recovered := serveCombinedAuthTestRequest(handler, request)
 
 			if recovered != nil {
 				t.Fatalf("ServeHTTP panic = %v", recovered)
@@ -71,26 +93,49 @@ func TestCombinedAuthCapabilityFallbackUsesLegacyPreflightAndVerify(t *testing.T
 	var authorizeCalls atomic.Int32
 	var preflightCalls atomic.Int32
 	var verifyCalls atomic.Int32
+	var expectedRoutedUpstream string
+	var expectedRoutedUpstreamHost string
+	assertRoutedUpstream := func(context *pb.AuthContext) {
+		t.Helper()
+		if context.RoutedUpstream == nil {
+			t.Error("legacy AuthContext routed_upstream presence = false, want true")
+		} else if got := context.GetRoutedUpstream(); got != expectedRoutedUpstream {
+			t.Errorf("legacy AuthContext routed_upstream = %q, want %q", got, expectedRoutedUpstream)
+		}
+		if context.RoutedUpstreamHost == nil {
+			t.Error("legacy AuthContext routed_upstream_host presence = false, want true")
+		} else if got := context.GetRoutedUpstreamHost(); got != expectedRoutedUpstreamHost {
+			t.Errorf("legacy AuthContext routed_upstream_host = %q, want %q", got, expectedRoutedUpstreamHost)
+		}
+		if context.RoutedUpstreamRouteId == nil || context.GetRoutedUpstreamRouteId() == "" {
+			t.Error("legacy AuthContext routed_upstream_route_id must be present and non-empty")
+		}
+	}
 	bridge := testAuthBridge{
 		supports: false,
 		authorize: func(context.Context, *pb.AuthorizeHttpRequest) (*pb.AuthorizeHttpResponse, error) {
 			authorizeCalls.Add(1)
 			return nil, errors.New("combined authorization must not be called")
 		},
-		preflight: func(context.Context, *pb.PreflightAuthRequest) (*pb.PreflightAuthResponse, error) {
+		preflight: func(_ context.Context, request *pb.PreflightAuthRequest) (*pb.PreflightAuthResponse, error) {
 			preflightCalls.Add(1)
+			assertRoutedUpstream(request.GetContext())
 			return &pb.PreflightAuthResponse{}, nil
 		},
-		verify: func(context.Context, *pb.VerifyAuthRequest) (*pb.VerifyAuthResponse, error) {
+		verify: func(_ context.Context, request *pb.VerifyAuthRequest) (*pb.VerifyAuthResponse, error) {
 			verifyCalls.Add(1)
+			assertRoutedUpstream(request.GetContext())
 			return successfulVerifyAuthResponse(nil), nil
 		},
 	}
 
 	target := newCombinedAuthTestTarget(t, nil)
 	defer target.Close()
+	expectedRoutedUpstream = target.URL
 	handler := newCombinedAuthTestHandler(target.URL, bridge, "path", 0)
-	recorder, recovered := serveCombinedAuthTestRequest(handler, newCombinedAuthTestRequest("path", "/protected/legacy"))
+	request := newCombinedAuthTestRequest("path", "/protected/legacy")
+	expectedRoutedUpstreamHost = request.Host
+	recorder, recovered := serveCombinedAuthTestRequest(handler, request)
 
 	if recovered != nil {
 		t.Fatalf("ServeHTTP panic = %v", recovered)

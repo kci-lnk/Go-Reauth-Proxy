@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"container/list"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"log"
@@ -36,6 +37,27 @@ type authStateCache struct {
 	order          *list.List
 	orderByKey     map[string]*list.Element
 	group          singleflight.Group
+}
+
+type authRouteIdentityContextKey struct{}
+
+func withAuthRouteIdentity(r *http.Request, identity string) *http.Request {
+	if r == nil {
+		return nil
+	}
+	return r.WithContext(context.WithValue(
+		r.Context(),
+		authRouteIdentityContextKey{},
+		strings.TrimSpace(identity),
+	))
+}
+
+func authRouteIdentityFromRequest(r *http.Request) string {
+	if r == nil {
+		return ""
+	}
+	identity, _ := r.Context().Value(authRouteIdentityContextKey{}).(string)
+	return strings.TrimSpace(identity)
 }
 
 type preflightStateCache struct {
@@ -249,6 +271,9 @@ func buildAuthCacheLookup(r *http.Request, clientIP string, accessMode string) (
 	if version := advancedAuthPolicyVersionFromRequest(r); version != "" {
 		host += "\x00advanced-auth:" + version
 	}
+	if routeIdentity := authRouteIdentityFromRequest(r); routeIdentity != "" {
+		host += "\x00route:" + routeIdentity
+	}
 
 	cacheKey := authCacheLookupKey(
 		identityKey,
@@ -282,6 +307,9 @@ func buildPreflightCacheLookup(r *http.Request, clientIP string, accessMode stri
 	host := requestHostForRouting(r)
 	if version := advancedAuthPolicyVersionFromRequest(r); version != "" {
 		host += "\x00advanced-auth:" + version
+	}
+	if routeIdentity := authRouteIdentityFromRequest(r); routeIdentity != "" {
+		host += "\x00route:" + routeIdentity
 	}
 
 	cacheKey := preflightCacheLookupKey(

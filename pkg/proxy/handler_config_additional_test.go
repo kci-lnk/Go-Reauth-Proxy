@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"errors"
+	"net/http/httptest"
 	"path/filepath"
 	"testing"
 	"time"
@@ -20,6 +21,183 @@ func TestSetProxyProtocolForceInvokesHookWhenChanged(t *testing.T) {
 	}
 	if calls != 1 || !handler.GetProxyProtocolForce() {
 		t.Fatalf("calls=%d force=%v, want one hook and enabled", calls, handler.GetProxyProtocolForce())
+	}
+}
+
+func TestRouteUpdatesClearAuthenticationCaches(t *testing.T) {
+	handler, _ := newAdditionalProxyTestHandler(t)
+	storeEntries := func() {
+		now := time.Now()
+		handler.authCacheStore("stale-auth", authCacheEntry{
+			expiresAt:   now.Add(time.Minute),
+			identityKey: "identity",
+		}, now)
+		handler.preflightCacheStore("stale-preflight", preflightCacheEntry{
+			expiresAt:   now.Add(time.Minute),
+			identityKey: "identity",
+		}, now)
+	}
+	assertEmpty := func() {
+		t.Helper()
+		handler.authCache.mu.RLock()
+		authCount := len(handler.authCache.entries)
+		handler.authCache.mu.RUnlock()
+		handler.preflightCache.mu.RLock()
+		preflightCount := len(handler.preflightCache.entries)
+		handler.preflightCache.mu.RUnlock()
+		if authCount != 0 || preflightCount != 0 {
+			t.Fatalf("cache entries after route update = auth:%d preflight:%d", authCount, preflightCount)
+		}
+	}
+
+	storeEntries()
+	if err := handler.SetRules([]models.Rule{{
+		Path:   "/app",
+		Target: "http://127.0.0.1:8080",
+	}}); err != nil {
+		t.Fatalf("SetRules() returned error: %v", err)
+	}
+	assertEmpty()
+
+	storeEntries()
+	if err := handler.SetHostRules([]models.HostRule{{
+		Host:   "app.example.test",
+		Target: "http://127.0.0.1:8080",
+	}}); err != nil {
+		t.Fatalf("SetHostRules() returned error: %v", err)
+	}
+	assertEmpty()
+}
+
+func TestFnosRouteIdentityTracksPortDeleteAndReAddLifecycle(t *testing.T) {
+	handler, _ := newAdditionalProxyTestHandler(t)
+	request := httptest.NewRequest("GET", "https://nas.example.test/s/share", nil)
+	hostRule := models.HostRule{
+		Host:         "nas.example.test",
+		Target:       "http://127.0.0.1:5666",
+		PreserveHost: true,
+	}
+
+	if err := handler.SetHostRules([]models.HostRule{hostRule}); err != nil {
+		t.Fatalf("SetHostRules(initial) returned error: %v", err)
+	}
+	initialSnapshot := handler.snapshotForRequest()
+	initialRule := matchHostRule(request, initialSnapshot)
+	initialBackend := handler.routedBackendForRequest(
+		request,
+		initialSnapshot,
+		initialRule,
+		nil,
+		nil,
+	)
+	if initialBackend == nil || initialBackend.routeID == nil || *initialBackend.routeID == "" {
+		t.Fatalf("initial routed backend = %#v, want non-empty route identity", initialBackend)
+	}
+
+	if err := handler.SetHostRules([]models.HostRule{hostRule}); err != nil {
+		t.Fatalf("SetHostRules(unchanged) returned error: %v", err)
+	}
+	unchangedSnapshot := handler.snapshotForRequest()
+	unchangedRule := matchHostRule(request, unchangedSnapshot)
+	unchangedBackend := handler.routedBackendForRequest(
+		request,
+		unchangedSnapshot,
+		unchangedRule,
+		nil,
+		nil,
+	)
+	if unchangedBackend == nil || unchangedBackend.routeID == nil {
+		t.Fatalf("unchanged routed backend = %#v", unchangedBackend)
+	}
+	if *unchangedBackend.routeID != *initialBackend.routeID {
+		t.Fatal("unchanged route synchronization rotated the route identity")
+	}
+
+	if err := handler.SetHostRules([]models.HostRule{
+		hostRule,
+		{
+			Host:   "unrelated.example.test",
+			Target: "http://127.0.0.1:8080",
+		},
+	}); err != nil {
+		t.Fatalf("SetHostRules(unrelated add) returned error: %v", err)
+	}
+	unrelatedSnapshot := handler.snapshotForRequest()
+	unrelatedRule := matchHostRule(request, unrelatedSnapshot)
+	unrelatedBackend := handler.routedBackendForRequest(
+		request,
+		unrelatedSnapshot,
+		unrelatedRule,
+		nil,
+		nil,
+	)
+	if unrelatedBackend == nil || unrelatedBackend.routeID == nil {
+		t.Fatalf("routed backend after unrelated edit = %#v", unrelatedBackend)
+	}
+	if *unrelatedBackend.routeID != *initialBackend.routeID {
+		t.Fatal("unrelated route edit rotated the FNOS route identity")
+	}
+
+	hostRule.Target = "http://127.0.0.1:5667"
+	if err := handler.SetHostRules([]models.HostRule{hostRule}); err != nil {
+		t.Fatalf("SetHostRules(port change) returned error: %v", err)
+	}
+	changedSnapshot := handler.snapshotForRequest()
+	changedRule := matchHostRule(request, changedSnapshot)
+	changedBackend := handler.routedBackendForRequest(
+		request,
+		changedSnapshot,
+		changedRule,
+		nil,
+		nil,
+	)
+	if changedBackend == nil || changedBackend.routeID == nil {
+		t.Fatalf("changed routed backend = %#v", changedBackend)
+	}
+	if *changedBackend.routeID == *initialBackend.routeID {
+		t.Fatal("port change reused the previous route identity")
+	}
+	if got := *changedBackend.target; got != "http://127.0.0.1:5667" {
+		t.Fatalf("port-changed target = %q", got)
+	}
+
+	if err := handler.FlushHostRules(); err != nil {
+		t.Fatalf("FlushHostRules() returned error: %v", err)
+	}
+	deletedSnapshot := handler.snapshotForRequest()
+	if deletedRule := matchHostRule(request, deletedSnapshot); deletedRule != nil {
+		t.Fatalf("deleted mapping still matched: %#v", deletedRule)
+	}
+	if deletedBackend := handler.routedBackendForRequest(
+		request,
+		deletedSnapshot,
+		nil,
+		nil,
+		nil,
+	); deletedBackend != nil {
+		t.Fatalf("deleted mapping routed backend = %#v, want nil", deletedBackend)
+	}
+
+	if err := handler.SetHostRules([]models.HostRule{hostRule}); err != nil {
+		t.Fatalf("SetHostRules(re-add) returned error: %v", err)
+	}
+	readdedSnapshot := handler.snapshotForRequest()
+	readdedRule := matchHostRule(request, readdedSnapshot)
+	readdedBackend := handler.routedBackendForRequest(
+		request,
+		readdedSnapshot,
+		readdedRule,
+		nil,
+		nil,
+	)
+	if readdedBackend == nil || readdedBackend.routeID == nil {
+		t.Fatalf("re-added routed backend = %#v", readdedBackend)
+	}
+	if *readdedBackend.routeID == *changedBackend.routeID {
+		t.Fatal("re-added mapping reused the deleted mapping identity")
+	}
+	if readdedBackend.cacheIdentity() == changedBackend.cacheIdentity() {
+		t.Fatal("re-added mapping reused the deleted mapping authentication cache identity")
 	}
 }
 

@@ -4,8 +4,10 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/rand"
 	"crypto/tls"
 	"encoding/base64"
+	"encoding/hex"
 	"fmt"
 	"go-reauth-proxy/pkg/config"
 	"go-reauth-proxy/pkg/diagnostics"
@@ -116,6 +118,8 @@ type Handler struct {
 	proxyProtocolOnChange   atomic.Value
 	gatewayListenerOnChange atomic.Value
 	requestState            atomic.Value
+	routeGeneration         string
+	routeIncarnations       map[string]routeIncarnation
 
 	configManager     *config.Manager
 	sslConfig         models.SSLConfig
@@ -198,6 +202,13 @@ type requestSnapshot struct {
 	gatewayPortal      models.GatewayPortalConfig
 	unmatchedRoute     models.GatewayUnmatchedRouteConfig
 	proxyProtocolForce bool
+	routeGeneration    string
+	routeIDs           map[string]string
+}
+
+type routeIncarnation struct {
+	signature string
+	id        string
 }
 
 type reverseProxyTargetRuntime struct {
@@ -299,6 +310,107 @@ func debugHostRuleSummaries(rules []models.HostRule) []map[string]any {
 	return out
 }
 
+func pathRouteIncarnationKey(rule *models.Rule) string {
+	if rule == nil {
+		return ""
+	}
+	return "path\x00" + rule.Path
+}
+
+func hostRouteIncarnationKey(rule *models.HostRule) string {
+	if rule == nil {
+		return ""
+	}
+	return "host\x00" + normalizeRequestHost(rule.Host)
+}
+
+func hostLocationRouteIncarnationKey(rule *models.HostRule, location *models.HostLocation) string {
+	if rule == nil || location == nil {
+		return ""
+	}
+	return hostRouteIncarnationKey(rule) + "\x00location\x00" + location.Match + "\x00" + location.Path
+}
+
+func pathRouteIncarnationSignature(rule *models.Rule) string {
+	if rule == nil {
+		return ""
+	}
+	return strings.TrimSpace(rule.Target) +
+		"\x00strip=" + strconv.FormatBool(rule.StripPath) +
+		"\x00root=" + strconv.FormatBool(rule.UseRootMode)
+}
+
+func hostRouteIncarnationSignature(rule *models.HostRule) string {
+	if rule == nil {
+		return ""
+	}
+	return strings.TrimSpace(rule.Target) +
+		"\x00preserve=" + strconv.FormatBool(rule.PreserveHost)
+}
+
+func hostLocationRouteIncarnationSignature(
+	rule *models.HostRule,
+	location *models.HostLocation,
+) string {
+	if rule == nil || location == nil {
+		return ""
+	}
+	return strings.TrimSpace(location.Target) +
+		"\x00action=" + location.Action +
+		"\x00strip=" + strconv.FormatBool(location.StripPath) +
+		"\x00preserve=" + strconv.FormatBool(rule.PreserveHost)
+}
+
+func reconcileRouteIncarnations(
+	existing map[string]routeIncarnation,
+	rules []models.Rule,
+	hostRules []models.HostRule,
+) map[string]routeIncarnation {
+	next := make(map[string]routeIncarnation, len(rules)+len(hostRules))
+	add := func(key string, signature string) {
+		if key == "" {
+			return
+		}
+		if current, ok := existing[key]; ok && current.signature == signature && current.id != "" {
+			next[key] = current
+			return
+		}
+		next[key] = routeIncarnation{
+			signature: signature,
+			id:        newRouteGeneration(),
+		}
+	}
+	for i := range rules {
+		rule := &rules[i]
+		add(pathRouteIncarnationKey(rule), pathRouteIncarnationSignature(rule))
+	}
+	for i := range hostRules {
+		rule := &hostRules[i]
+		add(hostRouteIncarnationKey(rule), hostRouteIncarnationSignature(rule))
+		for locationIndex := range rule.Locations {
+			location := &rule.Locations[locationIndex]
+			add(
+				hostLocationRouteIncarnationKey(rule, location),
+				hostLocationRouteIncarnationSignature(rule, location),
+			)
+		}
+	}
+	return next
+}
+
+func routeIncarnationIDs(values map[string]routeIncarnation) map[string]string {
+	if len(values) == 0 {
+		return nil
+	}
+	result := make(map[string]string, len(values))
+	for key, value := range values {
+		if value.id != "" {
+			result[key] = value.id
+		}
+	}
+	return result
+}
+
 func debugStreamRuleSummaries(rules []models.StreamRule) []map[string]any {
 	out := make([]map[string]any, 0, len(rules))
 	for _, rule := range rules {
@@ -342,9 +454,15 @@ func (h *Handler) snapshotForRequest() requestSnapshot {
 		}
 	}
 
-	h.mu.RLock()
+	h.mu.Lock()
+	h.ensureRouteGenerationLocked()
+	h.routeIncarnations = reconcileRouteIncarnations(
+		h.routeIncarnations,
+		h.Rules,
+		h.HostRules,
+	)
 	s := h.buildRequestSnapshotLocked()
-	h.mu.RUnlock()
+	h.mu.Unlock()
 	return *s
 }
 
@@ -418,11 +536,33 @@ func (h *Handler) buildRequestSnapshotLocked() *requestSnapshot {
 		gatewayPortal:      models.NormalizeGatewayPortalConfig(h.GatewayPortal),
 		unmatchedRoute:     models.NormalizeGatewayUnmatchedRouteConfig(h.GatewayUnmatchedRoute),
 		proxyProtocolForce: h.ProxyProtocolForce,
+		routeGeneration:    h.routeGeneration,
+		routeIDs:           routeIncarnationIDs(h.routeIncarnations),
 	}
 }
 
 func (h *Handler) publishRequestSnapshotLocked() {
+	h.ensureRouteGenerationLocked()
+	h.routeIncarnations = reconcileRouteIncarnations(
+		h.routeIncarnations,
+		h.Rules,
+		h.HostRules,
+	)
 	h.requestState.Store(h.buildRequestSnapshotLocked())
+}
+
+func (h *Handler) ensureRouteGenerationLocked() {
+	if h.routeGeneration == "" {
+		h.routeGeneration = newRouteGeneration()
+	}
+}
+
+func newRouteGeneration() string {
+	var value [16]byte
+	if _, err := rand.Read(value[:]); err == nil {
+		return hex.EncodeToString(value[:])
+	}
+	return strconv.FormatInt(time.Now().UnixNano(), 36)
 }
 
 func resolveClientIP(r *http.Request, authConfig models.AuthConfig, proxyProtocolForce bool) string {
@@ -796,9 +936,66 @@ type requestAuthContext struct {
 	legacyOnce sync.Once
 }
 
-func newRequestAuthContext(r *http.Request, clientIP string, accessMode string) *requestAuthContext {
+type routedBackend struct {
+	target  *string
+	host    *string
+	routeID *string
+}
+
+func newRoutedBackend(target string, host string) *routedBackend {
+	return newRoutedBackendWithRouteID(target, host, "")
+}
+
+func newRoutedBackendWithRouteID(target string, host string, routeID string) *routedBackend {
+	targetCopy := strings.TrimSpace(target)
+	hostCopy := strings.TrimSpace(host)
+	routeIDCopy := strings.TrimSpace(routeID)
+	return &routedBackend{
+		target:  &targetCopy,
+		host:    &hostCopy,
+		routeID: &routeIDCopy,
+	}
+}
+
+func (b *routedBackend) cacheIdentity() string {
+	if b == nil || b.target == nil {
+		return "unmatched"
+	}
+	host := ""
+	if b.host != nil {
+		host = strings.TrimSpace(*b.host)
+	}
+	routeID := ""
+	if b.routeID != nil {
+		routeID = strings.TrimSpace(*b.routeID)
+	}
+	return "target=" + strings.TrimSpace(*b.target) + "\x00host=" + host + "\x00route=" + routeID
+}
+
+func newRequestAuthContext(r *http.Request, clientIP string, accessMode string, backend *routedBackend) *requestAuthContext {
+	var normalizedRoutedUpstream *string
+	var normalizedRoutedUpstreamHost *string
+	var normalizedRoutedUpstreamRouteID *string
+	if backend != nil && backend.target != nil {
+		normalized := strings.TrimSpace(*backend.target)
+		normalizedRoutedUpstream = &normalized
+	}
+	if backend != nil && backend.host != nil {
+		normalized := strings.TrimSpace(*backend.host)
+		normalizedRoutedUpstreamHost = &normalized
+	}
+	if backend != nil && backend.routeID != nil {
+		normalized := strings.TrimSpace(*backend.routeID)
+		normalizedRoutedUpstreamRouteID = &normalized
+	}
 	if r == nil {
-		return &requestAuthContext{context: &pb.AuthContext{ClientIp: clientIP, AccessMode: accessMode}}
+		return &requestAuthContext{context: &pb.AuthContext{
+			ClientIp:              clientIP,
+			AccessMode:            accessMode,
+			RoutedUpstream:        normalizedRoutedUpstream,
+			RoutedUpstreamHost:    normalizedRoutedUpstreamHost,
+			RoutedUpstreamRouteId: normalizedRoutedUpstreamRouteID,
+		}}
 	}
 	scheme := requestScheme(r)
 	effectiveHost := requestHostForRouting(r)
@@ -822,6 +1019,9 @@ func newRequestAuthContext(r *http.Request, clientIP string, accessMode string) 
 		AccessMode:            accessMode,
 		AccessToken:           r.Header.Get("AccessToken"),
 		AccessTokenHyphenated: r.Header.Get("Access-Token"),
+		RoutedUpstream:        normalizedRoutedUpstream,
+		RoutedUpstreamHost:    normalizedRoutedUpstreamHost,
+		RoutedUpstreamRouteId: normalizedRoutedUpstreamRouteID,
 	}
 	if advancedAuthIsUpgradeRequest(r) {
 		// Combined authorization normally omits the legacy header map. Preserve
@@ -2149,6 +2349,10 @@ func (h *Handler) ClearSSLCertificate() error {
 	return h.SetSSLDeployment(models.SSLConfig{})
 }
 
+func isReservedFnosSharePath(value string) bool {
+	return value == "/s" || strings.HasPrefix(value, "/s/")
+}
+
 func (h *Handler) validateRule(newRule models.Rule) error {
 	if newRule.Path == "/" || newRule.Path == "" {
 		return fmt.Errorf("cannot add rule for root path '/' or empty path")
@@ -2156,8 +2360,8 @@ func (h *Handler) validateRule(newRule models.Rule) error {
 	if newRule.Target == "" {
 		return fmt.Errorf("cannot add rule with empty target")
 	}
-	if newRule.Path == "/s" || newRule.Path == "/s/" {
-		return fmt.Errorf("cannot add rule for reserved share path '/s' or '/s/'")
+	if isReservedFnosSharePath(newRule.Path) {
+		return fmt.Errorf("cannot add rule under reserved share path '/s'")
 	}
 	if strings.HasPrefix(newRule.Path, "/__") || strings.HasPrefix(newRule.Path, "__") {
 		return fmt.Errorf("cannot add rule for reserved path starting with '__'")
@@ -2212,6 +2416,7 @@ func (h *Handler) AddRule(newRule models.Rule) error {
 	h.Rules = nextRules
 	h.publishRequestSnapshotLocked()
 	if err := h.saveConfigLocked(); err != nil {
+		h.clearAuthCache()
 		return err
 	}
 	if event := debugProxyEvent("path_rule_upserted", ""); event != nil {
@@ -2222,6 +2427,7 @@ func (h *Handler) AddRule(newRule models.Rule) error {
 			Int("path_rule_count", len(h.Rules)).
 			Send()
 	}
+	h.clearAuthCache()
 	return nil
 }
 
@@ -2237,6 +2443,7 @@ func (h *Handler) SetRules(rules []models.Rule) error {
 	h.Rules = normalized
 	h.publishRequestSnapshotLocked()
 	if err := h.saveConfigLocked(); err != nil {
+		h.clearAuthCache()
 		return err
 	}
 	if event := debugProxyEvent("path_rules_set", ""); event != nil {
@@ -2244,6 +2451,7 @@ func (h *Handler) SetRules(rules []models.Rule) error {
 			Interface("path_rules", debugRuleSummaries(normalized)).
 			Send()
 	}
+	h.clearAuthCache()
 	return nil
 }
 
@@ -2551,20 +2759,24 @@ func (h *Handler) RemoveRule(path string) {
 			Int("path_rule_count", len(h.Rules)).
 			Send()
 	}
+	h.clearAuthCache()
 }
 
 func (h *Handler) FlushRules() error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
-	h.Rules = make([]models.Rule, 0)
+	nextRules := make([]models.Rule, 0)
+	h.Rules = nextRules
 	h.publishRequestSnapshotLocked()
 	if err := h.saveConfigLocked(); err != nil {
+		h.clearAuthCache()
 		return err
 	}
 	if event := debugProxyEvent("path_rules_flushed", ""); event != nil {
 		event.Send()
 	}
+	h.clearAuthCache()
 	return nil
 }
 
@@ -2637,7 +2849,7 @@ func (h *Handler) normalizeHostLocation(location models.HostLocation) (models.Ho
 	if location.Path == "/" {
 		return models.HostLocation{}, fmt.Errorf("host location path '/' is not allowed")
 	}
-	if location.Path == "/s" || location.Path == "/s/" {
+	if isReservedFnosSharePath(location.Path) {
 		return models.HostLocation{}, fmt.Errorf("host location path cannot use reserved share path %q", location.Path)
 	}
 	if strings.HasPrefix(location.Path, "/__") {
@@ -2869,6 +3081,7 @@ func (h *Handler) AddHostRule(newRule models.HostRule) error {
 			Int("host_rule_count", hostRuleCount).
 			Send()
 	}
+	h.clearAuthCache()
 	return nil
 }
 
@@ -2969,6 +3182,7 @@ func (h *Handler) SetHostRules(rules []models.HostRule) error {
 			Interface("host_rules", debugHostRuleSummaries(normalizedRules)).
 			Send()
 	}
+	h.clearAuthCache()
 	return nil
 }
 
@@ -2990,6 +3204,7 @@ func (h *Handler) FlushHostRules() error {
 	if event := debugProxyEvent("host_rules_flushed", ""); event != nil {
 		event.Send()
 	}
+	h.clearAuthCache()
 	return nil
 }
 
@@ -4982,6 +5197,14 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	matchedRule, needsSlashRedirect := matchRule(r, snapshot)
+	matchedHostLocation, matchedRule, needsSlashRedirect = enforceReservedFnosShareRoute(
+		r.URL.Path,
+		snapshot,
+		matchedHostRule,
+		matchedHostLocation,
+		matchedRule,
+		needsSlashRedirect,
+	)
 	if matchedHostRule != nil {
 		matchedRule = nil
 		needsSlashRedirect = ""
@@ -5014,7 +5237,8 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if matchedRule == nil && snapshot.defaultRule != nil {
+	if matchedHostRule == nil && matchedRule == nil && snapshot.defaultRule != nil &&
+		!isReservedFnosSharePath(snapshot.defaultRule.Path) {
 		matchedRule = snapshot.defaultRule
 	}
 	if resetUnmatchedConnection && matchedRule == nil && needsSlashRedirect == "" &&
@@ -5053,6 +5277,14 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			}()).
 			Send()
 	}
+	routedBackend := h.routedBackendForRequest(
+		r,
+		snapshot,
+		matchedHostRule,
+		matchedHostLocation,
+		matchedRule,
+	)
+	r = withAuthRouteIdentity(r, routedBackend.cacheIdentity())
 	if !h.allowReverseProxyRequest(w, r, clientIP, isAuthRoute, matchedHostRule, matchedHostLocation, matchedRule, requestID) {
 		return
 	}
@@ -5135,7 +5367,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	var preparedAuth *authCheckExecution
 	if shouldRunPreflightForRoute(isSelectRoute, isAuthRoute, matchedHostRule, matchedRule) {
 		if strings.TrimSpace(snapshot.authConfig.AuthURL) != "" {
-			requestAuth = newRequestAuthContext(r, clientIP, authContextAccessMode)
+			requestAuth = newRequestAuthContext(r, clientIP, authContextAccessMode, routedBackend)
 		}
 		preflight := preflightDecision{}
 		verifyRequired := strings.TrimSpace(snapshot.authConfig.AuthURL) != "" && !isAuthRoute &&
@@ -5298,7 +5530,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 		} else if !matchedHostRule.SuppressToolbar && snapshotReverseProxyTargetSupportsHTMLFeatures(snapshot, toolbarProbeTarget) && shouldProbeAuthForToolbar(r, snapshot.authConfig, snapshot.gatewayPortal) {
 			if requestAuth == nil {
-				requestAuth = newRequestAuthContext(r, clientIP, "")
+				requestAuth = newRequestAuthContext(r, clientIP, "", routedBackend)
 			}
 			authResult = h.checkAuthForToolbar(w, r, snapshot.authConfig, clientIP, requestID, requestAuth)
 			applyAuthResultToLogEntry(&accessEntry, authResult)
@@ -5346,7 +5578,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			strings.TrimSpace(snapshot.authConfig.AuthURL) != "" &&
 			requestHasExplicitAuthIdentity(r) {
 			if requestAuth == nil {
-				requestAuth = newRequestAuthContext(r, clientIP, "")
+				requestAuth = newRequestAuthContext(r, clientIP, "", routedBackend)
 			}
 			authResult = h.checkAuthForToolbar(w, r, snapshot.authConfig, clientIP, requestID, requestAuth)
 			applyAuthResultToLogEntry(&accessEntry, authResult)
@@ -5393,7 +5625,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	} else if snapshotReverseProxyTargetSupportsHTMLFeatures(snapshot, matchedRule.Target) && shouldProbeAuthForToolbar(r, snapshot.authConfig, snapshot.gatewayPortal) {
 		if requestAuth == nil {
-			requestAuth = newRequestAuthContext(r, clientIP, "")
+			requestAuth = newRequestAuthContext(r, clientIP, "", routedBackend)
 		}
 		authResult = h.checkAuthForToolbar(w, r, snapshot.authConfig, clientIP, requestID, requestAuth)
 		applyAuthResultToLogEntry(&accessEntry, authResult)
@@ -5596,6 +5828,72 @@ func requestHostForRouting(r *http.Request) string {
 	return host
 }
 
+func (h *Handler) routedBackendForRequest(
+	r *http.Request,
+	snapshot requestSnapshot,
+	hostRule *models.HostRule,
+	location *models.HostLocation,
+	rule *models.Rule,
+) *routedBackend {
+	target := ""
+	preserveHost := false
+	routeID := snapshot.routeGeneration
+	if hostRule != nil {
+		if location == nil {
+			target = strings.TrimSpace(hostRule.Target)
+			if selected := snapshot.routeIDs[hostRouteIncarnationKey(hostRule)]; selected != "" {
+				routeID = selected
+			}
+		} else if location.Action == models.HostLocationActionProxy {
+			target = strings.TrimSpace(location.Target)
+			if selected := snapshot.routeIDs[hostLocationRouteIncarnationKey(hostRule, location)]; selected != "" {
+				routeID = selected
+			}
+		} else {
+			if selected := snapshot.routeIDs[hostLocationRouteIncarnationKey(hostRule, location)]; selected != "" {
+				routeID = selected
+			}
+			return newRoutedBackendWithRouteID("", "", routeID)
+		}
+		preserveHost = hostRule.PreserveHost
+	} else if rule != nil {
+		target = strings.TrimSpace(rule.Target)
+		preserveHost = true
+		if selected := snapshot.routeIDs[pathRouteIncarnationKey(rule)]; selected != "" {
+			routeID = selected
+		}
+	} else {
+		return nil
+	}
+
+	if target == "" {
+		return newRoutedBackendWithRouteID("", "", routeID)
+	}
+	targetRuntime := reverseProxyTargetRuntimeFor(snapshot, target)
+	if targetRuntime.err != nil || targetRuntime.transportURL == nil {
+		targetCopy := target
+		routeIDCopy := strings.TrimSpace(routeID)
+		return &routedBackend{target: &targetCopy, routeID: &routeIDCopy}
+	}
+	transportTarget := targetRuntime.transportURL
+	if h.shouldOmitPreserveHost(transportTarget) {
+		preserveHost = false
+	}
+	if fnosConnectContext(r) != nil {
+		preserveHost = true
+	}
+
+	upstreamHost := transportTarget.Host
+	if preserveHost && r != nil && strings.TrimSpace(r.Host) != "" {
+		upstreamHost = r.Host
+	}
+	return newRoutedBackendWithRouteID(
+		transportTarget.String(),
+		upstreamHost,
+		routeID,
+	)
+}
+
 func buildDefaultHostRuleRedirectURL(r *http.Request, defaultHostRule *models.HostRule) string {
 	if r == nil || r.URL == nil || defaultHostRule == nil {
 		return ""
@@ -5679,6 +5977,27 @@ func matchHostLocation(r *http.Request, hostRule *models.HostRule) *models.HostL
 	}
 
 	return matchedPrefix
+}
+
+func enforceReservedFnosShareRoute(
+	requestPath string,
+	snapshot requestSnapshot,
+	hostRule *models.HostRule,
+	location *models.HostLocation,
+	rule *models.Rule,
+	needsSlashRedirect string,
+) (*models.HostLocation, *models.Rule, string) {
+	if !isReservedFnosSharePath(requestPath) {
+		return location, rule, needsSlashRedirect
+	}
+	if hostRule != nil {
+		return nil, nil, ""
+	}
+	defaultRule := snapshot.defaultRule
+	if defaultRule != nil && isReservedFnosSharePath(defaultRule.Path) {
+		defaultRule = nil
+	}
+	return nil, defaultRule, ""
 }
 
 func hostLocationPrefixMatches(requestPath string, locationPath string) bool {

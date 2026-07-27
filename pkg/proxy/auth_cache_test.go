@@ -167,6 +167,31 @@ func TestAuthCacheLookupSeparatesCookieIdentityByClientIP(t *testing.T) {
 	}
 }
 
+func TestAuthCacheLookupsSeparateRoutedBackends(t *testing.T) {
+	base := httptest.NewRequest(http.MethodGet, "https://nas.example.test/s/abc123abc123abc123", nil)
+	base.AddCookie(&http.Cookie{Name: authSessionCookieName, Value: "session-a"})
+	firstRequest := withAuthRouteIdentity(base.Clone(base.Context()), "target=http://10.0.0.8:5666\x00host=nas.example.test")
+	secondRequest := withAuthRouteIdentity(base.Clone(base.Context()), "target=http://10.0.0.9:5666\x00host=nas.example.test")
+
+	firstAuth, firstOK := buildAuthCacheLookup(firstRequest, "198.51.100.10", "login_first")
+	secondAuth, secondOK := buildAuthCacheLookup(secondRequest, "198.51.100.10", "login_first")
+	if !firstOK || !secondOK {
+		t.Fatal("auth cache lookup was unavailable")
+	}
+	if firstAuth.cacheKey == secondAuth.cacheKey || firstAuth.hostCacheKey == secondAuth.hostCacheKey {
+		t.Fatal("auth cache keys reused a decision across routed backends")
+	}
+
+	firstPreflight, firstOK := buildPreflightCacheLookup(firstRequest, "198.51.100.10", "login_first", true)
+	secondPreflight, secondOK := buildPreflightCacheLookup(secondRequest, "198.51.100.10", "login_first", true)
+	if !firstOK || !secondOK {
+		t.Fatal("preflight cache lookup was unavailable")
+	}
+	if firstPreflight.cacheKey == secondPreflight.cacheKey {
+		t.Fatal("preflight cache key reused a decision across routed backends")
+	}
+}
+
 func TestAuthCacheLookupKeysMatchCanonicalHashFields(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "https://app.example.com/path?q=1", nil)
 	req.AddCookie(&http.Cookie{Name: authSessionCookieName, Value: "session-a"})

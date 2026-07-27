@@ -5549,6 +5549,9 @@ type AuthContext struct {
 	ExtraHeaders          []*Header              `protobuf:"bytes,15,rep,name=extra_headers,json=extraHeaders,proto3" json:"extra_headers,omitempty"`
 	AccessToken           string                 `protobuf:"bytes,16,opt,name=access_token,json=accessToken,proto3" json:"access_token,omitempty"`
 	AccessTokenHyphenated string                 `protobuf:"bytes,17,opt,name=access_token_hyphenated,json=accessTokenHyphenated,proto3" json:"access_token_hyphenated,omitempty"`
+	RoutedUpstream        *string                `protobuf:"bytes,18,opt,name=routed_upstream,json=routedUpstream,proto3,oneof" json:"routed_upstream,omitempty"`
+	RoutedUpstreamHost    *string                `protobuf:"bytes,19,opt,name=routed_upstream_host,json=routedUpstreamHost,proto3,oneof" json:"routed_upstream_host,omitempty"`
+	RoutedUpstreamRouteId *string                `protobuf:"bytes,20,opt,name=routed_upstream_route_id,json=routedUpstreamRouteId,proto3,oneof" json:"routed_upstream_route_id,omitempty"`
 	unknownFields         protoimpl.UnknownFields
 	sizeCache             protoimpl.SizeCache
 }
@@ -5698,6 +5701,27 @@ func (x *AuthContext) GetAccessToken() string {
 func (x *AuthContext) GetAccessTokenHyphenated() string {
 	if x != nil {
 		return x.AccessTokenHyphenated
+	}
+	return ""
+}
+
+func (x *AuthContext) GetRoutedUpstream() string {
+	if x != nil && x.RoutedUpstream != nil {
+		return *x.RoutedUpstream
+	}
+	return ""
+}
+
+func (x *AuthContext) GetRoutedUpstreamHost() string {
+	if x != nil && x.RoutedUpstreamHost != nil {
+		return *x.RoutedUpstreamHost
+	}
+	return ""
+}
+
+func (x *AuthContext) GetRoutedUpstreamRouteId() string {
+	if x != nil && x.RoutedUpstreamRouteId != nil {
+		return *x.RoutedUpstreamRouteId
 	}
 	return ""
 }
@@ -7280,7 +7304,7 @@ const file_fnknock_v1_gateway_proto_rawDesc = "" +
 	"chain_name\x18\x01 \x01(\tR\tchainName\x12#\n" +
 	"\rparent_chains\x18\x02 \x03(\tR\fparentChains\"?\n" +
 	"\rIptablesRules\x12.\n" +
-	"\x05items\x18\x01 \x03(\v2\x18.fnknock.v1.IptablesRuleR\x05items\"\xd6\x04\n" +
+	"\x05items\x18\x01 \x03(\v2\x18.fnknock.v1.IptablesRuleR\x05items\"\xc3\x06\n" +
 	"\vAuthContext\x12\x1b\n" +
 	"\tclient_ip\x18\x01 \x01(\tR\bclientIp\x12#\n" +
 	"\rforwarded_for\x18\x02 \x01(\tR\fforwardedFor\x12%\n" +
@@ -7302,7 +7326,13 @@ const file_fnknock_v1_gateway_proto_rawDesc = "" +
 	"accessMode\x127\n" +
 	"\rextra_headers\x18\x0f \x03(\v2\x12.fnknock.v1.HeaderR\fextraHeaders\x12!\n" +
 	"\faccess_token\x18\x10 \x01(\tR\vaccessToken\x126\n" +
-	"\x17access_token_hyphenated\x18\x11 \x01(\tR\x15accessTokenHyphenated\"j\n" +
+	"\x17access_token_hyphenated\x18\x11 \x01(\tR\x15accessTokenHyphenated\x12,\n" +
+	"\x0frouted_upstream\x18\x12 \x01(\tH\x00R\x0eroutedUpstream\x88\x01\x01\x125\n" +
+	"\x14routed_upstream_host\x18\x13 \x01(\tH\x01R\x12routedUpstreamHost\x88\x01\x01\x12<\n" +
+	"\x18routed_upstream_route_id\x18\x14 \x01(\tH\x02R\x15routedUpstreamRouteId\x88\x01\x01B\x12\n" +
+	"\x10_routed_upstreamB\x17\n" +
+	"\x15_routed_upstream_hostB\x1b\n" +
+	"\x19_routed_upstream_route_id\"j\n" +
 	"\x12SubdomainRuleMatch\x12\x12\n" +
 	"\x04host\x18\x01 \x01(\tR\x04host\x12%\n" +
 	"\x0epolicy_version\x18\x02 \x01(\tR\rpolicyVersion\x12\x19\n" +
@@ -7835,6 +7865,7 @@ func file_fnknock_v1_gateway_proto_init() {
 		return
 	}
 	file_fnknock_v1_gateway_proto_msgTypes[12].OneofWrappers = []any{}
+	file_fnknock_v1_gateway_proto_msgTypes[71].OneofWrappers = []any{}
 	file_fnknock_v1_gateway_proto_msgTypes[82].OneofWrappers = []any{
 		(*AuthBridgeEnvelope_Ready)(nil),
 		(*AuthBridgeEnvelope_VerifyAuthRequest)(nil),

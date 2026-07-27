@@ -45,6 +45,200 @@ func TestSetHostRulesRejectsRootHostLocation(t *testing.T) {
 	}
 }
 
+func TestShareNamespaceRejectsRouteOverrides(t *testing.T) {
+	handler := &Handler{}
+	for _, routePath := range []string{"/s", "/s/download", "/s/abc123abc123abc123"} {
+		t.Run("path_rule_"+strings.ReplaceAll(routePath, "/", "_"), func(t *testing.T) {
+			err := handler.validateRule(models.Rule{
+				Path:   routePath,
+				Target: "http://127.0.0.1:8080",
+			})
+			if err == nil {
+				t.Fatalf("validateRule(%q) returned nil, want reserved share namespace error", routePath)
+			}
+		})
+		t.Run("host_location_"+strings.ReplaceAll(routePath, "/", "_"), func(t *testing.T) {
+			_, err := handler.normalizeHostLocation(models.HostLocation{
+				Path:      routePath,
+				Match:     models.HostLocationMatchPrefix,
+				Action:    models.HostLocationActionProxy,
+				Target:    "http://127.0.0.1:8080",
+				StripPath: true,
+			})
+			if err == nil {
+				t.Fatalf("normalizeHostLocation(%q) returned nil, want reserved share namespace error", routePath)
+			}
+		})
+	}
+}
+
+func TestShareNamespaceUsesBaseOrDefaultRoute(t *testing.T) {
+	hostRule := &models.HostRule{
+		Host:   "nas.example.test",
+		Target: "http://127.0.0.1:5666",
+	}
+	location := &models.HostLocation{
+		Path:      "/s/download",
+		Match:     models.HostLocationMatchPrefix,
+		Action:    models.HostLocationActionProxy,
+		Target:    hostRule.Target,
+		StripPath: true,
+	}
+	overrideRule := &models.Rule{
+		Path:      "/s/download",
+		Target:    hostRule.Target,
+		StripPath: true,
+	}
+	defaultRule := &models.Rule{
+		Path:   "/fnos",
+		Target: hostRule.Target,
+	}
+	snapshot := requestSnapshot{defaultRule: defaultRule}
+
+	gotLocation, gotRule, gotRedirect := enforceReservedFnosShareRoute(
+		"/s/download/file",
+		snapshot,
+		hostRule,
+		location,
+		overrideRule,
+		"/s/download/",
+	)
+	if gotLocation != nil || gotRule != nil || gotRedirect != "" {
+		t.Fatalf(
+			"host share route = location:%#v rule:%#v redirect:%q, want base host route",
+			gotLocation,
+			gotRule,
+			gotRedirect,
+		)
+	}
+
+	gotLocation, gotRule, gotRedirect = enforceReservedFnosShareRoute(
+		"/s/download/file",
+		snapshot,
+		nil,
+		nil,
+		overrideRule,
+		"/s/download/",
+	)
+	if gotLocation != nil || gotRule != defaultRule || gotRedirect != "" {
+		t.Fatalf(
+			"path share route = location:%#v rule:%#v redirect:%q, want default route",
+			gotLocation,
+			gotRule,
+			gotRedirect,
+		)
+	}
+}
+
+func TestShareNamespaceHostRoutePreservesPathAndIgnoresLegacyLocation(t *testing.T) {
+	var basePath string
+	var baseQuery string
+	baseUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		basePath = r.URL.Path
+		baseQuery = r.URL.RawQuery
+		_, _ = io.WriteString(w, "base")
+	}))
+	defer baseUpstream.Close()
+
+	var overrideCalls int
+	overrideUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		overrideCalls++
+		_, _ = io.WriteString(w, "override")
+	}))
+	defer overrideUpstream.Close()
+
+	// Construct the handler directly to emulate a legacy persisted location
+	// that predates the reserved /s namespace validation.
+	handler := newHostLocationTestHandler(models.HostRule{
+		Host:   "nas.example.test",
+		Target: baseUpstream.URL,
+		Locations: []models.HostLocation{
+			{
+				Path:      "/s/download",
+				Match:     models.HostLocationMatchPrefix,
+				Action:    models.HostLocationActionProxy,
+				Target:    overrideUpstream.URL,
+				StripPath: true,
+			},
+		},
+	})
+	request := httptest.NewRequest(
+		http.MethodGet,
+		"http://nas.example.test/s/download/file.bin?token=abc",
+		nil,
+	)
+	recorder := httptest.NewRecorder()
+
+	handler.ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusOK || recorder.Body.String() != "base" {
+		t.Fatalf("response = %d %q, want base upstream", recorder.Code, recorder.Body.String())
+	}
+	if overrideCalls != 0 {
+		t.Fatalf("legacy /s location calls = %d, want 0", overrideCalls)
+	}
+	if basePath != "/s/download/file.bin" || baseQuery != "token=abc" {
+		t.Fatalf("base upstream request = %q?%s, want original share path and query", basePath, baseQuery)
+	}
+}
+
+func TestShareNamespacePathModePreservesPathAndIgnoresLegacyRule(t *testing.T) {
+	var defaultPath string
+	var defaultQuery string
+	defaultUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defaultPath = r.URL.Path
+		defaultQuery = r.URL.RawQuery
+		_, _ = io.WriteString(w, "default")
+	}))
+	defer defaultUpstream.Close()
+
+	var overrideCalls int
+	overrideUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		overrideCalls++
+		_, _ = io.WriteString(w, "override")
+	}))
+	defer overrideUpstream.Close()
+
+	// Construct the handler directly to emulate a legacy persisted path rule
+	// that predates the reserved /s namespace validation.
+	handler := &Handler{
+		Rules: []models.Rule{
+			{
+				Path:      "/s/download",
+				Target:    overrideUpstream.URL,
+				StripPath: true,
+			},
+			{
+				Path:      "/fnos",
+				Target:    defaultUpstream.URL,
+				StripPath: true,
+			},
+		},
+		DefaultRoute:   "/fnos",
+		authCache:      newAuthStateCache(),
+		preflightCache: newPreflightStateCache(),
+	}
+	handler.publishRequestSnapshotLocked()
+	request := httptest.NewRequest(
+		http.MethodGet,
+		"http://gateway.example.test/s/download/file.bin?token=abc",
+		nil,
+	)
+	recorder := httptest.NewRecorder()
+
+	handler.ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusOK || recorder.Body.String() != "default" {
+		t.Fatalf("response = %d %q, want default upstream", recorder.Code, recorder.Body.String())
+	}
+	if overrideCalls != 0 {
+		t.Fatalf("legacy /s path-rule calls = %d, want 0", overrideCalls)
+	}
+	if defaultPath != "/s/download/file.bin" || defaultQuery != "token=abc" {
+		t.Fatalf("default upstream request = %q?%s, want original share path and query", defaultPath, defaultQuery)
+	}
+}
+
 func TestSetHostRulesRejectsProxyConnectionResponseHeader(t *testing.T) {
 	handler := &Handler{}
 	err := handler.SetHostRules([]models.HostRule{

@@ -88,6 +88,7 @@ type TCPPortAccessPolicy struct {
 
 var localCIDRv4 = []string{
 	"10.0.0.0/8",
+	"100.64.0.0/10",
 	"172.16.0.0/12",
 	"192.168.0.0/16",
 	"169.254.0.0/16",
@@ -736,6 +737,14 @@ func (m *Manager) applyTCPPortAccessPolicy(table string, policy TCPPortAccessPol
 	builder.WriteString("-F ")
 	builder.WriteString(chain)
 	builder.WriteString("\n")
+	if policy.IncludeLocalCIDRs {
+		// Match the loopback interface instead of trusting 127.0.0.0/8 or
+		// ::1/128 by source alone. This keeps local TCP relays working without
+		// allowing a spoofed loopback source arriving on another interface.
+		builder.WriteString("-A ")
+		builder.WriteString(chain)
+		builder.WriteString(" -i lo -j ACCEPT\n")
+	}
 	for _, cidr := range localCIDRs {
 		builder.WriteString("-A ")
 		builder.WriteString(chain)

@@ -305,9 +305,80 @@ func TestSyncTCPPortAccessPolicyWritesRestoreInput(t *testing.T) {
 		t.Fatalf("restore count = %d, want 1; calls=%#v", len(runner.restores), runner.calls)
 	}
 	input := runner.restores[0].Input
-	for _, want := range []string{"-A SSH_TEST -s 10.0.0.0/8 -j ACCEPT", "-A SSH_TEST -s 198.51.100.9 -j DROP", "-A SSH_TEST -s 203.0.113.0/24 -j ACCEPT", "-A SSH_TEST -j DROP"} {
+	rulesInOrder := []string{
+		"-A SSH_TEST -i lo -j ACCEPT",
+		"-A SSH_TEST -s 10.0.0.0/8 -j ACCEPT",
+		"-A SSH_TEST -s 100.64.0.0/10 -j ACCEPT",
+		"-A SSH_TEST -s 198.51.100.9 -j DROP",
+		"-A SSH_TEST -s 203.0.113.0/24 -j ACCEPT",
+		"-A SSH_TEST -j DROP",
+	}
+	previousIndex := -1
+	for _, want := range rulesInOrder {
 		if !strings.Contains(input, want) {
 			t.Fatalf("restore input missing %q:\n%s", want, input)
+		}
+		index := strings.Index(input, want)
+		if index <= previousIndex {
+			t.Fatalf("restore rule %q is out of order:\n%s", want, input)
+		}
+		previousIndex = index
+	}
+}
+
+func TestSyncTCPPortAccessPolicyAllowsLoopbackAndPrivateIPv6(t *testing.T) {
+	runner := &recordingIptablesRunner{}
+	manager := NewManager(Options{Tables: []string{"ip6tables"}, ParentChain: []string{"INPUT"}})
+	manager.runner = runner
+
+	err := manager.SyncTCPPortAccessPolicy(TCPPortAccessPolicy{
+		Chain:             "SSH_TEST",
+		Ports:             []int{22},
+		AllowSources:      []string{"2001:db8::/32"},
+		IncludeLocalCIDRs: true,
+		DefaultAction:     "DROP",
+	})
+	if err != nil {
+		t.Fatalf("SyncTCPPortAccessPolicy() returned error: %v", err)
+	}
+	if len(runner.restores) != 1 {
+		t.Fatalf("restore count = %d, want 1; calls=%#v", len(runner.restores), runner.calls)
+	}
+	input := runner.restores[0].Input
+	for _, want := range []string{
+		"-A SSH_TEST -i lo -j ACCEPT",
+		"-A SSH_TEST -s fc00::/7 -j ACCEPT",
+		"-A SSH_TEST -s fe80::/10 -j ACCEPT",
+		"-A SSH_TEST -s 2001:db8::/32 -j ACCEPT",
+		"-A SSH_TEST -j DROP",
+	} {
+		if !strings.Contains(input, want) {
+			t.Fatalf("restore input missing %q:\n%s", want, input)
+		}
+	}
+}
+
+func TestSyncTCPPortAccessPolicyDoesNotTrustLocalSourcesWhenDisabled(t *testing.T) {
+	runner := &recordingIptablesRunner{}
+	manager := NewManager(Options{Tables: []string{"iptables"}, ParentChain: []string{"INPUT"}})
+	manager.runner = runner
+
+	err := manager.SyncTCPPortAccessPolicy(TCPPortAccessPolicy{
+		Chain:         "SSH_TEST",
+		Ports:         []int{22},
+		AllowSources:  []string{"203.0.113.0/24"},
+		DefaultAction: "DROP",
+	})
+	if err != nil {
+		t.Fatalf("SyncTCPPortAccessPolicy() returned error: %v", err)
+	}
+	if len(runner.restores) != 1 {
+		t.Fatalf("restore count = %d, want 1; calls=%#v", len(runner.restores), runner.calls)
+	}
+	input := runner.restores[0].Input
+	for _, unwanted := range []string{" -i lo -j ACCEPT", " -s 10.0.0.0/8 -j ACCEPT", " -s 100.64.0.0/10 -j ACCEPT"} {
+		if strings.Contains(input, unwanted) {
+			t.Fatalf("restore input unexpectedly trusts %q:\n%s", unwanted, input)
 		}
 	}
 }

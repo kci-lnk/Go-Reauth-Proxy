@@ -83,15 +83,17 @@ func TestAuthConfigProtoRoundTrip(t *testing.T) {
 
 func TestLoggingConfigProtoRoundTrip(t *testing.T) {
 	input := gatewaylog.ConfigInfo{
-		Enabled:        true,
-		MaxDays:        9,
-		LogsDir:        "/tmp/logs",
-		DroppedEntries: 12,
-		QueueSize:      4096,
-		QueueDepth:     7,
+		Enabled:         true,
+		RecordLocalhost: true,
+		MaxDays:         9,
+		LogsDir:         "/tmp/logs",
+		DroppedEntries:  12,
+		QueueSize:       4096,
+		QueueDepth:      7,
 	}
 	proto := loggingConfigToProto(input)
 	if !proto.GetEnabled() ||
+		!proto.GetRecordLocalhost() ||
 		proto.GetMaxDays() != 9 ||
 		proto.GetLogsDir() != "/tmp/logs" ||
 		proto.GetDroppedEntries() != 12 ||
@@ -99,7 +101,11 @@ func TestLoggingConfigProtoRoundTrip(t *testing.T) {
 		proto.GetQueueDepth() != 7 {
 		t.Fatalf("logging proto = %#v", proto)
 	}
-	if got := protoToLoggingConfig(proto); got != (models.LoggingConfig{Enabled: true, MaxDays: 9}) {
+	if got := protoToLoggingConfig(proto); got != (models.LoggingConfig{
+		Enabled:         true,
+		RecordLocalhost: true,
+		MaxDays:         9,
+	}) {
 		t.Fatalf("protoToLoggingConfig() = %#v", got)
 	}
 }

@@ -88,12 +88,13 @@ type Entry struct {
 }
 
 type ConfigInfo struct {
-	Enabled        bool   `json:"enabled"`
-	MaxDays        int    `json:"max_days"`
-	LogsDir        string `json:"logs_dir"`
-	DroppedEntries uint64 `json:"dropped_entries"`
-	QueueSize      int    `json:"queue_size"`
-	QueueDepth     int    `json:"queue_depth"`
+	Enabled         bool   `json:"enabled"`
+	RecordLocalhost bool   `json:"record_localhost"`
+	MaxDays         int    `json:"max_days"`
+	LogsDir         string `json:"logs_dir"`
+	DroppedEntries  uint64 `json:"dropped_entries"`
+	QueueSize       int    `json:"queue_size"`
+	QueueDepth      int    `json:"queue_depth"`
 }
 
 type DirectoryInfo struct {
@@ -347,6 +348,7 @@ type Manager struct {
 	closeOnce         sync.Once
 	closed            atomic.Bool
 	enabled           atomic.Bool
+	recordLocalhost   atomic.Bool
 	droppedLogEntries atomic.Uint64
 	lastDropWarnNano  atomic.Int64
 	entryPool         sync.Pool
@@ -375,6 +377,7 @@ func NewManager(logsDir string, cfg models.LoggingConfig) *Manager {
 		done:       make(chan struct{}),
 	}
 	m.entryPool.New = func() any { return new(Entry) }
+	m.recordLocalhost.Store(normalized.RecordLocalhost)
 	if normalized.Enabled {
 		m.ensureLogWorker()
 		m.enabled.Store(true)
@@ -393,12 +396,13 @@ func (m *Manager) GetConfigInfo() ConfigInfo {
 		queueDepth = len(queue.entries)
 	}
 	return ConfigInfo{
-		Enabled:        m.config.Enabled,
-		MaxDays:        m.config.MaxDays,
-		LogsDir:        m.logsDir,
-		DroppedEntries: m.droppedLogEntries.Load(),
-		QueueSize:      queueSize,
-		QueueDepth:     queueDepth,
+		Enabled:         m.config.Enabled,
+		RecordLocalhost: m.config.RecordLocalhost,
+		MaxDays:         m.config.MaxDays,
+		LogsDir:         m.logsDir,
+		DroppedEntries:  m.droppedLogEntries.Load(),
+		QueueSize:       queueSize,
+		QueueDepth:      queueDepth,
 	}
 }
 
@@ -416,6 +420,7 @@ func (m *Manager) UpdateConfig(cfg models.LoggingConfig) ConfigInfo {
 	m.config = normalized
 	m.writer.SetRetentionDays(normalized.MaxDays)
 	m.mu.Unlock()
+	m.recordLocalhost.Store(normalized.RecordLocalhost)
 	m.enabled.Store(normalized.Enabled)
 
 	_ = m.writer.Cleanup()
@@ -434,7 +439,7 @@ func (m *Manager) Log(entry Entry) {
 	if m == nil || m.closed.Load() || !m.enabled.Load() {
 		return
 	}
-	if isLocalhostIPv4Entry(entry) {
+	if !m.recordLocalhost.Load() && isLocalhostIPv4Entry(entry) {
 		return
 	}
 	queue := m.logQueue.Load()

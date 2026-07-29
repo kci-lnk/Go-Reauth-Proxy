@@ -3428,9 +3428,13 @@ func (h *Handler) GetAuthConfig() models.AuthConfig {
 
 func (h *Handler) GetLoggingConfig() gatewaylog.ConfigInfo {
 	if h.gatewayLogManager == nil {
+		h.mu.RLock()
+		config := gatewaylog.NormalizeConfig(h.LoggingConfig)
+		h.mu.RUnlock()
 		return gatewaylog.ConfigInfo{
-			Enabled: false,
-			MaxDays: gatewaylog.DefaultMaxDays,
+			Enabled:         config.Enabled,
+			RecordLocalhost: config.RecordLocalhost,
+			MaxDays:         config.MaxDays,
 		}
 	}
 	return h.gatewayLogManager.GetConfigInfo()
@@ -3445,14 +3449,16 @@ func (h *Handler) SetLoggingConfig(cfg models.LoggingConfig) (gatewaylog.ConfigI
 	h.mu.Unlock()
 	if event := debugProxyEvent("gateway_logging_config_set", ""); event != nil {
 		event.Bool("enabled", normalized.Enabled).
+			Bool("record_localhost", normalized.RecordLocalhost).
 			Int("max_days", normalized.MaxDays).
 			Send()
 	}
 
 	if h.gatewayLogManager == nil {
 		return gatewaylog.ConfigInfo{
-			Enabled: normalized.Enabled,
-			MaxDays: normalized.MaxDays,
+			Enabled:         normalized.Enabled,
+			RecordLocalhost: normalized.RecordLocalhost,
+			MaxDays:         normalized.MaxDays,
 		}, saveErr
 	}
 	return h.gatewayLogManager.UpdateConfig(normalized), saveErr

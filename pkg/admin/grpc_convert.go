@@ -384,12 +384,13 @@ func protoToAuthConfig(cfg *pb.AuthConfig) models.AuthConfig {
 
 func loggingConfigToProto(cfg gatewaylog.ConfigInfo) *pb.LoggingConfig {
 	return &pb.LoggingConfig{
-		Enabled:        cfg.Enabled,
-		MaxDays:        int32(cfg.MaxDays),
-		LogsDir:        cfg.LogsDir,
-		DroppedEntries: cfg.DroppedEntries,
-		QueueSize:      int32(cfg.QueueSize),
-		QueueDepth:     int32(cfg.QueueDepth),
+		Enabled:         cfg.Enabled,
+		RecordLocalhost: cfg.RecordLocalhost,
+		MaxDays:         int32(cfg.MaxDays),
+		LogsDir:         cfg.LogsDir,
+		DroppedEntries:  cfg.DroppedEntries,
+		QueueSize:       int32(cfg.QueueSize),
+		QueueDepth:      int32(cfg.QueueDepth),
 	}
 }
 
@@ -397,7 +398,11 @@ func protoToLoggingConfig(cfg *pb.LoggingConfig) models.LoggingConfig {
 	if cfg == nil {
 		return models.LoggingConfig{}
 	}
-	return models.LoggingConfig{Enabled: cfg.GetEnabled(), MaxDays: int(cfg.GetMaxDays())}
+	return models.LoggingConfig{
+		Enabled:         cfg.GetEnabled(),
+		RecordLocalhost: cfg.GetRecordLocalhost(),
+		MaxDays:         int(cfg.GetMaxDays()),
+	}
 }
 
 func reverseProxyThrottleToProto(cfg models.ReverseProxyThrottleConfig) *pb.ReverseProxyThrottleConfig {

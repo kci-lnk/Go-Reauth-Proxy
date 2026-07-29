@@ -229,8 +229,9 @@ func (c AuthConfig) TencentEdgeOneActive() bool {
 }
 
 type LoggingConfig struct {
-	Enabled bool `json:"enabled"`
-	MaxDays int  `json:"max_days,omitempty"`
+	Enabled         bool `json:"enabled"`
+	RecordLocalhost bool `json:"record_localhost"`
+	MaxDays         int  `json:"max_days,omitempty"`
 }
 
 const (

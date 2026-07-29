@@ -202,6 +202,30 @@ func TestManagerLogFiltersLocalhostIPv4HTTPButKeepsStreamEntries(t *testing.T) {
 	}
 }
 
+func TestManagerLogRecordsLocalhostIPv4WhenConfigured(t *testing.T) {
+	dir := t.TempDir()
+	manager := NewManager(dir, models.LoggingConfig{Enabled: true})
+	t.Cleanup(manager.Close)
+
+	manager.Log(Entry{Method: "GET", Path: "/filtered-before-enable", Status: 200, RemoteIP: "127.0.0.1"})
+	info := manager.UpdateConfig(models.LoggingConfig{Enabled: true, RecordLocalhost: true})
+	if !info.RecordLocalhost {
+		t.Fatalf("UpdateConfig() = %#v, want localhost logging enabled", info)
+	}
+	manager.Log(Entry{Method: "GET", Path: "/local-ip", Status: 200, RemoteIP: "127.0.0.1"})
+	manager.Log(Entry{Method: "GET", Path: "/local-addr", Status: 200, RemoteAddr: "127.0.0.1:12345"})
+	manager.UpdateConfig(models.LoggingConfig{Enabled: true, RecordLocalhost: false})
+	manager.Log(Entry{Method: "GET", Path: "/filtered-after-disable", Status: 200, RemoteIP: "127.0.0.1"})
+
+	result, err := manager.Query("", 1, 20, "", "", "", "", "", "page")
+	if err != nil {
+		t.Fatalf("Query() returned error: %v", err)
+	}
+	if result.Total != 2 || len(result.Items) != 2 {
+		t.Fatalf("Query() = %#v, want both localhost HTTP entries", result)
+	}
+}
+
 func TestManagerLogDropsWhenQueueIsFull(t *testing.T) {
 	manager := &Manager{
 		config: models.LoggingConfig{Enabled: true},

@@ -643,6 +643,33 @@ func TestSetLoggingConfigDefaultsMaxDays(t *testing.T) {
 	}
 }
 
+func TestLoggingConfigFallbackPreservesLocalhostSetting(t *testing.T) {
+	handler := &Handler{
+		LoggingConfig: models.LoggingConfig{
+			Enabled:         true,
+			RecordLocalhost: true,
+			MaxDays:         3,
+		},
+	}
+
+	info := handler.GetLoggingConfig()
+	if !info.Enabled || !info.RecordLocalhost || info.MaxDays != 3 {
+		t.Fatalf("GetLoggingConfig() = %#v", info)
+	}
+
+	info, err := handler.SetLoggingConfig(models.LoggingConfig{
+		Enabled:         true,
+		RecordLocalhost: true,
+		MaxDays:         5,
+	})
+	if err != nil {
+		t.Fatalf("SetLoggingConfig() returned error: %v", err)
+	}
+	if !info.Enabled || !info.RecordLocalhost || info.MaxDays != 5 {
+		t.Fatalf("SetLoggingConfig() = %#v", info)
+	}
+}
+
 func TestGetLoggingDirectoryReturnsLogsDir(t *testing.T) {
 	handler, _ := newAdditionalProxyTestHandler(t)
 	if got := handler.GetLoggingDirectory(); got.LogsDir == "" {

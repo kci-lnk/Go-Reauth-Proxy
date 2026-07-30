@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -23,6 +24,17 @@ type recordedRestore struct {
 	Input   string
 	Command string
 	Args    []string
+}
+
+type failingNftDeleteRunner struct {
+	recordingIptablesRunner
+}
+
+func (r *failingNftDeleteRunner) CombinedOutput(command string, args ...string) ([]byte, error) {
+	if command == "nft" && len(args) >= 4 && args[0] == "delete" && args[1] == "table" {
+		return []byte("Operation not permitted"), errors.New("exit status 1")
+	}
+	return r.recordingIptablesRunner.CombinedOutput(command, args...)
 }
 
 func (r *recordingIptablesRunner) CombinedOutput(command string, args ...string) ([]byte, error) {
@@ -214,7 +226,7 @@ func TestAllowIPInsertsAcceptRuleAfterBaseRules(t *testing.T) {
 	if err := manager.AllowIP("198.51.100.7"); err != nil {
 		t.Fatalf("AllowIP() returned error: %v", err)
 	}
-	if !callContains(runner.calls, "-I", "REAUTH_FW", "2", "-s", "198.51.100.7", "-j", "ACCEPT") {
+	if !callContains(runner.calls, "-I", "REAUTH_FW", "4", "-s", "198.51.100.7", "-j", "ACCEPT") {
 		t.Fatalf("ACCEPT insert not recorded: %#v", runner.calls)
 	}
 }
@@ -228,7 +240,7 @@ func TestBlockIPInsertsDropRuleAfterBaseRules(t *testing.T) {
 	if err := manager.BlockIP("198.51.100.8"); err != nil {
 		t.Fatalf("BlockIP() returned error: %v", err)
 	}
-	if !callContains(runner.calls, "-I", "REAUTH_FW", "2", "-s", "198.51.100.8", "-j", "DROP") {
+	if !callContains(runner.calls, "-I", "REAUTH_FW", "4", "-s", "198.51.100.8", "-j", "DROP") {
 		t.Fatalf("DROP insert not recorded: %#v", runner.calls)
 	}
 }
@@ -250,7 +262,7 @@ func TestBlockTCPPortForIPInsertsPortScopedDrop(t *testing.T) {
 	if err := manager.BlockTCPPortForIP("198.51.100.7", 22); err != nil {
 		t.Fatalf("BlockTCPPortForIP() returned error: %v", err)
 	}
-	if !callContains(runner.calls, "-I", "REAUTH_FW", "2", "-s", "198.51.100.7", "-p", "tcp", "--dport", "22", "-j", "DROP") {
+	if !callContains(runner.calls, "-I", "REAUTH_FW", "4", "-s", "198.51.100.7", "-p", "tcp", "--dport", "22", "-j", "DROP") {
 		t.Fatalf("port DROP insert not recorded: %#v", runner.calls)
 	}
 }
@@ -383,6 +395,181 @@ func TestSyncTCPPortAccessPolicyDoesNotTrustLocalSourcesWhenDisabled(t *testing.
 	}
 }
 
+func TestSyncTCPPortAccessPolicyUsesNftIntervalSetsForLargePolicies(t *testing.T) {
+	runner := &recordingIptablesRunner{}
+	manager := NewManager(Options{
+		Tables:      []string{"iptables", "ip6tables"},
+		ParentChain: []string{"INPUT", "DOCKER-USER"},
+	})
+	manager.runner = runner
+	manager.nftCommand = "nft"
+	allowSources := make([]string, 0, nftIntervalSetMinSourceSize)
+	for index := range nftIntervalSetMinSourceSize {
+		allowSources = append(allowSources, fmt.Sprintf("198.18.%d.%d/32", index/256, index%256))
+	}
+
+	err := manager.SyncTCPPortAccessPolicy(TCPPortAccessPolicy{
+		Chain:             "SSH_TEST",
+		ParentChains:      []string{"INPUT", "DOCKER-USER"},
+		Ports:             []int{22, 2222},
+		AllowSources:      allowSources,
+		BlockSources:      []string{"2001:db8::7"},
+		IncludeLocalCIDRs: true,
+		DefaultAction:     "DROP",
+	})
+	if err != nil {
+		t.Fatalf("SyncTCPPortAccessPolicy() returned error: %v", err)
+	}
+	if len(runner.restores) != 3 {
+		t.Fatalf("restore count = %d, want one nft and two compact iptables restores", len(runner.restores))
+	}
+	restore := runner.restores[0]
+	if restore.Command != "nft" || !reflect.DeepEqual(restore.Args, []string{"-f", "-"}) {
+		t.Fatalf("nft command = %q %#v", restore.Command, restore.Args)
+	}
+	for _, want := range []string{
+		"add set inet fnknock_ssh allow4 { type ipv4_addr; flags interval; }",
+		"add set inet fnknock_ssh block6 { type ipv6_addr; flags interval; }",
+		"add rule inet fnknock_ssh input_classify meta mark set meta mark & 0xcfffffff",
+		"add rule inet fnknock_ssh input_classify ip saddr @allow4 meta mark set meta mark | 0x10000000",
+		"add rule inet fnknock_ssh forward_classify ip6 saddr @block6 meta mark set meta mark | 0x20000000",
+		"add chain inet fnknock_ssh input_classify { type filter hook input priority -1; policy accept; }",
+		"add chain inet fnknock_ssh forward_clear { type filter hook forward priority 10; policy accept; }",
+	} {
+		if !strings.Contains(restore.Input, want) {
+			t.Fatalf("nft input missing %q:\n%s", want, restore.Input)
+		}
+	}
+	if strings.Count(restore.Input, "ip saddr @allow4 meta mark set meta mark | 0x10000000") != 2 {
+		t.Fatalf("large allow set should use one membership rule:\n%s", restore.Input)
+	}
+	if strings.Contains(restore.Input, " drop\n") || strings.Contains(restore.Input, " jump enforce") {
+		t.Fatalf("native classifier must not enforce outside configured parent chains:\n%s", restore.Input)
+	}
+	for _, restore := range runner.restores[1:] {
+		if strings.Contains(restore.Input, "198.18.") {
+			t.Fatalf("compact iptables classifier unexpectedly expanded CIDRs:\n%s", restore.Input)
+		}
+		for _, want := range []string{
+			"-m mark --mark 0x20000000/0x20000000 -j FNK-SSH-BLOCK",
+			"-m mark --mark 0x10000000/0x10000000 -j FNK-SSH-ALLOW",
+			"-j MARK --set-xmark 0x0/0x30000000",
+		} {
+			if !strings.Contains(restore.Input, want) {
+				t.Fatalf("compact SSH restore missing %q:\n%s", want, restore.Input)
+			}
+		}
+	}
+	if !callContains(runner.calls, "-C", "DOCKER-USER", "-p", "tcp", "--dport", "22", "-j", "SSH_TEST") {
+		t.Fatalf("DOCKER-USER scoped jump was not reconciled: %#v", runner.calls)
+	}
+}
+
+func TestSyncWhitelistIPSetUsesOneNativeIntervalPolicy(t *testing.T) {
+	runner := &recordingIptablesRunner{}
+	manager := NewManager(Options{
+		Tables:      []string{"iptables", "ip6tables"},
+		ParentChain: []string{"INPUT", "DOCKER-USER"},
+	})
+	manager.runner = runner
+	manager.nftCommand = "nft"
+
+	if err := manager.SyncWhitelistIPSet([]string{"192.0.2.0/24", "2001:db8::/48"}); err != nil {
+		t.Fatalf("SyncWhitelistIPSet() returned error: %v", err)
+	}
+	if len(runner.restores) != 1 {
+		t.Fatalf("nft restore count = %d, want 1", len(runner.restores))
+	}
+	input := runner.restores[0].Input
+	for _, want := range []string{
+		"add set inet fnknock_whitelist allow4 { type ipv4_addr; flags interval; }",
+		"add set inet fnknock_whitelist allow6 { type ipv6_addr; flags interval; }",
+		"add chain inet fnknock_whitelist input_mark { type filter hook input priority -1; policy accept; }",
+		"add chain inet fnknock_whitelist forward_mark { type filter hook forward priority -1; policy accept; }",
+		"input_mark meta mark set meta mark & 0xbfffffff",
+		"forward_mark meta mark set meta mark & 0xbfffffff",
+		"ip saddr @allow4 meta mark set meta mark | 0x40000000",
+		"ip6 saddr @allow6 meta mark set meta mark | 0x40000000",
+	} {
+		if !strings.Contains(input, want) {
+			t.Fatalf("nft input missing %q:\n%s", want, input)
+		}
+	}
+	clearIndex := strings.Index(input, "input_mark meta mark set meta mark & 0xbfffffff")
+	setIndex := strings.Index(input, "input_mark ip saddr @allow4 meta mark set meta mark | 0x40000000")
+	if clearIndex < 0 || setIndex < 0 || clearIndex >= setIndex {
+		t.Fatalf("whitelist classifier must clear an untrusted mark before setting it:\n%s", input)
+	}
+}
+
+func TestSyncEmptyWhitelistKeepsMarkSanitizerActive(t *testing.T) {
+	runner := &recordingIptablesRunner{}
+	manager := NewManager(Options{
+		Tables:      []string{"iptables", "ip6tables"},
+		ParentChain: []string{"INPUT", "DOCKER-USER"},
+	})
+	manager.runner = runner
+	manager.nftCommand = "nft"
+
+	if err := manager.SyncWhitelistIPSet(nil); err != nil {
+		t.Fatalf("SyncWhitelistIPSet(nil) returned error: %v", err)
+	}
+	if len(runner.restores) != 1 {
+		t.Fatalf("nft restore count = %d, want 1", len(runner.restores))
+	}
+	input := runner.restores[0].Input
+	if !strings.Contains(input, "input_mark meta mark set meta mark & 0xbfffffff") {
+		t.Fatalf("empty whitelist must retain the mark sanitizer:\n%s", input)
+	}
+	if strings.Contains(input, "meta mark set meta mark | 0x40000000") {
+		t.Fatalf("empty whitelist unexpectedly marks a source as trusted:\n%s", input)
+	}
+}
+
+func TestClearTCPPortAccessPolicyPropagatesNftDeleteFailure(t *testing.T) {
+	runner := &failingNftDeleteRunner{}
+	manager := NewManager(Options{Tables: []string{"iptables"}})
+	manager.runner = runner
+	manager.nftCommand = "nft"
+
+	err := manager.ClearTCPPortAccessPolicy("SSH_TEST", []string{"INPUT"})
+	if err == nil || !strings.Contains(err.Error(), "Operation not permitted") {
+		t.Fatalf("ClearTCPPortAccessPolicy() error = %v, want nft delete failure", err)
+	}
+}
+
+func TestDestroyRemovesClassifierSupportChainsAndTables(t *testing.T) {
+	runner := &recordingIptablesRunner{}
+	manager := NewManager(Options{
+		ChainName:   "REAUTH_FW",
+		Tables:      []string{"iptables"},
+		ParentChain: []string{"INPUT"},
+	})
+	manager.runner = runner
+	manager.nftCommand = "nft"
+	manager.whitelistNftReady = true
+
+	if err := manager.Destroy(); err != nil {
+		t.Fatalf("Destroy() returned error: %v", err)
+	}
+	for _, chain := range []string{
+		DefaultSSHFirewallChain,
+		sshAllowActionChain,
+		sshBlockActionChain,
+		sshDefaultActionChain,
+		whitelistChainName,
+		whitelistMarkChainName,
+	} {
+		if !callContains(runner.calls, "-F", chain) || !callContains(runner.calls, "-X", chain) {
+			t.Fatalf("Destroy() did not remove %s: %#v", chain, runner.calls)
+		}
+	}
+	if !callContains(runner.calls, "delete", "table", "inet", sshNftTableName) ||
+		!callContains(runner.calls, "delete", "table", "inet", whitelistNftTableName) {
+		t.Fatalf("Destroy() did not remove nft classifier tables: %#v", runner.calls)
+	}
+}
+
 func TestSyncTCPPortAccessPolicyClearsWhenPortsEmpty(t *testing.T) {
 	runner := &recordingIptablesRunner{}
 	manager := NewManager(Options{Tables: []string{"iptables"}, ParentChain: []string{"INPUT"}})
@@ -444,7 +631,7 @@ func TestHandleAllowIPRecordsManagerCommand(t *testing.T) {
 		t.Fatalf("status = %d, body=%s", rec.Code, rec.Body.String())
 	}
 	runner := manager.runner.(*recordingIptablesRunner)
-	if !callContains(runner.calls, "-I", "REAUTH_FW", "2", "-s", "198.51.100.7", "-j", "ACCEPT") {
+	if !callContains(runner.calls, "-I", "REAUTH_FW", "4", "-s", "198.51.100.7", "-j", "ACCEPT") {
 		t.Fatalf("allow command not recorded: %#v", runner.calls)
 	}
 }

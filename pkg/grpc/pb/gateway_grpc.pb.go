@@ -2958,21 +2958,22 @@ var SslService_ServiceDesc = grpc.ServiceDesc{
 }
 
 const (
-	FirewallService_InitIptables_FullMethodName      = "/fnknock.v1.FirewallService/InitIptables"
-	FirewallService_CleanIptables_FullMethodName     = "/fnknock.v1.FirewallService/CleanIptables"
-	FirewallService_FlushIptables_FullMethodName     = "/fnknock.v1.FirewallService/FlushIptables"
-	FirewallService_AllowIp_FullMethodName           = "/fnknock.v1.FirewallService/AllowIp"
-	FirewallService_BlockIp_FullMethodName           = "/fnknock.v1.FirewallService/BlockIp"
-	FirewallService_RemoveIp_FullMethodName          = "/fnknock.v1.FirewallService/RemoveIp"
-	FirewallService_BlockTcpPortForIp_FullMethodName = "/fnknock.v1.FirewallService/BlockTcpPortForIp"
-	FirewallService_RemoveTcpPortRule_FullMethodName = "/fnknock.v1.FirewallService/RemoveTcpPortRule"
-	FirewallService_SyncSshFirewall_FullMethodName   = "/fnknock.v1.FirewallService/SyncSshFirewall"
-	FirewallService_ClearSshFirewall_FullMethodName  = "/fnknock.v1.FirewallService/ClearSshFirewall"
-	FirewallService_BlockAll_FullMethodName          = "/fnknock.v1.FirewallService/BlockAll"
-	FirewallService_AllowAll_FullMethodName          = "/fnknock.v1.FirewallService/AllowAll"
-	FirewallService_EnsureTcpRedirect_FullMethodName = "/fnknock.v1.FirewallService/EnsureTcpRedirect"
-	FirewallService_ClearTcpRedirect_FullMethodName  = "/fnknock.v1.FirewallService/ClearTcpRedirect"
-	FirewallService_ListIptables_FullMethodName      = "/fnknock.v1.FirewallService/ListIptables"
+	FirewallService_InitIptables_FullMethodName          = "/fnknock.v1.FirewallService/InitIptables"
+	FirewallService_CleanIptables_FullMethodName         = "/fnknock.v1.FirewallService/CleanIptables"
+	FirewallService_FlushIptables_FullMethodName         = "/fnknock.v1.FirewallService/FlushIptables"
+	FirewallService_AllowIp_FullMethodName               = "/fnknock.v1.FirewallService/AllowIp"
+	FirewallService_BlockIp_FullMethodName               = "/fnknock.v1.FirewallService/BlockIp"
+	FirewallService_RemoveIp_FullMethodName              = "/fnknock.v1.FirewallService/RemoveIp"
+	FirewallService_BlockTcpPortForIp_FullMethodName     = "/fnknock.v1.FirewallService/BlockTcpPortForIp"
+	FirewallService_RemoveTcpPortRule_FullMethodName     = "/fnknock.v1.FirewallService/RemoveTcpPortRule"
+	FirewallService_SyncSshFirewall_FullMethodName       = "/fnknock.v1.FirewallService/SyncSshFirewall"
+	FirewallService_ClearSshFirewall_FullMethodName      = "/fnknock.v1.FirewallService/ClearSshFirewall"
+	FirewallService_SyncWhitelistFirewall_FullMethodName = "/fnknock.v1.FirewallService/SyncWhitelistFirewall"
+	FirewallService_BlockAll_FullMethodName              = "/fnknock.v1.FirewallService/BlockAll"
+	FirewallService_AllowAll_FullMethodName              = "/fnknock.v1.FirewallService/AllowAll"
+	FirewallService_EnsureTcpRedirect_FullMethodName     = "/fnknock.v1.FirewallService/EnsureTcpRedirect"
+	FirewallService_ClearTcpRedirect_FullMethodName      = "/fnknock.v1.FirewallService/ClearTcpRedirect"
+	FirewallService_ListIptables_FullMethodName          = "/fnknock.v1.FirewallService/ListIptables"
 )
 
 // FirewallServiceClient is the client API for FirewallService service.
@@ -2989,6 +2990,7 @@ type FirewallServiceClient interface {
 	RemoveTcpPortRule(ctx context.Context, in *TcpPortRuleRequest, opts ...grpc.CallOption) (*RpcStatus, error)
 	SyncSshFirewall(ctx context.Context, in *SshFirewallSyncRequest, opts ...grpc.CallOption) (*RpcStatus, error)
 	ClearSshFirewall(ctx context.Context, in *SshFirewallClearRequest, opts ...grpc.CallOption) (*RpcStatus, error)
+	SyncWhitelistFirewall(ctx context.Context, in *WhitelistFirewallSyncRequest, opts ...grpc.CallOption) (*RpcStatus, error)
 	BlockAll(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*RpcStatus, error)
 	AllowAll(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*RpcStatus, error)
 	EnsureTcpRedirect(ctx context.Context, in *TcpRedirectRequest, opts ...grpc.CallOption) (*RpcStatus, error)
@@ -3104,6 +3106,16 @@ func (c *firewallServiceClient) ClearSshFirewall(ctx context.Context, in *SshFir
 	return out, nil
 }
 
+func (c *firewallServiceClient) SyncWhitelistFirewall(ctx context.Context, in *WhitelistFirewallSyncRequest, opts ...grpc.CallOption) (*RpcStatus, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(RpcStatus)
+	err := c.cc.Invoke(ctx, FirewallService_SyncWhitelistFirewall_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *firewallServiceClient) BlockAll(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*RpcStatus, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(RpcStatus)
@@ -3168,6 +3180,7 @@ type FirewallServiceServer interface {
 	RemoveTcpPortRule(context.Context, *TcpPortRuleRequest) (*RpcStatus, error)
 	SyncSshFirewall(context.Context, *SshFirewallSyncRequest) (*RpcStatus, error)
 	ClearSshFirewall(context.Context, *SshFirewallClearRequest) (*RpcStatus, error)
+	SyncWhitelistFirewall(context.Context, *WhitelistFirewallSyncRequest) (*RpcStatus, error)
 	BlockAll(context.Context, *emptypb.Empty) (*RpcStatus, error)
 	AllowAll(context.Context, *emptypb.Empty) (*RpcStatus, error)
 	EnsureTcpRedirect(context.Context, *TcpRedirectRequest) (*RpcStatus, error)
@@ -3212,6 +3225,9 @@ func (UnimplementedFirewallServiceServer) SyncSshFirewall(context.Context, *SshF
 }
 func (UnimplementedFirewallServiceServer) ClearSshFirewall(context.Context, *SshFirewallClearRequest) (*RpcStatus, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method ClearSshFirewall not implemented")
+}
+func (UnimplementedFirewallServiceServer) SyncWhitelistFirewall(context.Context, *WhitelistFirewallSyncRequest) (*RpcStatus, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method SyncWhitelistFirewall not implemented")
 }
 func (UnimplementedFirewallServiceServer) BlockAll(context.Context, *emptypb.Empty) (*RpcStatus, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method BlockAll not implemented")
@@ -3429,6 +3445,24 @@ func _FirewallService_ClearSshFirewall_Handler(srv interface{}, ctx context.Cont
 	return interceptor(ctx, in, info, handler)
 }
 
+func _FirewallService_SyncWhitelistFirewall_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(WhitelistFirewallSyncRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(FirewallServiceServer).SyncWhitelistFirewall(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: FirewallService_SyncWhitelistFirewall_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(FirewallServiceServer).SyncWhitelistFirewall(ctx, req.(*WhitelistFirewallSyncRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _FirewallService_BlockAll_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(emptypb.Empty)
 	if err := dec(in); err != nil {
@@ -3565,6 +3599,10 @@ var FirewallService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "ClearSshFirewall",
 			Handler:    _FirewallService_ClearSshFirewall_Handler,
+		},
+		{
+			MethodName: "SyncWhitelistFirewall",
+			Handler:    _FirewallService_SyncWhitelistFirewall_Handler,
 		},
 		{
 			MethodName: "BlockAll",

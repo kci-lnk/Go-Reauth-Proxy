@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"fmt"
 	"net/netip"
 	"strings"
 	"sync"
@@ -26,7 +27,9 @@ func newGatewayTrustedClientIPsRuntime(cfg models.GatewayTrustedClientIPsRuntime
 	runtime := &gatewayTrustedClientIPsRuntime{
 		ips: make(map[string]struct{}),
 	}
-	runtime.updateConfig(cfg)
+	if _, err := runtime.updateConfig(cfg); err != nil {
+		runtime.config = models.GatewayTrustedClientIPsRuntime{}
+	}
 	return runtime
 }
 
@@ -36,6 +39,7 @@ func (r *gatewayTrustedClientIPsRuntime) getConfig() models.GatewayTrustedClient
 			IPs:       []string{},
 			CIDRs:     []string{},
 			UpdatedAt: "",
+			PolicyID:  "",
 		}
 	}
 
@@ -43,28 +47,37 @@ func (r *gatewayTrustedClientIPsRuntime) getConfig() models.GatewayTrustedClient
 	defer r.mu.RUnlock()
 
 	ips := append([]string(nil), r.config.IPs...)
-	cidrs := append([]string(nil), r.config.CIDRs...)
+	var policy *models.CompiledIPSet
+	if r.config.Policy != nil {
+		copied := compiledipset.Clone(*r.config.Policy)
+		policy = &copied
+	}
 	return models.GatewayTrustedClientIPsRuntime{
 		IPs:       ips,
-		CIDRs:     cidrs,
+		CIDRs:     []string{},
 		UpdatedAt: r.config.UpdatedAt,
+		PolicyID:  r.config.PolicyID,
+		Policy:    policy,
 	}
 }
 
-func (r *gatewayTrustedClientIPsRuntime) updateConfig(cfg models.GatewayTrustedClientIPsRuntime) bool {
-	normalized, ips, cidrSet := normalizeGatewayTrustedClientIPsRuntime(cfg)
+func (r *gatewayTrustedClientIPsRuntime) updateConfig(cfg models.GatewayTrustedClientIPsRuntime) (bool, error) {
+	normalized, ips, cidrSet, err := normalizeGatewayTrustedClientIPsRuntime(cfg)
+	if err != nil {
+		return false, err
+	}
 
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
 	if shouldIgnoreGatewayTrustedClientIPsUpdate(r.config.UpdatedAt, normalized.UpdatedAt) {
-		return false
+		return false, nil
 	}
 
 	r.config = normalized
 	r.ips = ips
 	r.cidrSet = cidrSet
-	return true
+	return true, nil
 }
 
 func (r *gatewayTrustedClientIPsRuntime) contains(clientIP string) bool {
@@ -82,17 +95,17 @@ func (r *gatewayTrustedClientIPsRuntime) contains(clientIP string) bool {
 	if _, exists := r.ips[normalizedIP]; exists {
 		return true
 	}
-	if r.cidrSet.Contains(addr) {
+	if r.cidrSet != nil && r.cidrSet.Contains(addr) {
 		return true
 	}
 	if equivalentLoopback, ok := gatewayTrustedEquivalentLoopback(addr); ok &&
-		r.cidrSet.Contains(equivalentLoopback) {
+		r.cidrSet != nil && r.cidrSet.Contains(equivalentLoopback) {
 		return true
 	}
 	return false
 }
 
-func normalizeGatewayTrustedClientIPsRuntime(cfg models.GatewayTrustedClientIPsRuntime) (models.GatewayTrustedClientIPsRuntime, map[string]struct{}, *compiledipset.Set) {
+func normalizeGatewayTrustedClientIPsRuntime(cfg models.GatewayTrustedClientIPsRuntime) (models.GatewayTrustedClientIPsRuntime, map[string]struct{}, *compiledipset.Set, error) {
 	ips := make([]string, 0, len(cfg.IPs))
 	ipSet := make(map[string]struct{}, len(cfg.IPs))
 	for _, rawIP := range cfg.IPs {
@@ -107,36 +120,25 @@ func normalizeGatewayTrustedClientIPsRuntime(cfg models.GatewayTrustedClientIPsR
 		ips = append(ips, normalizedIP)
 	}
 
-	cidrs := make([]string, 0, len(cfg.CIDRs))
-	cidrSet := make(map[string]struct{}, len(cfg.CIDRs))
-	for _, rawCIDR := range cfg.CIDRs {
-		prefix, err := netip.ParsePrefix(strings.TrimSpace(rawCIDR))
-		if err != nil {
-			continue
-		}
-		prefix = prefix.Masked()
-		text := prefix.String()
-		if _, exists := cidrSet[text]; exists {
-			continue
-		}
-		cidrSet[text] = struct{}{}
-		cidrs = append(cidrs, text)
+	legacyCIDRs := cfg.CIDRs
+	if cfg.Policy == nil {
+		legacyCIDRs = normalizeLegacyCompiledCIDRs(cfg.CIDRs)
 	}
-
-	compiled, err := compiledipset.Compile(cidrs)
+	compiled, compiledCIDRs, err := compiledipset.Resolve(cfg.PolicyID, cfg.Policy, legacyCIDRs)
 	if err != nil {
-		return models.GatewayTrustedClientIPsRuntime{}, map[string]struct{}{}, nil
-	}
-	compiledCIDRs, err := compiledipset.Decode(compiled)
-	if err != nil {
-		return models.GatewayTrustedClientIPsRuntime{}, map[string]struct{}{}, nil
+		return models.GatewayTrustedClientIPsRuntime{}, nil, nil, fmt.Errorf(
+			"invalid gateway trusted client IP policy: %w",
+			err,
+		)
 	}
 
 	return models.GatewayTrustedClientIPsRuntime{
 		IPs:       ips,
-		CIDRs:     cidrs,
+		CIDRs:     []string{},
 		UpdatedAt: strings.TrimSpace(cfg.UpdatedAt),
-	}, ipSet, compiledCIDRs
+		PolicyID:  compiled.ID,
+		Policy:    &compiled,
+	}, ipSet, compiledCIDRs, nil
 }
 
 func normalizeGatewayTrustedClientIP(value string) (string, netip.Addr, bool) {

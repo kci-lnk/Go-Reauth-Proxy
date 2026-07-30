@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"go-reauth-proxy/pkg/grpc/pb"
+	compiledipset "go-reauth-proxy/pkg/ipset"
 	"go-reauth-proxy/pkg/models"
 	proxywaf "go-reauth-proxy/pkg/waf"
 )
@@ -42,31 +43,62 @@ func TestGatewayTrustedClientIPsRuntimeNormalizesMatchesAndClears(t *testing.T) 
 	if len(got.IPs) != 3 || got.IPs[0] != "192.168.1.8" || got.IPs[1] != "203.0.113.9" || got.IPs[2] != "127.0.0.1" {
 		t.Fatalf("normalized IPs = %#v, want private, mapped IPv4 and canonical loopback addresses", got.IPs)
 	}
-	if len(got.CIDRs) != 3 || got.CIDRs[0] != "100.64.0.0/10" || got.CIDRs[1] != "2001:db8::/32" || got.CIDRs[2] != "::1/128" {
-		t.Fatalf("normalized CIDRs = %#v", got.CIDRs)
+	if len(got.CIDRs) != 0 || got.Policy == nil || got.PolicyID == "" {
+		t.Fatalf("trusted CIDRs were not compacted into a policy: %#v", got)
 	}
 	if rangeCount := runtime.cidrSet.RangeCount(); rangeCount != 3 {
 		t.Fatalf("compiled CIDR range count = %d, want 3", rangeCount)
 	}
 
-	if runtime.updateConfig(models.GatewayTrustedClientIPsRuntime{
+	if updated, err := runtime.updateConfig(models.GatewayTrustedClientIPsRuntime{
 		UpdatedAt: "2026-07-31T00:59:59Z",
-	}) {
+	}); err != nil || updated {
 		t.Fatal("older trusted runtime update was accepted")
 	}
 	if !runtime.contains("192.168.1.8") {
 		t.Fatal("older update unexpectedly cleared the trusted runtime")
 	}
 
-	if !runtime.updateConfig(models.GatewayTrustedClientIPsRuntime{
+	if updated, err := runtime.updateConfig(models.GatewayTrustedClientIPsRuntime{
 		IPs:       []string{},
 		CIDRs:     []string{},
 		UpdatedAt: "2026-07-31T01:00:01Z",
-	}) {
+	}); err != nil || !updated {
 		t.Fatal("newer empty trusted runtime update was ignored")
 	}
 	if runtime.contains("192.168.1.8") || runtime.contains("100.64.0.1") {
 		t.Fatal("empty trusted runtime did not clear exact IPs and CIDRs")
+	}
+}
+
+func TestGatewayTrustedClientIPsRuntimeAcceptsCompiledPolicyWithoutCIDRExpansion(t *testing.T) {
+	policy, err := compiledipset.Compile([]string{
+		"203.0.113.0/25",
+		"203.0.113.128/25",
+		"2001:db8::/32",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime := newGatewayTrustedClientIPsRuntime(models.GatewayTrustedClientIPsRuntime{
+		PolicyID: policy.ID,
+		Policy:   &policy,
+	})
+	if !runtime.contains("203.0.113.200") || !runtime.contains("2001:db8::1") {
+		t.Fatal("compiled trusted policy did not match its ranges")
+	}
+	got := runtime.getConfig()
+	if got.PolicyID != policy.ID || got.Policy == nil || len(got.CIDRs) != 0 {
+		t.Fatalf("compiled trusted policy was not retained compactly: %#v", got)
+	}
+
+	corrupt := policy
+	corrupt.ID = "ipset-v2:wrong"
+	if _, err := runtime.updateConfig(models.GatewayTrustedClientIPsRuntime{
+		PolicyID: corrupt.ID,
+		Policy:   &corrupt,
+	}); err == nil {
+		t.Fatal("corrupt compiled trusted policy was accepted")
 	}
 }
 

@@ -1,6 +1,8 @@
 package proxy
 
 import (
+	"fmt"
+	compiledipset "go-reauth-proxy/pkg/ipset"
 	"go-reauth-proxy/pkg/models"
 	"net/netip"
 	"strings"
@@ -12,57 +14,60 @@ type reverseProxyThrottleExemptIPsRuntime struct {
 	mu     sync.RWMutex
 	config models.ReverseProxyThrottleExemptIPsRuntime
 	ips    map[string]struct{}
-	cidrs  []netip.Prefix
+	set    *compiledipset.Set
 }
 
 func newReverseProxyThrottleExemptIPsRuntime(cfg models.ReverseProxyThrottleExemptIPsRuntime) *reverseProxyThrottleExemptIPsRuntime {
 	runtime := &reverseProxyThrottleExemptIPsRuntime{
 		ips: make(map[string]struct{}),
 	}
-	runtime.updateConfig(cfg)
+	if _, err := runtime.updateConfig(cfg); err != nil {
+		runtime.config = models.ReverseProxyThrottleExemptIPsRuntime{}
+	}
 	return runtime
 }
 
 func (r *reverseProxyThrottleExemptIPsRuntime) getConfig() models.ReverseProxyThrottleExemptIPsRuntime {
 	if r == nil {
-		return models.ReverseProxyThrottleExemptIPsRuntime{
-			Enabled:   false,
-			IPs:       []string{},
-			CIDRs:     []string{},
-			UpdatedAt: "",
-		}
+		return models.ReverseProxyThrottleExemptIPsRuntime{}
 	}
 
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
-	ips := make([]string, len(r.config.IPs))
-	copy(ips, r.config.IPs)
-	cidrs := make([]string, len(r.config.CIDRs))
-	copy(cidrs, r.config.CIDRs)
-
+	ips := append([]string(nil), r.config.IPs...)
+	var policy *models.CompiledIPSet
+	if r.config.Policy != nil {
+		copied := compiledipset.Clone(*r.config.Policy)
+		policy = &copied
+	}
 	return models.ReverseProxyThrottleExemptIPsRuntime{
 		Enabled:   r.config.Enabled,
 		IPs:       ips,
-		CIDRs:     cidrs,
+		CIDRs:     []string{},
 		UpdatedAt: r.config.UpdatedAt,
+		PolicyID:  r.config.PolicyID,
+		Policy:    policy,
 	}
 }
 
-func (r *reverseProxyThrottleExemptIPsRuntime) updateConfig(cfg models.ReverseProxyThrottleExemptIPsRuntime) bool {
-	normalized, ipSet, cidrPrefixes := normalizeReverseProxyThrottleExemptIPsRuntime(cfg)
+func (r *reverseProxyThrottleExemptIPsRuntime) updateConfig(cfg models.ReverseProxyThrottleExemptIPsRuntime) (bool, error) {
+	normalized, ipSet, set, err := normalizeReverseProxyThrottleExemptIPsRuntime(cfg)
+	if err != nil {
+		return false, err
+	}
 
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
 	if shouldIgnoreReverseProxyThrottleExemptIPsUpdate(r.config.UpdatedAt, normalized.UpdatedAt) {
-		return false
+		return false, nil
 	}
 
 	r.config = normalized
 	r.ips = ipSet
-	r.cidrs = cidrPrefixes
-	return true
+	r.set = set
+	return true, nil
 }
 
 func (r *reverseProxyThrottleExemptIPsRuntime) shouldBypass(clientIP string) bool {
@@ -85,31 +90,18 @@ func (r *reverseProxyThrottleExemptIPsRuntime) shouldBypass(clientIP string) boo
 	if !r.config.Enabled {
 		return false
 	}
-
 	if _, exists := r.ips[normalizedIP]; exists {
 		return true
 	}
-	for _, prefix := range r.cidrs {
-		if prefix.Contains(addr) {
-			return true
-		}
-	}
-	return false
+	return r.set != nil && r.set.Contains(addr)
 }
 
-func normalizeReverseProxyThrottleExemptIPsRuntime(cfg models.ReverseProxyThrottleExemptIPsRuntime) (models.ReverseProxyThrottleExemptIPsRuntime, map[string]struct{}, []netip.Prefix) {
+func normalizeReverseProxyThrottleExemptIPsRuntime(cfg models.ReverseProxyThrottleExemptIPsRuntime) (models.ReverseProxyThrottleExemptIPsRuntime, map[string]struct{}, *compiledipset.Set, error) {
 	ips := make([]string, 0, len(cfg.IPs))
 	ipSet := make(map[string]struct{}, len(cfg.IPs))
-	cidrs := make([]string, 0, len(cfg.CIDRs))
-	cidrSet := make(map[string]struct{}, len(cfg.CIDRs))
-	cidrPrefixes := make([]netip.Prefix, 0, len(cfg.CIDRs))
-
 	for _, rawIP := range cfg.IPs {
 		normalizedIP, addr, ok := normalizeReverseProxyThrottleExemptIP(rawIP)
-		if !ok {
-			continue
-		}
-		if isVisibilityExemptAddr(addr) {
+		if !ok || isVisibilityExemptAddr(addr) {
 			continue
 		}
 		if _, exists := ipSet[normalizedIP]; exists {
@@ -119,34 +111,25 @@ func normalizeReverseProxyThrottleExemptIPsRuntime(cfg models.ReverseProxyThrott
 		ips = append(ips, normalizedIP)
 	}
 
-	for _, rawCIDR := range cfg.CIDRs {
-		cidr := strings.TrimSpace(rawCIDR)
-		if cidr == "" {
-			continue
-		}
-
-		prefix, err := netip.ParsePrefix(cidr)
-		if err != nil {
-			continue
-		}
-
-		prefix = prefix.Masked()
-		text := prefix.String()
-		if _, exists := cidrSet[text]; exists {
-			continue
-		}
-
-		cidrSet[text] = struct{}{}
-		cidrs = append(cidrs, text)
-		cidrPrefixes = append(cidrPrefixes, prefix)
+	legacyCIDRs := cfg.CIDRs
+	if cfg.Policy == nil {
+		legacyCIDRs = normalizeLegacyCompiledCIDRs(cfg.CIDRs)
 	}
-
+	compiled, set, err := compiledipset.Resolve(cfg.PolicyID, cfg.Policy, legacyCIDRs)
+	if err != nil {
+		return models.ReverseProxyThrottleExemptIPsRuntime{}, nil, nil, fmt.Errorf(
+			"invalid reverse proxy throttle exemption policy: %w",
+			err,
+		)
+	}
 	return models.ReverseProxyThrottleExemptIPsRuntime{
 		Enabled:   cfg.Enabled,
 		IPs:       ips,
-		CIDRs:     cidrs,
+		CIDRs:     []string{},
 		UpdatedAt: strings.TrimSpace(cfg.UpdatedAt),
-	}, ipSet, cidrPrefixes
+		PolicyID:  compiled.ID,
+		Policy:    &compiled,
+	}, ipSet, set, nil
 }
 
 func normalizeReverseProxyThrottleExemptIP(value string) (string, netip.Addr, bool) {

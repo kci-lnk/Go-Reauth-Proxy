@@ -89,6 +89,7 @@ type HostRule struct {
 	Availability     *HostRuleAvailability `json:"availability,omitempty"`
 	Visibility       HostRuleVisibility    `json:"visibility,omitempty"`
 	AdvancedAuth     AdvancedAuthConfig    `json:"advanced_auth,omitempty"`
+	AdvancedAuthSet  bool                  `json:"-"`
 	Title            string                `json:"title,omitempty" example:"Redis"`
 	Favicon          string                `json:"favicon,omitempty" example:"data:image/png;base64,..."`
 	BasicAuth        BasicAuthConfig       `json:"basic_auth,omitempty"`
@@ -114,7 +115,8 @@ type AdvancedAuthCondition struct {
 	Operator string   `json:"operator"`
 	Name     string   `json:"name,omitempty"`
 	Values   []string `json:"values,omitempty"`
-	CIDRs    []string `json:"cidrs,omitempty"`
+	CIDRs    []string `json:"cidrs,omitempty"` // Deprecated compatibility input.
+	PolicyID string   `json:"policy_id,omitempty"`
 }
 
 type HostRuleVisibility struct {
@@ -454,16 +456,20 @@ type FnosPortIconHijackConfig struct {
 }
 
 type ReverseProxyThrottleExemptIPsRuntime struct {
-	Enabled   bool     `json:"enabled,omitempty"`
-	IPs       []string `json:"ips,omitempty"`
-	CIDRs     []string `json:"cidrs,omitempty"`
-	UpdatedAt string   `json:"updated_at,omitempty"`
+	Enabled   bool           `json:"enabled,omitempty"`
+	IPs       []string       `json:"ips,omitempty"`
+	CIDRs     []string       `json:"cidrs,omitempty"` // Deprecated compatibility input.
+	UpdatedAt string         `json:"updated_at,omitempty"`
+	PolicyID  string         `json:"policy_id,omitempty"`
+	Policy    *CompiledIPSet `json:"-"`
 }
 
 type GatewayTrustedClientIPsRuntime struct {
-	IPs       []string `json:"ips,omitempty"`
-	CIDRs     []string `json:"cidrs,omitempty"`
-	UpdatedAt string   `json:"updated_at,omitempty"`
+	IPs       []string       `json:"ips,omitempty"`
+	CIDRs     []string       `json:"cidrs,omitempty"` // Deprecated compatibility input.
+	UpdatedAt string         `json:"updated_at,omitempty"`
+	PolicyID  string         `json:"policy_id,omitempty"`
+	Policy    *CompiledIPSet `json:"-"`
 }
 
 type LocaleConfig struct {
@@ -471,10 +477,12 @@ type LocaleConfig struct {
 }
 
 type CommonLocationExemptionsRuntime struct {
-	Enabled    bool     `json:"enabled,omitempty"`
-	WAFEnabled bool     `json:"waf_enabled,omitempty"`
-	CIDRs      []string `json:"cidrs,omitempty"`
-	UpdatedAt  string   `json:"updated_at,omitempty"`
+	Enabled    bool           `json:"enabled,omitempty"`
+	WAFEnabled bool           `json:"waf_enabled,omitempty"`
+	CIDRs      []string       `json:"cidrs,omitempty"` // Deprecated compatibility input.
+	UpdatedAt  string         `json:"updated_at,omitempty"`
+	PolicyID   string         `json:"policy_id,omitempty"`
+	Policy     *CompiledIPSet `json:"-"`
 }
 
 type PortConfig struct {

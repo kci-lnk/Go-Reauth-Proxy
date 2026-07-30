@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"go-reauth-proxy/pkg/grpc/pb"
+	compiledipset "go-reauth-proxy/pkg/ipset"
 	"go-reauth-proxy/pkg/models"
 )
 
@@ -82,7 +83,7 @@ func TestAdvancedAuthNegativeMultiValuesRequireAllValuesNotToMatch(t *testing.T)
 	}
 }
 
-func TestAdvancedAuthCIDRIndexSupportsIPv4IPv6AndRegion(t *testing.T) {
+func TestAdvancedAuthLegacyCIDRsUseSharedIPSetForIPv4IPv6AndRegion(t *testing.T) {
 	policy := testAdvancedAuthPolicy(t, []models.AdvancedAuthGroup{
 		{ID: "source-networks", Conditions: []models.AdvancedAuthCondition{{
 			ID:       "ip",
@@ -110,13 +111,53 @@ func TestAdvancedAuthCIDRIndexSupportsIPv4IPv6AndRegion(t *testing.T) {
 	}
 }
 
+func TestAdvancedAuthUsesSharedCompiledIPSetPolicy(t *testing.T) {
+	transport, err := compiledipset.Compile([]string{
+		"192.0.2.0/25",
+		"192.0.2.128/25",
+		"2001:db8::/32",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	set, err := compiledipset.Decode(transport)
+	if err != nil {
+		t.Fatal(err)
+	}
+	policy, err := compileAdvancedAuthPolicyWithSets(models.AdvancedAuthConfig{
+		Enabled:            true,
+		PolicyVersion:      "compiled",
+		IdleTTLSeconds:     advancedAuthDefaultIdleSeconds,
+		MaxLifetimeSeconds: advancedAuthDefaultMaxSeconds,
+		Groups: []models.AdvancedAuthGroup{{ID: "compiled", Conditions: []models.AdvancedAuthCondition{{
+			ID:       "source",
+			Target:   "source_region",
+			Operator: "in",
+			PolicyID: transport.ID,
+		}}}},
+	}, map[string]*compiledipset.Set{transport.ID: set})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodGet, "https://app.example/", nil)
+	if policy.evaluate(request, "192.0.2.255") == nil {
+		t.Fatal("compiled IPv4 range did not match")
+	}
+	if policy.evaluate(request, "2001:db8::1") == nil {
+		t.Fatal("compiled IPv6 range did not match")
+	}
+	if policy.evaluate(request, "198.51.100.1") != nil {
+		t.Fatal("address outside the compiled policy matched")
+	}
+}
+
 func TestAdvancedAuthExactSourceIPSupportsMultipleIPv4AndIPv6Addresses(t *testing.T) {
 	policy := testAdvancedAuthPolicy(t, []models.AdvancedAuthGroup{{ID: "exact", Conditions: []models.AdvancedAuthCondition{{
 		ID:       "ip",
 		Target:   "source_ip",
 		Operator: "equals",
-		// Rust sends exact addresses in the compiled CIDR field as host
-		// prefixes. This shape must remain accepted across the gRPC boundary.
+		// Legacy control snapshots encoded exact addresses as host prefixes.
+		// Keep that migration shape accepted alongside compiled policies.
 		CIDRs: []string{
 			"192.0.2.10/32",
 			"2001:0db8::10/128",
@@ -431,6 +472,71 @@ func TestSetHostRulesPreservesAdvancedAuthForLegacyEditors(t *testing.T) {
 	got := handler.GetHostRules()
 	if len(got) != 1 || !got[0].AdvancedAuth.Enabled || got[0].AdvancedAuth.PolicyVersion != "v1" {
 		t.Fatalf("advanced auth after legacy update = %#v, want existing policy preserved", got)
+	}
+}
+
+func TestDisabledAdvancedAuthMissingPolicyDoesNotBlockHostRuleUpdate(t *testing.T) {
+	rule := models.HostRule{
+		Host:    "app.example.com",
+		Target:  "http://127.0.0.1:8080",
+		UseAuth: true,
+		AdvancedAuth: models.AdvancedAuthConfig{
+			Enabled:       false,
+			PolicyVersion: "draft-v1",
+			Groups: []models.AdvancedAuthGroup{{
+				ID: "group-1",
+				Conditions: []models.AdvancedAuthCondition{{
+					ID:       "condition-1",
+					Target:   "source_region",
+					Operator: "in",
+					PolicyID: "ipset-v2:missing",
+				}},
+			}},
+		},
+	}
+
+	handler := &Handler{}
+	if err := handler.SetHostRulesBundle([]models.HostRule{rule}, nil); err != nil {
+		t.Fatalf("disabled draft blocked unrelated Host update: %v", err)
+	}
+	rule.AdvancedAuth.Enabled = true
+	if err := handler.SetHostRulesBundle([]models.HostRule{rule}, nil); err == nil ||
+		!strings.Contains(err.Error(), "references missing IP set") {
+		t.Fatalf("enabled rule did not fail closed for a missing policy: %v", err)
+	}
+}
+
+func TestExplicitDisabledAdvancedAuthClearsUnusablePersistedDraft(t *testing.T) {
+	handler := &Handler{HostRules: []models.HostRule{{
+		Host:    "app.example.com",
+		Target:  "http://127.0.0.1:8080",
+		UseAuth: true,
+		AdvancedAuth: models.AdvancedAuthConfig{
+			Enabled:       false,
+			PolicyVersion: "draft-v1",
+			Groups: []models.AdvancedAuthGroup{{
+				ID: "group-1",
+				Conditions: []models.AdvancedAuthCondition{{
+					ID:       "condition-1",
+					Target:   "source_region",
+					Operator: "in",
+				}},
+			}},
+		},
+	}}}
+
+	err := handler.SetHostRulesBundle([]models.HostRule{{
+		Host:            "app.example.com",
+		Target:          "http://127.0.0.1:8080",
+		UseAuth:         true,
+		AdvancedAuthSet: true,
+	}}, nil)
+	if err != nil {
+		t.Fatalf("explicit disabled advanced auth did not clear unusable draft: %v", err)
+	}
+	got := handler.GetHostRules()
+	if len(got) != 1 || !isEmptyAdvancedAuthConfig(got[0].AdvancedAuth) {
+		t.Fatalf("advanced auth after explicit disable = %#v, want empty", got)
 	}
 }
 

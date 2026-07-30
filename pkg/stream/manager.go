@@ -9,6 +9,7 @@ import (
 	"go-reauth-proxy/pkg/logger"
 	"go-reauth-proxy/pkg/models"
 	"go-reauth-proxy/pkg/proxy"
+	"go-reauth-proxy/pkg/rpcbridge"
 	"io"
 	"log"
 	"net"
@@ -1590,22 +1591,13 @@ func (m *Manager) verifyContext(parent context.Context, rule models.StreamRule, 
 
 	resp, err := m.handler.VerifyStreamAuth(ctx, rule, clientIP)
 	if err != nil {
-		if errors.Is(err, context.DeadlineExceeded) || isTimeoutErr(err) {
-			if event := logger.DebugEvent("stream", "auth_verify_failed"); event != nil {
-				event.Str("decision", "timeout").
-					Str("error", logger.SanitizeLogString(err.Error())).
-					Int64("duration_ms", time.Since(start).Milliseconds()).
-					Send()
-			}
-			return false, http.StatusGatewayTimeout, "timeout", err
-		}
+		cause, statusCode := classifyStreamAuthBridgeFailure(err)
 		if event := logger.DebugEvent("stream", "auth_verify_failed"); event != nil {
-			event.Str("decision", "auth_error").
-				Str("error", logger.SanitizeLogString(err.Error())).
+			event.Str("decision", cause).
 				Int64("duration_ms", time.Since(start).Milliseconds()).
 				Send()
 		}
-		return false, http.StatusBadGateway, "auth_error", err
+		return false, statusCode, cause, err
 	}
 	statusCode := int(resp.GetStatus())
 	if statusCode <= 0 {
@@ -1669,6 +1661,23 @@ func (m *Manager) verifyContext(parent context.Context, rule models.StreamRule, 
 	}
 	return false, http.StatusForbidden, decision, errors.New(message)
 
+}
+
+func classifyStreamAuthBridgeFailure(err error) (string, int) {
+	switch {
+	case errors.Is(err, context.DeadlineExceeded) || isTimeoutErr(err):
+		return "timeout", http.StatusGatewayTimeout
+	case errors.Is(err, rpcbridge.ErrAuthBridgeQueueFull):
+		return "queue_full", http.StatusServiceUnavailable
+	case errors.Is(err, rpcbridge.ErrAuthBridgeDisconnected):
+		return "disconnected", http.StatusServiceUnavailable
+	case errors.Is(err, rpcbridge.ErrAuthBridgeUnavailable):
+		return "bridge_unavailable", http.StatusServiceUnavailable
+	case errors.Is(err, rpcbridge.ErrAuthBridgeInvalidResponse):
+		return "invalid_response", http.StatusBadGateway
+	default:
+		return "internal", http.StatusBadGateway
+	}
 }
 
 func relayBidirectional(client net.Conn, upstream net.Conn) (uint64, uint64, error) {

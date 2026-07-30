@@ -4,11 +4,13 @@ import (
 	"context"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"strconv"
 	"testing"
 
 	"go-reauth-proxy/pkg/grpc/pb"
+	"go-reauth-proxy/pkg/rpcbridge"
 )
 
 func testServerPort(t *testing.T, rawURL string) int {
@@ -83,4 +85,47 @@ func (b testAuthBridge) VerifyStreamAuth(ctx context.Context, in *pb.VerifyStrea
 		Decision: "denied",
 		Message:  "stream auth is not implemented by the test bridge",
 	}, nil
+}
+
+func TestAuthBridgeFailureClassificationAndHTTPStatus(t *testing.T) {
+	tests := []struct {
+		name       string
+		err        error
+		cause      string
+		status     int
+		retryAfter string
+	}{
+		{"unavailable", rpcbridge.ErrAuthBridgeUnavailable, "bridge_unavailable", http.StatusServiceUnavailable, "1"},
+		{"queue full", rpcbridge.ErrAuthBridgeQueueFull, "queue_full", http.StatusServiceUnavailable, "1"},
+		{"disconnected", rpcbridge.ErrAuthBridgeDisconnected, "disconnected", http.StatusServiceUnavailable, "1"},
+		{"timeout", context.DeadlineExceeded, "timeout", http.StatusGatewayTimeout, ""},
+		{"invalid response", rpcbridge.ErrAuthBridgeInvalidResponse, "invalid_response", http.StatusBadGateway, ""},
+		{"internal", context.Canceled, "internal", http.StatusBadGateway, ""},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			failure := classifyAuthBridgeFailure(test.err)
+			if failure.cause != test.cause || failure.status != test.status || failure.retryAfter != test.retryAfter {
+				t.Fatalf("failure = %#v, want cause=%s status=%d retry=%q", failure, test.cause, test.status, test.retryAfter)
+			}
+			recorder := httptest.NewRecorder()
+			request := httptest.NewRequest(http.MethodGet, "http://app.example.test/", nil)
+			(&Handler{}).applyAuthCheckPlan(
+				recorder,
+				request,
+				authCheckPlan{
+					result:    authCheckResult{decision: "error"},
+					errorPage: failure.errorPage(),
+				},
+				"203.0.113.1",
+				"",
+			)
+			if recorder.Code != test.status {
+				t.Fatalf("HTTP status = %d, want %d", recorder.Code, test.status)
+			}
+			if got := recorder.Header().Get("Retry-After"); got != test.retryAfter {
+				t.Fatalf("Retry-After = %q, want %q", got, test.retryAfter)
+			}
+		})
+	}
 }

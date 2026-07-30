@@ -8,6 +8,7 @@ import (
 	"crypto/tls"
 	"encoding/base64"
 	"encoding/hex"
+	stderrors "errors"
 	"fmt"
 	"go-reauth-proxy/pkg/config"
 	"go-reauth-proxy/pkg/diagnostics"
@@ -15,6 +16,7 @@ import (
 	"go-reauth-proxy/pkg/events"
 	"go-reauth-proxy/pkg/gatewaylog"
 	"go-reauth-proxy/pkg/grpc/pb"
+	compiledipset "go-reauth-proxy/pkg/ipset"
 	"go-reauth-proxy/pkg/logger"
 
 	"go-reauth-proxy/pkg/models"
@@ -26,7 +28,6 @@ import (
 	"net"
 	"net/http"
 	"net/http/httputil"
-	"net/netip"
 	"net/url"
 	"path"
 	"sort"
@@ -94,6 +95,7 @@ type Handler struct {
 	listenerChangeMu        sync.Mutex
 	Rules                   []models.Rule
 	HostRules               []models.HostRule
+	VisibilityPolicies      map[string]models.CompiledIPSet
 	StreamRules             []models.StreamRule
 	DefaultRoute            string
 	AuthConfig              models.AuthConfig
@@ -143,6 +145,7 @@ type Handler struct {
 	reverseProxyThrottleExempt *reverseProxyThrottleExemptIPsRuntime
 	commonLocationExemptions   *commonLocationExemptionsRuntime
 	gatewayVisibility          *gatewayVisibility
+	compiledVisibilityPolicies map[string]*compiledipset.Set
 	generalBlacklist           *generalBlacklistRuntime
 	forwardedHeaders           *forwardedHeadersConfig
 	preserveHost               *preserveHostConfig
@@ -193,7 +196,7 @@ type requestSnapshot struct {
 	rulesByPath        map[string]*models.Rule
 	hostRules          []models.HostRule
 	hostRulesByHost    map[string]*models.HostRule
-	hostVisibility     map[string][]netip.Prefix
+	hostVisibility     map[string]*compiledipset.Set
 	advancedAuth       map[string]*compiledAdvancedAuthPolicy
 	defaultHostRule    *models.HostRule
 	targets            map[string]reverseProxyTargetRuntime
@@ -489,7 +492,7 @@ func (h *Handler) buildRequestSnapshotLocked() *requestSnapshot {
 
 	hostRules := copyHostRules(h.HostRules)
 	hostRulesByHost := make(map[string]*models.HostRule, len(hostRules))
-	hostVisibility := make(map[string][]netip.Prefix, len(hostRules))
+	hostVisibility := make(map[string]*compiledipset.Set, len(hostRules))
 	advancedAuth := make(map[string]*compiledAdvancedAuthPolicy, len(hostRules))
 	var defaultHostRule *models.HostRule
 	for i := range hostRules {
@@ -506,7 +509,9 @@ func (h *Handler) buildRequestSnapshotLocked() *requestSnapshot {
 		}
 		hostRulesByHost[host] = rule
 		if rule.Visibility.Mode == models.HostVisibilityModeCustom {
-			hostVisibility[host] = visibilityPrefixes(rule.Visibility.CIDRs)
+			if policy := h.compiledVisibilityPolicies[rule.Visibility.PolicyID]; policy != nil {
+				hostVisibility[host] = policy
+			}
 		}
 		if policy, err := compileAdvancedAuthPolicy(rule.AdvancedAuth); err == nil && policy != nil {
 			advancedAuth[host] = policy
@@ -633,6 +638,16 @@ func copyHostRules(rules []models.HostRule) []models.HostRule {
 			}
 		}
 		copied[i].Locations = copyHostLocations(rule.Locations)
+	}
+	return copied
+}
+
+func copyHostRulesForPersistence(rules []models.HostRule) []models.HostRule {
+	copied := copyHostRules(rules)
+	for i := range copied {
+		if strings.TrimSpace(copied[i].Visibility.PolicyID) != "" {
+			copied[i].Visibility.CIDRs = nil
+		}
 	}
 	return copied
 }
@@ -1309,12 +1324,17 @@ func (h *Handler) runPreflight(r *http.Request, authConfig models.AuthConfig, cl
 	if err != nil {
 		cooldownUntil := time.Now().Add(preflightFailureCooldown).UnixNano()
 		h.preflightSkipUntilUnixNano.Store(cooldownUntil)
+		failure := classifyAuthBridgeFailure(err)
 		if event := debugProxyEvent("preflight_request_failed", requestID); event != nil {
-			event.Str("error", logger.SanitizeLogString(err.Error())).
+			event.Str("cause", failure.cause).
 				Time("cooldown_until", time.Unix(0, cooldownUntil)).
 				Send()
 		}
-		log.Printf("Preflight request failed, skipping checks for %s: %v", preflightFailureCooldown, err)
+		log.Printf(
+			"Auth bridge preflight failed: cause=%s cooldown=%s",
+			failure.cause,
+			preflightFailureCooldown,
+		)
 		return preflightDecision{}
 	}
 	h.preflightSkipUntilUnixNano.Store(0)
@@ -1546,40 +1566,79 @@ func NewHandler(adminPort int, proxyPort int, cfgManager *config.Manager, initia
 	for i := range initialHostRules {
 		initialHostRules[i].ProtocolMode = models.NormalizeHostProtocolMode(initialHostRules[i].ProtocolMode)
 	}
+	initialPolicies, initialCompiledPolicies, policyErr :=
+		decodeVisibilityPolicies(initialCfg.VisibilityPolicies)
+	if policyErr != nil {
+		log.Printf("Failed to decode initial visibility policies: %v", policyErr)
+		initialPolicies = make(map[string]models.CompiledIPSet)
+		initialCompiledPolicies = make(map[string]*compiledipset.Set)
+	}
+	for i := range initialHostRules {
+		visibility, err := prepareHostVisibilityPolicy(
+			initialHostRules[i].Visibility,
+			initialPolicies,
+			initialCompiledPolicies,
+		)
+		if err != nil {
+			log.Printf("Failed to prepare initial host visibility for %s: %v", initialHostRules[i].Host, err)
+			initialHostRules[i].Visibility = models.HostRuleVisibility{
+				Mode:     models.HostVisibilityModeCustom,
+				PolicyID: strings.TrimSpace(initialHostRules[i].Visibility.PolicyID),
+			}
+			continue
+		}
+		initialHostRules[i].Visibility = visibility
+	}
+	initialVisibility, initialVisibilitySet, visibilityErr := prepareGatewayVisibilityPolicy(
+		initialCfg.Visibility,
+		initialPolicies,
+		initialCompiledPolicies,
+	)
+	if visibilityErr != nil {
+		log.Printf("Failed to prepare initial gateway visibility: %v", visibilityErr)
+		initialVisibility = models.GatewayVisibilityConfig{
+			Enabled:   initialCfg.Visibility.Enabled,
+			UpdatedAt: strings.TrimSpace(initialCfg.Visibility.UpdatedAt),
+		}
+		initialVisibilitySet = nil
+	}
+	pruneVisibilityPolicies(initialHostRules, initialVisibility, initialPolicies, initialCompiledPolicies)
 
 	h := &Handler{
-		Rules:                 initialCfg.Rules,
-		HostRules:             initialHostRules,
-		StreamRules:           initialCfg.StreamRules,
-		DefaultRoute:          initialCfg.DefaultRoute,
-		AuthConfig:            initialCfg.AuthConfig,
-		LoggingConfig:         logConfig,
-		AdminPort:             adminPort,
-		ProxyPort:             proxyPort,
-		ProxyProtocolForce:    initialCfg.ProxyProtocolForce,
-		GatewayListener:       initialCfg.GatewayListener,
-		ReverseProxyThrottle:  normalizeReverseProxyThrottleConfig(initialCfg.ReverseProxyThrottle),
-		GatewayVisibility:     initialCfg.Visibility,
-		ForwardedHeaders:      normalizedForwardedHeaders,
-		PreserveHost:          normalizedPreserveHost,
-		CrawlerBlocker:        normalizeCrawlerBlockerConfig(initialCfg.CrawlerBlocker),
-		GatewayPortal:         models.NormalizeGatewayPortalConfig(initialCfg.Portal),
-		GatewayUnmatchedRoute: models.NormalizeGatewayUnmatchedRouteConfig(initialCfg.UnmatchedRoute),
-		FnosPortIconHijack:    initialCfg.FnosPortIconHijack,
-		GeneralBlacklist:      models.GeneralBlacklistConfig{Items: []models.GeneralBlacklistRecord{}},
-		WAFConfig:             wafConfig,
-		configManager:         cfgManager,
-		sslConfig:             copySSLConfig(initialCfg.SSL),
-		gatewayLogManager:     gatewaylog.NewManager(logsDir, logConfig),
-		fnAppMockService:      newFNAppMockServiceFromEnv(),
-		proxyTransport:        newProxyTransport(),
-		authCache:             newAuthStateCache(),
-		preflightCache:        newPreflightStateCache(),
-		generalBlacklist:      newGeneralBlacklistRuntime(initialCfg.GeneralBlacklist),
-		forwardedHeaders:      newForwardedHeadersConfig(normalizedForwardedHeaders),
-		preserveHost:          newPreserveHostConfig(normalizedPreserveHost),
-		wafRuntime:            wafRuntime,
-		systemEventClient:     systemEventClient,
+		Rules:                      initialCfg.Rules,
+		HostRules:                  initialHostRules,
+		VisibilityPolicies:         initialPolicies,
+		StreamRules:                initialCfg.StreamRules,
+		DefaultRoute:               initialCfg.DefaultRoute,
+		AuthConfig:                 initialCfg.AuthConfig,
+		LoggingConfig:              logConfig,
+		AdminPort:                  adminPort,
+		ProxyPort:                  proxyPort,
+		ProxyProtocolForce:         initialCfg.ProxyProtocolForce,
+		GatewayListener:            initialCfg.GatewayListener,
+		ReverseProxyThrottle:       normalizeReverseProxyThrottleConfig(initialCfg.ReverseProxyThrottle),
+		GatewayVisibility:          initialVisibility,
+		ForwardedHeaders:           normalizedForwardedHeaders,
+		PreserveHost:               normalizedPreserveHost,
+		CrawlerBlocker:             normalizeCrawlerBlockerConfig(initialCfg.CrawlerBlocker),
+		GatewayPortal:              models.NormalizeGatewayPortalConfig(initialCfg.Portal),
+		GatewayUnmatchedRoute:      models.NormalizeGatewayUnmatchedRouteConfig(initialCfg.UnmatchedRoute),
+		FnosPortIconHijack:         initialCfg.FnosPortIconHijack,
+		GeneralBlacklist:           models.GeneralBlacklistConfig{Items: []models.GeneralBlacklistRecord{}},
+		WAFConfig:                  wafConfig,
+		configManager:              cfgManager,
+		sslConfig:                  copySSLConfig(initialCfg.SSL),
+		gatewayLogManager:          gatewaylog.NewManager(logsDir, logConfig),
+		fnAppMockService:           newFNAppMockServiceFromEnv(),
+		proxyTransport:             newProxyTransport(),
+		authCache:                  newAuthStateCache(),
+		preflightCache:             newPreflightStateCache(),
+		generalBlacklist:           newGeneralBlacklistRuntime(initialCfg.GeneralBlacklist),
+		forwardedHeaders:           newForwardedHeadersConfig(normalizedForwardedHeaders),
+		preserveHost:               newPreserveHostConfig(normalizedPreserveHost),
+		wafRuntime:                 wafRuntime,
+		systemEventClient:          systemEventClient,
+		compiledVisibilityPolicies: initialCompiledPolicies,
 	}
 	h.GeneralBlacklist = h.generalBlacklist.getConfig()
 	if models.NormalizeGatewayListenerScope(h.GatewayListener.Scope) == "" {
@@ -1614,16 +1673,7 @@ func NewHandler(adminPort int, proxyPort int, cfgManager *config.Manager, initia
 			UpdatedAt:  "",
 		},
 	)
-	visibility, err := newGatewayVisibility(initialCfg.Visibility)
-	if err != nil {
-		log.Printf("Failed to normalize initial gateway visibility: %v", err)
-		visibility, _ = newGatewayVisibility(models.GatewayVisibilityConfig{
-			Enabled:   false,
-			CIDRs:     []string{},
-			UpdatedAt: "",
-		})
-	}
-	h.gatewayVisibility = visibility
+	h.gatewayVisibility = newCompiledGatewayVisibility(initialVisibility, initialVisibilitySet)
 
 	var emptyHook func()
 	var emptyProtocolModeHook func([]string)
@@ -1727,13 +1777,14 @@ func (h *Handler) saveConfigLocked() error {
 
 	rulesCopy := make([]models.Rule, len(h.Rules))
 	copy(rulesCopy, h.Rules)
-	hostRulesCopy := copyHostRules(h.HostRules)
+	hostRulesCopy := copyHostRulesForPersistence(h.HostRules)
 	streamRulesCopy := make([]models.StreamRule, len(h.StreamRules))
 	copy(streamRulesCopy, h.StreamRules)
 
 	if err := h.configManager.Update(func(conf *config.AppConfig) error {
 		conf.Rules = rulesCopy
 		conf.HostRules = hostRulesCopy
+		conf.VisibilityPolicies = copyVisibilityPolicies(h.VisibilityPolicies)
 		conf.StreamRules = streamRulesCopy
 		conf.DefaultRoute = h.DefaultRoute
 		conf.AuthConfig = h.AuthConfig
@@ -1741,7 +1792,12 @@ func (h *Handler) saveConfigLocked() error {
 		conf.ProxyProtocolForce = h.ProxyProtocolForce
 		conf.GatewayListener = h.GatewayListener
 		conf.ReverseProxyThrottle = h.ReverseProxyThrottle
-		conf.Visibility = h.GatewayVisibility
+		persistedVisibility := h.GatewayVisibility
+		if strings.TrimSpace(persistedVisibility.PolicyID) != "" {
+			persistedVisibility.CIDRs = nil
+		}
+		persistedVisibility.Policy = nil
+		conf.Visibility = persistedVisibility
 		conf.ForwardedHeaders = h.ForwardedHeaders
 		conf.PreserveHost = h.PreserveHost
 		conf.CrawlerBlocker = h.CrawlerBlocker
@@ -1810,6 +1866,7 @@ func (h *Handler) ResetAllData(resetConfig *config.AppConfig) error {
 
 	resetConfig.Rules = []models.Rule{}
 	resetConfig.HostRules = []models.HostRule{}
+	resetConfig.VisibilityPolicies = map[string]models.CompiledIPSet{}
 	resetConfig.StreamRules = []models.StreamRule{}
 	resetConfig.Logging = loggingConfig
 	resetConfig.ForwardedHeaders = forwardedHeaders
@@ -1841,6 +1898,7 @@ func (h *Handler) ResetAllData(resetConfig *config.AppConfig) error {
 	h.mu.Lock()
 	h.Rules = []models.Rule{}
 	h.HostRules = []models.HostRule{}
+	h.VisibilityPolicies = map[string]models.CompiledIPSet{}
 	h.StreamRules = []models.StreamRule{}
 	h.DefaultRoute = resetConfig.DefaultRoute
 	h.AuthConfig = resetConfig.AuthConfig
@@ -1863,6 +1921,7 @@ func (h *Handler) ResetAllData(resetConfig *config.AppConfig) error {
 	h.reverseProxyThrottleExempt = reverseProxyThrottleExempt
 	h.commonLocationExemptions = commonLocationExemptions
 	h.gatewayVisibility = visibility
+	h.compiledVisibilityPolicies = map[string]*compiledipset.Set{}
 	h.generalBlacklist = generalBlacklist
 	h.forwardedHeaders = newForwardedHeadersConfig(forwardedHeaders)
 	h.preserveHost = newPreserveHostConfig(preserveHost)
@@ -1914,12 +1973,21 @@ func (h *Handler) persistGatewayListenerConfigLocked(listener models.GatewayList
 // runtime fields whose own save may previously have failed. Callers publish the
 // candidate to requestState only after this returns nil.
 func (h *Handler) persistHostRulesLocked(hostRules []models.HostRule) error {
+	return h.persistHostRulesAndPoliciesLocked(hostRules, h.VisibilityPolicies)
+}
+
+func (h *Handler) persistHostRulesAndPoliciesLocked(
+	hostRules []models.HostRule,
+	policies map[string]models.CompiledIPSet,
+) error {
 	if h.configManager == nil {
 		return nil
 	}
-	hostRulesCopy := copyHostRules(hostRules)
+	hostRulesCopy := copyHostRulesForPersistence(hostRules)
+	policiesCopy := copyVisibilityPolicies(policies)
 	if err := h.configManager.Update(func(conf *config.AppConfig) error {
 		conf.HostRules = hostRulesCopy
+		conf.VisibilityPolicies = policiesCopy
 		return nil
 	}); err != nil {
 		if event := debugProxyEvent("host_rules_save_failed", ""); event != nil {
@@ -1932,6 +2000,24 @@ func (h *Handler) persistHostRulesLocked(hostRules []models.HostRule) error {
 		event.Int("host_rule_count", len(hostRulesCopy)).Send()
 	}
 	return nil
+}
+
+func (h *Handler) persistGatewayVisibilityAndPoliciesLocked(
+	visibility models.GatewayVisibilityConfig,
+	policies map[string]models.CompiledIPSet,
+) error {
+	if h.configManager == nil {
+		return nil
+	}
+	persistedVisibility := visibility
+	persistedVisibility.CIDRs = nil
+	persistedVisibility.Policy = nil
+	policiesCopy := copyVisibilityPolicies(policies)
+	return h.configManager.Update(func(conf *config.AppConfig) error {
+		conf.Visibility = persistedVisibility
+		conf.VisibilityPolicies = policiesCopy
+		return nil
+	})
 }
 
 func (h *Handler) GetProxyProtocolForce() bool {
@@ -3193,12 +3279,32 @@ func (h *Handler) AddHostRule(newRule models.HostRule) error {
 	} else {
 		keepFirstDefaultHostRule(nextRules)
 	}
+	candidatePolicies := copyVisibilityPolicies(h.VisibilityPolicies)
+	candidateSets := make(map[string]*compiledipset.Set, len(h.compiledVisibilityPolicies)+1)
+	for id, set := range h.compiledVisibilityPolicies {
+		candidateSets[id] = set
+	}
+	for i := range nextRules {
+		visibility, visibilityErr := prepareHostVisibilityPolicy(
+			nextRules[i].Visibility,
+			candidatePolicies,
+			candidateSets,
+		)
+		if visibilityErr != nil {
+			h.mu.Unlock()
+			return fmt.Errorf("host %s visibility: %w", nextRules[i].Host, visibilityErr)
+		}
+		nextRules[i].Visibility = visibility
+	}
+	pruneVisibilityPolicies(nextRules, h.GatewayVisibility, candidatePolicies, candidateSets)
 	changedProtocolHosts := changedHostProtocolModes(h.HostRules, nextRules)
-	if err := h.persistHostRulesLocked(nextRules); err != nil {
+	if err := h.persistHostRulesAndPoliciesLocked(nextRules, candidatePolicies); err != nil {
 		h.mu.Unlock()
 		return err
 	}
 	h.HostRules = nextRules
+	h.VisibilityPolicies = candidatePolicies
+	h.compiledVisibilityPolicies = candidateSets
 	h.publishRequestSnapshotLocked()
 	hook := h.getHostProtocolModeChangeHook()
 	hostRuleCount := len(nextRules)
@@ -3221,6 +3327,17 @@ func (h *Handler) AddHostRule(newRule models.HostRule) error {
 }
 
 func (h *Handler) SetHostRules(rules []models.HostRule) error {
+	return h.SetHostRulesBundle(rules, nil)
+}
+
+func (h *Handler) SetHostRulesBundle(
+	rules []models.HostRule,
+	incomingPolicies map[string]models.CompiledIPSet,
+) error {
+	decodedPolicies, decodedSets, err := decodeVisibilityPolicies(incomingPolicies)
+	if err != nil {
+		return err
+	}
 	normalizedRules := make([]models.HostRule, 0, len(rules))
 	protocolModeMissing := make([]bool, 0, len(rules))
 	visibilityMissing := make([]bool, 0, len(rules))
@@ -3255,6 +3372,15 @@ func (h *Handler) SetHostRules(rules []models.HostRule) error {
 	keepFirstDefaultHostRule(normalizedRules)
 
 	h.mu.Lock()
+	candidatePolicies := copyVisibilityPolicies(h.VisibilityPolicies)
+	candidateSets := make(map[string]*compiledipset.Set, len(h.compiledVisibilityPolicies)+len(decodedSets))
+	for id, set := range h.compiledVisibilityPolicies {
+		candidateSets[id] = set
+	}
+	for id, policy := range decodedPolicies {
+		candidatePolicies[id] = policy
+		candidateSets[id] = decodedSets[id]
+	}
 	existingModes := make(map[string]string, len(h.HostRules))
 	existingVisibilities := make(map[string]models.HostRuleVisibility, len(h.HostRules))
 	existingAdvancedAuth := make(map[string]models.AdvancedAuthConfig, len(h.HostRules))
@@ -3299,13 +3425,26 @@ func (h *Handler) SetHostRules(rules []models.HostRule) error {
 				normalizedRules[i].AdvancedAuth = existingPolicy
 			}
 		}
+		visibility, visibilityErr := prepareHostVisibilityPolicy(
+			normalizedRules[i].Visibility,
+			candidatePolicies,
+			candidateSets,
+		)
+		if visibilityErr != nil {
+			h.mu.Unlock()
+			return fmt.Errorf("host %s visibility: %w", normalizedRules[i].Host, visibilityErr)
+		}
+		normalizedRules[i].Visibility = visibility
 	}
+	pruneVisibilityPolicies(normalizedRules, h.GatewayVisibility, candidatePolicies, candidateSets)
 	changedProtocolHosts := changedHostProtocolModes(h.HostRules, normalizedRules)
-	if err := h.persistHostRulesLocked(normalizedRules); err != nil {
+	if err := h.persistHostRulesAndPoliciesLocked(normalizedRules, candidatePolicies); err != nil {
 		h.mu.Unlock()
 		return err
 	}
 	h.HostRules = normalizedRules
+	h.VisibilityPolicies = candidatePolicies
+	h.compiledVisibilityPolicies = candidateSets
 	h.publishRequestSnapshotLocked()
 	hook := h.getHostProtocolModeChangeHook()
 	h.mu.Unlock()
@@ -3325,11 +3464,19 @@ func (h *Handler) FlushHostRules() error {
 	h.mu.Lock()
 	changedProtocolHosts := changedHostProtocolModes(h.HostRules, nil)
 	nextRules := make([]models.HostRule, 0)
-	if err := h.persistHostRulesLocked(nextRules); err != nil {
+	nextPolicies := copyVisibilityPolicies(h.VisibilityPolicies)
+	nextSets := make(map[string]*compiledipset.Set, len(h.compiledVisibilityPolicies))
+	for id, set := range h.compiledVisibilityPolicies {
+		nextSets[id] = set
+	}
+	pruneVisibilityPolicies(nextRules, h.GatewayVisibility, nextPolicies, nextSets)
+	if err := h.persistHostRulesAndPoliciesLocked(nextRules, nextPolicies); err != nil {
 		h.mu.Unlock()
 		return err
 	}
 	h.HostRules = nextRules
+	h.VisibilityPolicies = nextPolicies
+	h.compiledVisibilityPolicies = nextSets
 	h.publishRequestSnapshotLocked()
 	hook := h.getHostProtocolModeChangeHook()
 	h.mu.Unlock()
@@ -3348,6 +3495,23 @@ func (h *Handler) GetHostRules() []models.HostRule {
 	defer h.mu.RUnlock()
 
 	return copyHostRules(h.HostRules)
+}
+
+func (h *Handler) GetVisibilityPoliciesForHostRules() map[string]models.CompiledIPSet {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+
+	referenced := make(map[string]models.CompiledIPSet)
+	for _, rule := range h.HostRules {
+		id := strings.TrimSpace(rule.Visibility.PolicyID)
+		if rule.Visibility.Mode != models.HostVisibilityModeCustom || id == "" {
+			continue
+		}
+		if policy, ok := h.VisibilityPolicies[id]; ok {
+			referenced[id] = copyVisibilityPolicy(policy)
+		}
+	}
+	return referenced
 }
 
 func (h *Handler) ValidateStreamRules(rules []models.StreamRule) ([]models.StreamRule, error) {
@@ -3687,11 +3851,17 @@ func (h *Handler) GetGatewayVisibility() models.GatewayVisibilityConfig {
 	cidrs := make([]string, len(h.GatewayVisibility.CIDRs))
 	copy(cidrs, h.GatewayVisibility.CIDRs)
 
-	return models.GatewayVisibilityConfig{
+	result := models.GatewayVisibilityConfig{
 		Enabled:   h.GatewayVisibility.Enabled,
 		CIDRs:     cidrs,
 		UpdatedAt: h.GatewayVisibility.UpdatedAt,
+		PolicyID:  h.GatewayVisibility.PolicyID,
 	}
+	if policy, ok := h.VisibilityPolicies[result.PolicyID]; ok {
+		copied := copyVisibilityPolicy(policy)
+		result.Policy = &copied
+	}
+	return result
 }
 
 func (h *Handler) ListGeneralBlacklist(page int, limit int, search string) models.GeneralBlacklistList {
@@ -3856,6 +4026,9 @@ func (h *Handler) IsClientIPVisible(clientIP string) bool {
 	if visibility == nil {
 		return true
 	}
+	if !visibility.enabled() {
+		return true
+	}
 	return visibility.contains(clientIP)
 }
 
@@ -3865,6 +4038,9 @@ func (h *Handler) IsClientIPVisibleForHost(clientIP string, rule *models.HostRul
 	h.mu.RUnlock()
 
 	if visibility == nil {
+		return true
+	}
+	if !visibility.enabled() {
 		return true
 	}
 	if rule == nil || normalizeRequestHost(rule.Host) == normalizeRequestHost(snapshot.authConfig.AuthHost) {
@@ -3877,11 +4053,21 @@ func (h *Handler) IsClientIPVisibleForHost(clientIP string, rule *models.HostRul
 		return visibility.contains(clientIP)
 	}
 	host := normalizeRequestHost(rule.Host)
-	prefixes, ok := snapshot.hostVisibility[host]
-	if !ok {
-		return visibility.contains(clientIP)
+	policy, ok := snapshot.hostVisibility[host]
+	if !ok || policy == nil {
+		// A missing custom policy is a corrupt security boundary. Keep the
+		// request fail-closed instead of widening it to inherited visibility.
+		addr, valid := visibilityClientAddr(clientIP)
+		return valid && isVisibilityExemptAddr(addr)
 	}
-	return visibility.containsPrefixes(clientIP, prefixes, true)
+	addr, valid := visibilityClientAddr(clientIP)
+	if !valid {
+		return false
+	}
+	if isVisibilityExemptAddr(addr) {
+		return true
+	}
+	return policy.Contains(addr)
 }
 
 func gatewayVisibilityPolicyContext(rule *models.HostRule, snapshot requestSnapshot) (string, string) {
@@ -4013,32 +4199,46 @@ func (h *Handler) SetReverseProxyThrottle(cfg models.ReverseProxyThrottleConfig)
 }
 
 func (h *Handler) SetGatewayVisibility(cfg models.GatewayVisibilityConfig) error {
-	normalized, prefixes, err := normalizeGatewayVisibilityConfig(cfg)
+	h.mu.Lock()
+	candidatePolicies := copyVisibilityPolicies(h.VisibilityPolicies)
+	candidateSets := make(map[string]*compiledipset.Set, len(h.compiledVisibilityPolicies)+1)
+	for id, set := range h.compiledVisibilityPolicies {
+		candidateSets[id] = set
+	}
+	normalized, set, err := prepareGatewayVisibilityPolicy(cfg, candidatePolicies, candidateSets)
 	if err != nil {
+		h.mu.Unlock()
 		return err
 	}
-
-	h.mu.Lock()
+	pruneVisibilityPolicies(h.HostRules, normalized, candidatePolicies, candidateSets)
+	if err := h.persistGatewayVisibilityAndPoliciesLocked(normalized, candidatePolicies); err != nil {
+		h.mu.Unlock()
+		return err
+	}
 	h.GatewayVisibility = normalized
-	saveErr := h.saveConfigLocked()
+	h.VisibilityPolicies = candidatePolicies
+	h.compiledVisibilityPolicies = candidateSets
+	h.publishRequestSnapshotLocked()
 	visibility := h.gatewayVisibility
 	if visibility == nil {
 		visibility = &gatewayVisibility{}
 		h.gatewayVisibility = visibility
 	}
 	h.mu.Unlock()
-	if saveErr != nil {
-		return saveErr
-	}
 
 	visibility.mu.Lock()
 	visibility.config = normalized
-	visibility.prefixes = prefixes
+	visibility.set = set
+	visibility.prefixes = nil
 	visibility.mu.Unlock()
 
+	rangeCount := 0
+	if set != nil {
+		rangeCount = set.RangeCount()
+	}
 	if event := debugProxyEvent("gateway_visibility_set", ""); event != nil {
 		event.Bool("enabled", normalized.Enabled).
-			Int("cidr_count", len(normalized.CIDRs)).
+			Int("range_count", rangeCount).
 			Str("updated_at", logger.SanitizeLogString(normalized.UpdatedAt)).
 			Send()
 	}
@@ -7569,9 +7769,10 @@ func lowerASCII(b byte) byte {
 }
 
 type authCheckErrorPage struct {
-	code    int
-	title   string
-	message string
+	code       int
+	title      string
+	message    string
+	retryAfter string
 }
 
 type authCheckPlan struct {
@@ -7746,16 +7947,18 @@ func (h *Handler) executeCombinedHTTPAuth(r *http.Request, authConfig models.Aut
 			}
 			cooldownUntil := time.Now().Add(preflightFailureCooldown).UnixNano()
 			h.preflightSkipUntilUnixNano.Store(cooldownUntil)
+			failure := classifyAuthBridgeFailure(err)
 			if event := debugProxyEvent("authorize_http_request_failed", requestID); event != nil {
-				event.Str("error", logger.SanitizeLogString(err.Error())).
+				event.Str("cause", failure.cause).
 					Int64("duration_ms", time.Since(start).Milliseconds()).
 					Send()
 			}
+			log.Printf("Auth bridge request failed: cause=%s duration_ms=%d", failure.cause, time.Since(start).Milliseconds())
 			return combinedHTTPAuthExecution{auth: canceledAuthCheckExecution(err), handled: true}
 		}
 		h.preflightSkipUntilUnixNano.Store(0)
 		if response.GetPreflight() == nil {
-			return combinedHTTPAuthExecution{auth: canceledAuthCheckExecution(fmt.Errorf("auth bridge returned no preflight response")), handled: true}
+			return combinedHTTPAuthExecution{auth: canceledAuthCheckExecution(rpcbridge.ErrAuthBridgeInvalidResponse), handled: true}
 		}
 		execution := combinedHTTPAuthExecution{
 			preflight: h.preflightDecisionFromResponse(response.GetPreflight(), requestID, start),
@@ -7765,7 +7968,7 @@ func (h *Handler) executeCombinedHTTPAuth(r *http.Request, authConfig models.Aut
 			return h.storeCombinedHTTPAuth(callRequest, authConfig, response, execution, preflightLookup, canPreflightLookup, authLookup, canAuthLookup)
 		}
 		if response.GetVerify() == nil {
-			execution.auth = canceledAuthCheckExecution(fmt.Errorf("auth bridge returned no verify response"))
+			execution.auth = canceledAuthCheckExecution(rpcbridge.ErrAuthBridgeInvalidResponse)
 			return execution
 		}
 		execution.auth.plan = h.authCheckPlanFromResponse(callRequest, authConfig, accessMode, requestID, start, response.GetVerify())
@@ -7836,14 +8039,11 @@ func (h *Handler) performAuthCheck(r *http.Request, authConfig models.AuthConfig
 			strings.Contains(r.Header.Get("Cookie"), advancedAuthGrantCookieName+"=") {
 			diagnostics.RecordSubdomainGrantStorageError()
 		}
-		log.Printf("Auth request failed: %v", rpcbridge.ErrAuthBridgeUnavailable)
+		failure := classifyAuthBridgeFailure(rpcbridge.ErrAuthBridgeUnavailable)
+		log.Printf("Auth bridge request failed: cause=%s duration_ms=0", failure.cause)
 		return authCheckPlan{
-			result: authCheckResult{decision: "error"},
-			errorPage: &authCheckErrorPage{
-				code:    errors.CodeProxyAuthFailed,
-				title:   "Authentication Service Unavailable",
-				message: "Authentication Service Unavailable",
-			},
+			result:    authCheckResult{decision: "error"},
+			errorPage: failure.errorPage(),
 		}
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
@@ -7877,20 +8077,17 @@ func (h *Handler) performAuthCheck(r *http.Request, authConfig models.AuthConfig
 			strings.Contains(r.Header.Get("Cookie"), advancedAuthGrantCookieName+"=") {
 			diagnostics.RecordSubdomainGrantStorageError()
 		}
+		failure := classifyAuthBridgeFailure(err)
 		if event := debugProxyEvent("auth_check_request_failed", requestID); event != nil {
 			event.Str("transport", "auth_bridge").
-				Str("error", logger.SanitizeLogString(err.Error())).
+				Str("cause", failure.cause).
 				Int64("duration_ms", time.Since(start).Milliseconds()).
 				Send()
 		}
-		log.Printf("Auth request failed: %v", err)
+		log.Printf("Auth bridge request failed: cause=%s duration_ms=%d", failure.cause, time.Since(start).Milliseconds())
 		return authCheckPlan{
-			result: authCheckResult{decision: "error"},
-			errorPage: &authCheckErrorPage{
-				code:    errors.CodeProxyAuthFailed,
-				title:   "Authentication Service Unavailable",
-				message: "Authentication Service Unavailable",
-			},
+			result:    authCheckResult{decision: "error"},
+			errorPage: failure.errorPage(),
 		}
 	}
 	plan := h.authCheckPlanFromResponse(r, authConfig, accessMode, requestID, start, resp)
@@ -8091,6 +8288,9 @@ func (h *Handler) applyAuthCheckPlan(w http.ResponseWriter, r *http.Request, pla
 
 	if plan.errorPage != nil {
 		applyNoStoreCacheHeaders(w.Header())
+		if plan.errorPage.retryAfter != "" {
+			w.Header().Set("Retry-After", plan.errorPage.retryAfter)
+		}
 		response.HTML(w, r, plan.errorPage.code, plan.errorPage.message, nil)
 		return plan.result
 	}
@@ -8201,14 +8401,43 @@ func (h *Handler) cachedAuthEntry(lookup authCacheLookup, now time.Time) (authCa
 	return authCacheEntry{}, "", false
 }
 
-func canceledAuthCheckExecution(_ error) authCheckExecution {
+type authBridgeFailure struct {
+	cause      string
+	status     int
+	retryAfter string
+}
+
+func classifyAuthBridgeFailure(err error) authBridgeFailure {
+	switch {
+	case stderrors.Is(err, context.DeadlineExceeded):
+		return authBridgeFailure{cause: "timeout", status: http.StatusGatewayTimeout}
+	case stderrors.Is(err, rpcbridge.ErrAuthBridgeQueueFull):
+		return authBridgeFailure{cause: "queue_full", status: http.StatusServiceUnavailable, retryAfter: "1"}
+	case stderrors.Is(err, rpcbridge.ErrAuthBridgeDisconnected):
+		return authBridgeFailure{cause: "disconnected", status: http.StatusServiceUnavailable, retryAfter: "1"}
+	case stderrors.Is(err, rpcbridge.ErrAuthBridgeUnavailable):
+		return authBridgeFailure{cause: "bridge_unavailable", status: http.StatusServiceUnavailable, retryAfter: "1"}
+	case stderrors.Is(err, rpcbridge.ErrAuthBridgeInvalidResponse):
+		return authBridgeFailure{cause: "invalid_response", status: http.StatusBadGateway}
+	default:
+		return authBridgeFailure{cause: "internal", status: http.StatusBadGateway}
+	}
+}
+
+func (failure authBridgeFailure) errorPage() *authCheckErrorPage {
+	return &authCheckErrorPage{
+		code:       failure.status,
+		title:      "Authentication Service Unavailable",
+		message:    "Authentication Service Unavailable",
+		retryAfter: failure.retryAfter,
+	}
+}
+
+func canceledAuthCheckExecution(err error) authCheckExecution {
+	failure := classifyAuthBridgeFailure(err)
 	return authCheckExecution{plan: authCheckPlan{
-		result: authCheckResult{decision: "error"},
-		errorPage: &authCheckErrorPage{
-			code:    errors.CodeProxyAuthFailed,
-			title:   "Authentication Service Unavailable",
-			message: "Authentication Service Unavailable",
-		},
+		result:    authCheckResult{decision: "error"},
+		errorPage: failure.errorPage(),
 	}}
 }
 

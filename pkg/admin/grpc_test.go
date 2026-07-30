@@ -70,7 +70,7 @@ func TestGatewayControlServerInfoIncludesCompatibilityMetadata(t *testing.T) {
 	if info.GetVersion() == "" || info.GetOs() != runtime.GOOS || info.GetArch() != runtime.GOARCH {
 		t.Fatalf("unexpected server info: %#v", info)
 	}
-	if info.GetControlApiVersion() != 2 || len(info.GetCapabilities()) == 0 || info.GetCommit() == "" {
+	if info.GetControlApiVersion() != 3 || len(info.GetCapabilities()) == 0 || info.GetCommit() == "" {
 		t.Fatalf("incomplete compatibility metadata: %#v", info)
 	}
 }

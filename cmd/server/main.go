@@ -780,6 +780,11 @@ func run(options runOptions) error {
 	proxyHandler.SetHostProtocolModeChangeHook(httpsConns.retireForServerNames)
 
 	proxyStack = newProxyStack(options.ProxyPort, proxyHandler, httpServer, httpsServer)
+	bridgeReadyCtx, bridgeReadyCancel := context.WithTimeout(ctx, 60*time.Second)
+	defer bridgeReadyCancel()
+	if err := authBridgeManager.WaitReady(bridgeReadyCtx); err != nil {
+		return fmt.Errorf("wait for Rust auth bridge before opening proxy listeners: %w", err)
+	}
 	if err := proxyStack.Start(); err != nil {
 		if event := logger.DebugEvent("server", "proxy_stack_start_failed"); event != nil {
 			event.Interface("proxy_port", logger.SanitizePort(options.ProxyPort)).

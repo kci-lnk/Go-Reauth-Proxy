@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"fmt"
+	compiledipset "go-reauth-proxy/pkg/ipset"
 	"go-reauth-proxy/pkg/models"
 	"net/netip"
 	"strings"
@@ -23,6 +24,7 @@ func mustParseVisibilityPrefix(value string) netip.Prefix {
 type gatewayVisibility struct {
 	mu       sync.RWMutex
 	config   models.GatewayVisibilityConfig
+	set      *compiledipset.Set
 	prefixes []netip.Prefix
 }
 
@@ -31,6 +33,8 @@ func normalizeGatewayVisibilityConfig(cfg models.GatewayVisibilityConfig) (model
 		Enabled:   cfg.Enabled,
 		CIDRs:     make([]string, 0, len(cfg.CIDRs)),
 		UpdatedAt: strings.TrimSpace(cfg.UpdatedAt),
+		PolicyID:  strings.TrimSpace(cfg.PolicyID),
+		Policy:    cfg.Policy,
 	}
 
 	seen := make(map[string]struct{}, len(cfg.CIDRs))
@@ -72,6 +76,10 @@ func newGatewayVisibility(cfg models.GatewayVisibilityConfig) (*gatewayVisibilit
 	}, nil
 }
 
+func newCompiledGatewayVisibility(cfg models.GatewayVisibilityConfig, set *compiledipset.Set) *gatewayVisibility {
+	return &gatewayVisibility{config: cfg, set: set}
+}
+
 func (v *gatewayVisibility) updateConfig(cfg models.GatewayVisibilityConfig) error {
 	if v == nil {
 		return nil
@@ -108,11 +116,48 @@ func (v *gatewayVisibility) getConfig() models.GatewayVisibilityConfig {
 		Enabled:   v.config.Enabled,
 		CIDRs:     cidrs,
 		UpdatedAt: v.config.UpdatedAt,
+		PolicyID:  v.config.PolicyID,
 	}
 }
 
 func (v *gatewayVisibility) contains(clientIP string) bool {
-	return v.containsPrefixes(clientIP, nil, false)
+	if v == nil {
+		return true
+	}
+	v.mu.RLock()
+	enabled := v.config.Enabled
+	set := v.set
+	v.mu.RUnlock()
+	if !enabled {
+		return true
+	}
+	addr, ok := visibilityClientAddr(clientIP)
+	if !ok {
+		return false
+	}
+	if isVisibilityExemptAddr(addr) {
+		return true
+	}
+	if set != nil {
+		return set.Contains(addr)
+	}
+	v.mu.RLock()
+	defer v.mu.RUnlock()
+	for _, prefix := range v.prefixes {
+		if prefix.Contains(addr) {
+			return true
+		}
+	}
+	return false
+}
+
+func (v *gatewayVisibility) enabled() bool {
+	if v == nil {
+		return false
+	}
+	v.mu.RLock()
+	defer v.mu.RUnlock()
+	return v.config.Enabled
 }
 
 func (v *gatewayVisibility) containsPrefixes(clientIP string, override []netip.Prefix, custom bool) bool {
@@ -159,6 +204,7 @@ func (v *gatewayVisibility) containsPrefixes(clientIP string, override []netip.P
 
 func normalizeHostRuleVisibility(cfg models.HostRuleVisibility) (models.HostRuleVisibility, []netip.Prefix, error) {
 	mode := models.NormalizeHostVisibilityMode(cfg.Mode)
+	policyID := strings.TrimSpace(cfg.PolicyID)
 	prefixes := make([]netip.Prefix, 0, len(cfg.CIDRs))
 	cidrs := make([]string, 0, len(cfg.CIDRs))
 	seen := make(map[string]struct{}, len(cfg.CIDRs))
@@ -180,10 +226,10 @@ func normalizeHostRuleVisibility(cfg models.HostRuleVisibility) (models.HostRule
 		cidrs = append(cidrs, value)
 		prefixes = append(prefixes, prefix)
 	}
-	if mode == models.HostVisibilityModeCustom && len(prefixes) == 0 {
-		return models.HostRuleVisibility{}, nil, fmt.Errorf("custom host visibility requires at least one cidr")
+	if mode == models.HostVisibilityModeCustom && len(prefixes) == 0 && policyID == "" {
+		return models.HostRuleVisibility{}, nil, fmt.Errorf("custom host visibility requires a policy or at least one cidr")
 	}
-	return models.HostRuleVisibility{Mode: mode, CIDRs: cidrs}, prefixes, nil
+	return models.HostRuleVisibility{Mode: mode, CIDRs: cidrs, PolicyID: policyID}, prefixes, nil
 }
 
 func visibilityPrefixes(cidrs []string) []netip.Prefix {
@@ -212,4 +258,13 @@ func isVisibilityExemptAddr(addr netip.Addr) bool {
 	}
 
 	return false
+}
+
+func visibilityClientAddr(clientIP string) (netip.Addr, bool) {
+	normalizedIP := normalizeClientIP(clientIP)
+	if normalizedIP == "" {
+		return netip.Addr{}, false
+	}
+	addr, err := netip.ParseAddr(normalizedIP)
+	return addr, err == nil
 }

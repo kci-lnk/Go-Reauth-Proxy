@@ -1,6 +1,7 @@
 package admin
 
 import (
+	"sort"
 	"strings"
 	"time"
 
@@ -160,8 +161,9 @@ func protoToHostRuleAvailability(value *pb.HostRuleAvailability) *models.HostRul
 
 func hostRuleVisibilityToProto(value models.HostRuleVisibility) *pb.HostRuleVisibility {
 	return &pb.HostRuleVisibility{
-		Mode:  value.Mode,
-		Cidrs: append([]string(nil), value.CIDRs...),
+		Mode:     value.Mode,
+		Cidrs:    append([]string(nil), value.CIDRs...),
+		PolicyId: value.PolicyID,
 	}
 }
 
@@ -170,9 +172,60 @@ func protoToHostRuleVisibility(value *pb.HostRuleVisibility) models.HostRuleVisi
 		return models.HostRuleVisibility{}
 	}
 	return models.HostRuleVisibility{
-		Mode:  value.GetMode(),
-		CIDRs: append([]string(nil), value.GetCidrs()...),
+		Mode:     value.GetMode(),
+		CIDRs:    append([]string(nil), value.GetCidrs()...),
+		PolicyID: value.GetPolicyId(),
 	}
+}
+
+func compiledIPSetToProto(value models.CompiledIPSet) *pb.CompiledIpSet {
+	return &pb.CompiledIpSet{
+		Id:            value.ID,
+		FormatVersion: value.FormatVersion,
+		Ipv4Ranges:    append([]byte(nil), value.IPv4Ranges...),
+		Ipv6Ranges:    append([]byte(nil), value.IPv6Ranges...),
+	}
+}
+
+func protoToCompiledIPSet(value *pb.CompiledIpSet) models.CompiledIPSet {
+	if value == nil {
+		return models.CompiledIPSet{}
+	}
+	return models.CompiledIPSet{
+		ID:            value.GetId(),
+		FormatVersion: value.GetFormatVersion(),
+		IPv4Ranges:    append(models.Base64URLBytes(nil), value.GetIpv4Ranges()...),
+		IPv6Ranges:    append(models.Base64URLBytes(nil), value.GetIpv6Ranges()...),
+	}
+}
+
+func visibilityPoliciesToProto(values map[string]models.CompiledIPSet) []*pb.CompiledIpSet {
+	ids := make([]string, 0, len(values))
+	for id := range values {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	result := make([]*pb.CompiledIpSet, 0, len(ids))
+	for _, id := range ids {
+		value := values[id]
+		if value.ID == "" {
+			value.ID = id
+		}
+		result = append(result, compiledIPSetToProto(value))
+	}
+	return result
+}
+
+func protoToVisibilityPolicies(values []*pb.CompiledIpSet) map[string]models.CompiledIPSet {
+	result := make(map[string]models.CompiledIPSet, len(values))
+	for _, value := range values {
+		if value == nil {
+			continue
+		}
+		policy := protoToCompiledIPSet(value)
+		result[policy.ID] = policy
+	}
+	return result
 }
 
 func advancedAuthToProto(value models.AdvancedAuthConfig) *pb.AdvancedAuthConfig {
@@ -242,6 +295,13 @@ func protoToAdvancedAuth(value *pb.AdvancedAuthConfig) models.AdvancedAuthConfig
 }
 
 func hostRulesToProto(rules []models.HostRule) *pb.HostRules {
+	return hostRulesBundleToProto(rules, nil)
+}
+
+func hostRulesBundleToProto(
+	rules []models.HostRule,
+	policies map[string]models.CompiledIPSet,
+) *pb.HostRules {
 	items := make([]*pb.HostRule, 0, len(rules))
 	for _, rule := range rules {
 		item := &pb.HostRule{
@@ -270,7 +330,10 @@ func hostRulesToProto(rules []models.HostRule) *pb.HostRules {
 		}
 		items = append(items, item)
 	}
-	return &pb.HostRules{Items: items}
+	return &pb.HostRules{
+		Items:              items,
+		VisibilityPolicies: visibilityPoliciesToProto(policies),
+	}
 }
 
 func protoToHostRules(req *pb.HostRules) []models.HostRule {
@@ -427,14 +490,37 @@ func protoToReverseProxyThrottle(cfg *pb.ReverseProxyThrottleConfig) models.Reve
 }
 
 func gatewayVisibilityToProto(cfg models.GatewayVisibilityConfig) *pb.GatewayVisibilityConfig {
-	return &pb.GatewayVisibilityConfig{Enabled: cfg.Enabled, Cidrs: cfg.CIDRs, UpdatedAt: cfg.UpdatedAt}
+	return &pb.GatewayVisibilityConfig{
+		Enabled:   cfg.Enabled,
+		Cidrs:     cfg.CIDRs,
+		UpdatedAt: cfg.UpdatedAt,
+		PolicyId:  cfg.PolicyID,
+		Policy:    compiledIPSetToProtoPointer(cfg.Policy),
+	}
 }
 
 func protoToGatewayVisibility(cfg *pb.GatewayVisibilityConfig) models.GatewayVisibilityConfig {
 	if cfg == nil {
 		return models.GatewayVisibilityConfig{}
 	}
-	return models.GatewayVisibilityConfig{Enabled: cfg.GetEnabled(), CIDRs: cfg.GetCidrs(), UpdatedAt: cfg.GetUpdatedAt()}
+	result := models.GatewayVisibilityConfig{
+		Enabled:   cfg.GetEnabled(),
+		CIDRs:     append([]string(nil), cfg.GetCidrs()...),
+		UpdatedAt: cfg.GetUpdatedAt(),
+		PolicyID:  cfg.GetPolicyId(),
+	}
+	if cfg.GetPolicy() != nil {
+		policy := protoToCompiledIPSet(cfg.GetPolicy())
+		result.Policy = &policy
+	}
+	return result
+}
+
+func compiledIPSetToProtoPointer(value *models.CompiledIPSet) *pb.CompiledIpSet {
+	if value == nil {
+		return nil
+	}
+	return compiledIPSetToProto(*value)
 }
 
 func omitTargetsToProto(enabled bool, targets []string, updatedAt string) *pb.OmitTargetsConfig {

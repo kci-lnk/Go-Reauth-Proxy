@@ -573,8 +573,8 @@ func TestAuthBridgeReconnectFailsOnlyOldPendingRequests(t *testing.T) {
 	}
 	select {
 	case err := <-oldResult:
-		if !errors.Is(err, ErrAuthBridgeUnavailable) {
-			t.Fatalf("old request error = %v, want unavailable", err)
+		if !errors.Is(err, ErrAuthBridgeDisconnected) {
+			t.Fatalf("old request error = %v, want disconnected", err)
 		}
 	case <-time.After(time.Second):
 		t.Fatal("old pending request was not failed on reconnect")
@@ -600,6 +600,39 @@ func TestAuthBridgeReconnectFailsOnlyOldPendingRequests(t *testing.T) {
 		t.Fatal("new request did not complete")
 	}
 	oldStream.release()
+}
+
+func TestAuthBridgeWaitReadyRequiresHandshake(t *testing.T) {
+	manager := NewAuthBridgeManager("secret")
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	if err := manager.WaitReady(ctx); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("WaitReady without stream = %v, want deadline exceeded", err)
+	}
+
+	stream := &blockingAuthBridgeStream{
+		ctx:  context.Background(),
+		sent: make(chan *pb.AuthBridgeEnvelope, 1),
+	}
+	active := manager.attachStream(stream)
+	t.Cleanup(func() { manager.detachStream(active) })
+	ready := make(chan error, 1)
+	go func() {
+		ready <- manager.WaitReady(context.Background())
+	}()
+	manager.handleIncoming(active, &pb.AuthBridgeEnvelope{
+		Payload: &pb.AuthBridgeEnvelope_Ready{
+			Ready: &pb.AuthBridgeReady{Capabilities: []string{CapabilityAuthorizeHTTPV1}},
+		},
+	})
+	select {
+	case err := <-ready:
+		if err != nil {
+			t.Fatalf("WaitReady after handshake = %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("WaitReady did not observe handshake")
+	}
 }
 
 func waitForConnectedBridge(t *testing.T, manager *AuthBridgeManager) {

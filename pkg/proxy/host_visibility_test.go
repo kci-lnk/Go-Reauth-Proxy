@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"go-reauth-proxy/pkg/events"
+	compiledipset "go-reauth-proxy/pkg/ipset"
 	"go-reauth-proxy/pkg/models"
 )
 
@@ -35,12 +36,86 @@ func TestSetHostRulesNormalizesAndDeepCopiesVisibility(t *testing.T) {
 		CIDRs: []string{"1.1.1.0/24"},
 	}
 	got := handler.GetHostRules()
+	if got[0].Visibility.PolicyID == "" {
+		t.Fatal("custom visibility was not compiled into a shared policy")
+	}
+	want.PolicyID = got[0].Visibility.PolicyID
 	if !reflect.DeepEqual(got[0].Visibility, want) {
 		t.Fatalf("visibility = %#v, want %#v", got[0].Visibility, want)
 	}
 	got[0].Visibility.CIDRs[0] = "9.9.9.0/24"
 	if current := handler.GetHostRules()[0].Visibility; !reflect.DeepEqual(current, want) {
 		t.Fatalf("GetHostRules() did not return a defensive visibility copy: %#v", current)
+	}
+}
+
+func TestSixHostsAndGlobalVisibilityShareOneCompiledPolicyPointer(t *testing.T) {
+	handler, _ := newAdditionalProxyTestHandler(t)
+	policy, err := compiledipset.Compile([]string{
+		"203.0.113.0/25",
+		"203.0.113.128/25",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rules := make([]models.HostRule, 0, 6)
+	for index := range 6 {
+		rules = append(rules, models.HostRule{
+			Host:   "app-" + strconv.Itoa(index) + ".example.test",
+			Target: "http://127.0.0.1:8080",
+			Visibility: models.HostRuleVisibility{
+				Mode:     models.HostVisibilityModeCustom,
+				PolicyID: policy.ID,
+			},
+		})
+	}
+	if err := handler.SetHostRulesBundle(
+		rules,
+		map[string]models.CompiledIPSet{policy.ID: policy},
+	); err != nil {
+		t.Fatal(err)
+	}
+	snapshot := handler.snapshotForRequest()
+	first := snapshot.hostVisibility["app-0.example.test"]
+	if first == nil {
+		t.Fatal("first host did not resolve a compiled visibility set")
+	}
+	for index := range 6 {
+		host := "app-" + strconv.Itoa(index) + ".example.test"
+		if snapshot.hostVisibility[host] != first {
+			t.Fatalf("host %s did not share the immutable compiled set pointer", host)
+		}
+	}
+	if len(handler.VisibilityPolicies) != 1 {
+		t.Fatalf("policy count = %d, want 1", len(handler.VisibilityPolicies))
+	}
+
+	globalPolicy := policy
+	if err := handler.SetGatewayVisibility(models.GatewayVisibilityConfig{
+		Enabled:  true,
+		PolicyID: policy.ID,
+		Policy:   &globalPolicy,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	snapshot = handler.snapshotForRequest()
+	handler.gatewayVisibility.mu.RLock()
+	globalSet := handler.gatewayVisibility.set
+	handler.gatewayVisibility.mu.RUnlock()
+	if globalSet == nil || snapshot.hostVisibility["app-0.example.test"] != globalSet {
+		t.Fatal("global and host visibility did not share the compiled set pointer")
+	}
+	if err := handler.FlushHostRules(); err != nil {
+		t.Fatal(err)
+	}
+	if len(handler.VisibilityPolicies) != 1 {
+		t.Fatalf("global reference did not retain shared policy: %d", len(handler.VisibilityPolicies))
+	}
+	if err := handler.SetGatewayVisibility(models.GatewayVisibilityConfig{Enabled: false}); err != nil {
+		t.Fatal(err)
+	}
+	if len(handler.VisibilityPolicies) != 0 {
+		t.Fatalf("unreferenced policy count = %d, want 0", len(handler.VisibilityPolicies))
 	}
 }
 
@@ -93,7 +168,11 @@ func TestSetHostRulesPreservesVisibilityWhenLegacyUpdateOmitsIt(t *testing.T) {
 		t.Fatalf("legacy SetHostRules() returned error: %v", err)
 	}
 
-	want := models.HostRuleVisibility{Mode: models.HostVisibilityModeCustom, CIDRs: []string{"1.1.1.0/24"}}
+	want := models.HostRuleVisibility{
+		Mode:     models.HostVisibilityModeCustom,
+		CIDRs:    []string{"1.1.1.0/24"},
+		PolicyID: handler.GetHostRules()[0].Visibility.PolicyID,
+	}
 	if got := handler.GetHostRules()[0].Visibility; !reflect.DeepEqual(got, want) {
 		t.Fatalf("visibility = %#v, want preserved %#v", got, want)
 	}

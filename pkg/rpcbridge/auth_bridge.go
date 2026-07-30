@@ -32,7 +32,9 @@ const (
 
 var (
 	ErrAuthBridgeUnavailable           = errors.New("auth bridge is not connected")
+	ErrAuthBridgeDisconnected          = errors.New("auth bridge disconnected")
 	ErrAuthBridgeQueueFull             = errors.New("auth bridge request queue is full")
+	ErrAuthBridgeInvalidResponse       = errors.New("auth bridge returned an invalid response")
 	ErrAuthBridgeCapabilityUnsupported = errors.New("auth bridge capability is not supported")
 	ErrInternalRPCTokenRequired        = errors.New("FN_KNOCK_INTERNAL_RPC_TOKEN must be set for internal gRPC")
 	errInternalRPCTokenUnsetGRPC       = status.Error(codes.Unauthenticated, "internal rpc token is not configured")
@@ -45,6 +47,7 @@ type AuthBridgeManager struct {
 
 	stream        atomic.Pointer[authBridgeStream]
 	readyOnChange atomic.Value
+	readyNotify   chan struct{}
 	nextID        atomic.Uint64
 	pending       [authBridgePendingShardCount]authBridgePendingShard
 }
@@ -92,7 +95,10 @@ type authBridgeRecvResult struct {
 }
 
 func NewAuthBridgeManager(token string) *AuthBridgeManager {
-	m := &AuthBridgeManager{token: strings.TrimSpace(token)}
+	m := &AuthBridgeManager{
+		token:       strings.TrimSpace(token),
+		readyNotify: make(chan struct{}, 1),
+	}
 	var emptyReadyHook func(bool)
 	m.readyOnChange.Store(emptyReadyHook)
 	for i := range m.pending {
@@ -121,10 +127,31 @@ func (m *AuthBridgeManager) SetReadyChangeHook(hook func(bool)) {
 }
 
 func (m *AuthBridgeManager) notifyReadyChange(ready bool) {
+	select {
+	case m.readyNotify <- struct{}{}:
+	default:
+	}
 	value := m.readyOnChange.Load()
 	if hook, ok := value.(func(bool)); ok && hook != nil {
 		hook(ready)
 	}
+}
+
+// WaitReady blocks until a connected Rust bridge has completed its Ready
+// handshake. Callers use this to keep public proxy listeners closed during
+// startup while the internal gRPC control plane remains available.
+func (m *AuthBridgeManager) WaitReady(ctx context.Context) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	for !m.IsReady() {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-m.readyNotify:
+		}
+	}
+	return nil
 }
 
 func (m *AuthBridgeManager) ConnectAuthBridge(stream pb.AuthBridgeService_ConnectAuthBridgeServer) error {
@@ -192,7 +219,7 @@ func (m *AuthBridgeManager) AuthorizeHTTP(ctx context.Context, req *pb.Authorize
 	}
 	resp := msg.GetAuthorizeHttpResponse()
 	if resp == nil {
-		return nil, fmt.Errorf("auth bridge returned %T for authorize http", msg.GetPayload())
+		return nil, fmt.Errorf("%w for authorize http", ErrAuthBridgeInvalidResponse)
 	}
 	return resp, nil
 }
@@ -206,7 +233,7 @@ func (m *AuthBridgeManager) VerifyAuth(ctx context.Context, req *pb.VerifyAuthRe
 	}
 	resp := msg.GetVerifyAuthResponse()
 	if resp == nil {
-		return nil, fmt.Errorf("auth bridge returned %T for verify auth", msg.GetPayload())
+		return nil, fmt.Errorf("%w for verify auth", ErrAuthBridgeInvalidResponse)
 	}
 	return resp, nil
 }
@@ -220,7 +247,7 @@ func (m *AuthBridgeManager) PreflightAuth(ctx context.Context, req *pb.Preflight
 	}
 	resp := msg.GetPreflightAuthResponse()
 	if resp == nil {
-		return nil, fmt.Errorf("auth bridge returned %T for preflight auth", msg.GetPayload())
+		return nil, fmt.Errorf("%w for preflight auth", ErrAuthBridgeInvalidResponse)
 	}
 	return resp, nil
 }
@@ -234,7 +261,7 @@ func (m *AuthBridgeManager) VerifyStreamAuth(ctx context.Context, req *pb.Verify
 	}
 	resp := msg.GetVerifyStreamAuthResponse()
 	if resp == nil {
-		return nil, fmt.Errorf("auth bridge returned %T for stream auth", msg.GetPayload())
+		return nil, fmt.Errorf("%w for stream auth", ErrAuthBridgeInvalidResponse)
 	}
 	return resp, nil
 }
@@ -473,7 +500,7 @@ func (m *AuthBridgeManager) attachStream(stream pb.AuthBridgeService_ConnectAuth
 
 	if previous != nil {
 		previous.close()
-		m.failPendingForStream(previous, ErrAuthBridgeUnavailable)
+		m.failPendingForStream(previous, ErrAuthBridgeDisconnected)
 	}
 	return active
 }
@@ -487,7 +514,7 @@ func (m *AuthBridgeManager) detachStream(stream *authBridgeStream) {
 		}
 	}
 	stream.close()
-	m.failPendingForStream(stream, ErrAuthBridgeUnavailable)
+	m.failPendingForStream(stream, ErrAuthBridgeDisconnected)
 }
 
 func (m *AuthBridgeManager) observeQueueDepth(stream *authBridgeStream) {

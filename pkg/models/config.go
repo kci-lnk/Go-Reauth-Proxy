@@ -118,8 +118,9 @@ type AdvancedAuthCondition struct {
 }
 
 type HostRuleVisibility struct {
-	Mode  string   `json:"mode,omitempty"`
-	CIDRs []string `json:"cidrs,omitempty"`
+	Mode     string   `json:"mode,omitempty"`
+	CIDRs    []string `json:"cidrs,omitempty"` // Deprecated compatibility input.
+	PolicyID string   `json:"policy_id,omitempty"`
 }
 
 type HostRuleAvailability struct {
@@ -296,9 +297,18 @@ type ReverseProxyThrottleConfig struct {
 }
 
 type GatewayVisibilityConfig struct {
-	Enabled   bool     `json:"enabled,omitempty"`
-	CIDRs     []string `json:"cidrs,omitempty"`
-	UpdatedAt string   `json:"updated_at,omitempty"`
+	Enabled   bool           `json:"enabled,omitempty"`
+	CIDRs     []string       `json:"cidrs,omitempty"` // Deprecated compatibility input.
+	UpdatedAt string         `json:"updated_at,omitempty"`
+	PolicyID  string         `json:"policy_id,omitempty"`
+	Policy    *CompiledIPSet `json:"-"`
+}
+
+type CompiledIPSet struct {
+	ID            string         `json:"id,omitempty"`
+	FormatVersion uint32         `json:"format_version"`
+	IPv4Ranges    Base64URLBytes `json:"ipv4_ranges"`
+	IPv6Ranges    Base64URLBytes `json:"ipv6_ranges"`
 }
 
 type ForwardedHeadersConfig struct {

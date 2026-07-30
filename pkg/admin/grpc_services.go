@@ -57,7 +57,10 @@ func (s *GRPCServer) GetHostRules(ctx context.Context, _ *emptypb.Empty) (*pb.Ho
 	if err := s.checkToken(ctx); err != nil {
 		return nil, err
 	}
-	return hostRulesToProto(s.admin.ProxyHandler.GetHostRules()), nil
+	return hostRulesBundleToProto(
+		s.admin.ProxyHandler.GetHostRules(),
+		s.admin.ProxyHandler.GetVisibilityPoliciesForHostRules(),
+	), nil
 }
 
 func (s *GRPCServer) SetHostRules(ctx context.Context, req *pb.HostRules) (*pb.HostRules, error) {
@@ -67,10 +70,16 @@ func (s *GRPCServer) SetHostRules(ctx context.Context, req *pb.HostRules) (*pb.H
 	if req == nil {
 		return nil, grpcBadRequest("request is required")
 	}
-	if err := s.admin.ProxyHandler.SetHostRules(protoToHostRules(req)); err != nil {
+	if err := s.admin.ProxyHandler.SetHostRulesBundle(
+		protoToHostRules(req),
+		protoToVisibilityPolicies(req.GetVisibilityPolicies()),
+	); err != nil {
 		return nil, grpcBadRequest("failed to set host rules: %v", err)
 	}
-	return hostRulesToProto(s.admin.ProxyHandler.GetHostRules()), nil
+	return hostRulesBundleToProto(
+		s.admin.ProxyHandler.GetHostRules(),
+		s.admin.ProxyHandler.GetVisibilityPoliciesForHostRules(),
+	), nil
 }
 
 func (s *GRPCServer) FlushHostRules(ctx context.Context, _ *emptypb.Empty) (*pb.RpcStatus, error) {

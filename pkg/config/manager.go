@@ -24,6 +24,7 @@ const (
 type AppConfig struct {
 	Rules                []models.Rule                      `json:"rules"`
 	HostRules            []models.HostRule                  `json:"host_rules,omitempty"`
+	VisibilityPolicies   map[string]models.CompiledIPSet    `json:"visibility_policies,omitempty"`
 	StreamRules          []models.StreamRule                `json:"stream_rules,omitempty"`
 	DefaultRoute         string                             `json:"default_route"`
 	AuthConfig           models.AuthConfig                  `json:"auth_config"`
@@ -68,10 +69,11 @@ func (m *Manager) RuntimeDir() string {
 
 func defaultConfig() *AppConfig {
 	return &AppConfig{
-		Rules:        []models.Rule{},
-		HostRules:    []models.HostRule{},
-		StreamRules:  []models.StreamRule{},
-		DefaultRoute: "/__select__",
+		Rules:              []models.Rule{},
+		HostRules:          []models.HostRule{},
+		VisibilityPolicies: map[string]models.CompiledIPSet{},
+		StreamRules:        []models.StreamRule{},
+		DefaultRoute:       "/__select__",
 		AuthConfig: models.AuthConfig{
 			AuthPort:              7997,
 			AuthURL:               "/api/auth/verify",

@@ -1472,6 +1472,24 @@ func (h *Handler) abortConnection(w http.ResponseWriter) {
 	panic(http.ErrAbortHandler)
 }
 
+func markConnectionResetStatus(w http.ResponseWriter) {
+	for depth := 0; w != nil && depth < 16; depth++ {
+		if trafficWriter, ok := w.(*trafficResponseWriter); ok {
+			if trafficWriter.metrics != nil && !trafficWriter.metrics.wroteHeader {
+				trafficWriter.metrics.statusCode = 499
+			}
+			return
+		}
+		unwrapper, ok := w.(interface {
+			Unwrap() http.ResponseWriter
+		})
+		if !ok {
+			return
+		}
+		w = unwrapper.Unwrap()
+	}
+}
+
 type netConnUnwrapper interface {
 	NetConn() net.Conn
 }
@@ -6345,6 +6363,40 @@ func upstreamUnavailableMessage(cfg models.GatewayUnmatchedRouteConfig, err erro
 	return "Upstream unavailable"
 }
 
+func (h *Handler) abortUpstreamConnectionIfConfigured(
+	w http.ResponseWriter,
+	cfg models.GatewayUnmatchedRouteConfig,
+) bool {
+	normalized := models.NormalizeGatewayUnmatchedRouteConfig(cfg)
+	if normalized.UpstreamErrorDetail != models.GatewayUpstreamErrorDetailResetConnection {
+		return false
+	}
+	markConnectionResetStatus(w)
+	h.abortConnection(w)
+	return true
+}
+
+func (h *Handler) handleUpstreamUnavailable(
+	w http.ResponseWriter,
+	r *http.Request,
+	cfg models.GatewayUnmatchedRouteConfig,
+	rules []models.Rule,
+	authenticated bool,
+	err error,
+) {
+	if h.abortUpstreamConnectionIfConfigured(w, cfg) {
+		return
+	}
+	response.HTMLWithSelectLink(
+		w,
+		r,
+		errors.CodeProxyTimeout,
+		upstreamUnavailableMessage(cfg, err),
+		rules,
+		authenticated,
+	)
+}
+
 func serveHostLocationResponse(w http.ResponseWriter, location models.HostLocation) {
 	for name, value := range location.Response.Headers {
 		w.Header().Set(name, value)
@@ -6461,7 +6513,7 @@ func (h *Handler) proxyToHostLocationTarget(w http.ResponseWriter, r *http.Reque
 					Send()
 			}
 			log.Printf("Host location proxy error: %v", err)
-			response.HTMLWithSelectLink(w, r, errors.CodeProxyTimeout, upstreamUnavailableMessage(snapshot.unmatchedRoute, err), snapshot.rules, authResult.authenticated)
+			h.handleUpstreamUnavailable(w, r, snapshot.unmatchedRoute, snapshot.rules, authResult.authenticated, err)
 		},
 	}
 
@@ -6526,6 +6578,7 @@ func (h *Handler) proxyToHostLocationTarget(w http.ResponseWriter, r *http.Reque
 	if h.maybeProxyFnosPortIconHijackWebSocket(w, r, fnosPortIconHijackWebSocketOptions{
 		targetURL:            transportTargetURL,
 		hostRules:            snapshot.hostRules,
+		unmatchedRoute:       snapshot.unmatchedRoute,
 		clientIP:             clientIP,
 		omitForwardedHeaders: omitForwardedHeaders,
 		preserveHost:         preserveHost,
@@ -6637,7 +6690,7 @@ func (h *Handler) proxyToHostTarget(w http.ResponseWriter, r *http.Request, snap
 					Send()
 			}
 			log.Printf("Host proxy error: %v", err)
-			response.HTMLWithSelectLink(w, r, errors.CodeProxyTimeout, upstreamUnavailableMessage(snapshot.unmatchedRoute, err), snapshot.rules, authResult.authenticated)
+			h.handleUpstreamUnavailable(w, r, snapshot.unmatchedRoute, snapshot.rules, authResult.authenticated, err)
 		},
 	}
 
@@ -6692,6 +6745,7 @@ func (h *Handler) proxyToHostTarget(w http.ResponseWriter, r *http.Request, snap
 	if fnosConnectContext(r) == nil && h.maybeProxyFnosPortIconHijackWebSocket(w, r, fnosPortIconHijackWebSocketOptions{
 		targetURL:             transportTargetURL,
 		hostRules:             snapshot.hostRules,
+		unmatchedRoute:        snapshot.unmatchedRoute,
 		clientIP:              clientIP,
 		omitForwardedHeaders:  omitForwardedHeaders,
 		preserveHost:          preserveHost,
@@ -6803,7 +6857,7 @@ func (h *Handler) proxyToRuleTarget(w http.ResponseWriter, r *http.Request, snap
 					Send()
 			}
 			log.Printf("Proxy error: %v", err)
-			response.HTMLWithSelectLink(w, r, errors.CodeProxyTimeout, upstreamUnavailableMessage(snapshot.unmatchedRoute, err), snapshot.rules, authResult.authenticated)
+			h.handleUpstreamUnavailable(w, r, snapshot.unmatchedRoute, snapshot.rules, authResult.authenticated, err)
 		},
 	}
 
@@ -6855,6 +6909,7 @@ func (h *Handler) proxyToRuleTarget(w http.ResponseWriter, r *http.Request, snap
 	if h.maybeProxyFnosPortIconHijackWebSocket(w, r, fnosPortIconHijackWebSocketOptions{
 		targetURL:            transportTargetURL,
 		hostRules:            snapshot.hostRules,
+		unmatchedRoute:       snapshot.unmatchedRoute,
 		clientIP:             clientIP,
 		omitForwardedHeaders: false,
 		preserveHost:         preserveHost,

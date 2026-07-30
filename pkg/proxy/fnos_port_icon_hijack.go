@@ -33,6 +33,7 @@ type fnosPortIconHijackPublicEndpoint struct {
 type fnosPortIconHijackWebSocketOptions struct {
 	targetURL             *url.URL
 	hostRules             []models.HostRule
+	unmatchedRoute        models.GatewayUnmatchedRouteConfig
 	clientIP              string
 	omitForwardedHeaders  bool
 	preserveHost          bool
@@ -70,8 +71,11 @@ func (h *Handler) shouldProxyFnosPortIconHijackWebSocket(r *http.Request) bool {
 
 func (h *Handler) proxyFnosPortIconHijackWebSocket(w http.ResponseWriter, r *http.Request, options fnosPortIconHijackWebSocketOptions, targets map[int]string) error {
 	if options.targetURL == nil {
-		http.Error(w, "missing upstream target", http.StatusBadGateway)
-		return fmt.Errorf("missing websocket upstream target")
+		err := fmt.Errorf("missing websocket upstream target")
+		if !h.abortUpstreamConnectionIfConfigured(w, options.unmatchedRoute) {
+			http.Error(w, "missing upstream target", http.StatusBadGateway)
+		}
+		return err
 	}
 
 	upstreamURL := buildFnosPortIconHijackWebSocketURL(
@@ -96,7 +100,9 @@ func (h *Handler) proxyFnosPortIconHijackWebSocket(w http.ResponseWriter, r *htt
 		resp.Body.Close()
 	}
 	if err != nil {
-		http.Error(w, "websocket upstream unavailable", http.StatusBadGateway)
+		if !h.abortUpstreamConnectionIfConfigured(w, options.unmatchedRoute) {
+			http.Error(w, "websocket upstream unavailable", http.StatusBadGateway)
+		}
 		return err
 	}
 	defer upstreamConn.Close()

@@ -506,6 +506,39 @@ func TestFnosPortIconHijackWebSocketRewritesUpstreamMessages(t *testing.T) {
 	}
 }
 
+func TestFnosPortIconHijackWebSocketUpstreamFailureCanResetConnection(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	targetURL, err := url.Parse(upstream.URL)
+	if err != nil {
+		t.Fatalf("parse upstream URL: %v", err)
+	}
+	upstream.Close()
+
+	handler := &Handler{}
+	req := httptest.NewRequest(http.MethodGet, "https://app.example.com/websocket", nil)
+	req.ProtoMajor = 2
+	req.ProtoMinor = 0
+	req.Proto = "HTTP/2.0"
+	options := fnosPortIconHijackWebSocketOptions{
+		targetURL: targetURL,
+		unmatchedRoute: models.GatewayUnmatchedRouteConfig{
+			UpstreamErrorDetail: models.GatewayUpstreamErrorDetailResetConnection,
+		},
+	}
+
+	defer func() {
+		if recovered := recover(); recovered != http.ErrAbortHandler {
+			t.Fatalf("panic = %#v, want http.ErrAbortHandler", recovered)
+		}
+	}()
+	_ = handler.proxyFnosPortIconHijackWebSocket(
+		httptest.NewRecorder(),
+		req,
+		options,
+		nil,
+	)
+}
+
 func TestFnosPortIconHijackWebSocketRelaysTimerMessagesWithoutRewrite(t *testing.T) {
 	upgrader := websocket.Upgrader{
 		CheckOrigin: func(_ *http.Request) bool {

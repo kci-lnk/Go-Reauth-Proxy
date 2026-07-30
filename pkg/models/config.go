@@ -412,6 +412,7 @@ const (
 	GatewayUnmatchedRouteBehaviorResetConnection = "reset_connection"
 	GatewayUpstreamErrorDetailLess               = "less"
 	GatewayUpstreamErrorDetailMore               = "more"
+	GatewayUpstreamErrorDetailResetConnection    = "reset_connection"
 )
 
 type GatewayUnmatchedRouteConfig struct {
@@ -425,8 +426,11 @@ func NormalizeGatewayUnmatchedRouteConfig(cfg GatewayUnmatchedRouteConfig) Gatew
 		behavior = GatewayUnmatchedRouteBehaviorResetConnection
 	}
 	upstreamErrorDetail := GatewayUpstreamErrorDetailLess
-	if cfg.UpstreamErrorDetail == GatewayUpstreamErrorDetailMore {
+	switch cfg.UpstreamErrorDetail {
+	case GatewayUpstreamErrorDetailMore:
 		upstreamErrorDetail = GatewayUpstreamErrorDetailMore
+	case GatewayUpstreamErrorDetailResetConnection:
+		upstreamErrorDetail = GatewayUpstreamErrorDetailResetConnection
 	}
 	return GatewayUnmatchedRouteConfig{
 		Behavior:            behavior,

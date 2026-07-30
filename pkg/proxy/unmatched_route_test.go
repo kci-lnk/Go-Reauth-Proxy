@@ -478,3 +478,173 @@ func TestUpstreamUnavailableMessageCanShowMoreForTroubleshooting(t *testing.T) {
 		t.Fatalf("message = %q, want detailed upstream error", got)
 	}
 }
+
+func TestUpstreamUnavailableCanResetConnection(t *testing.T) {
+	handler := &Handler{}
+	req := httptest.NewRequest(http.MethodGet, "https://app.example.com/", nil)
+	req.ProtoMajor = 2
+	req.ProtoMinor = 0
+	req.Proto = "HTTP/2.0"
+	cfg := models.GatewayUnmatchedRouteConfig{
+		UpstreamErrorDetail: models.GatewayUpstreamErrorDetailResetConnection,
+	}
+
+	defer func() {
+		if recovered := recover(); recovered != http.ErrAbortHandler {
+			t.Fatalf("panic = %#v, want http.ErrAbortHandler", recovered)
+		}
+	}()
+	handler.handleUpstreamUnavailable(
+		httptest.NewRecorder(),
+		req,
+		cfg,
+		nil,
+		false,
+		errors.New("dial tcp: connection refused"),
+	)
+}
+
+func TestUpstreamUnavailableResetRecords499BeforeClosing(t *testing.T) {
+	handler := &Handler{}
+	recorder := newHijackableResponseRecorder()
+	defer recorder.Close()
+	metrics := &requestTrafficMetrics{statusCode: http.StatusOK}
+	writer := newProxyResponseCoalescer(&trafficResponseWriter{
+		ResponseWriter: recorder,
+		handler:        handler,
+		metrics:        metrics,
+	})
+	cfg := models.GatewayUnmatchedRouteConfig{
+		UpstreamErrorDetail: models.GatewayUpstreamErrorDetailResetConnection,
+	}
+
+	handler.handleUpstreamUnavailable(
+		writer,
+		httptest.NewRequest(http.MethodGet, "http://app.example.com/", nil),
+		cfg,
+		nil,
+		false,
+		errors.New("dial tcp: connection refused"),
+	)
+
+	if metrics.statusCode != 499 {
+		t.Fatalf("status = %d, want 499", metrics.statusCode)
+	}
+}
+
+func TestUpstreamUnavailableResetWrites499AccessLog(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	target := upstream.URL
+	upstream.Close()
+
+	cfg := config.DefaultConfig()
+	cfg.Logging = models.LoggingConfig{
+		Enabled:         true,
+		RecordLocalhost: true,
+		MaxDays:         1,
+	}
+	cfg.HostRules = []models.HostRule{{
+		Host:   "app.example.com",
+		Target: target,
+	}}
+	cfg.UnmatchedRoute.UpstreamErrorDetail =
+		models.GatewayUpstreamErrorDetailResetConnection
+	handler := NewHandler(7996, 7999, nil, cfg, filepath.Join(t.TempDir(), "logs"), nil)
+	t.Cleanup(handler.gatewayLogManager.Close)
+
+	req := httptest.NewRequest(http.MethodGet, "http://app.example.com/", nil)
+	req.RemoteAddr = "127.0.0.1:4567"
+	recorder := newHijackableResponseRecorder()
+	defer recorder.Close()
+	handler.ServeHTTP(recorder, req)
+
+	result, err := handler.QueryLogEntries("", 1, 20, "host_rule", "", "", "", "", "page")
+	if err != nil {
+		t.Fatalf("QueryLogEntries: %v", err)
+	}
+	if len(result.Items) != 1 {
+		t.Fatalf("logged items = %d, want 1", len(result.Items))
+	}
+	if entry := result.Items[0]; entry.Status != 499 || entry.RouteType != "host_rule" {
+		t.Fatalf("unexpected upstream reset log: %#v", entry)
+	}
+}
+
+func TestUpstreamUnavailableResetCoversEveryReverseProxyRoute(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	target := upstream.URL
+	upstream.Close()
+
+	tests := []struct {
+		name  string
+		rules []models.Rule
+		hosts []models.HostRule
+		url   string
+		host  string
+	}{
+		{
+			name: "path rule",
+			rules: []models.Rule{{
+				Path:   "/app",
+				Target: target,
+			}},
+			url:  "https://gateway.example.com/app/resource",
+			host: "gateway.example.com",
+		},
+		{
+			name: "host rule",
+			hosts: []models.HostRule{{
+				Host:   "app.example.com",
+				Target: target,
+			}},
+			url:  "https://app.example.com/",
+			host: "app.example.com",
+		},
+		{
+			name: "host location",
+			hosts: []models.HostRule{{
+				Host:   "app.example.com",
+				Target: "http://127.0.0.1:1",
+				Locations: []models.HostLocation{{
+					Path:   "/api",
+					Match:  models.HostLocationMatchPrefix,
+					Action: models.HostLocationActionProxy,
+					Target: target,
+				}},
+			}},
+			url:  "https://app.example.com/api/resource",
+			host: "app.example.com",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := config.DefaultConfig()
+			cfg.Rules = tc.rules
+			cfg.HostRules = tc.hosts
+			cfg.UnmatchedRoute.UpstreamErrorDetail =
+				models.GatewayUpstreamErrorDetailResetConnection
+			handler := NewHandler(
+				7996,
+				7999,
+				nil,
+				cfg,
+				filepath.Join(t.TempDir(), "logs"),
+				nil,
+			)
+			t.Cleanup(handler.gatewayLogManager.Close)
+			req := httptest.NewRequest(http.MethodGet, tc.url, nil)
+			req.Host = tc.host
+			req.ProtoMajor = 2
+			req.ProtoMinor = 0
+			req.Proto = "HTTP/2.0"
+
+			defer func() {
+				if recovered := recover(); recovered != http.ErrAbortHandler {
+					t.Fatalf("panic = %#v, want http.ErrAbortHandler", recovered)
+				}
+			}()
+			handler.ServeHTTP(httptest.NewRecorder(), req)
+		})
+	}
+}

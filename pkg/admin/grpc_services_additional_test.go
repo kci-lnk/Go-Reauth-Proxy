@@ -350,13 +350,13 @@ func TestGatewayControlGatewayUnmatchedRouteRoundTrip(t *testing.T) {
 	ctx := authTestContext()
 	got, err := server.SetGatewayUnmatchedRouteConfig(ctx, &pb.GatewayUnmatchedRouteConfig{
 		Behavior:            models.GatewayUnmatchedRouteBehaviorResetConnection,
-		UpstreamErrorDetail: models.GatewayUpstreamErrorDetailMore,
+		UpstreamErrorDetail: models.GatewayUpstreamErrorDetailResetConnection,
 	})
 	if err != nil {
 		t.Fatalf("SetGatewayUnmatchedRouteConfig() returned error: %v", err)
 	}
 	if got.GetBehavior() != models.GatewayUnmatchedRouteBehaviorResetConnection ||
-		got.GetUpstreamErrorDetail() != models.GatewayUpstreamErrorDetailMore {
+		got.GetUpstreamErrorDetail() != models.GatewayUpstreamErrorDetailResetConnection {
 		t.Fatalf("set response = %#v", got)
 	}
 	reloaded, err := server.GetGatewayUnmatchedRouteConfig(ctx, &emptypb.Empty{})
@@ -364,7 +364,7 @@ func TestGatewayControlGatewayUnmatchedRouteRoundTrip(t *testing.T) {
 		t.Fatalf("GetGatewayUnmatchedRouteConfig() returned error: %v", err)
 	}
 	if reloaded.GetBehavior() != models.GatewayUnmatchedRouteBehaviorResetConnection ||
-		reloaded.GetUpstreamErrorDetail() != models.GatewayUpstreamErrorDetailMore {
+		reloaded.GetUpstreamErrorDetail() != models.GatewayUpstreamErrorDetailResetConnection {
 		t.Fatalf("get response = %#v", reloaded)
 	}
 

@@ -22,58 +22,36 @@ func mustParseVisibilityPrefix(value string) netip.Prefix {
 }
 
 type gatewayVisibility struct {
-	mu       sync.RWMutex
-	config   models.GatewayVisibilityConfig
-	set      *compiledipset.Set
-	prefixes []netip.Prefix
+	mu     sync.RWMutex
+	config models.GatewayVisibilityConfig
+	set    *compiledipset.Set
 }
 
-func normalizeGatewayVisibilityConfig(cfg models.GatewayVisibilityConfig) (models.GatewayVisibilityConfig, []netip.Prefix, error) {
+func normalizeGatewayVisibilityConfig(cfg models.GatewayVisibilityConfig) (models.GatewayVisibilityConfig, error) {
 	normalized := models.GatewayVisibilityConfig{
 		Enabled:   cfg.Enabled,
-		CIDRs:     make([]string, 0, len(cfg.CIDRs)),
 		UpdatedAt: strings.TrimSpace(cfg.UpdatedAt),
 		PolicyID:  strings.TrimSpace(cfg.PolicyID),
 		Policy:    cfg.Policy,
 	}
-
-	seen := make(map[string]struct{}, len(cfg.CIDRs))
-	prefixes := make([]netip.Prefix, 0, len(cfg.CIDRs))
-
-	for _, rawCIDR := range cfg.CIDRs {
-		cidr := strings.TrimSpace(rawCIDR)
-		if cidr == "" {
-			continue
-		}
-
-		prefix, err := netip.ParsePrefix(cidr)
-		if err != nil {
-			return models.GatewayVisibilityConfig{}, nil, fmt.Errorf("invalid visibility cidr %q: %w", cidr, err)
-		}
-
-		prefix = prefix.Masked()
-		text := prefix.String()
-		if _, exists := seen[text]; exists {
-			continue
-		}
-		seen[text] = struct{}{}
-		normalized.CIDRs = append(normalized.CIDRs, text)
-		prefixes = append(prefixes, prefix)
+	cidrs, err := normalizeVisibilityCIDRs(cfg.CIDRs, "visibility")
+	if err != nil {
+		return models.GatewayVisibilityConfig{}, err
 	}
-
-	return normalized, prefixes, nil
+	normalized.CIDRs = cidrs
+	return normalized, nil
 }
 
 func newGatewayVisibility(cfg models.GatewayVisibilityConfig) (*gatewayVisibility, error) {
-	normalized, prefixes, err := normalizeGatewayVisibilityConfig(cfg)
+	normalized, err := normalizeGatewayVisibilityConfig(cfg)
 	if err != nil {
 		return nil, err
 	}
-
-	return &gatewayVisibility{
-		config:   normalized,
-		prefixes: prefixes,
-	}, nil
+	_, set, err := compiledipset.Resolve("", nil, normalized.CIDRs)
+	if err != nil {
+		return nil, err
+	}
+	return &gatewayVisibility{config: normalized, set: set}, nil
 }
 
 func newCompiledGatewayVisibility(cfg models.GatewayVisibilityConfig, set *compiledipset.Set) *gatewayVisibility {
@@ -85,14 +63,18 @@ func (v *gatewayVisibility) updateConfig(cfg models.GatewayVisibilityConfig) err
 		return nil
 	}
 
-	normalized, prefixes, err := normalizeGatewayVisibilityConfig(cfg)
+	normalized, err := normalizeGatewayVisibilityConfig(cfg)
+	if err != nil {
+		return err
+	}
+	_, set, err := compiledipset.Resolve("", nil, normalized.CIDRs)
 	if err != nil {
 		return err
 	}
 
 	v.mu.Lock()
 	v.config = normalized
-	v.prefixes = prefixes
+	v.set = set
 	v.mu.Unlock()
 	return nil
 }
@@ -141,13 +123,6 @@ func (v *gatewayVisibility) contains(clientIP string) bool {
 	if set != nil {
 		return set.Contains(addr)
 	}
-	v.mu.RLock()
-	defer v.mu.RUnlock()
-	for _, prefix := range v.prefixes {
-		if prefix.Contains(addr) {
-			return true
-		}
-	}
 	return false
 }
 
@@ -160,62 +135,30 @@ func (v *gatewayVisibility) enabled() bool {
 	return v.config.Enabled
 }
 
-func (v *gatewayVisibility) containsPrefixes(clientIP string, override []netip.Prefix, custom bool) bool {
-	if v == nil {
-		return true
-	}
-
-	v.mu.RLock()
-	enabled := v.config.Enabled
-	v.mu.RUnlock()
-
-	if !enabled {
-		return true
-	}
-
-	normalizedIP := normalizeClientIP(clientIP)
-	if normalizedIP == "" {
-		return false
-	}
-
-	addr, err := netip.ParseAddr(normalizedIP)
-	if err != nil {
-		return false
-	}
-	if isVisibilityExemptAddr(addr) {
-		return true
-	}
-
-	prefixes := override
-	if !custom {
-		v.mu.RLock()
-		defer v.mu.RUnlock()
-		prefixes = v.prefixes
-	}
-
-	for _, prefix := range prefixes {
-		if prefix.Contains(addr) {
-			return true
-		}
-	}
-
-	return false
-}
-
-func normalizeHostRuleVisibility(cfg models.HostRuleVisibility) (models.HostRuleVisibility, []netip.Prefix, error) {
+func normalizeHostRuleVisibility(cfg models.HostRuleVisibility) (models.HostRuleVisibility, error) {
 	mode := models.NormalizeHostVisibilityMode(cfg.Mode)
 	policyID := strings.TrimSpace(cfg.PolicyID)
-	prefixes := make([]netip.Prefix, 0, len(cfg.CIDRs))
-	cidrs := make([]string, 0, len(cfg.CIDRs))
-	seen := make(map[string]struct{}, len(cfg.CIDRs))
-	for _, raw := range cfg.CIDRs {
+	cidrs, err := normalizeVisibilityCIDRs(cfg.CIDRs, "host visibility")
+	if err != nil {
+		return models.HostRuleVisibility{}, err
+	}
+	if mode == models.HostVisibilityModeCustom && len(cidrs) == 0 && policyID == "" {
+		return models.HostRuleVisibility{}, fmt.Errorf("custom host visibility requires a policy or at least one cidr")
+	}
+	return models.HostRuleVisibility{Mode: mode, CIDRs: cidrs, PolicyID: policyID}, nil
+}
+
+func normalizeVisibilityCIDRs(values []string, label string) ([]string, error) {
+	cidrs := make([]string, 0, len(values))
+	seen := make(map[string]struct{}, len(values))
+	for _, raw := range values {
 		value := strings.TrimSpace(raw)
 		if value == "" {
 			continue
 		}
 		prefix, err := netip.ParsePrefix(value)
 		if err != nil {
-			return models.HostRuleVisibility{}, nil, fmt.Errorf("invalid host visibility cidr %q: %w", value, err)
+			return nil, fmt.Errorf("invalid %s cidr %q: %w", label, value, err)
 		}
 		prefix = prefix.Masked()
 		value = prefix.String()
@@ -224,22 +167,8 @@ func normalizeHostRuleVisibility(cfg models.HostRuleVisibility) (models.HostRule
 		}
 		seen[value] = struct{}{}
 		cidrs = append(cidrs, value)
-		prefixes = append(prefixes, prefix)
 	}
-	if mode == models.HostVisibilityModeCustom && len(prefixes) == 0 && policyID == "" {
-		return models.HostRuleVisibility{}, nil, fmt.Errorf("custom host visibility requires a policy or at least one cidr")
-	}
-	return models.HostRuleVisibility{Mode: mode, CIDRs: cidrs, PolicyID: policyID}, prefixes, nil
-}
-
-func visibilityPrefixes(cidrs []string) []netip.Prefix {
-	prefixes := make([]netip.Prefix, 0, len(cidrs))
-	for _, cidr := range cidrs {
-		if prefix, err := netip.ParsePrefix(cidr); err == nil {
-			prefixes = append(prefixes, prefix.Masked())
-		}
-	}
-	return prefixes
+	return cidrs, nil
 }
 
 func isVisibilityExemptAddr(addr netip.Addr) bool {

@@ -915,7 +915,10 @@ func (s *Server) handleSetReverseProxyThrottleExemptIPs(w http.ResponseWriter, r
 		return
 	}
 
-	s.ProxyHandler.SetReverseProxyThrottleExemptIPs(req)
+	if err := s.ProxyHandler.SetReverseProxyThrottleExemptIPs(req); err != nil {
+		response.Error(w, errors.CodeBadRequest, err.Error())
+		return
+	}
 	response.Success(w, s.ProxyHandler.GetReverseProxyThrottleExemptIPs())
 }
 
@@ -929,7 +932,10 @@ func (s *Server) handleSetCommonLocationExemptions(w http.ResponseWriter, r *htt
 		return
 	}
 
-	s.ProxyHandler.SetCommonLocationExemptions(req)
+	if err := s.ProxyHandler.SetCommonLocationExemptions(req); err != nil {
+		response.Error(w, errors.CodeBadRequest, err.Error())
+		return
+	}
 	response.Success(w, s.ProxyHandler.GetCommonLocationExemptions())
 }
 

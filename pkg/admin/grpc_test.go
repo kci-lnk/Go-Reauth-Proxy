@@ -15,6 +15,7 @@ import (
 	"go-reauth-proxy/pkg/models"
 	"go-reauth-proxy/pkg/proxy"
 	"go-reauth-proxy/pkg/rpcbridge"
+	"go-reauth-proxy/pkg/version"
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
@@ -70,8 +71,18 @@ func TestGatewayControlServerInfoIncludesCompatibilityMetadata(t *testing.T) {
 	if info.GetVersion() == "" || info.GetOs() != runtime.GOOS || info.GetArch() != runtime.GOARCH {
 		t.Fatalf("unexpected server info: %#v", info)
 	}
-	if info.GetControlApiVersion() != 3 || len(info.GetCapabilities()) == 0 || info.GetCommit() == "" {
+	if info.GetControlApiVersion() != version.ControlAPIVersion || len(info.GetCapabilities()) == 0 || info.GetCommit() == "" {
 		t.Fatalf("incomplete compatibility metadata: %#v", info)
+	}
+	hasTrustedClientIPBypass := false
+	for _, capability := range info.GetCapabilities() {
+		if capability == "trusted_client_ip_bypass_v1" {
+			hasTrustedClientIPBypass = true
+			break
+		}
+	}
+	if !hasTrustedClientIPBypass {
+		t.Fatalf("server info is missing trusted_client_ip_bypass_v1: %#v", info.GetCapabilities())
 	}
 }
 
@@ -127,6 +138,9 @@ func TestGatewayControlResetAllDataClearsRuntimeAndPersistedConfig(t *testing.T)
 	if _, err := server.SetGatewayVisibility(ctx, &pb.GatewayVisibilityConfig{Enabled: true, Cidrs: []string{"192.0.2.0/24"}}); err != nil {
 		t.Fatalf("SetGatewayVisibility: %v", err)
 	}
+	if _, err := server.SetGatewayTrustedClientIps(ctx, &pb.GatewayTrustedClientIpsRuntime{Ips: []string{"203.0.113.11"}}); err != nil {
+		t.Fatalf("SetGatewayTrustedClientIps: %v", err)
+	}
 
 	result, err := server.ResetAllData(ctx, &emptypb.Empty{})
 	if err != nil || !result.GetSuccess() {
@@ -143,6 +157,9 @@ func TestGatewayControlResetAllDataClearsRuntimeAndPersistedConfig(t *testing.T)
 	}
 	if got := server.admin.ProxyHandler.GetGatewayVisibility(); got.Enabled || len(got.CIDRs) != 0 {
 		t.Fatalf("runtime visibility after reset = %#v", got)
+	}
+	if got := server.admin.ProxyHandler.GetGatewayTrustedClientIPs(); len(got.IPs) != 0 || len(got.CIDRs) != 0 {
+		t.Fatalf("runtime trusted client IPs after reset = %#v", got)
 	}
 
 	persisted, err := server.admin.ConfigManager.Load()

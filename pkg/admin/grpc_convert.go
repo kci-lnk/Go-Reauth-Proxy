@@ -199,6 +199,14 @@ func protoToCompiledIPSet(value *pb.CompiledIpSet) models.CompiledIPSet {
 	}
 }
 
+func protoToCompiledIPSetPointer(value *pb.CompiledIpSet) *models.CompiledIPSet {
+	if value == nil {
+		return nil
+	}
+	policy := protoToCompiledIPSet(value)
+	return &policy
+}
+
 func visibilityPoliciesToProto(values map[string]models.CompiledIPSet) []*pb.CompiledIpSet {
 	ids := make([]string, 0, len(values))
 	for id := range values {
@@ -244,6 +252,7 @@ func advancedAuthToProto(value models.AdvancedAuthConfig) *pb.AdvancedAuthConfig
 				Name:     condition.Name,
 				Values:   append([]string(nil), condition.Values...),
 				Cidrs:    append([]string(nil), condition.CIDRs...),
+				PolicyId: condition.PolicyID,
 			})
 		}
 		groups = append(groups, &pb.AdvancedAuthGroup{Id: group.ID, Conditions: conditions})
@@ -281,6 +290,7 @@ func protoToAdvancedAuth(value *pb.AdvancedAuthConfig) models.AdvancedAuthConfig
 				Name:     condition.GetName(),
 				Values:   append([]string(nil), condition.GetValues()...),
 				CIDRs:    append([]string(nil), condition.GetCidrs()...),
+				PolicyID: condition.GetPolicyId(),
 			})
 		}
 		groups = append(groups, models.AdvancedAuthGroup{ID: group.GetId(), Conditions: conditions})
@@ -365,6 +375,7 @@ func protoToHostRules(req *pb.HostRules) []models.HostRule {
 			Availability:     protoToHostRuleAvailability(rule.GetAvailability()),
 			Visibility:       protoToHostRuleVisibility(rule.GetVisibility()),
 			AdvancedAuth:     protoToAdvancedAuth(rule.GetAdvancedAuth()),
+			AdvancedAuthSet:  rule.GetAdvancedAuth() != nil,
 		})
 	}
 	return rules
@@ -617,6 +628,8 @@ func throttleExemptIPsToProto(cfg models.ReverseProxyThrottleExemptIPsRuntime) *
 		Ips:       cfg.IPs,
 		Cidrs:     cfg.CIDRs,
 		UpdatedAt: cfg.UpdatedAt,
+		PolicyId:  cfg.PolicyID,
+		Policy:    compiledIPSetToProtoPointer(cfg.Policy),
 	}
 }
 
@@ -629,6 +642,31 @@ func protoToThrottleExemptIPs(cfg *pb.ReverseProxyThrottleExemptIpsRuntime) mode
 		IPs:       cfg.GetIps(),
 		CIDRs:     cfg.GetCidrs(),
 		UpdatedAt: cfg.GetUpdatedAt(),
+		PolicyID:  cfg.GetPolicyId(),
+		Policy:    protoToCompiledIPSetPointer(cfg.GetPolicy()),
+	}
+}
+
+func gatewayTrustedClientIPsToProto(cfg models.GatewayTrustedClientIPsRuntime) *pb.GatewayTrustedClientIpsRuntime {
+	return &pb.GatewayTrustedClientIpsRuntime{
+		Ips:       cfg.IPs,
+		Cidrs:     cfg.CIDRs,
+		UpdatedAt: cfg.UpdatedAt,
+		PolicyId:  cfg.PolicyID,
+		Policy:    compiledIPSetToProtoPointer(cfg.Policy),
+	}
+}
+
+func protoToGatewayTrustedClientIPs(cfg *pb.GatewayTrustedClientIpsRuntime) models.GatewayTrustedClientIPsRuntime {
+	if cfg == nil {
+		return models.GatewayTrustedClientIPsRuntime{}
+	}
+	return models.GatewayTrustedClientIPsRuntime{
+		IPs:       cfg.GetIps(),
+		CIDRs:     cfg.GetCidrs(),
+		UpdatedAt: cfg.GetUpdatedAt(),
+		PolicyID:  cfg.GetPolicyId(),
+		Policy:    protoToCompiledIPSetPointer(cfg.GetPolicy()),
 	}
 }
 
@@ -638,6 +676,8 @@ func commonLocationExemptionsToProto(cfg models.CommonLocationExemptionsRuntime)
 		WafEnabled: cfg.WAFEnabled,
 		Cidrs:      cfg.CIDRs,
 		UpdatedAt:  cfg.UpdatedAt,
+		PolicyId:   cfg.PolicyID,
+		Policy:     compiledIPSetToProtoPointer(cfg.Policy),
 	}
 }
 
@@ -650,6 +690,8 @@ func protoToCommonLocationExemptions(cfg *pb.CommonLocationExemptionsRuntime) mo
 		WAFEnabled: cfg.GetWafEnabled(),
 		CIDRs:      cfg.GetCidrs(),
 		UpdatedAt:  cfg.GetUpdatedAt(),
+		PolicyID:   cfg.GetPolicyId(),
+		Policy:     protoToCompiledIPSetPointer(cfg.GetPolicy()),
 	}
 }
 

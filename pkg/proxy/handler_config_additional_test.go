@@ -437,7 +437,8 @@ func TestSetReverseProxyThrottleExemptIPsNormalizesRuntime(t *testing.T) {
 		CIDRs:   []string{"192.168.0.0/16"},
 	})
 	got := handler.GetReverseProxyThrottleExemptIPs()
-	if !got.Enabled || len(got.IPs) != 1 || got.IPs[0] != "198.51.100.7" || len(got.CIDRs) != 1 {
+	if !got.Enabled || len(got.IPs) != 1 || got.IPs[0] != "198.51.100.7" ||
+		len(got.CIDRs) != 0 || got.Policy == nil || got.PolicyID == "" {
 		t.Fatalf("exempt IP runtime = %#v", got)
 	}
 }
@@ -449,7 +450,7 @@ func TestSetCommonLocationExemptionsNormalizesRuntime(t *testing.T) {
 		CIDRs:   []string{"192.168.0.0/16", "bad"},
 	})
 	got := handler.GetCommonLocationExemptions()
-	if !got.Enabled || len(got.CIDRs) != 1 || got.CIDRs[0] != "192.168.0.0/16" {
+	if !got.Enabled || len(got.CIDRs) != 0 || got.Policy == nil || got.PolicyID == "" {
 		t.Fatalf("common location exemptions = %#v", got)
 	}
 }

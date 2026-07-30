@@ -143,6 +143,7 @@ type Handler struct {
 	loggedInActiveCleanupNano  atomic.Int64
 	reverseProxyThrottle       *reverseProxyThrottle
 	reverseProxyThrottleExempt *reverseProxyThrottleExemptIPsRuntime
+	trustedClientIPs           *gatewayTrustedClientIPsRuntime
 	commonLocationExemptions   *commonLocationExemptionsRuntime
 	gatewayVisibility          *gatewayVisibility
 	compiledVisibilityPolicies map[string]*compiledipset.Set
@@ -513,7 +514,10 @@ func (h *Handler) buildRequestSnapshotLocked() *requestSnapshot {
 				hostVisibility[host] = policy
 			}
 		}
-		if policy, err := compileAdvancedAuthPolicy(rule.AdvancedAuth); err == nil && policy != nil {
+		if policy, err := compileAdvancedAuthPolicyWithSets(
+			rule.AdvancedAuth,
+			h.compiledVisibilityPolicies,
+		); err == nil && policy != nil {
 			advancedAuth[host] = policy
 		}
 	}
@@ -1665,6 +1669,9 @@ func NewHandler(adminPort int, proxyPort int, cfgManager *config.Manager, initia
 			UpdatedAt: "",
 		},
 	)
+	h.trustedClientIPs = newGatewayTrustedClientIPsRuntime(
+		models.GatewayTrustedClientIPsRuntime{},
+	)
 	h.commonLocationExemptions = newCommonLocationExemptionsRuntime(
 		models.CommonLocationExemptionsRuntime{
 			Enabled:    false,
@@ -1891,6 +1898,9 @@ func (h *Handler) ResetAllData(resetConfig *config.AppConfig) error {
 	reverseProxyThrottleExempt := newReverseProxyThrottleExemptIPsRuntime(
 		models.ReverseProxyThrottleExemptIPsRuntime{},
 	)
+	trustedClientIPs := newGatewayTrustedClientIPsRuntime(
+		models.GatewayTrustedClientIPsRuntime{},
+	)
 	commonLocationExemptions := newCommonLocationExemptionsRuntime(
 		models.CommonLocationExemptionsRuntime{},
 	)
@@ -1919,6 +1929,7 @@ func (h *Handler) ResetAllData(resetConfig *config.AppConfig) error {
 	h.sslBundle.Store(sslBundle)
 	h.reverseProxyThrottle = reverseProxyThrottle
 	h.reverseProxyThrottleExempt = reverseProxyThrottleExempt
+	h.trustedClientIPs = trustedClientIPs
 	h.commonLocationExemptions = commonLocationExemptions
 	h.gatewayVisibility = visibility
 	h.compiledVisibilityPolicies = map[string]*compiledipset.Set{}
@@ -2107,11 +2118,14 @@ func (h *Handler) SetGatewayListenerConfig(listener models.GatewayListenerConfig
 	return nil
 }
 
-func (h *Handler) evaluateReverseProxyThrottleRequest(isAuthRoute bool, matchedHostRule *models.HostRule, matchedHostLocation *models.HostLocation, matchedRule *models.Rule, clientIP string, now time.Time) reverseProxyThrottleDecision {
+func (h *Handler) evaluateReverseProxyThrottleRequest(isAuthRoute bool, matchedHostRule *models.HostRule, matchedHostLocation *models.HostLocation, matchedRule *models.Rule, clientIP string, trustedClientIP bool, now time.Time) reverseProxyThrottleDecision {
 	if !isAuthRoute && matchedHostRule == nil && matchedRule == nil {
 		return reverseProxyThrottleDecision{Allowed: true}
 	}
 	if h.reverseProxyThrottle == nil {
+		return reverseProxyThrottleDecision{Allowed: true}
+	}
+	if trustedClientIP {
 		return reverseProxyThrottleDecision{Allowed: true}
 	}
 	h.mu.RLock()
@@ -2131,6 +2145,7 @@ func (h *Handler) allowReverseProxyRequest(
 	matchedHostRule *models.HostRule,
 	matchedHostLocation *models.HostLocation,
 	matchedRule *models.Rule,
+	trustedClientIP bool,
 	requestID string,
 ) bool {
 	checkedAt := time.Now()
@@ -2140,6 +2155,7 @@ func (h *Handler) allowReverseProxyRequest(
 		matchedHostLocation,
 		matchedRule,
 		clientIP,
+		trustedClientIP,
 		checkedAt,
 	)
 	routeType := classifyReverseProxyRouteType(r.URL.Path, isAuthRoute, matchedHostRule, matchedHostLocation, matchedRule)
@@ -3169,7 +3185,7 @@ func (h *Handler) normalizeHostRule(newRule models.HostRule) (models.HostRule, e
 	newRule.ProtocolMode = models.NormalizeHostProtocolMode(newRule.ProtocolMode)
 	newRule.GroupID = strings.TrimSpace(newRule.GroupID)
 	newRule.GroupName = strings.TrimSpace(newRule.GroupName)
-	visibility, _, err := normalizeHostRuleVisibility(newRule.Visibility)
+	visibility, err := normalizeHostRuleVisibility(newRule.Visibility)
 	if err != nil {
 		return models.HostRule{}, err
 	}
@@ -3295,6 +3311,13 @@ func (h *Handler) AddHostRule(newRule models.HostRule) error {
 			return fmt.Errorf("host %s visibility: %w", nextRules[i].Host, visibilityErr)
 		}
 		nextRules[i].Visibility = visibility
+		if _, advancedErr := compileAdvancedAuthPolicyWithSets(
+			nextRules[i].AdvancedAuth,
+			candidateSets,
+		); advancedErr != nil {
+			h.mu.Unlock()
+			return fmt.Errorf("host %s advanced auth: %w", nextRules[i].Host, advancedErr)
+		}
 	}
 	pruneVisibilityPolicies(nextRules, h.GatewayVisibility, candidatePolicies, candidateSets)
 	changedProtocolHosts := changedHostProtocolModes(h.HostRules, nextRules)
@@ -3420,7 +3443,8 @@ func (h *Handler) SetHostRulesBundle(
 		// Host mapping editors predating advanced authentication omit this
 		// field entirely. Preserve an existing policy in that case so an
 		// unrelated host edit cannot silently disable a security boundary.
-		if isEmptyAdvancedAuthConfig(normalizedRules[i].AdvancedAuth) {
+		if !normalizedRules[i].AdvancedAuthSet &&
+			isEmptyAdvancedAuthConfig(normalizedRules[i].AdvancedAuth) {
 			if existingPolicy, exists := existingAdvancedAuth[normalizedRules[i].Host]; exists && !isEmptyAdvancedAuthConfig(existingPolicy) {
 				normalizedRules[i].AdvancedAuth = existingPolicy
 			}
@@ -3435,6 +3459,17 @@ func (h *Handler) SetHostRulesBundle(
 			return fmt.Errorf("host %s visibility: %w", normalizedRules[i].Host, visibilityErr)
 		}
 		normalizedRules[i].Visibility = visibility
+		if _, advancedErr := compileAdvancedAuthPolicyWithSets(
+			normalizedRules[i].AdvancedAuth,
+			candidateSets,
+		); advancedErr != nil {
+			h.mu.Unlock()
+			return fmt.Errorf(
+				"host %s advanced auth: %w",
+				normalizedRules[i].Host,
+				advancedErr,
+			)
+		}
 	}
 	pruneVisibilityPolicies(normalizedRules, h.GatewayVisibility, candidatePolicies, candidateSets)
 	changedProtocolHosts := changedHostProtocolModes(h.HostRules, normalizedRules)
@@ -3504,11 +3539,21 @@ func (h *Handler) GetVisibilityPoliciesForHostRules() map[string]models.Compiled
 	referenced := make(map[string]models.CompiledIPSet)
 	for _, rule := range h.HostRules {
 		id := strings.TrimSpace(rule.Visibility.PolicyID)
-		if rule.Visibility.Mode != models.HostVisibilityModeCustom || id == "" {
-			continue
+		if rule.Visibility.Mode == models.HostVisibilityModeCustom && id != "" {
+			if policy, ok := h.VisibilityPolicies[id]; ok {
+				referenced[id] = copyVisibilityPolicy(policy)
+			}
 		}
-		if policy, ok := h.VisibilityPolicies[id]; ok {
-			referenced[id] = copyVisibilityPolicy(policy)
+		for _, group := range rule.AdvancedAuth.Groups {
+			for _, condition := range group.Conditions {
+				id := strings.TrimSpace(condition.PolicyID)
+				if id == "" {
+					continue
+				}
+				if policy, ok := h.VisibilityPolicies[id]; ok {
+					referenced[id] = copyVisibilityPolicy(policy)
+				}
+			}
 		}
 	}
 	return referenced
@@ -4018,6 +4063,28 @@ func (h *Handler) GetReverseProxyThrottleExemptIPs() models.ReverseProxyThrottle
 	return runtime.getConfig()
 }
 
+func (h *Handler) GetGatewayTrustedClientIPs() models.GatewayTrustedClientIPsRuntime {
+	h.mu.RLock()
+	runtime := h.trustedClientIPs
+	h.mu.RUnlock()
+
+	if runtime == nil {
+		return models.GatewayTrustedClientIPsRuntime{
+			IPs:       []string{},
+			CIDRs:     []string{},
+			UpdatedAt: "",
+		}
+	}
+	return runtime.getConfig()
+}
+
+func (h *Handler) IsGatewayTrustedClientIP(clientIP string) bool {
+	h.mu.RLock()
+	runtime := h.trustedClientIPs
+	h.mu.RUnlock()
+	return runtime != nil && runtime.contains(clientIP)
+}
+
 func (h *Handler) IsClientIPVisible(clientIP string) bool {
 	h.mu.RLock()
 	visibility := h.gatewayVisibility
@@ -4229,7 +4296,6 @@ func (h *Handler) SetGatewayVisibility(cfg models.GatewayVisibilityConfig) error
 	visibility.mu.Lock()
 	visibility.config = normalized
 	visibility.set = set
-	visibility.prefixes = nil
 	visibility.mu.Unlock()
 
 	rangeCount := 0
@@ -4398,7 +4464,7 @@ func (h *Handler) SetFnosPortIconHijackConfig(cfg models.FnosPortIconHijackConfi
 	return normalized, nil
 }
 
-func (h *Handler) SetReverseProxyThrottleExemptIPs(cfg models.ReverseProxyThrottleExemptIPsRuntime) {
+func (h *Handler) SetReverseProxyThrottleExemptIPs(cfg models.ReverseProxyThrottleExemptIPsRuntime) error {
 	h.mu.Lock()
 	runtime := h.reverseProxyThrottleExempt
 	if runtime == nil {
@@ -4409,15 +4475,46 @@ func (h *Handler) SetReverseProxyThrottleExemptIPs(cfg models.ReverseProxyThrott
 	}
 	h.mu.Unlock()
 
-	runtime.updateConfig(cfg)
+	if _, err := runtime.updateConfig(cfg); err != nil {
+		return err
+	}
 	normalized := runtime.getConfig()
 	if event := debugProxyEvent("reverse_proxy_throttle_exempt_ips_set", ""); event != nil {
 		event.Bool("enabled", normalized.Enabled).
 			Int("ip_count", len(normalized.IPs)).
-			Int("cidr_count", len(normalized.CIDRs)).
+			Str("policy_id", logger.SanitizeLogString(normalized.PolicyID)).
 			Str("updated_at", logger.SanitizeLogString(normalized.UpdatedAt)).
 			Send()
 	}
+	return nil
+}
+
+func (h *Handler) SetGatewayTrustedClientIPs(cfg models.GatewayTrustedClientIPsRuntime) error {
+	h.mu.Lock()
+	runtime := h.trustedClientIPs
+	if runtime == nil {
+		runtime = newGatewayTrustedClientIPsRuntime(
+			models.GatewayTrustedClientIPsRuntime{},
+		)
+		h.trustedClientIPs = runtime
+	}
+	h.mu.Unlock()
+
+	updated, err := runtime.updateConfig(cfg)
+	if err != nil {
+		return err
+	}
+	if !updated {
+		return nil
+	}
+	normalized := runtime.getConfig()
+	if event := debugProxyEvent("gateway_trusted_client_ips_set", ""); event != nil {
+		event.Int("ip_count", len(normalized.IPs)).
+			Str("policy_id", logger.SanitizeLogString(normalized.PolicyID)).
+			Str("updated_at", logger.SanitizeLogString(normalized.UpdatedAt)).
+			Send()
+	}
+	return nil
 }
 
 func (h *Handler) GetCommonLocationExemptions() models.CommonLocationExemptionsRuntime {
@@ -4437,7 +4534,7 @@ func (h *Handler) GetCommonLocationExemptions() models.CommonLocationExemptionsR
 	return runtime.getConfig()
 }
 
-func (h *Handler) SetCommonLocationExemptions(cfg models.CommonLocationExemptionsRuntime) {
+func (h *Handler) SetCommonLocationExemptions(cfg models.CommonLocationExemptionsRuntime) error {
 	h.mu.Lock()
 	runtime := h.commonLocationExemptions
 	if runtime == nil {
@@ -4448,15 +4545,18 @@ func (h *Handler) SetCommonLocationExemptions(cfg models.CommonLocationExemption
 	}
 	h.mu.Unlock()
 
-	runtime.updateConfig(cfg)
+	if _, err := runtime.updateConfig(cfg); err != nil {
+		return err
+	}
 	normalized := runtime.getConfig()
 	if event := debugProxyEvent("common_location_exemptions_set", ""); event != nil {
 		event.Bool("enabled", normalized.Enabled).
 			Bool("waf_enabled", normalized.WAFEnabled).
-			Int("cidr_count", len(normalized.CIDRs)).
+			Str("policy_id", logger.SanitizeLogString(normalized.PolicyID)).
 			Str("updated_at", logger.SanitizeLogString(normalized.UpdatedAt)).
 			Send()
 	}
+	return nil
 }
 
 type TrafficStats struct {
@@ -5461,9 +5561,11 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	} else {
 		clientIP = resolveClientIP(r, snapshot.authConfig, snapshot.proxyProtocolForce)
 	}
+	trustedClientIP := h.IsGatewayTrustedClientIP(clientIP)
 	accessEntry.RemoteIP = clientIP
 	if event := debugProxyEvent("client_ip_resolved", requestID); event != nil {
 		event.Str("client_ip", logger.SanitizeLogString(clientIP)).
+			Bool("trusted_client_ip", trustedClientIP).
 			Bool("proxy_protocol_force", snapshot.proxyProtocolForce).
 			Bool("edge_client_ip_active", snapshot.authConfig.EdgeClientIPActive()).
 			Str("x_forwarded_for", logger.SanitizeLogString(firstForwardedValue(r.Header.Get("X-Forwarded-For")))).
@@ -5474,7 +5576,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	crawlerBlocker := h.GetCrawlerBlockerConfig()
-	if fnosConnect == nil && crawlerBlocker.Enabled {
+	if !trustedClientIP && fnosConnect == nil && crawlerBlocker.Enabled {
 		if isCrawlerBlockerRobotsPath(r.URL.Path) {
 			accessEntry.RouteType = "crawler_blocker"
 			accessEntry.RouteKey = crawlerBlockerRobotsPath
@@ -5503,7 +5605,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if blacklistRecord, blocked := h.GetGeneralBlacklistRecordForClientIP(clientIP); blocked {
+	if blacklistRecord, blocked := h.GetGeneralBlacklistRecordForClientIP(clientIP); !trustedClientIP && blocked {
 		accessEntry.RouteType = "general_blacklist"
 		accessEntry.RouteKey = blacklistRecord.IP
 		accessEntry.AuthDecision = "general_blacklist_blocked"
@@ -5524,7 +5626,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if fnosConnect != nil {
 		matchedHostRule = &fnosConnect.hostRule
 	}
-	if !h.IsClientIPVisibleForHost(clientIP, matchedHostRule, snapshot) {
+	if !trustedClientIP && !h.IsClientIPVisibleForHost(clientIP, matchedHostRule, snapshot) {
 		accessEntry.RouteType = "visibility"
 		accessEntry.RouteKey = "cidr"
 		accessEntry.AuthDecision = "visibility_denied"
@@ -5556,7 +5658,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	http1Required := isHTTP1OnlyHostOverHTTP2(r, matchedHostRule)
 	http2Required := isHTTP2OnlyHostOverHTTP1(r, matchedHostRule)
 	if http1Required || http2Required {
-		if !h.allowReverseProxyRequest(w, r, clientIP, false, matchedHostRule, nil, nil, requestID) {
+		if !h.allowReverseProxyRequest(w, r, clientIP, false, matchedHostRule, nil, nil, trustedClientIP, requestID) {
 			return
 		}
 		metrics.bindHost(h, matchedHostRule.Host)
@@ -5729,7 +5831,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		matchedRule,
 	)
 	r = withAuthRouteIdentity(r, routedBackend.cacheIdentity())
-	if !h.allowReverseProxyRequest(w, r, clientIP, isAuthRoute, matchedHostRule, matchedHostLocation, matchedRule, requestID) {
+	if !h.allowReverseProxyRequest(w, r, clientIP, isAuthRoute, matchedHostRule, matchedHostLocation, matchedRule, trustedClientIP, requestID) {
 		return
 	}
 	wafRouteType, wafRouteKey, wafUpstream := wafRouteContextForRequest(
@@ -5746,7 +5848,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		commonLocationExemptions := h.commonLocationExemptions
 		h.mu.RUnlock()
 		wafBypassedByCommonLocation := commonLocationExemptions != nil && commonLocationExemptions.shouldBypassWAF(clientIP)
-		if !wafBypassedByCommonLocation {
+		if !trustedClientIP && !wafBypassedByCommonLocation {
 			decision := wafRuntime.Evaluate(r, proxywaf.EvaluateContext{
 				ClientIP:   clientIP,
 				RouteType:  wafRouteType,

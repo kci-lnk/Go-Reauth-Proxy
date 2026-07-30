@@ -141,6 +141,44 @@ func TestGatewayControlLegacyHostRuleUpdatePreservesGroupsAndExplicitEmptyClears
 	}
 }
 
+func TestGatewayControlExplicitDisabledAdvancedAuthClearsUnusablePersistedDraft(t *testing.T) {
+	server := newGatewayControlTestServer(t, "secret")
+	server.admin.ProxyHandler.HostRules = []models.HostRule{{
+		Host:    "app.example.test",
+		Target:  "http://127.0.0.1:8080",
+		UseAuth: true,
+		AdvancedAuth: models.AdvancedAuthConfig{
+			Enabled:       false,
+			PolicyVersion: "draft-v1",
+			Groups: []models.AdvancedAuthGroup{{
+				ID: "group-1",
+				Conditions: []models.AdvancedAuthCondition{{
+					ID:       "condition-1",
+					Target:   "source_region",
+					Operator: "in",
+				}},
+			}},
+		},
+	}}
+
+	_, err := server.SetHostRules(authTestContext(), &pb.HostRules{Items: []*pb.HostRule{{
+		Host:         "app.example.test",
+		Target:       "http://127.0.0.1:8080",
+		UseAuth:      true,
+		AdvancedAuth: &pb.AdvancedAuthConfig{Enabled: false},
+	}}})
+	if err != nil {
+		t.Fatalf("explicit disabled advanced auth did not clear unusable draft: %v", err)
+	}
+	got, err := server.GetHostRules(authTestContext(), &emptypb.Empty{})
+	if err != nil {
+		t.Fatalf("GetHostRules() returned error: %v", err)
+	}
+	if len(got.GetItems()) != 1 || got.GetItems()[0].GetAdvancedAuth() != nil {
+		t.Fatalf("advanced auth after explicit disable = %#v, want absent", got.GetItems())
+	}
+}
+
 func TestGatewayControlSetHostRulesRejectsNilRequest(t *testing.T) {
 	server := newGatewayControlTestServer(t, "secret")
 	_, err := server.SetHostRules(authTestContext(), nil)
@@ -412,13 +450,49 @@ func TestGatewayControlThrottleExemptIPsRoundTrip(t *testing.T) {
 	}
 }
 
+func TestGatewayControlTrustedClientIPsRoundTripAndClear(t *testing.T) {
+	server := newGatewayControlTestServer(t, "secret")
+	ctx := authTestContext()
+	got, err := server.SetGatewayTrustedClientIps(ctx, &pb.GatewayTrustedClientIpsRuntime{
+		Ips:       []string{"192.168.1.8"},
+		Cidrs:     []string{"100.64.0.7/10"},
+		UpdatedAt: "2026-07-31T01:00:00Z",
+	})
+	if err != nil {
+		t.Fatalf("SetGatewayTrustedClientIps() returned error: %v", err)
+	}
+	if got.GetIps()[0] != "192.168.1.8" || len(got.GetCidrs()) != 0 ||
+		got.GetPolicyId() == "" || got.GetPolicy() == nil {
+		t.Fatalf("trusted client IPs = %#v", got)
+	}
+
+	read, err := server.GetGatewayTrustedClientIps(ctx, &emptypb.Empty{})
+	if err != nil {
+		t.Fatalf("GetGatewayTrustedClientIps() returned error: %v", err)
+	}
+	if !proto.Equal(got, read) {
+		t.Fatalf("read trusted client IPs = %#v, want %#v", read, got)
+	}
+
+	cleared, err := server.SetGatewayTrustedClientIps(ctx, &pb.GatewayTrustedClientIpsRuntime{
+		UpdatedAt: "2026-07-31T01:00:01Z",
+	})
+	if err != nil {
+		t.Fatalf("clear GatewayTrustedClientIps() returned error: %v", err)
+	}
+	if len(cleared.GetIps()) != 0 || len(cleared.GetCidrs()) != 0 ||
+		cleared.GetPolicyId() == "" || cleared.GetPolicy() == nil {
+		t.Fatalf("cleared trusted client IPs = %#v", cleared)
+	}
+}
+
 func TestGatewayControlCommonLocationExemptionsRoundTrip(t *testing.T) {
 	server := newGatewayControlTestServer(t, "secret")
 	got, err := server.SetCommonLocationExemptions(authTestContext(), &pb.CommonLocationExemptionsRuntime{Enabled: true, Cidrs: []string{"198.51.100.0/24"}})
 	if err != nil {
 		t.Fatalf("SetCommonLocationExemptions() returned error: %v", err)
 	}
-	if !got.GetEnabled() || len(got.GetCidrs()) != 1 {
+	if !got.GetEnabled() || len(got.GetCidrs()) != 0 || got.GetPolicy() == nil || got.GetPolicyId() == "" {
 		t.Fatalf("common location exemptions = %#v", got)
 	}
 }

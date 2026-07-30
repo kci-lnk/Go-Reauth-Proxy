@@ -65,6 +65,24 @@ func TestHostRulesProtoRoundTripPreservesLocations(t *testing.T) {
 	}
 }
 
+func TestHostRulesProtoDistinguishesExplicitDisabledAdvancedAuth(t *testing.T) {
+	rules := protoToHostRules(&pb.HostRules{Items: []*pb.HostRule{
+		{
+			Host:         "explicit.example.test",
+			Target:       "http://127.0.0.1:8080",
+			AdvancedAuth: &pb.AdvancedAuthConfig{Enabled: false},
+		},
+		{
+			Host:   "legacy.example.test",
+			Target: "http://127.0.0.1:8081",
+		},
+	}})
+
+	if len(rules) != 2 || !rules[0].AdvancedAuthSet || rules[1].AdvancedAuthSet {
+		t.Fatalf("advanced auth presence was not preserved: %#v", rules)
+	}
+}
+
 func TestStreamRulesProtoRoundTrip(t *testing.T) {
 	input := []models.StreamRule{{Protocol: "udp", ListenPort: 5353, Target: "127.0.0.1:5354", UseAuth: true}}
 	got := protoToStreamRules(streamRulesToProto(input))
@@ -173,6 +191,17 @@ func TestFnosPortIconHijackProtoRoundTrip(t *testing.T) {
 func TestThrottleExemptIPsProtoRoundTrip(t *testing.T) {
 	input := models.ReverseProxyThrottleExemptIPsRuntime{Enabled: true, IPs: []string{"198.51.100.7"}, CIDRs: []string{"192.168.0.0/16"}, UpdatedAt: "now"}
 	if got := protoToThrottleExemptIPs(throttleExemptIPsToProto(input)); !reflect.DeepEqual(got, input) {
+		t.Fatalf("round trip = %#v", got)
+	}
+}
+
+func TestGatewayTrustedClientIPsProtoRoundTrip(t *testing.T) {
+	input := models.GatewayTrustedClientIPsRuntime{
+		IPs:       []string{"198.51.100.7"},
+		CIDRs:     []string{"192.168.0.0/16"},
+		UpdatedAt: "now",
+	}
+	if got := protoToGatewayTrustedClientIPs(gatewayTrustedClientIPsToProto(input)); !reflect.DeepEqual(got, input) {
 		t.Fatalf("round trip = %#v", got)
 	}
 }

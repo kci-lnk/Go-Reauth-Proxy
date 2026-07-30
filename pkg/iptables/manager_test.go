@@ -112,6 +112,24 @@ func TestApplyBaseRulesFallsBackToConntrackWhenStateMatchIsUnavailable(t *testin
 	if !callContains(runner.calls, "-A", "REAUTH_FW", "-j", "DROP") {
 		t.Fatalf("applyBaseRules did not continue through default DROP: %#v", runner.calls)
 	}
+	if callContains(runner.calls, "-A", "REAUTH_FW", "-m", "mark", "--mark", whitelistPacketMarkWithMask, "-j", whitelistMarkChainName) {
+		t.Fatalf("legacy firewall must not trust an nft classifier mark: %#v", runner.calls)
+	}
+}
+
+func TestApplyBaseRulesTrustsWhitelistMarkOnlyAfterClassifierIsReady(t *testing.T) {
+	runner := &baseRuleRunner{}
+	manager := NewManager(Options{ChainName: "REAUTH_FW", Tables: []string{"iptables"}})
+	manager.runner = runner
+	manager.nftCommand = "nft"
+	manager.whitelistNftReady = true
+
+	if err := manager.applyBaseRules("iptables"); err != nil {
+		t.Fatalf("applyBaseRules returned error: %v", err)
+	}
+	if !callContains(runner.calls, "-A", "REAUTH_FW", "-m", "mark", "--mark", whitelistPacketMarkWithMask, "-j", whitelistMarkChainName) {
+		t.Fatalf("ready nft classifier mark was not consumed: %#v", runner.calls)
+	}
 }
 
 func TestApplyBaseRulesSkipsFirewallWhenStateAndConntrackAreUnavailable(t *testing.T) {
@@ -136,8 +154,8 @@ func TestApplyBaseRulesSkipsFirewallWhenStateAndConntrackAreUnavailable(t *testi
 	if callContains(runner.calls, "-A", "REAUTH_FW", "-j", "DROP") {
 		t.Fatalf("default DROP should not be added when firewall is skipped: %#v", runner.calls)
 	}
-	if got := manager.baseRuleCountForTable("iptables"); got != 1 {
-		t.Fatalf("baseRuleCountForTable after skip = %d, want 1", got)
+	if got := manager.baseRuleCountForTable("iptables"); got != 3 {
+		t.Fatalf("baseRuleCountForTable after skip = %d, want 3", got)
 	}
 }
 

@@ -62,6 +62,8 @@ const (
 	GatewayControlService_SetFnosConnectIngressConfig_FullMethodName      = "/fnknock.v1.GatewayControlService/SetFnosConnectIngressConfig"
 	GatewayControlService_GetReverseProxyThrottleExemptIps_FullMethodName = "/fnknock.v1.GatewayControlService/GetReverseProxyThrottleExemptIps"
 	GatewayControlService_SetReverseProxyThrottleExemptIps_FullMethodName = "/fnknock.v1.GatewayControlService/SetReverseProxyThrottleExemptIps"
+	GatewayControlService_GetGatewayTrustedClientIps_FullMethodName       = "/fnknock.v1.GatewayControlService/GetGatewayTrustedClientIps"
+	GatewayControlService_SetGatewayTrustedClientIps_FullMethodName       = "/fnknock.v1.GatewayControlService/SetGatewayTrustedClientIps"
 	GatewayControlService_GetCommonLocationExemptions_FullMethodName      = "/fnknock.v1.GatewayControlService/GetCommonLocationExemptions"
 	GatewayControlService_SetCommonLocationExemptions_FullMethodName      = "/fnknock.v1.GatewayControlService/SetCommonLocationExemptions"
 )
@@ -116,6 +118,8 @@ type GatewayControlServiceClient interface {
 	SetFnosConnectIngressConfig(ctx context.Context, in *FnosConnectIngressConfig, opts ...grpc.CallOption) (*FnosConnectIngressStatus, error)
 	GetReverseProxyThrottleExemptIps(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*ReverseProxyThrottleExemptIpsRuntime, error)
 	SetReverseProxyThrottleExemptIps(ctx context.Context, in *ReverseProxyThrottleExemptIpsRuntime, opts ...grpc.CallOption) (*ReverseProxyThrottleExemptIpsRuntime, error)
+	GetGatewayTrustedClientIps(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*GatewayTrustedClientIpsRuntime, error)
+	SetGatewayTrustedClientIps(ctx context.Context, in *GatewayTrustedClientIpsRuntime, opts ...grpc.CallOption) (*GatewayTrustedClientIpsRuntime, error)
 	GetCommonLocationExemptions(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*CommonLocationExemptionsRuntime, error)
 	SetCommonLocationExemptions(ctx context.Context, in *CommonLocationExemptionsRuntime, opts ...grpc.CallOption) (*CommonLocationExemptionsRuntime, error)
 }
@@ -548,6 +552,26 @@ func (c *gatewayControlServiceClient) SetReverseProxyThrottleExemptIps(ctx conte
 	return out, nil
 }
 
+func (c *gatewayControlServiceClient) GetGatewayTrustedClientIps(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*GatewayTrustedClientIpsRuntime, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GatewayTrustedClientIpsRuntime)
+	err := c.cc.Invoke(ctx, GatewayControlService_GetGatewayTrustedClientIps_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *gatewayControlServiceClient) SetGatewayTrustedClientIps(ctx context.Context, in *GatewayTrustedClientIpsRuntime, opts ...grpc.CallOption) (*GatewayTrustedClientIpsRuntime, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GatewayTrustedClientIpsRuntime)
+	err := c.cc.Invoke(ctx, GatewayControlService_SetGatewayTrustedClientIps_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *gatewayControlServiceClient) GetCommonLocationExemptions(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*CommonLocationExemptionsRuntime, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(CommonLocationExemptionsRuntime)
@@ -618,6 +642,8 @@ type GatewayControlServiceServer interface {
 	SetFnosConnectIngressConfig(context.Context, *FnosConnectIngressConfig) (*FnosConnectIngressStatus, error)
 	GetReverseProxyThrottleExemptIps(context.Context, *emptypb.Empty) (*ReverseProxyThrottleExemptIpsRuntime, error)
 	SetReverseProxyThrottleExemptIps(context.Context, *ReverseProxyThrottleExemptIpsRuntime) (*ReverseProxyThrottleExemptIpsRuntime, error)
+	GetGatewayTrustedClientIps(context.Context, *emptypb.Empty) (*GatewayTrustedClientIpsRuntime, error)
+	SetGatewayTrustedClientIps(context.Context, *GatewayTrustedClientIpsRuntime) (*GatewayTrustedClientIpsRuntime, error)
 	GetCommonLocationExemptions(context.Context, *emptypb.Empty) (*CommonLocationExemptionsRuntime, error)
 	SetCommonLocationExemptions(context.Context, *CommonLocationExemptionsRuntime) (*CommonLocationExemptionsRuntime, error)
 	mustEmbedUnimplementedGatewayControlServiceServer()
@@ -755,6 +781,12 @@ func (UnimplementedGatewayControlServiceServer) GetReverseProxyThrottleExemptIps
 }
 func (UnimplementedGatewayControlServiceServer) SetReverseProxyThrottleExemptIps(context.Context, *ReverseProxyThrottleExemptIpsRuntime) (*ReverseProxyThrottleExemptIpsRuntime, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method SetReverseProxyThrottleExemptIps not implemented")
+}
+func (UnimplementedGatewayControlServiceServer) GetGatewayTrustedClientIps(context.Context, *emptypb.Empty) (*GatewayTrustedClientIpsRuntime, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method GetGatewayTrustedClientIps not implemented")
+}
+func (UnimplementedGatewayControlServiceServer) SetGatewayTrustedClientIps(context.Context, *GatewayTrustedClientIpsRuntime) (*GatewayTrustedClientIpsRuntime, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method SetGatewayTrustedClientIps not implemented")
 }
 func (UnimplementedGatewayControlServiceServer) GetCommonLocationExemptions(context.Context, *emptypb.Empty) (*CommonLocationExemptionsRuntime, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method GetCommonLocationExemptions not implemented")
@@ -1539,6 +1571,42 @@ func _GatewayControlService_SetReverseProxyThrottleExemptIps_Handler(srv interfa
 	return interceptor(ctx, in, info, handler)
 }
 
+func _GatewayControlService_GetGatewayTrustedClientIps_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(emptypb.Empty)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(GatewayControlServiceServer).GetGatewayTrustedClientIps(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: GatewayControlService_GetGatewayTrustedClientIps_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(GatewayControlServiceServer).GetGatewayTrustedClientIps(ctx, req.(*emptypb.Empty))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _GatewayControlService_SetGatewayTrustedClientIps_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GatewayTrustedClientIpsRuntime)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(GatewayControlServiceServer).SetGatewayTrustedClientIps(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: GatewayControlService_SetGatewayTrustedClientIps_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(GatewayControlServiceServer).SetGatewayTrustedClientIps(ctx, req.(*GatewayTrustedClientIpsRuntime))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _GatewayControlService_GetCommonLocationExemptions_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(emptypb.Empty)
 	if err := dec(in); err != nil {
@@ -1749,6 +1817,14 @@ var GatewayControlService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "SetReverseProxyThrottleExemptIps",
 			Handler:    _GatewayControlService_SetReverseProxyThrottleExemptIps_Handler,
+		},
+		{
+			MethodName: "GetGatewayTrustedClientIps",
+			Handler:    _GatewayControlService_GetGatewayTrustedClientIps_Handler,
+		},
+		{
+			MethodName: "SetGatewayTrustedClientIps",
+			Handler:    _GatewayControlService_SetGatewayTrustedClientIps_Handler,
 		},
 		{
 			MethodName: "GetCommonLocationExemptions",
@@ -2882,21 +2958,22 @@ var SslService_ServiceDesc = grpc.ServiceDesc{
 }
 
 const (
-	FirewallService_InitIptables_FullMethodName      = "/fnknock.v1.FirewallService/InitIptables"
-	FirewallService_CleanIptables_FullMethodName     = "/fnknock.v1.FirewallService/CleanIptables"
-	FirewallService_FlushIptables_FullMethodName     = "/fnknock.v1.FirewallService/FlushIptables"
-	FirewallService_AllowIp_FullMethodName           = "/fnknock.v1.FirewallService/AllowIp"
-	FirewallService_BlockIp_FullMethodName           = "/fnknock.v1.FirewallService/BlockIp"
-	FirewallService_RemoveIp_FullMethodName          = "/fnknock.v1.FirewallService/RemoveIp"
-	FirewallService_BlockTcpPortForIp_FullMethodName = "/fnknock.v1.FirewallService/BlockTcpPortForIp"
-	FirewallService_RemoveTcpPortRule_FullMethodName = "/fnknock.v1.FirewallService/RemoveTcpPortRule"
-	FirewallService_SyncSshFirewall_FullMethodName   = "/fnknock.v1.FirewallService/SyncSshFirewall"
-	FirewallService_ClearSshFirewall_FullMethodName  = "/fnknock.v1.FirewallService/ClearSshFirewall"
-	FirewallService_BlockAll_FullMethodName          = "/fnknock.v1.FirewallService/BlockAll"
-	FirewallService_AllowAll_FullMethodName          = "/fnknock.v1.FirewallService/AllowAll"
-	FirewallService_EnsureTcpRedirect_FullMethodName = "/fnknock.v1.FirewallService/EnsureTcpRedirect"
-	FirewallService_ClearTcpRedirect_FullMethodName  = "/fnknock.v1.FirewallService/ClearTcpRedirect"
-	FirewallService_ListIptables_FullMethodName      = "/fnknock.v1.FirewallService/ListIptables"
+	FirewallService_InitIptables_FullMethodName          = "/fnknock.v1.FirewallService/InitIptables"
+	FirewallService_CleanIptables_FullMethodName         = "/fnknock.v1.FirewallService/CleanIptables"
+	FirewallService_FlushIptables_FullMethodName         = "/fnknock.v1.FirewallService/FlushIptables"
+	FirewallService_AllowIp_FullMethodName               = "/fnknock.v1.FirewallService/AllowIp"
+	FirewallService_BlockIp_FullMethodName               = "/fnknock.v1.FirewallService/BlockIp"
+	FirewallService_RemoveIp_FullMethodName              = "/fnknock.v1.FirewallService/RemoveIp"
+	FirewallService_BlockTcpPortForIp_FullMethodName     = "/fnknock.v1.FirewallService/BlockTcpPortForIp"
+	FirewallService_RemoveTcpPortRule_FullMethodName     = "/fnknock.v1.FirewallService/RemoveTcpPortRule"
+	FirewallService_SyncSshFirewall_FullMethodName       = "/fnknock.v1.FirewallService/SyncSshFirewall"
+	FirewallService_ClearSshFirewall_FullMethodName      = "/fnknock.v1.FirewallService/ClearSshFirewall"
+	FirewallService_SyncWhitelistFirewall_FullMethodName = "/fnknock.v1.FirewallService/SyncWhitelistFirewall"
+	FirewallService_BlockAll_FullMethodName              = "/fnknock.v1.FirewallService/BlockAll"
+	FirewallService_AllowAll_FullMethodName              = "/fnknock.v1.FirewallService/AllowAll"
+	FirewallService_EnsureTcpRedirect_FullMethodName     = "/fnknock.v1.FirewallService/EnsureTcpRedirect"
+	FirewallService_ClearTcpRedirect_FullMethodName      = "/fnknock.v1.FirewallService/ClearTcpRedirect"
+	FirewallService_ListIptables_FullMethodName          = "/fnknock.v1.FirewallService/ListIptables"
 )
 
 // FirewallServiceClient is the client API for FirewallService service.
@@ -2913,6 +2990,7 @@ type FirewallServiceClient interface {
 	RemoveTcpPortRule(ctx context.Context, in *TcpPortRuleRequest, opts ...grpc.CallOption) (*RpcStatus, error)
 	SyncSshFirewall(ctx context.Context, in *SshFirewallSyncRequest, opts ...grpc.CallOption) (*RpcStatus, error)
 	ClearSshFirewall(ctx context.Context, in *SshFirewallClearRequest, opts ...grpc.CallOption) (*RpcStatus, error)
+	SyncWhitelistFirewall(ctx context.Context, in *WhitelistFirewallSyncRequest, opts ...grpc.CallOption) (*RpcStatus, error)
 	BlockAll(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*RpcStatus, error)
 	AllowAll(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*RpcStatus, error)
 	EnsureTcpRedirect(ctx context.Context, in *TcpRedirectRequest, opts ...grpc.CallOption) (*RpcStatus, error)
@@ -3028,6 +3106,16 @@ func (c *firewallServiceClient) ClearSshFirewall(ctx context.Context, in *SshFir
 	return out, nil
 }
 
+func (c *firewallServiceClient) SyncWhitelistFirewall(ctx context.Context, in *WhitelistFirewallSyncRequest, opts ...grpc.CallOption) (*RpcStatus, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(RpcStatus)
+	err := c.cc.Invoke(ctx, FirewallService_SyncWhitelistFirewall_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *firewallServiceClient) BlockAll(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*RpcStatus, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(RpcStatus)
@@ -3092,6 +3180,7 @@ type FirewallServiceServer interface {
 	RemoveTcpPortRule(context.Context, *TcpPortRuleRequest) (*RpcStatus, error)
 	SyncSshFirewall(context.Context, *SshFirewallSyncRequest) (*RpcStatus, error)
 	ClearSshFirewall(context.Context, *SshFirewallClearRequest) (*RpcStatus, error)
+	SyncWhitelistFirewall(context.Context, *WhitelistFirewallSyncRequest) (*RpcStatus, error)
 	BlockAll(context.Context, *emptypb.Empty) (*RpcStatus, error)
 	AllowAll(context.Context, *emptypb.Empty) (*RpcStatus, error)
 	EnsureTcpRedirect(context.Context, *TcpRedirectRequest) (*RpcStatus, error)
@@ -3136,6 +3225,9 @@ func (UnimplementedFirewallServiceServer) SyncSshFirewall(context.Context, *SshF
 }
 func (UnimplementedFirewallServiceServer) ClearSshFirewall(context.Context, *SshFirewallClearRequest) (*RpcStatus, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method ClearSshFirewall not implemented")
+}
+func (UnimplementedFirewallServiceServer) SyncWhitelistFirewall(context.Context, *WhitelistFirewallSyncRequest) (*RpcStatus, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method SyncWhitelistFirewall not implemented")
 }
 func (UnimplementedFirewallServiceServer) BlockAll(context.Context, *emptypb.Empty) (*RpcStatus, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method BlockAll not implemented")
@@ -3353,6 +3445,24 @@ func _FirewallService_ClearSshFirewall_Handler(srv interface{}, ctx context.Cont
 	return interceptor(ctx, in, info, handler)
 }
 
+func _FirewallService_SyncWhitelistFirewall_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(WhitelistFirewallSyncRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(FirewallServiceServer).SyncWhitelistFirewall(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: FirewallService_SyncWhitelistFirewall_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(FirewallServiceServer).SyncWhitelistFirewall(ctx, req.(*WhitelistFirewallSyncRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _FirewallService_BlockAll_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(emptypb.Empty)
 	if err := dec(in); err != nil {
@@ -3489,6 +3599,10 @@ var FirewallService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "ClearSshFirewall",
 			Handler:    _FirewallService_ClearSshFirewall_Handler,
+		},
+		{
+			MethodName: "SyncWhitelistFirewall",
+			Handler:    _FirewallService_SyncWhitelistFirewall_Handler,
 		},
 		{
 			MethodName: "BlockAll",

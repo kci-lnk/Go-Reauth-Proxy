@@ -28,8 +28,8 @@ func TestCommonLocationExemptionsBypassesWAFForConfiguredCIDR(t *testing.T) {
 	}
 
 	config := runtime.getConfig()
-	if len(config.CIDRs) != 2 {
-		t.Fatalf("expected invalid CIDR to be dropped, got %#v", config.CIDRs)
+	if len(config.CIDRs) != 0 || config.Policy == nil || config.PolicyID == "" {
+		t.Fatalf("expected compact compiled policy, got %#v", config)
 	}
 }
 

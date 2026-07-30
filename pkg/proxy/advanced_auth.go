@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"go-reauth-proxy/pkg/grpc/pb"
+	compiledipset "go-reauth-proxy/pkg/ipset"
 	"go-reauth-proxy/pkg/models"
 )
 
@@ -146,14 +147,7 @@ type compiledAdvancedAuthCondition struct {
 	values   []string
 	valueSet map[string]struct{}
 	regexps  []*regexp.Regexp
-	cidrs    *advancedAuthCIDRIndex
-}
-
-type advancedAuthCIDRIndex struct {
-	v4        [33]map[netip.Addr]struct{}
-	v6        [129]map[netip.Addr]struct{}
-	v4Lengths []uint8
-	v6Lengths []uint8
+	ipsets   []*compiledipset.Set
 }
 
 type advancedAuthRuleMatch struct {
@@ -265,6 +259,7 @@ func normalizeAdvancedAuthConfig(config models.AdvancedAuthConfig) (models.Advan
 			condition.Target = strings.ToLower(strings.TrimSpace(condition.Target))
 			condition.Operator = strings.ToLower(strings.TrimSpace(condition.Operator))
 			condition.Name = strings.TrimSpace(condition.Name)
+			condition.PolicyID = strings.TrimSpace(condition.PolicyID)
 			if condition.ID == "" {
 				return models.AdvancedAuthConfig{}, fmt.Errorf("advanced auth condition %d in group %q has no id", conditionIndex+1, group.ID)
 			}
@@ -328,6 +323,10 @@ func normalizeAdvancedAuthCondition(condition *models.AdvancedAuthCondition) err
 		if !slices.Contains([]string{"equals", "not_equals", "in_cidr", "not_in_cidr"}, condition.Operator) {
 			return fmt.Errorf("unsupported source IP operator %q", condition.Operator)
 		}
+		if condition.PolicyID != "" {
+			condition.CIDRs = nil
+			return nil
+		}
 		if len(condition.CIDRs) == 0 {
 			condition.CIDRs = append([]string(nil), condition.Values...)
 		}
@@ -352,6 +351,10 @@ func normalizeAdvancedAuthCondition(condition *models.AdvancedAuthCondition) err
 	case "source_region":
 		if condition.Operator != "in" && condition.Operator != "not_in" {
 			return fmt.Errorf("unsupported source region operator %q", condition.Operator)
+		}
+		if condition.PolicyID != "" {
+			condition.CIDRs = nil
+			return nil
 		}
 		if len(condition.CIDRs) == 0 {
 			return fmt.Errorf("source region condition resolved to no CIDRs")
@@ -509,6 +512,13 @@ func validateAdvancedAuthTextValues(condition *models.AdvancedAuthCondition) err
 }
 
 func compileAdvancedAuthPolicy(config models.AdvancedAuthConfig) (*compiledAdvancedAuthPolicy, error) {
+	return compileAdvancedAuthPolicyWithSets(config, nil)
+}
+
+func compileAdvancedAuthPolicyWithSets(
+	config models.AdvancedAuthConfig,
+	sets map[string]*compiledipset.Set,
+) (*compiledAdvancedAuthPolicy, error) {
 	normalized, err := normalizeAdvancedAuthConfig(config)
 	if err != nil {
 		return nil, err
@@ -541,11 +551,27 @@ func compileAdvancedAuthPolicy(config models.AdvancedAuthConfig) (*compiledAdvan
 					compiled.valueSet[method] = struct{}{}
 				}
 			}
-			if len(condition.CIDRs) > 0 {
-				compiled.cidrs, err = newAdvancedAuthCIDRIndex(condition.CIDRs)
-				if err != nil {
-					return nil, err
+			if condition.PolicyID != "" {
+				set := sets[condition.PolicyID]
+				if set == nil {
+					return nil, fmt.Errorf(
+						"advanced auth condition %q references missing IP set %q",
+						condition.ID,
+						condition.PolicyID,
+					)
 				}
+				compiled.ipsets = append(compiled.ipsets, set)
+			}
+			if len(condition.CIDRs) > 0 {
+				legacyPolicy, compileErr := compiledipset.Compile(condition.CIDRs)
+				if compileErr != nil {
+					return nil, fmt.Errorf("invalid advanced auth CIDR notation")
+				}
+				legacySet, decodeErr := compiledipset.Decode(legacyPolicy)
+				if decodeErr != nil {
+					return nil, decodeErr
+				}
+				compiled.ipsets = append(compiled.ipsets, legacySet)
 			}
 			if condition.Operator == "regex" || condition.Operator == "not_regex" {
 				compiled.regexps = make([]*regexp.Regexp, 0, len(condition.Values))
@@ -562,66 +588,6 @@ func compileAdvancedAuthPolicy(config models.AdvancedAuthConfig) (*compiledAdvan
 		policy.groups = append(policy.groups, compiledGroup)
 	}
 	return policy, nil
-}
-
-func newAdvancedAuthCIDRIndex(values []string) (*advancedAuthCIDRIndex, error) {
-	index := &advancedAuthCIDRIndex{}
-	v4Seen := make(map[uint8]struct{})
-	v6Seen := make(map[uint8]struct{})
-	for _, value := range values {
-		prefix, err := netip.ParsePrefix(value)
-		if err != nil {
-			return nil, fmt.Errorf("invalid advanced auth CIDR notation")
-		}
-		prefix = prefix.Masked()
-		bits := uint8(prefix.Bits())
-		address := prefix.Addr()
-		if address.Is4() {
-			if index.v4[bits] == nil {
-				index.v4[bits] = make(map[netip.Addr]struct{})
-			}
-			index.v4[bits][address] = struct{}{}
-			v4Seen[bits] = struct{}{}
-		} else {
-			if index.v6[bits] == nil {
-				index.v6[bits] = make(map[netip.Addr]struct{})
-			}
-			index.v6[bits][address] = struct{}{}
-			v6Seen[bits] = struct{}{}
-		}
-	}
-	for bits := range v4Seen {
-		index.v4Lengths = append(index.v4Lengths, bits)
-	}
-	for bits := range v6Seen {
-		index.v6Lengths = append(index.v6Lengths, bits)
-	}
-	slices.Sort(index.v4Lengths)
-	slices.Sort(index.v6Lengths)
-	return index, nil
-}
-
-func (index *advancedAuthCIDRIndex) contains(address netip.Addr) bool {
-	if index == nil || !address.IsValid() {
-		return false
-	}
-	address = address.Unmap()
-	if address.Is4() {
-		for _, bits := range index.v4Lengths {
-			masked := netip.PrefixFrom(address, int(bits)).Masked().Addr()
-			if _, exists := index.v4[bits][masked]; exists {
-				return true
-			}
-		}
-		return false
-	}
-	for _, bits := range index.v6Lengths {
-		masked := netip.PrefixFrom(address, int(bits)).Masked().Addr()
-		if _, exists := index.v6[bits][masked]; exists {
-			return true
-		}
-	}
-	return false
 }
 
 func (policy *compiledAdvancedAuthPolicy) evaluate(request *http.Request, clientIP string) *advancedAuthRuleMatch {
@@ -687,7 +653,9 @@ func (condition compiledAdvancedAuthCondition) matches(request *http.Request, ad
 		if !address.IsValid() {
 			return false
 		}
-		matched := condition.cidrs != nil && condition.cidrs.contains(address)
+		matched := slices.ContainsFunc(condition.ipsets, func(set *compiledipset.Set) bool {
+			return set != nil && set.Contains(address)
+		})
 		return matched != isAdvancedAuthNegativeOperator(condition.operator)
 	case "url_path":
 		return condition.matchesValues([]string{request.URL.Path}, true)

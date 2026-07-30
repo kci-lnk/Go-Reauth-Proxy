@@ -8,6 +8,7 @@ import (
 	"go-reauth-proxy/pkg/config"
 	"go-reauth-proxy/pkg/grpc/pb"
 	"go-reauth-proxy/pkg/i18n"
+	compiledipset "go-reauth-proxy/pkg/ipset"
 	"go-reauth-proxy/pkg/iptables"
 
 	"google.golang.org/grpc/codes"
@@ -435,7 +436,9 @@ func (s *GRPCServer) SetReverseProxyThrottleExemptIps(ctx context.Context, req *
 	if req == nil {
 		return nil, grpcBadRequest("request is required")
 	}
-	s.admin.ProxyHandler.SetReverseProxyThrottleExemptIPs(protoToThrottleExemptIPs(req))
+	if err := s.admin.ProxyHandler.SetReverseProxyThrottleExemptIPs(protoToThrottleExemptIPs(req)); err != nil {
+		return nil, grpcBadRequest("%s", err)
+	}
 	return throttleExemptIPsToProto(s.admin.ProxyHandler.GetReverseProxyThrottleExemptIPs()), nil
 }
 
@@ -453,7 +456,9 @@ func (s *GRPCServer) SetCommonLocationExemptions(ctx context.Context, req *pb.Co
 	if req == nil {
 		return nil, grpcBadRequest("request is required")
 	}
-	s.admin.ProxyHandler.SetCommonLocationExemptions(protoToCommonLocationExemptions(req))
+	if err := s.admin.ProxyHandler.SetCommonLocationExemptions(protoToCommonLocationExemptions(req)); err != nil {
+		return nil, grpcBadRequest("%s", err)
+	}
 	return commonLocationExemptionsToProto(s.admin.ProxyHandler.GetCommonLocationExemptions()), nil
 }
 
@@ -833,6 +838,30 @@ func (s *GRPCServer) RemoveIp(ctx context.Context, req *pb.IpRequest) (*pb.RpcSt
 	return rpcOK(), nil
 }
 
+func (s *GRPCServer) SyncWhitelistFirewall(
+	ctx context.Context,
+	req *pb.WhitelistFirewallSyncRequest,
+) (*pb.RpcStatus, error) {
+	if err := s.checkToken(ctx); err != nil {
+		return nil, err
+	}
+	if req == nil {
+		return nil, grpcBadRequest("request is required")
+	}
+	_, whitelist, err := compiledipset.Resolve(
+		req.GetPolicyId(),
+		protoToCompiledIPSetPointer(req.GetPolicy()),
+		nil,
+	)
+	if err != nil {
+		return nil, grpcBadRequest("invalid whitelist firewall policy: %v", err)
+	}
+	if err := s.admin.IptablesHandler.Manager.SyncWhitelistIPSet(whitelist.Prefixes()); err != nil {
+		return nil, grpcInternal("%v", err)
+	}
+	return rpcOK(), nil
+}
+
 func requireIP(req *pb.IpRequest) (string, error) {
 	if req == nil || strings.TrimSpace(req.GetIp()) == "" {
 		return "", grpcBadRequest("IP is required")
@@ -884,8 +913,17 @@ func (s *GRPCServer) SyncSshFirewall(ctx context.Context, req *pb.SshFirewallSyn
 	if strings.TrimSpace(chainName) == "" {
 		chainName = iptables.DefaultSSHFirewallChain
 	}
+	_, allowSet, err := compiledipset.Resolve(
+		req.GetPolicyId(),
+		protoToCompiledIPSetPointer(req.GetPolicy()),
+		req.GetAllowedCidrs(),
+	)
+	if err != nil {
+		return nil, grpcBadRequest("invalid SSH allow policy: %v", err)
+	}
+	allowSources := allowSet.Prefixes()
 	defaultAction := "RETURN"
-	if len(req.GetAllowedCidrs()) > 0 {
+	if allowSet.RangeCount() > 0 {
 		defaultAction = "DROP"
 	}
 	ports := make([]int, 0, len(req.GetPorts()))
@@ -898,7 +936,7 @@ func (s *GRPCServer) SyncSshFirewall(ctx context.Context, req *pb.SshFirewallSyn
 		Chain:             chainName,
 		ParentChains:      defaultParentChains(req.GetParentChains()),
 		Ports:             ports,
-		AllowSources:      req.GetAllowedCidrs(),
+		AllowSources:      allowSources,
 		BlockSources:      req.GetBlockedIps(),
 		IncludeLocalCIDRs: req.GetIncludeLocalCidrs(),
 		DefaultAction:     defaultAction,

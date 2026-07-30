@@ -2,10 +2,13 @@ package ipset
 
 import (
 	"bytes"
+	"compress/zlib"
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
 	"fmt"
+	"io"
+	"math/bits"
 	"net/netip"
 	"sort"
 	"strings"
@@ -13,9 +16,16 @@ import (
 	"go-reauth-proxy/pkg/models"
 )
 
-const FormatVersion uint32 = 1
+const (
+	LegacyFormatVersion    uint32 = 1
+	FormatVersion          uint32 = 2
+	maxCanonicalRangeBytes        = 64 * 1024 * 1024
+)
 
-var digestDomain = []byte("fnknock-ipset-v1\x00")
+var (
+	v1DigestDomain = []byte("fnknock-ipset-v1\x00")
+	v2DigestDomain = []byte("fnknock-ipset-v2\x00")
+)
 
 type range4 struct {
 	start uint32
@@ -32,6 +42,53 @@ type Set struct {
 	ID   string
 	ipv4 []range4
 	ipv6 []range6
+}
+
+// Resolve validates a compiled policy or compiles deprecated CIDR input. The
+// returned policy owns its byte slices and can be safely stored in an immutable
+// runtime snapshot.
+func Resolve(policyID string, policy *models.CompiledIPSet, legacyCIDRs []string) (models.CompiledIPSet, *Set, error) {
+	policyID = strings.TrimSpace(policyID)
+	var compiled models.CompiledIPSet
+	if policy != nil {
+		compiled = Clone(*policy)
+		if compiled.ID == "" {
+			compiled.ID = policyID
+		}
+		if policyID != "" && compiled.ID != policyID {
+			return models.CompiledIPSet{}, nil, fmt.Errorf(
+				"compiled IP set reference mismatch: expected %s, got %s",
+				policyID,
+				compiled.ID,
+			)
+		}
+	} else {
+		if policyID != "" {
+			return models.CompiledIPSet{}, nil, fmt.Errorf(
+				"compiled IP set %s is referenced but missing",
+				policyID,
+			)
+		}
+		var err error
+		compiled, err = Compile(legacyCIDRs)
+		if err != nil {
+			return models.CompiledIPSet{}, nil, err
+		}
+	}
+	set, err := Decode(compiled)
+	if err != nil {
+		return models.CompiledIPSet{}, nil, err
+	}
+	return compiled, set, nil
+}
+
+func Clone(policy models.CompiledIPSet) models.CompiledIPSet {
+	return models.CompiledIPSet{
+		ID:            policy.ID,
+		FormatVersion: policy.FormatVersion,
+		IPv4Ranges:    append(models.Base64URLBytes(nil), policy.IPv4Ranges...),
+		IPv6Ranges:    append(models.Base64URLBytes(nil), policy.IPv6Ranges...),
+	}
 }
 
 func Compile(cidrs []string) (models.CompiledIPSet, error) {
@@ -76,49 +133,72 @@ func Compile(cidrs []string) (models.CompiledIPSet, error) {
 		ipv6Ranges = append(ipv6Ranges, item.end[:]...)
 	}
 	return models.CompiledIPSet{
-		ID:            policyID(ipv4Ranges, ipv6Ranges),
+		ID:            policyID(FormatVersion, ipv4Ranges, ipv6Ranges),
 		FormatVersion: FormatVersion,
-		IPv4Ranges:    ipv4Ranges,
-		IPv6Ranges:    ipv6Ranges,
+		IPv4Ranges:    compressRanges(ipv4Ranges),
+		IPv6Ranges:    compressRanges(ipv6Ranges),
 	}, nil
 }
 
 func Decode(policy models.CompiledIPSet) (*Set, error) {
-	if policy.FormatVersion != FormatVersion {
+	var ipv4Ranges, ipv6Ranges []byte
+	var err error
+	switch policy.FormatVersion {
+	case LegacyFormatVersion:
+		ipv4Ranges = policy.IPv4Ranges
+		ipv6Ranges = policy.IPv6Ranges
+	case FormatVersion:
+		ipv4Ranges, err = decompressRanges(policy.IPv4Ranges, "IPv4")
+		if err != nil {
+			return nil, err
+		}
+		ipv6Ranges, err = decompressRanges(policy.IPv6Ranges, "IPv6")
+		if err != nil {
+			return nil, err
+		}
+	default:
 		return nil, fmt.Errorf("unsupported compiled IP set format version %d", policy.FormatVersion)
 	}
-	if len(policy.IPv4Ranges)%8 != 0 {
-		return nil, fmt.Errorf("compiled IPv4 range length %d is invalid", len(policy.IPv4Ranges))
+	if len(ipv4Ranges)%8 != 0 {
+		return nil, fmt.Errorf("compiled IPv4 range length %d is invalid", len(ipv4Ranges))
 	}
-	if len(policy.IPv6Ranges)%32 != 0 {
-		return nil, fmt.Errorf("compiled IPv6 range length %d is invalid", len(policy.IPv6Ranges))
+	if len(ipv6Ranges)%32 != 0 {
+		return nil, fmt.Errorf("compiled IPv6 range length %d is invalid", len(ipv6Ranges))
 	}
-	expectedID := policyID(policy.IPv4Ranges, policy.IPv6Ranges)
+	expectedID := policyID(policy.FormatVersion, ipv4Ranges, ipv6Ranges)
 	if strings.TrimSpace(policy.ID) != expectedID {
 		return nil, fmt.Errorf("compiled IP set digest mismatch: expected %s, got %s", expectedID, policy.ID)
 	}
 	set := &Set{
 		ID:   expectedID,
-		ipv4: make([]range4, 0, len(policy.IPv4Ranges)/8),
-		ipv6: make([]range6, 0, len(policy.IPv6Ranges)/32),
+		ipv4: make([]range4, 0, len(ipv4Ranges)/8),
+		ipv6: make([]range6, 0, len(ipv6Ranges)/32),
 	}
-	for offset := 0; offset < len(policy.IPv4Ranges); offset += 8 {
+	for offset := 0; offset < len(ipv4Ranges); offset += 8 {
 		item := range4{
-			start: binary.BigEndian.Uint32(policy.IPv4Ranges[offset : offset+4]),
-			end:   binary.BigEndian.Uint32(policy.IPv4Ranges[offset+4 : offset+8]),
+			start: binary.BigEndian.Uint32(ipv4Ranges[offset : offset+4]),
+			end:   binary.BigEndian.Uint32(ipv4Ranges[offset+4 : offset+8]),
 		}
-		if item.start > item.end || (len(set.ipv4) > 0 && set.ipv4[len(set.ipv4)-1].end >= item.start) {
-			return nil, fmt.Errorf("compiled IPv4 ranges are not sorted and disjoint")
+		if item.start > item.end ||
+			(len(set.ipv4) > 0 && ranges4Touch(set.ipv4[len(set.ipv4)-1], item)) {
+			return nil, fmt.Errorf("compiled IPv4 ranges are not sorted, disjoint, and non-adjacent")
 		}
 		set.ipv4 = append(set.ipv4, item)
 	}
-	for offset := 0; offset < len(policy.IPv6Ranges); offset += 32 {
+	for offset := 0; offset < len(ipv6Ranges); offset += 32 {
 		var item range6
-		copy(item.start[:], policy.IPv6Ranges[offset:offset+16])
-		copy(item.end[:], policy.IPv6Ranges[offset+16:offset+32])
+		copy(item.start[:], ipv6Ranges[offset:offset+16])
+		copy(item.end[:], ipv6Ranges[offset+16:offset+32])
+		var touchesPrevious bool
+		if len(set.ipv6) > 0 {
+			previous := set.ipv6[len(set.ipv6)-1]
+			next := increment16(previous.end)
+			touchesPrevious = compare16(previous.end, item.start) >= 0 ||
+				(next != nil && compare16(*next, item.start) >= 0)
+		}
 		if compare16(item.start, item.end) > 0 ||
-			(len(set.ipv6) > 0 && compare16(set.ipv6[len(set.ipv6)-1].end, item.start) >= 0) {
-			return nil, fmt.Errorf("compiled IPv6 ranges are not sorted and disjoint")
+			touchesPrevious {
+			return nil, fmt.Errorf("compiled IPv6 ranges are not sorted, disjoint, and non-adjacent")
 		}
 		set.ipv6 = append(set.ipv6, item)
 	}
@@ -151,9 +231,92 @@ func (set *Set) RangeCount() int {
 	return len(set.ipv4) + len(set.ipv6)
 }
 
-func policyID(ipv4Ranges, ipv6Ranges []byte) string {
+// Prefixes returns the smallest exact CIDR cover for the canonical ranges.
+// It is intended for control-plane consumers such as kernel firewall loaders,
+// never for request-time membership checks.
+func (set *Set) Prefixes() []string {
+	if set == nil {
+		return nil
+	}
+	prefixes := make([]string, 0, set.RangeCount())
+	for _, item := range set.ipv4 {
+		start := item.start
+		for {
+			alignmentBits := bits.TrailingZeros32(start)
+			remaining := uint64(item.end) - uint64(start) + 1
+			hostBits := min(alignmentBits, bits.Len64(remaining)-1)
+			address := [4]byte{
+				byte(start >> 24),
+				byte(start >> 16),
+				byte(start >> 8),
+				byte(start),
+			}
+			prefixes = append(prefixes, netip.PrefixFrom(netip.AddrFrom4(address), 32-hostBits).String())
+			if hostBits == 32 {
+				break
+			}
+			next := uint64(start) + 1<<hostBits
+			if next > uint64(item.end) {
+				break
+			}
+			start = uint32(next)
+		}
+	}
+	for _, item := range set.ipv6 {
+		start := item.start
+		for {
+			hostBits := trailingZeroBits16(start)
+			for hostBits > 0 {
+				blockEnd := start
+				setHostBits(&blockEnd, 128-hostBits)
+				if compare16(blockEnd, item.end) <= 0 {
+					break
+				}
+				hostBits--
+			}
+			prefixes = append(prefixes, netip.PrefixFrom(netip.AddrFrom16(start), 128-hostBits).String())
+			blockEnd := start
+			setHostBits(&blockEnd, 128-hostBits)
+			if compare16(blockEnd, item.end) == 0 {
+				break
+			}
+			next := increment16(blockEnd)
+			if next == nil {
+				break
+			}
+			start = *next
+		}
+	}
+	return prefixes
+}
+
+func trailingZeroBits16(value [16]byte) int {
+	total := 0
+	for index := len(value) - 1; index >= 0; index-- {
+		if value[index] == 0 {
+			total += 8
+			continue
+		}
+		return total + bits.TrailingZeros8(value[index])
+	}
+	return 128
+}
+
+func policyID(formatVersion uint32, ipv4Ranges, ipv6Ranges []byte) string {
+	var domain []byte
+	var prefix string
+	switch formatVersion {
+	case LegacyFormatVersion:
+		domain = v1DigestDomain
+		prefix = "ipset-v1:"
+	case FormatVersion:
+		domain = v2DigestDomain
+		prefix = "ipset-v2:"
+	default:
+		panic(fmt.Sprintf("policy ID requested for unsupported format %d", formatVersion))
+	}
 	hasher := sha256.New()
-	_, _ = hasher.Write(digestDomain)
+	_, _ = hasher.Write(domain)
 	var count [4]byte
 	binary.BigEndian.PutUint32(count[:], uint32(len(ipv4Ranges)/8))
 	_, _ = hasher.Write(count[:])
@@ -161,7 +324,53 @@ func policyID(ipv4Ranges, ipv6Ranges []byte) string {
 	binary.BigEndian.PutUint32(count[:], uint32(len(ipv6Ranges)/32))
 	_, _ = hasher.Write(count[:])
 	_, _ = hasher.Write(ipv6Ranges)
-	return "ipset-v1:" + hex.EncodeToString(hasher.Sum(nil))
+	return prefix + hex.EncodeToString(hasher.Sum(nil))
+}
+
+func compressRanges(ranges []byte) []byte {
+	if len(ranges) == 0 {
+		return nil
+	}
+	var encoded bytes.Buffer
+	writer, err := zlib.NewWriterLevel(&encoded, zlib.BestCompression)
+	if err != nil {
+		panic(fmt.Sprintf("create zlib encoder: %v", err))
+	}
+	if _, err := writer.Write(ranges); err != nil {
+		panic(fmt.Sprintf("compress compiled IP ranges: %v", err))
+	}
+	if err := writer.Close(); err != nil {
+		panic(fmt.Sprintf("finish compressed IP ranges: %v", err))
+	}
+	return encoded.Bytes()
+}
+
+func decompressRanges(encoded []byte, family string) ([]byte, error) {
+	if len(encoded) == 0 {
+		return nil, nil
+	}
+	reader, err := zlib.NewReader(bytes.NewReader(encoded))
+	if err != nil {
+		return nil, fmt.Errorf("compiled %s ranges are invalid zlib: %w", family, err)
+	}
+	defer reader.Close()
+	decoded, err := io.ReadAll(io.LimitReader(reader, maxCanonicalRangeBytes+1))
+	if err != nil {
+		return nil, fmt.Errorf("decompress compiled %s ranges: %w", family, err)
+	}
+	if len(decoded) > maxCanonicalRangeBytes {
+		return nil, fmt.Errorf(
+			"compiled %s ranges exceed the %d byte decompression limit",
+			family,
+			maxCanonicalRangeBytes,
+		)
+	}
+	return decoded, nil
+}
+
+func ranges4Touch(previous, next range4) bool {
+	return previous.end >= next.start ||
+		(previous.end != ^uint32(0) && previous.end+1 >= next.start)
 }
 
 func setHostBits(value *[16]byte, prefixBits int) {

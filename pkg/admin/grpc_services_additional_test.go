@@ -418,7 +418,7 @@ func TestGatewayControlCommonLocationExemptionsRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SetCommonLocationExemptions() returned error: %v", err)
 	}
-	if !got.GetEnabled() || len(got.GetCidrs()) != 1 {
+	if !got.GetEnabled() || len(got.GetCidrs()) != 0 || got.GetPolicy() == nil || got.GetPolicyId() == "" {
 		t.Fatalf("common location exemptions = %#v", got)
 	}
 }

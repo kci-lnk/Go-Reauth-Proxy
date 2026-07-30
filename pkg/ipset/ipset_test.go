@@ -6,8 +6,19 @@ import (
 	"math/rand"
 	"net/netip"
 	"os"
+	"slices"
+	"strings"
 	"testing"
+
+	"go-reauth-proxy/pkg/models"
 )
+
+func TestResolveRejectsMissingReferencedPolicy(t *testing.T) {
+	_, _, err := Resolve("ipset-v2:missing", nil, nil)
+	if err == nil || !strings.Contains(err.Error(), "referenced but missing") {
+		t.Fatalf("Resolve() error = %v, want missing referenced policy", err)
+	}
+}
 
 func TestCompileMergesEquivalentIPv4AndIPv6Ranges(t *testing.T) {
 	compiled, err := Compile([]string{
@@ -53,6 +64,31 @@ func TestCompilePolicyIDIsDeterministicForEquivalentSets(t *testing.T) {
 	}
 }
 
+func TestPrefixesReturnsMinimalExactCoverForMergedAdjacentRanges(t *testing.T) {
+	compiled, err := Compile([]string{
+		"192.0.2.0/25",
+		"192.0.2.128/26",
+		"2001:db8::/127",
+		"2001:db8::2/128",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	set, err := Decode(compiled)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{
+		"192.0.2.0/25",
+		"192.0.2.128/26",
+		"2001:db8::/127",
+		"2001:db8::2/128",
+	}
+	if got := set.Prefixes(); !slices.Equal(got, want) {
+		t.Fatalf("Prefixes() = %#v, want %#v", got, want)
+	}
+}
+
 func TestCompileFullAddressSpacesWithoutOverflow(t *testing.T) {
 	compiled, err := Compile([]string{"0.0.0.0/0", "::/0"})
 	if err != nil {
@@ -67,9 +103,14 @@ func TestCompileFullAddressSpacesWithoutOverflow(t *testing.T) {
 			t.Fatalf("full set did not contain %s", value)
 		}
 	}
+	got := set.Prefixes()
+	want := []string{"0.0.0.0/0", "::/0"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("Prefixes() = %#v, want %#v", got, want)
+	}
 }
 
-func TestCompileMatchesCrossLanguageGoldenFixture(t *testing.T) {
+func TestDecodeMatchesLegacyCrossLanguageGoldenFixture(t *testing.T) {
 	var fixture struct {
 		CIDRs         []string `json:"cidrs"`
 		ID            string   `json:"id"`
@@ -84,18 +125,77 @@ func TestCompileMatchesCrossLanguageGoldenFixture(t *testing.T) {
 	if err := json.Unmarshal(raw, &fixture); err != nil {
 		t.Fatal(err)
 	}
+	ipv4Ranges, err := base64.RawURLEncoding.DecodeString(fixture.IPv4Ranges)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ipv6Ranges, err := base64.RawURLEncoding.DecodeString(fixture.IPv6Ranges)
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacy := models.CompiledIPSet{
+		ID:            fixture.ID,
+		FormatVersion: fixture.FormatVersion,
+		IPv4Ranges:    ipv4Ranges,
+		IPv6Ranges:    ipv6Ranges,
+	}
+	if _, err := Decode(legacy); err != nil {
+		t.Fatalf("decode legacy cross-language fixture: %v", err)
+	}
+
+	compiled, err := Compile(fixture.CIDRs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if compiled.ID != "ipset-v2:045f9d04abff90c133eb8992fa305f5638cd320ac8b895f1e23f601d0b68c8ce" {
+		t.Fatalf("compiled v2 ID = %s", compiled.ID)
+	}
+	if _, err := Decode(compiled); err != nil {
+		t.Fatalf("decode compiled v2 policy: %v", err)
+	}
+}
+
+func TestV2EncodingMatchesCrossLanguageGoldenFixture(t *testing.T) {
+	var fixture struct {
+		CIDRs         []string `json:"cidrs"`
+		ID            string   `json:"id"`
+		FormatVersion uint32   `json:"format_version"`
+		IPv4Ranges    string   `json:"canonical_ipv4_ranges"`
+		IPv6Ranges    string   `json:"canonical_ipv6_ranges"`
+	}
+	raw, err := os.ReadFile("../../../fn-knock-turborepo/packages/grpc-contracts/testdata/ipset-v2-golden.json")
+	if err != nil {
+		// CI commonly checks out the two repositories as siblings with these
+		// exact directory names; keep a local copy fallback for standalone Go
+		// repository test runs.
+		raw, err = os.ReadFile("testdata/ipset-v2-golden.json")
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(raw, &fixture); err != nil {
+		t.Fatal(err)
+	}
 	compiled, err := Compile(fixture.CIDRs)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if compiled.ID != fixture.ID || compiled.FormatVersion != fixture.FormatVersion {
-		t.Fatalf("compiled identity = (%s, %d), want (%s, %d)", compiled.ID, compiled.FormatVersion, fixture.ID, fixture.FormatVersion)
+		t.Fatalf("compiled identity = %s v%d", compiled.ID, compiled.FormatVersion)
 	}
-	if base64.RawURLEncoding.EncodeToString(compiled.IPv4Ranges) != fixture.IPv4Ranges {
-		t.Fatal("compiled IPv4 bytes differ from golden fixture")
+	ipv4Ranges, err := decompressRanges(compiled.IPv4Ranges, "IPv4")
+	if err != nil {
+		t.Fatal(err)
 	}
-	if base64.RawURLEncoding.EncodeToString(compiled.IPv6Ranges) != fixture.IPv6Ranges {
-		t.Fatal("compiled IPv6 bytes differ from golden fixture")
+	ipv6Ranges, err := decompressRanges(compiled.IPv6Ranges, "IPv6")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := base64.RawURLEncoding.EncodeToString(ipv4Ranges); got != fixture.IPv4Ranges {
+		t.Fatalf("compiled IPv4 bytes = %s, want %s", got, fixture.IPv4Ranges)
+	}
+	if got := base64.RawURLEncoding.EncodeToString(ipv6Ranges); got != fixture.IPv6Ranges {
+		t.Fatalf("compiled IPv6 bytes = %s, want %s", got, fixture.IPv6Ranges)
 	}
 }
 

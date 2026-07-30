@@ -1,6 +1,8 @@
 package proxy
 
 import (
+	"fmt"
+	compiledipset "go-reauth-proxy/pkg/ipset"
 	"go-reauth-proxy/pkg/models"
 	"net/netip"
 	"strings"
@@ -8,54 +10,58 @@ import (
 )
 
 type commonLocationExemptionsRuntime struct {
-	mu       sync.RWMutex
-	config   models.CommonLocationExemptionsRuntime
-	prefixes []netip.Prefix
+	mu     sync.RWMutex
+	config models.CommonLocationExemptionsRuntime
+	set    *compiledipset.Set
 }
 
 func newCommonLocationExemptionsRuntime(cfg models.CommonLocationExemptionsRuntime) *commonLocationExemptionsRuntime {
 	runtime := &commonLocationExemptionsRuntime{}
-	runtime.updateConfig(cfg)
+	if _, err := runtime.updateConfig(cfg); err != nil {
+		runtime.config = models.CommonLocationExemptionsRuntime{}
+	}
 	return runtime
 }
 
 func (r *commonLocationExemptionsRuntime) getConfig() models.CommonLocationExemptionsRuntime {
 	if r == nil {
-		return models.CommonLocationExemptionsRuntime{
-			Enabled:    false,
-			WAFEnabled: false,
-			CIDRs:      []string{},
-			UpdatedAt:  "",
-		}
+		return models.CommonLocationExemptionsRuntime{}
 	}
 
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
-	cidrs := make([]string, len(r.config.CIDRs))
-	copy(cidrs, r.config.CIDRs)
-
+	var policy *models.CompiledIPSet
+	if r.config.Policy != nil {
+		copied := compiledipset.Clone(*r.config.Policy)
+		policy = &copied
+	}
 	return models.CommonLocationExemptionsRuntime{
 		Enabled:    r.config.Enabled,
 		WAFEnabled: r.config.WAFEnabled,
-		CIDRs:      cidrs,
+		CIDRs:      []string{},
 		UpdatedAt:  r.config.UpdatedAt,
+		PolicyID:   r.config.PolicyID,
+		Policy:     policy,
 	}
 }
 
-func (r *commonLocationExemptionsRuntime) updateConfig(cfg models.CommonLocationExemptionsRuntime) bool {
-	normalized, prefixes := normalizeCommonLocationExemptionsRuntime(cfg)
+func (r *commonLocationExemptionsRuntime) updateConfig(cfg models.CommonLocationExemptionsRuntime) (bool, error) {
+	normalized, set, err := normalizeCommonLocationExemptionsRuntime(cfg)
+	if err != nil {
+		return false, err
+	}
 
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
 	if shouldIgnoreReverseProxyThrottleExemptIPsUpdate(r.config.UpdatedAt, normalized.UpdatedAt) {
-		return false
+		return false, nil
 	}
 
 	r.config = normalized
-	r.prefixes = prefixes
-	return true
+	r.set = set
+	return true, nil
 }
 
 func (r *commonLocationExemptionsRuntime) shouldBypassWAF(clientIP string) bool {
@@ -76,48 +82,48 @@ func (r *commonLocationExemptionsRuntime) shouldBypassWAF(clientIP string) bool 
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
-	if !r.config.Enabled || !r.config.WAFEnabled {
-		return false
-	}
-
-	for _, prefix := range r.prefixes {
-		if prefix.Contains(addr) {
-			return true
-		}
-	}
-	return false
+	return r.config.Enabled &&
+		r.config.WAFEnabled &&
+		r.set != nil &&
+		r.set.Contains(addr)
 }
 
-func normalizeCommonLocationExemptionsRuntime(cfg models.CommonLocationExemptionsRuntime) (models.CommonLocationExemptionsRuntime, []netip.Prefix) {
-	cidrs := make([]string, 0, len(cfg.CIDRs))
-	seen := make(map[string]struct{}, len(cfg.CIDRs))
-	prefixes := make([]netip.Prefix, 0, len(cfg.CIDRs))
+func normalizeCommonLocationExemptionsRuntime(cfg models.CommonLocationExemptionsRuntime) (models.CommonLocationExemptionsRuntime, *compiledipset.Set, error) {
+	legacyCIDRs := cfg.CIDRs
+	if cfg.Policy == nil {
+		legacyCIDRs = normalizeLegacyCompiledCIDRs(cfg.CIDRs)
+	}
+	compiled, set, err := compiledipset.Resolve(cfg.PolicyID, cfg.Policy, legacyCIDRs)
+	if err != nil {
+		return models.CommonLocationExemptionsRuntime{}, nil, fmt.Errorf(
+			"invalid common location exemption policy: %w",
+			err,
+		)
+	}
+	return models.CommonLocationExemptionsRuntime{
+		Enabled:    cfg.Enabled,
+		WAFEnabled: cfg.WAFEnabled,
+		CIDRs:      []string{},
+		UpdatedAt:  strings.TrimSpace(cfg.UpdatedAt),
+		PolicyID:   compiled.ID,
+		Policy:     &compiled,
+	}, set, nil
+}
 
-	for _, rawCIDR := range cfg.CIDRs {
-		cidr := strings.TrimSpace(rawCIDR)
-		if cidr == "" {
-			continue
-		}
-
-		prefix, err := netip.ParsePrefix(cidr)
+func normalizeLegacyCompiledCIDRs(values []string) []string {
+	normalized := make([]string, 0, len(values))
+	seen := make(map[string]struct{}, len(values))
+	for _, raw := range values {
+		prefix, err := netip.ParsePrefix(strings.TrimSpace(raw))
 		if err != nil {
 			continue
 		}
-
-		prefix = prefix.Masked()
-		text := prefix.String()
+		text := prefix.Masked().String()
 		if _, exists := seen[text]; exists {
 			continue
 		}
 		seen[text] = struct{}{}
-		cidrs = append(cidrs, text)
-		prefixes = append(prefixes, prefix)
+		normalized = append(normalized, text)
 	}
-
-	return models.CommonLocationExemptionsRuntime{
-		Enabled:    cfg.Enabled,
-		WAFEnabled: cfg.WAFEnabled,
-		CIDRs:      cidrs,
-		UpdatedAt:  strings.TrimSpace(cfg.UpdatedAt),
-	}, prefixes
+	return normalized
 }

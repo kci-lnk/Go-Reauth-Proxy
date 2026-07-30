@@ -68,7 +68,7 @@ func prepareHostVisibilityPolicy(
 	policies map[string]models.CompiledIPSet,
 	sets map[string]*compiledipset.Set,
 ) (models.HostRuleVisibility, error) {
-	normalized, _, err := normalizeHostRuleVisibility(visibility)
+	normalized, err := normalizeHostRuleVisibility(visibility)
 	if err != nil {
 		return models.HostRuleVisibility{}, err
 	}
@@ -100,7 +100,7 @@ func prepareGatewayVisibilityPolicy(
 	policies map[string]models.CompiledIPSet,
 	sets map[string]*compiledipset.Set,
 ) (models.GatewayVisibilityConfig, *compiledipset.Set, error) {
-	normalized, _, err := normalizeGatewayVisibilityConfig(cfg)
+	normalized, err := normalizeGatewayVisibilityConfig(cfg)
 	if err != nil {
 		return models.GatewayVisibilityConfig{}, nil, err
 	}
@@ -157,6 +157,13 @@ func pruneVisibilityPolicies(
 		if rule.Visibility.Mode == models.HostVisibilityModeCustom &&
 			strings.TrimSpace(rule.Visibility.PolicyID) != "" {
 			referenced[strings.TrimSpace(rule.Visibility.PolicyID)] = struct{}{}
+		}
+		for _, group := range rule.AdvancedAuth.Groups {
+			for _, condition := range group.Conditions {
+				if id := strings.TrimSpace(condition.PolicyID); id != "" {
+					referenced[id] = struct{}{}
+				}
+			}
 		}
 	}
 	for id := range policies {

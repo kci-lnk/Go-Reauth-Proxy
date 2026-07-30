@@ -513,7 +513,10 @@ func (h *Handler) buildRequestSnapshotLocked() *requestSnapshot {
 				hostVisibility[host] = policy
 			}
 		}
-		if policy, err := compileAdvancedAuthPolicy(rule.AdvancedAuth); err == nil && policy != nil {
+		if policy, err := compileAdvancedAuthPolicyWithSets(
+			rule.AdvancedAuth,
+			h.compiledVisibilityPolicies,
+		); err == nil && policy != nil {
 			advancedAuth[host] = policy
 		}
 	}
@@ -3169,7 +3172,7 @@ func (h *Handler) normalizeHostRule(newRule models.HostRule) (models.HostRule, e
 	newRule.ProtocolMode = models.NormalizeHostProtocolMode(newRule.ProtocolMode)
 	newRule.GroupID = strings.TrimSpace(newRule.GroupID)
 	newRule.GroupName = strings.TrimSpace(newRule.GroupName)
-	visibility, _, err := normalizeHostRuleVisibility(newRule.Visibility)
+	visibility, err := normalizeHostRuleVisibility(newRule.Visibility)
 	if err != nil {
 		return models.HostRule{}, err
 	}
@@ -3295,6 +3298,13 @@ func (h *Handler) AddHostRule(newRule models.HostRule) error {
 			return fmt.Errorf("host %s visibility: %w", nextRules[i].Host, visibilityErr)
 		}
 		nextRules[i].Visibility = visibility
+		if _, advancedErr := compileAdvancedAuthPolicyWithSets(
+			nextRules[i].AdvancedAuth,
+			candidateSets,
+		); advancedErr != nil {
+			h.mu.Unlock()
+			return fmt.Errorf("host %s advanced auth: %w", nextRules[i].Host, advancedErr)
+		}
 	}
 	pruneVisibilityPolicies(nextRules, h.GatewayVisibility, candidatePolicies, candidateSets)
 	changedProtocolHosts := changedHostProtocolModes(h.HostRules, nextRules)
@@ -3435,6 +3445,17 @@ func (h *Handler) SetHostRulesBundle(
 			return fmt.Errorf("host %s visibility: %w", normalizedRules[i].Host, visibilityErr)
 		}
 		normalizedRules[i].Visibility = visibility
+		if _, advancedErr := compileAdvancedAuthPolicyWithSets(
+			normalizedRules[i].AdvancedAuth,
+			candidateSets,
+		); advancedErr != nil {
+			h.mu.Unlock()
+			return fmt.Errorf(
+				"host %s advanced auth: %w",
+				normalizedRules[i].Host,
+				advancedErr,
+			)
+		}
 	}
 	pruneVisibilityPolicies(normalizedRules, h.GatewayVisibility, candidatePolicies, candidateSets)
 	changedProtocolHosts := changedHostProtocolModes(h.HostRules, normalizedRules)
@@ -3504,11 +3525,21 @@ func (h *Handler) GetVisibilityPoliciesForHostRules() map[string]models.Compiled
 	referenced := make(map[string]models.CompiledIPSet)
 	for _, rule := range h.HostRules {
 		id := strings.TrimSpace(rule.Visibility.PolicyID)
-		if rule.Visibility.Mode != models.HostVisibilityModeCustom || id == "" {
-			continue
+		if rule.Visibility.Mode == models.HostVisibilityModeCustom && id != "" {
+			if policy, ok := h.VisibilityPolicies[id]; ok {
+				referenced[id] = copyVisibilityPolicy(policy)
+			}
 		}
-		if policy, ok := h.VisibilityPolicies[id]; ok {
-			referenced[id] = copyVisibilityPolicy(policy)
+		for _, group := range rule.AdvancedAuth.Groups {
+			for _, condition := range group.Conditions {
+				id := strings.TrimSpace(condition.PolicyID)
+				if id == "" {
+					continue
+				}
+				if policy, ok := h.VisibilityPolicies[id]; ok {
+					referenced[id] = copyVisibilityPolicy(policy)
+				}
+			}
 		}
 	}
 	return referenced
@@ -4229,7 +4260,6 @@ func (h *Handler) SetGatewayVisibility(cfg models.GatewayVisibilityConfig) error
 	visibility.mu.Lock()
 	visibility.config = normalized
 	visibility.set = set
-	visibility.prefixes = nil
 	visibility.mu.Unlock()
 
 	rangeCount := 0
@@ -4398,7 +4428,7 @@ func (h *Handler) SetFnosPortIconHijackConfig(cfg models.FnosPortIconHijackConfi
 	return normalized, nil
 }
 
-func (h *Handler) SetReverseProxyThrottleExemptIPs(cfg models.ReverseProxyThrottleExemptIPsRuntime) {
+func (h *Handler) SetReverseProxyThrottleExemptIPs(cfg models.ReverseProxyThrottleExemptIPsRuntime) error {
 	h.mu.Lock()
 	runtime := h.reverseProxyThrottleExempt
 	if runtime == nil {
@@ -4409,15 +4439,18 @@ func (h *Handler) SetReverseProxyThrottleExemptIPs(cfg models.ReverseProxyThrott
 	}
 	h.mu.Unlock()
 
-	runtime.updateConfig(cfg)
+	if _, err := runtime.updateConfig(cfg); err != nil {
+		return err
+	}
 	normalized := runtime.getConfig()
 	if event := debugProxyEvent("reverse_proxy_throttle_exempt_ips_set", ""); event != nil {
 		event.Bool("enabled", normalized.Enabled).
 			Int("ip_count", len(normalized.IPs)).
-			Int("cidr_count", len(normalized.CIDRs)).
+			Str("policy_id", logger.SanitizeLogString(normalized.PolicyID)).
 			Str("updated_at", logger.SanitizeLogString(normalized.UpdatedAt)).
 			Send()
 	}
+	return nil
 }
 
 func (h *Handler) GetCommonLocationExemptions() models.CommonLocationExemptionsRuntime {
@@ -4437,7 +4470,7 @@ func (h *Handler) GetCommonLocationExemptions() models.CommonLocationExemptionsR
 	return runtime.getConfig()
 }
 
-func (h *Handler) SetCommonLocationExemptions(cfg models.CommonLocationExemptionsRuntime) {
+func (h *Handler) SetCommonLocationExemptions(cfg models.CommonLocationExemptionsRuntime) error {
 	h.mu.Lock()
 	runtime := h.commonLocationExemptions
 	if runtime == nil {
@@ -4448,15 +4481,18 @@ func (h *Handler) SetCommonLocationExemptions(cfg models.CommonLocationExemption
 	}
 	h.mu.Unlock()
 
-	runtime.updateConfig(cfg)
+	if _, err := runtime.updateConfig(cfg); err != nil {
+		return err
+	}
 	normalized := runtime.getConfig()
 	if event := debugProxyEvent("common_location_exemptions_set", ""); event != nil {
 		event.Bool("enabled", normalized.Enabled).
 			Bool("waf_enabled", normalized.WAFEnabled).
-			Int("cidr_count", len(normalized.CIDRs)).
+			Str("policy_id", logger.SanitizeLogString(normalized.PolicyID)).
 			Str("updated_at", logger.SanitizeLogString(normalized.UpdatedAt)).
 			Send()
 	}
+	return nil
 }
 
 type TrafficStats struct {

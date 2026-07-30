@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"go-reauth-proxy/pkg/grpc/pb"
+	compiledipset "go-reauth-proxy/pkg/ipset"
 	"go-reauth-proxy/pkg/models"
 )
 
@@ -82,7 +83,7 @@ func TestAdvancedAuthNegativeMultiValuesRequireAllValuesNotToMatch(t *testing.T)
 	}
 }
 
-func TestAdvancedAuthCIDRIndexSupportsIPv4IPv6AndRegion(t *testing.T) {
+func TestAdvancedAuthLegacyCIDRsUseSharedIPSetForIPv4IPv6AndRegion(t *testing.T) {
 	policy := testAdvancedAuthPolicy(t, []models.AdvancedAuthGroup{
 		{ID: "source-networks", Conditions: []models.AdvancedAuthCondition{{
 			ID:       "ip",
@@ -110,13 +111,53 @@ func TestAdvancedAuthCIDRIndexSupportsIPv4IPv6AndRegion(t *testing.T) {
 	}
 }
 
+func TestAdvancedAuthUsesSharedCompiledIPSetPolicy(t *testing.T) {
+	transport, err := compiledipset.Compile([]string{
+		"192.0.2.0/25",
+		"192.0.2.128/25",
+		"2001:db8::/32",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	set, err := compiledipset.Decode(transport)
+	if err != nil {
+		t.Fatal(err)
+	}
+	policy, err := compileAdvancedAuthPolicyWithSets(models.AdvancedAuthConfig{
+		Enabled:            true,
+		PolicyVersion:      "compiled",
+		IdleTTLSeconds:     advancedAuthDefaultIdleSeconds,
+		MaxLifetimeSeconds: advancedAuthDefaultMaxSeconds,
+		Groups: []models.AdvancedAuthGroup{{ID: "compiled", Conditions: []models.AdvancedAuthCondition{{
+			ID:       "source",
+			Target:   "source_region",
+			Operator: "in",
+			PolicyID: transport.ID,
+		}}}},
+	}, map[string]*compiledipset.Set{transport.ID: set})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodGet, "https://app.example/", nil)
+	if policy.evaluate(request, "192.0.2.255") == nil {
+		t.Fatal("compiled IPv4 range did not match")
+	}
+	if policy.evaluate(request, "2001:db8::1") == nil {
+		t.Fatal("compiled IPv6 range did not match")
+	}
+	if policy.evaluate(request, "198.51.100.1") != nil {
+		t.Fatal("address outside the compiled policy matched")
+	}
+}
+
 func TestAdvancedAuthExactSourceIPSupportsMultipleIPv4AndIPv6Addresses(t *testing.T) {
 	policy := testAdvancedAuthPolicy(t, []models.AdvancedAuthGroup{{ID: "exact", Conditions: []models.AdvancedAuthCondition{{
 		ID:       "ip",
 		Target:   "source_ip",
 		Operator: "equals",
-		// Rust sends exact addresses in the compiled CIDR field as host
-		// prefixes. This shape must remain accepted across the gRPC boundary.
+		// Legacy control snapshots encoded exact addresses as host prefixes.
+		// Keep that migration shape accepted alongside compiled policies.
 		CIDRs: []string{
 			"192.0.2.10/32",
 			"2001:0db8::10/128",

@@ -680,9 +680,11 @@ func (x *HostRuleVisibility) GetPolicyId() string {
 }
 
 // Exact, immutable IP set encoded as sorted, disjoint inclusive ranges.
-// ipv4_ranges is a concatenation of start(4 bytes) + end(4 bytes);
-// ipv6_ranges uses start(16 bytes) + end(16 bytes). All bytes are network
-// byte order. format_version 1 is content-addressed by id.
+// The canonical IPv4 representation concatenates start(4 bytes) + end(4 bytes)
+// and IPv6 uses start(16 bytes) + end(16 bytes), all in network byte order.
+// Format version 1 transports those canonical bytes directly. Format version
+// 2 transports each byte stream as zlib data while the content ID continues to
+// cover the uncompressed canonical representation.
 type CompiledIpSet struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Id            string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
@@ -753,15 +755,18 @@ func (x *CompiledIpSet) GetIpv6Ranges() []byte {
 
 // Advanced authentication rules are compiled by the control plane before they
 // are sent to the gateway. Region selectors are deliberately absent here:
-// source_region conditions carry their immutable, resolved CIDRs in cidrs.
+// source_ip/source_region normally reference the shared compiled policy table.
+// cidrs is retained only while importing legacy control-plane snapshots.
 type AdvancedAuthCondition struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Id            string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
-	Target        string                 `protobuf:"bytes,2,opt,name=target,proto3" json:"target,omitempty"`
-	Operator      string                 `protobuf:"bytes,3,opt,name=operator,proto3" json:"operator,omitempty"`
-	Name          string                 `protobuf:"bytes,4,opt,name=name,proto3" json:"name,omitempty"`
-	Values        []string               `protobuf:"bytes,5,rep,name=values,proto3" json:"values,omitempty"`
-	Cidrs         []string               `protobuf:"bytes,6,rep,name=cidrs,proto3" json:"cidrs,omitempty"`
+	state    protoimpl.MessageState `protogen:"open.v1"`
+	Id       string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
+	Target   string                 `protobuf:"bytes,2,opt,name=target,proto3" json:"target,omitempty"`
+	Operator string                 `protobuf:"bytes,3,opt,name=operator,proto3" json:"operator,omitempty"`
+	Name     string                 `protobuf:"bytes,4,opt,name=name,proto3" json:"name,omitempty"`
+	Values   []string               `protobuf:"bytes,5,rep,name=values,proto3" json:"values,omitempty"`
+	// Deprecated: Marked as deprecated in fnknock/v1/gateway.proto.
+	Cidrs         []string `protobuf:"bytes,6,rep,name=cidrs,proto3" json:"cidrs,omitempty"`
+	PolicyId      string   `protobuf:"bytes,7,opt,name=policy_id,json=policyId,proto3" json:"policy_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -831,11 +836,19 @@ func (x *AdvancedAuthCondition) GetValues() []string {
 	return nil
 }
 
+// Deprecated: Marked as deprecated in fnknock/v1/gateway.proto.
 func (x *AdvancedAuthCondition) GetCidrs() []string {
 	if x != nil {
 		return x.Cidrs
 	}
 	return nil
+}
+
+func (x *AdvancedAuthCondition) GetPolicyId() string {
+	if x != nil {
+		return x.PolicyId
+	}
+	return ""
 }
 
 type AdvancedAuthGroup struct {
@@ -1992,6 +2005,8 @@ type ReverseProxyThrottleExemptIpsRuntime struct {
 	Ips           []string               `protobuf:"bytes,2,rep,name=ips,proto3" json:"ips,omitempty"`
 	Cidrs         []string               `protobuf:"bytes,3,rep,name=cidrs,proto3" json:"cidrs,omitempty"`
 	UpdatedAt     string                 `protobuf:"bytes,4,opt,name=updated_at,json=updatedAt,proto3" json:"updated_at,omitempty"`
+	PolicyId      string                 `protobuf:"bytes,5,opt,name=policy_id,json=policyId,proto3" json:"policy_id,omitempty"`
+	Policy        *CompiledIpSet         `protobuf:"bytes,6,opt,name=policy,proto3" json:"policy,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2054,12 +2069,28 @@ func (x *ReverseProxyThrottleExemptIpsRuntime) GetUpdatedAt() string {
 	return ""
 }
 
+func (x *ReverseProxyThrottleExemptIpsRuntime) GetPolicyId() string {
+	if x != nil {
+		return x.PolicyId
+	}
+	return ""
+}
+
+func (x *ReverseProxyThrottleExemptIpsRuntime) GetPolicy() *CompiledIpSet {
+	if x != nil {
+		return x.Policy
+	}
+	return nil
+}
+
 type CommonLocationExemptionsRuntime struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Enabled       bool                   `protobuf:"varint,1,opt,name=enabled,proto3" json:"enabled,omitempty"`
 	WafEnabled    bool                   `protobuf:"varint,2,opt,name=waf_enabled,json=wafEnabled,proto3" json:"waf_enabled,omitempty"`
 	Cidrs         []string               `protobuf:"bytes,3,rep,name=cidrs,proto3" json:"cidrs,omitempty"`
 	UpdatedAt     string                 `protobuf:"bytes,4,opt,name=updated_at,json=updatedAt,proto3" json:"updated_at,omitempty"`
+	PolicyId      string                 `protobuf:"bytes,5,opt,name=policy_id,json=policyId,proto3" json:"policy_id,omitempty"`
+	Policy        *CompiledIpSet         `protobuf:"bytes,6,opt,name=policy,proto3" json:"policy,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2120,6 +2151,20 @@ func (x *CommonLocationExemptionsRuntime) GetUpdatedAt() string {
 		return x.UpdatedAt
 	}
 	return ""
+}
+
+func (x *CommonLocationExemptionsRuntime) GetPolicyId() string {
+	if x != nil {
+		return x.PolicyId
+	}
+	return ""
+}
+
+func (x *CommonLocationExemptionsRuntime) GetPolicy() *CompiledIpSet {
+	if x != nil {
+		return x.Policy
+	}
+	return nil
 }
 
 type LocaleConfig struct {
@@ -5484,9 +5529,11 @@ type SshFirewallSyncRequest struct {
 	ChainName         string                 `protobuf:"bytes,1,opt,name=chain_name,json=chainName,proto3" json:"chain_name,omitempty"`
 	ParentChains      []string               `protobuf:"bytes,2,rep,name=parent_chains,json=parentChains,proto3" json:"parent_chains,omitempty"`
 	Ports             []int32                `protobuf:"varint,3,rep,packed,name=ports,proto3" json:"ports,omitempty"`
-	AllowedCidrs      []string               `protobuf:"bytes,4,rep,name=allowed_cidrs,json=allowedCidrs,proto3" json:"allowed_cidrs,omitempty"`
+	AllowedCidrs      []string               `protobuf:"bytes,4,rep,name=allowed_cidrs,json=allowedCidrs,proto3" json:"allowed_cidrs,omitempty"` // deprecated，仅兼容旧控制端
 	BlockedIps        []string               `protobuf:"bytes,5,rep,name=blocked_ips,json=blockedIps,proto3" json:"blocked_ips,omitempty"`
 	IncludeLocalCidrs bool                   `protobuf:"varint,6,opt,name=include_local_cidrs,json=includeLocalCidrs,proto3" json:"include_local_cidrs,omitempty"`
+	PolicyId          string                 `protobuf:"bytes,7,opt,name=policy_id,json=policyId,proto3" json:"policy_id,omitempty"`
+	Policy            *CompiledIpSet         `protobuf:"bytes,8,opt,name=policy,proto3" json:"policy,omitempty"`
 	unknownFields     protoimpl.UnknownFields
 	sizeCache         protoimpl.SizeCache
 }
@@ -5563,6 +5610,20 @@ func (x *SshFirewallSyncRequest) GetIncludeLocalCidrs() bool {
 	return false
 }
 
+func (x *SshFirewallSyncRequest) GetPolicyId() string {
+	if x != nil {
+		return x.PolicyId
+	}
+	return ""
+}
+
+func (x *SshFirewallSyncRequest) GetPolicy() *CompiledIpSet {
+	if x != nil {
+		return x.Policy
+	}
+	return nil
+}
+
 type SshFirewallClearRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	ChainName     string                 `protobuf:"bytes,1,opt,name=chain_name,json=chainName,proto3" json:"chain_name,omitempty"`
@@ -5615,6 +5676,58 @@ func (x *SshFirewallClearRequest) GetParentChains() []string {
 	return nil
 }
 
+type WhitelistFirewallSyncRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	PolicyId      string                 `protobuf:"bytes,1,opt,name=policy_id,json=policyId,proto3" json:"policy_id,omitempty"`
+	Policy        *CompiledIpSet         `protobuf:"bytes,2,opt,name=policy,proto3" json:"policy,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *WhitelistFirewallSyncRequest) Reset() {
+	*x = WhitelistFirewallSyncRequest{}
+	mi := &file_fnknock_v1_gateway_proto_msgTypes[71]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *WhitelistFirewallSyncRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*WhitelistFirewallSyncRequest) ProtoMessage() {}
+
+func (x *WhitelistFirewallSyncRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_fnknock_v1_gateway_proto_msgTypes[71]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use WhitelistFirewallSyncRequest.ProtoReflect.Descriptor instead.
+func (*WhitelistFirewallSyncRequest) Descriptor() ([]byte, []int) {
+	return file_fnknock_v1_gateway_proto_rawDescGZIP(), []int{71}
+}
+
+func (x *WhitelistFirewallSyncRequest) GetPolicyId() string {
+	if x != nil {
+		return x.PolicyId
+	}
+	return ""
+}
+
+func (x *WhitelistFirewallSyncRequest) GetPolicy() *CompiledIpSet {
+	if x != nil {
+		return x.Policy
+	}
+	return nil
+}
+
 type IptablesRules struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Items         []*IptablesRule        `protobuf:"bytes,1,rep,name=items,proto3" json:"items,omitempty"`
@@ -5624,7 +5737,7 @@ type IptablesRules struct {
 
 func (x *IptablesRules) Reset() {
 	*x = IptablesRules{}
-	mi := &file_fnknock_v1_gateway_proto_msgTypes[71]
+	mi := &file_fnknock_v1_gateway_proto_msgTypes[72]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5636,7 +5749,7 @@ func (x *IptablesRules) String() string {
 func (*IptablesRules) ProtoMessage() {}
 
 func (x *IptablesRules) ProtoReflect() protoreflect.Message {
-	mi := &file_fnknock_v1_gateway_proto_msgTypes[71]
+	mi := &file_fnknock_v1_gateway_proto_msgTypes[72]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5649,7 +5762,7 @@ func (x *IptablesRules) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use IptablesRules.ProtoReflect.Descriptor instead.
 func (*IptablesRules) Descriptor() ([]byte, []int) {
-	return file_fnknock_v1_gateway_proto_rawDescGZIP(), []int{71}
+	return file_fnknock_v1_gateway_proto_rawDescGZIP(), []int{72}
 }
 
 func (x *IptablesRules) GetItems() []*IptablesRule {
@@ -5687,7 +5800,7 @@ type AuthContext struct {
 
 func (x *AuthContext) Reset() {
 	*x = AuthContext{}
-	mi := &file_fnknock_v1_gateway_proto_msgTypes[72]
+	mi := &file_fnknock_v1_gateway_proto_msgTypes[73]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5699,7 +5812,7 @@ func (x *AuthContext) String() string {
 func (*AuthContext) ProtoMessage() {}
 
 func (x *AuthContext) ProtoReflect() protoreflect.Message {
-	mi := &file_fnknock_v1_gateway_proto_msgTypes[72]
+	mi := &file_fnknock_v1_gateway_proto_msgTypes[73]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5712,7 +5825,7 @@ func (x *AuthContext) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AuthContext.ProtoReflect.Descriptor instead.
 func (*AuthContext) Descriptor() ([]byte, []int) {
-	return file_fnknock_v1_gateway_proto_rawDescGZIP(), []int{72}
+	return file_fnknock_v1_gateway_proto_rawDescGZIP(), []int{73}
 }
 
 func (x *AuthContext) GetClientIp() string {
@@ -5866,7 +5979,7 @@ type SubdomainRuleMatch struct {
 
 func (x *SubdomainRuleMatch) Reset() {
 	*x = SubdomainRuleMatch{}
-	mi := &file_fnknock_v1_gateway_proto_msgTypes[73]
+	mi := &file_fnknock_v1_gateway_proto_msgTypes[74]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5878,7 +5991,7 @@ func (x *SubdomainRuleMatch) String() string {
 func (*SubdomainRuleMatch) ProtoMessage() {}
 
 func (x *SubdomainRuleMatch) ProtoReflect() protoreflect.Message {
-	mi := &file_fnknock_v1_gateway_proto_msgTypes[73]
+	mi := &file_fnknock_v1_gateway_proto_msgTypes[74]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5891,7 +6004,7 @@ func (x *SubdomainRuleMatch) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SubdomainRuleMatch.ProtoReflect.Descriptor instead.
 func (*SubdomainRuleMatch) Descriptor() ([]byte, []int) {
-	return file_fnknock_v1_gateway_proto_rawDescGZIP(), []int{73}
+	return file_fnknock_v1_gateway_proto_rawDescGZIP(), []int{74}
 }
 
 func (x *SubdomainRuleMatch) GetHost() string {
@@ -5924,7 +6037,7 @@ type VerifyAuthRequest struct {
 
 func (x *VerifyAuthRequest) Reset() {
 	*x = VerifyAuthRequest{}
-	mi := &file_fnknock_v1_gateway_proto_msgTypes[74]
+	mi := &file_fnknock_v1_gateway_proto_msgTypes[75]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5936,7 +6049,7 @@ func (x *VerifyAuthRequest) String() string {
 func (*VerifyAuthRequest) ProtoMessage() {}
 
 func (x *VerifyAuthRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_fnknock_v1_gateway_proto_msgTypes[74]
+	mi := &file_fnknock_v1_gateway_proto_msgTypes[75]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5949,7 +6062,7 @@ func (x *VerifyAuthRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use VerifyAuthRequest.ProtoReflect.Descriptor instead.
 func (*VerifyAuthRequest) Descriptor() ([]byte, []int) {
-	return file_fnknock_v1_gateway_proto_rawDescGZIP(), []int{74}
+	return file_fnknock_v1_gateway_proto_rawDescGZIP(), []int{75}
 }
 
 func (x *VerifyAuthRequest) GetContext() *AuthContext {
@@ -5982,7 +6095,7 @@ type VerifyAuthResponse struct {
 
 func (x *VerifyAuthResponse) Reset() {
 	*x = VerifyAuthResponse{}
-	mi := &file_fnknock_v1_gateway_proto_msgTypes[75]
+	mi := &file_fnknock_v1_gateway_proto_msgTypes[76]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5994,7 +6107,7 @@ func (x *VerifyAuthResponse) String() string {
 func (*VerifyAuthResponse) ProtoMessage() {}
 
 func (x *VerifyAuthResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_fnknock_v1_gateway_proto_msgTypes[75]
+	mi := &file_fnknock_v1_gateway_proto_msgTypes[76]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6007,7 +6120,7 @@ func (x *VerifyAuthResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use VerifyAuthResponse.ProtoReflect.Descriptor instead.
 func (*VerifyAuthResponse) Descriptor() ([]byte, []int) {
-	return file_fnknock_v1_gateway_proto_rawDescGZIP(), []int{75}
+	return file_fnknock_v1_gateway_proto_rawDescGZIP(), []int{76}
 }
 
 func (x *VerifyAuthResponse) GetSuccess() bool {
@@ -6125,7 +6238,7 @@ type PreflightAuthRequest struct {
 
 func (x *PreflightAuthRequest) Reset() {
 	*x = PreflightAuthRequest{}
-	mi := &file_fnknock_v1_gateway_proto_msgTypes[76]
+	mi := &file_fnknock_v1_gateway_proto_msgTypes[77]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6137,7 +6250,7 @@ func (x *PreflightAuthRequest) String() string {
 func (*PreflightAuthRequest) ProtoMessage() {}
 
 func (x *PreflightAuthRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_fnknock_v1_gateway_proto_msgTypes[76]
+	mi := &file_fnknock_v1_gateway_proto_msgTypes[77]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6150,7 +6263,7 @@ func (x *PreflightAuthRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PreflightAuthRequest.ProtoReflect.Descriptor instead.
 func (*PreflightAuthRequest) Descriptor() ([]byte, []int) {
-	return file_fnknock_v1_gateway_proto_rawDescGZIP(), []int{76}
+	return file_fnknock_v1_gateway_proto_rawDescGZIP(), []int{77}
 }
 
 func (x *PreflightAuthRequest) GetContext() *AuthContext {
@@ -6179,7 +6292,7 @@ type PreflightAuthResponse struct {
 
 func (x *PreflightAuthResponse) Reset() {
 	*x = PreflightAuthResponse{}
-	mi := &file_fnknock_v1_gateway_proto_msgTypes[77]
+	mi := &file_fnknock_v1_gateway_proto_msgTypes[78]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6191,7 +6304,7 @@ func (x *PreflightAuthResponse) String() string {
 func (*PreflightAuthResponse) ProtoMessage() {}
 
 func (x *PreflightAuthResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_fnknock_v1_gateway_proto_msgTypes[77]
+	mi := &file_fnknock_v1_gateway_proto_msgTypes[78]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6204,7 +6317,7 @@ func (x *PreflightAuthResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PreflightAuthResponse.ProtoReflect.Descriptor instead.
 func (*PreflightAuthResponse) Descriptor() ([]byte, []int) {
-	return file_fnknock_v1_gateway_proto_rawDescGZIP(), []int{77}
+	return file_fnknock_v1_gateway_proto_rawDescGZIP(), []int{78}
 }
 
 func (x *PreflightAuthResponse) GetDeny() bool {
@@ -6247,7 +6360,7 @@ type AuthorizeHttpRequest struct {
 
 func (x *AuthorizeHttpRequest) Reset() {
 	*x = AuthorizeHttpRequest{}
-	mi := &file_fnknock_v1_gateway_proto_msgTypes[78]
+	mi := &file_fnknock_v1_gateway_proto_msgTypes[79]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6259,7 +6372,7 @@ func (x *AuthorizeHttpRequest) String() string {
 func (*AuthorizeHttpRequest) ProtoMessage() {}
 
 func (x *AuthorizeHttpRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_fnknock_v1_gateway_proto_msgTypes[78]
+	mi := &file_fnknock_v1_gateway_proto_msgTypes[79]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6272,7 +6385,7 @@ func (x *AuthorizeHttpRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AuthorizeHttpRequest.ProtoReflect.Descriptor instead.
 func (*AuthorizeHttpRequest) Descriptor() ([]byte, []int) {
-	return file_fnknock_v1_gateway_proto_rawDescGZIP(), []int{78}
+	return file_fnknock_v1_gateway_proto_rawDescGZIP(), []int{79}
 }
 
 func (x *AuthorizeHttpRequest) GetContext() *AuthContext {
@@ -6315,7 +6428,7 @@ type AuthorizeHttpResponse struct {
 
 func (x *AuthorizeHttpResponse) Reset() {
 	*x = AuthorizeHttpResponse{}
-	mi := &file_fnknock_v1_gateway_proto_msgTypes[79]
+	mi := &file_fnknock_v1_gateway_proto_msgTypes[80]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6327,7 +6440,7 @@ func (x *AuthorizeHttpResponse) String() string {
 func (*AuthorizeHttpResponse) ProtoMessage() {}
 
 func (x *AuthorizeHttpResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_fnknock_v1_gateway_proto_msgTypes[79]
+	mi := &file_fnknock_v1_gateway_proto_msgTypes[80]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6340,7 +6453,7 @@ func (x *AuthorizeHttpResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AuthorizeHttpResponse.ProtoReflect.Descriptor instead.
 func (*AuthorizeHttpResponse) Descriptor() ([]byte, []int) {
-	return file_fnknock_v1_gateway_proto_rawDescGZIP(), []int{79}
+	return file_fnknock_v1_gateway_proto_rawDescGZIP(), []int{80}
 }
 
 func (x *AuthorizeHttpResponse) GetPreflight() *PreflightAuthResponse {
@@ -6383,7 +6496,7 @@ type VerifyStreamAuthRequest struct {
 
 func (x *VerifyStreamAuthRequest) Reset() {
 	*x = VerifyStreamAuthRequest{}
-	mi := &file_fnknock_v1_gateway_proto_msgTypes[80]
+	mi := &file_fnknock_v1_gateway_proto_msgTypes[81]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6395,7 +6508,7 @@ func (x *VerifyStreamAuthRequest) String() string {
 func (*VerifyStreamAuthRequest) ProtoMessage() {}
 
 func (x *VerifyStreamAuthRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_fnknock_v1_gateway_proto_msgTypes[80]
+	mi := &file_fnknock_v1_gateway_proto_msgTypes[81]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6408,7 +6521,7 @@ func (x *VerifyStreamAuthRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use VerifyStreamAuthRequest.ProtoReflect.Descriptor instead.
 func (*VerifyStreamAuthRequest) Descriptor() ([]byte, []int) {
-	return file_fnknock_v1_gateway_proto_rawDescGZIP(), []int{80}
+	return file_fnknock_v1_gateway_proto_rawDescGZIP(), []int{81}
 }
 
 func (x *VerifyStreamAuthRequest) GetClientIp() string {
@@ -6451,7 +6564,7 @@ type VerifyStreamAuthResponse struct {
 
 func (x *VerifyStreamAuthResponse) Reset() {
 	*x = VerifyStreamAuthResponse{}
-	mi := &file_fnknock_v1_gateway_proto_msgTypes[81]
+	mi := &file_fnknock_v1_gateway_proto_msgTypes[82]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6463,7 +6576,7 @@ func (x *VerifyStreamAuthResponse) String() string {
 func (*VerifyStreamAuthResponse) ProtoMessage() {}
 
 func (x *VerifyStreamAuthResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_fnknock_v1_gateway_proto_msgTypes[81]
+	mi := &file_fnknock_v1_gateway_proto_msgTypes[82]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6476,7 +6589,7 @@ func (x *VerifyStreamAuthResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use VerifyStreamAuthResponse.ProtoReflect.Descriptor instead.
 func (*VerifyStreamAuthResponse) Descriptor() ([]byte, []int) {
-	return file_fnknock_v1_gateway_proto_rawDescGZIP(), []int{81}
+	return file_fnknock_v1_gateway_proto_rawDescGZIP(), []int{82}
 }
 
 func (x *VerifyStreamAuthResponse) GetAllowed() bool {
@@ -6517,7 +6630,7 @@ type AuthBridgeReady struct {
 
 func (x *AuthBridgeReady) Reset() {
 	*x = AuthBridgeReady{}
-	mi := &file_fnknock_v1_gateway_proto_msgTypes[82]
+	mi := &file_fnknock_v1_gateway_proto_msgTypes[83]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6529,7 +6642,7 @@ func (x *AuthBridgeReady) String() string {
 func (*AuthBridgeReady) ProtoMessage() {}
 
 func (x *AuthBridgeReady) ProtoReflect() protoreflect.Message {
-	mi := &file_fnknock_v1_gateway_proto_msgTypes[82]
+	mi := &file_fnknock_v1_gateway_proto_msgTypes[83]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6542,7 +6655,7 @@ func (x *AuthBridgeReady) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AuthBridgeReady.ProtoReflect.Descriptor instead.
 func (*AuthBridgeReady) Descriptor() ([]byte, []int) {
-	return file_fnknock_v1_gateway_proto_rawDescGZIP(), []int{82}
+	return file_fnknock_v1_gateway_proto_rawDescGZIP(), []int{83}
 }
 
 func (x *AuthBridgeReady) GetInstanceId() string {
@@ -6580,7 +6693,7 @@ type AuthBridgeEnvelope struct {
 
 func (x *AuthBridgeEnvelope) Reset() {
 	*x = AuthBridgeEnvelope{}
-	mi := &file_fnknock_v1_gateway_proto_msgTypes[83]
+	mi := &file_fnknock_v1_gateway_proto_msgTypes[84]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6592,7 +6705,7 @@ func (x *AuthBridgeEnvelope) String() string {
 func (*AuthBridgeEnvelope) ProtoMessage() {}
 
 func (x *AuthBridgeEnvelope) ProtoReflect() protoreflect.Message {
-	mi := &file_fnknock_v1_gateway_proto_msgTypes[83]
+	mi := &file_fnknock_v1_gateway_proto_msgTypes[84]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6605,7 +6718,7 @@ func (x *AuthBridgeEnvelope) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AuthBridgeEnvelope.ProtoReflect.Descriptor instead.
 func (*AuthBridgeEnvelope) Descriptor() ([]byte, []int) {
-	return file_fnknock_v1_gateway_proto_rawDescGZIP(), []int{83}
+	return file_fnknock_v1_gateway_proto_rawDescGZIP(), []int{84}
 }
 
 func (x *AuthBridgeEnvelope) GetRequestId() string {
@@ -6774,7 +6887,7 @@ type FnosConnectIngressConfig struct {
 
 func (x *FnosConnectIngressConfig) Reset() {
 	*x = FnosConnectIngressConfig{}
-	mi := &file_fnknock_v1_gateway_proto_msgTypes[84]
+	mi := &file_fnknock_v1_gateway_proto_msgTypes[85]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6786,7 +6899,7 @@ func (x *FnosConnectIngressConfig) String() string {
 func (*FnosConnectIngressConfig) ProtoMessage() {}
 
 func (x *FnosConnectIngressConfig) ProtoReflect() protoreflect.Message {
-	mi := &file_fnknock_v1_gateway_proto_msgTypes[84]
+	mi := &file_fnknock_v1_gateway_proto_msgTypes[85]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6799,7 +6912,7 @@ func (x *FnosConnectIngressConfig) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use FnosConnectIngressConfig.ProtoReflect.Descriptor instead.
 func (*FnosConnectIngressConfig) Descriptor() ([]byte, []int) {
-	return file_fnknock_v1_gateway_proto_rawDescGZIP(), []int{84}
+	return file_fnknock_v1_gateway_proto_rawDescGZIP(), []int{85}
 }
 
 func (x *FnosConnectIngressConfig) GetEnabled() bool {
@@ -6833,7 +6946,7 @@ type FnosConnectIngressStatus struct {
 
 func (x *FnosConnectIngressStatus) Reset() {
 	*x = FnosConnectIngressStatus{}
-	mi := &file_fnknock_v1_gateway_proto_msgTypes[85]
+	mi := &file_fnknock_v1_gateway_proto_msgTypes[86]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6845,7 +6958,7 @@ func (x *FnosConnectIngressStatus) String() string {
 func (*FnosConnectIngressStatus) ProtoMessage() {}
 
 func (x *FnosConnectIngressStatus) ProtoReflect() protoreflect.Message {
-	mi := &file_fnknock_v1_gateway_proto_msgTypes[85]
+	mi := &file_fnknock_v1_gateway_proto_msgTypes[86]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6858,7 +6971,7 @@ func (x *FnosConnectIngressStatus) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use FnosConnectIngressStatus.ProtoReflect.Descriptor instead.
 func (*FnosConnectIngressStatus) Descriptor() ([]byte, []int) {
-	return file_fnknock_v1_gateway_proto_rawDescGZIP(), []int{85}
+	return file_fnknock_v1_gateway_proto_rawDescGZIP(), []int{86}
 }
 
 func (x *FnosConnectIngressStatus) GetEnabled() bool {
@@ -6976,14 +7089,15 @@ const file_fnknock_v1_gateway_proto_rawDesc = "" +
 	"\vipv4_ranges\x18\x03 \x01(\fR\n" +
 	"ipv4Ranges\x12\x1f\n" +
 	"\vipv6_ranges\x18\x04 \x01(\fR\n" +
-	"ipv6Ranges\"\x9d\x01\n" +
+	"ipv6Ranges\"\xbe\x01\n" +
 	"\x15AdvancedAuthCondition\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x16\n" +
 	"\x06target\x18\x02 \x01(\tR\x06target\x12\x1a\n" +
 	"\boperator\x18\x03 \x01(\tR\boperator\x12\x12\n" +
 	"\x04name\x18\x04 \x01(\tR\x04name\x12\x16\n" +
-	"\x06values\x18\x05 \x03(\tR\x06values\x12\x14\n" +
-	"\x05cidrs\x18\x06 \x03(\tR\x05cidrs\"f\n" +
+	"\x06values\x18\x05 \x03(\tR\x06values\x12\x18\n" +
+	"\x05cidrs\x18\x06 \x03(\tB\x02\x18\x01R\x05cidrs\x12\x1b\n" +
+	"\tpolicy_id\x18\a \x01(\tR\bpolicyId\"f\n" +
 	"\x11AdvancedAuthGroup\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12A\n" +
 	"\n" +
@@ -7100,20 +7214,24 @@ const file_fnknock_v1_gateway_proto_rawDesc = "" +
 	"\x18FnosPortIconHijackConfig\x12\x18\n" +
 	"\aenabled\x18\x01 \x01(\bR\aenabled\x12\x1d\n" +
 	"\n" +
-	"updated_at\x18\x02 \x01(\tR\tupdatedAt\"\x87\x01\n" +
+	"updated_at\x18\x02 \x01(\tR\tupdatedAt\"\xd7\x01\n" +
 	"$ReverseProxyThrottleExemptIpsRuntime\x12\x18\n" +
 	"\aenabled\x18\x01 \x01(\bR\aenabled\x12\x10\n" +
 	"\x03ips\x18\x02 \x03(\tR\x03ips\x12\x14\n" +
 	"\x05cidrs\x18\x03 \x03(\tR\x05cidrs\x12\x1d\n" +
 	"\n" +
-	"updated_at\x18\x04 \x01(\tR\tupdatedAt\"\x91\x01\n" +
+	"updated_at\x18\x04 \x01(\tR\tupdatedAt\x12\x1b\n" +
+	"\tpolicy_id\x18\x05 \x01(\tR\bpolicyId\x121\n" +
+	"\x06policy\x18\x06 \x01(\v2\x19.fnknock.v1.CompiledIpSetR\x06policy\"\xe1\x01\n" +
 	"\x1fCommonLocationExemptionsRuntime\x12\x18\n" +
 	"\aenabled\x18\x01 \x01(\bR\aenabled\x12\x1f\n" +
 	"\vwaf_enabled\x18\x02 \x01(\bR\n" +
 	"wafEnabled\x12\x14\n" +
 	"\x05cidrs\x18\x03 \x03(\tR\x05cidrs\x12\x1d\n" +
 	"\n" +
-	"updated_at\x18\x04 \x01(\tR\tupdatedAt\"5\n" +
+	"updated_at\x18\x04 \x01(\tR\tupdatedAt\x12\x1b\n" +
+	"\tpolicy_id\x18\x05 \x01(\tR\bpolicyId\x121\n" +
+	"\x06policy\x18\x06 \x01(\v2\x19.fnknock.v1.CompiledIpSetR\x06policy\"5\n" +
 	"\fLocaleConfig\x12%\n" +
 	"\x0edefault_locale\x18\x01 \x01(\tR\rdefaultLocale\"\x98\x01\n" +
 	"\x16GeneralBlacklistRecord\x12\x0e\n" +
@@ -7431,7 +7549,7 @@ const file_fnknock_v1_gateway_proto_rawDesc = "" +
 	"\n" +
 	"chain_name\x18\x01 \x01(\tR\tchainName\x12#\n" +
 	"\rparent_chains\x18\x02 \x03(\tR\fparentChains\x12!\n" +
-	"\fexempt_ports\x18\x03 \x03(\tR\vexemptPorts\"\xe8\x01\n" +
+	"\fexempt_ports\x18\x03 \x03(\tR\vexemptPorts\"\xb8\x02\n" +
 	"\x16SshFirewallSyncRequest\x12\x1d\n" +
 	"\n" +
 	"chain_name\x18\x01 \x01(\tR\tchainName\x12#\n" +
@@ -7440,11 +7558,16 @@ const file_fnknock_v1_gateway_proto_rawDesc = "" +
 	"\rallowed_cidrs\x18\x04 \x03(\tR\fallowedCidrs\x12\x1f\n" +
 	"\vblocked_ips\x18\x05 \x03(\tR\n" +
 	"blockedIps\x12.\n" +
-	"\x13include_local_cidrs\x18\x06 \x01(\bR\x11includeLocalCidrs\"]\n" +
+	"\x13include_local_cidrs\x18\x06 \x01(\bR\x11includeLocalCidrs\x12\x1b\n" +
+	"\tpolicy_id\x18\a \x01(\tR\bpolicyId\x121\n" +
+	"\x06policy\x18\b \x01(\v2\x19.fnknock.v1.CompiledIpSetR\x06policy\"]\n" +
 	"\x17SshFirewallClearRequest\x12\x1d\n" +
 	"\n" +
 	"chain_name\x18\x01 \x01(\tR\tchainName\x12#\n" +
-	"\rparent_chains\x18\x02 \x03(\tR\fparentChains\"?\n" +
+	"\rparent_chains\x18\x02 \x03(\tR\fparentChains\"n\n" +
+	"\x1cWhitelistFirewallSyncRequest\x12\x1b\n" +
+	"\tpolicy_id\x18\x01 \x01(\tR\bpolicyId\x121\n" +
+	"\x06policy\x18\x02 \x01(\v2\x19.fnknock.v1.CompiledIpSetR\x06policy\"?\n" +
 	"\rIptablesRules\x12.\n" +
 	"\x05items\x18\x01 \x03(\v2\x18.fnknock.v1.IptablesRuleR\x05items\"\xc3\x06\n" +
 	"\vAuthContext\x12\x1b\n" +
@@ -7654,7 +7777,7 @@ const file_fnknock_v1_gateway_proto_rawDesc = "" +
 	"GetSslInfo\x12\x16.google.protobuf.Empty\x1a\x13.fnknock.v1.SslInfo\x12@\n" +
 	"\x10SetSslDeployment\x12\x15.fnknock.v1.SslConfig\x1a\x15.fnknock.v1.RpcStatus\x12F\n" +
 	"\tSetSslPem\x12\".fnknock.v1.SslDeployedCertificate\x1a\x15.fnknock.v1.RpcStatus\x129\n" +
-	"\bClearSsl\x12\x16.google.protobuf.Empty\x1a\x15.fnknock.v1.RpcStatus2\x8b\b\n" +
+	"\bClearSsl\x12\x16.google.protobuf.Empty\x1a\x15.fnknock.v1.RpcStatus2\xe5\b\n" +
 	"\x0fFirewallService\x12F\n" +
 	"\fInitIptables\x12\x1f.fnknock.v1.IptablesInitRequest\x1a\x15.fnknock.v1.RpcStatus\x12>\n" +
 	"\rCleanIptables\x12\x16.google.protobuf.Empty\x1a\x15.fnknock.v1.RpcStatus\x12>\n" +
@@ -7665,7 +7788,8 @@ const file_fnknock_v1_gateway_proto_rawDesc = "" +
 	"\x11BlockTcpPortForIp\x12\x1e.fnknock.v1.TcpPortRuleRequest\x1a\x15.fnknock.v1.RpcStatus\x12J\n" +
 	"\x11RemoveTcpPortRule\x12\x1e.fnknock.v1.TcpPortRuleRequest\x1a\x15.fnknock.v1.RpcStatus\x12L\n" +
 	"\x0fSyncSshFirewall\x12\".fnknock.v1.SshFirewallSyncRequest\x1a\x15.fnknock.v1.RpcStatus\x12N\n" +
-	"\x10ClearSshFirewall\x12#.fnknock.v1.SshFirewallClearRequest\x1a\x15.fnknock.v1.RpcStatus\x129\n" +
+	"\x10ClearSshFirewall\x12#.fnknock.v1.SshFirewallClearRequest\x1a\x15.fnknock.v1.RpcStatus\x12X\n" +
+	"\x15SyncWhitelistFirewall\x12(.fnknock.v1.WhitelistFirewallSyncRequest\x1a\x15.fnknock.v1.RpcStatus\x129\n" +
 	"\bBlockAll\x12\x16.google.protobuf.Empty\x1a\x15.fnknock.v1.RpcStatus\x129\n" +
 	"\bAllowAll\x12\x16.google.protobuf.Empty\x1a\x15.fnknock.v1.RpcStatus\x12J\n" +
 	"\x11EnsureTcpRedirect\x12\x1e.fnknock.v1.TcpRedirectRequest\x1a\x15.fnknock.v1.RpcStatus\x12I\n" +
@@ -7687,7 +7811,7 @@ func file_fnknock_v1_gateway_proto_rawDescGZIP() []byte {
 }
 
 var file_fnknock_v1_gateway_proto_enumTypes = make([]protoimpl.EnumInfo, 3)
-var file_fnknock_v1_gateway_proto_msgTypes = make([]protoimpl.MessageInfo, 88)
+var file_fnknock_v1_gateway_proto_msgTypes = make([]protoimpl.MessageInfo, 89)
 var file_fnknock_v1_gateway_proto_goTypes = []any{
 	(HttpAuthMode)(0),                            // 0: fnknock.v1.HttpAuthMode
 	(AuthCacheScope)(0),                          // 1: fnknock.v1.AuthCacheScope
@@ -7763,28 +7887,29 @@ var file_fnknock_v1_gateway_proto_goTypes = []any{
 	(*IptablesInitRequest)(nil),                  // 71: fnknock.v1.IptablesInitRequest
 	(*SshFirewallSyncRequest)(nil),               // 72: fnknock.v1.SshFirewallSyncRequest
 	(*SshFirewallClearRequest)(nil),              // 73: fnknock.v1.SshFirewallClearRequest
-	(*IptablesRules)(nil),                        // 74: fnknock.v1.IptablesRules
-	(*AuthContext)(nil),                          // 75: fnknock.v1.AuthContext
-	(*SubdomainRuleMatch)(nil),                   // 76: fnknock.v1.SubdomainRuleMatch
-	(*VerifyAuthRequest)(nil),                    // 77: fnknock.v1.VerifyAuthRequest
-	(*VerifyAuthResponse)(nil),                   // 78: fnknock.v1.VerifyAuthResponse
-	(*PreflightAuthRequest)(nil),                 // 79: fnknock.v1.PreflightAuthRequest
-	(*PreflightAuthResponse)(nil),                // 80: fnknock.v1.PreflightAuthResponse
-	(*AuthorizeHttpRequest)(nil),                 // 81: fnknock.v1.AuthorizeHttpRequest
-	(*AuthorizeHttpResponse)(nil),                // 82: fnknock.v1.AuthorizeHttpResponse
-	(*VerifyStreamAuthRequest)(nil),              // 83: fnknock.v1.VerifyStreamAuthRequest
-	(*VerifyStreamAuthResponse)(nil),             // 84: fnknock.v1.VerifyStreamAuthResponse
-	(*AuthBridgeReady)(nil),                      // 85: fnknock.v1.AuthBridgeReady
-	(*AuthBridgeEnvelope)(nil),                   // 86: fnknock.v1.AuthBridgeEnvelope
-	(*FnosConnectIngressConfig)(nil),             // 87: fnknock.v1.FnosConnectIngressConfig
-	(*FnosConnectIngressStatus)(nil),             // 88: fnknock.v1.FnosConnectIngressStatus
-	nil,                                          // 89: fnknock.v1.HostLocationResponse.HeadersEntry
-	nil,                                          // 90: fnknock.v1.GeneralBlacklistStatus.RecordsEntry
-	(*emptypb.Empty)(nil),                        // 91: google.protobuf.Empty
+	(*WhitelistFirewallSyncRequest)(nil),         // 74: fnknock.v1.WhitelistFirewallSyncRequest
+	(*IptablesRules)(nil),                        // 75: fnknock.v1.IptablesRules
+	(*AuthContext)(nil),                          // 76: fnknock.v1.AuthContext
+	(*SubdomainRuleMatch)(nil),                   // 77: fnknock.v1.SubdomainRuleMatch
+	(*VerifyAuthRequest)(nil),                    // 78: fnknock.v1.VerifyAuthRequest
+	(*VerifyAuthResponse)(nil),                   // 79: fnknock.v1.VerifyAuthResponse
+	(*PreflightAuthRequest)(nil),                 // 80: fnknock.v1.PreflightAuthRequest
+	(*PreflightAuthResponse)(nil),                // 81: fnknock.v1.PreflightAuthResponse
+	(*AuthorizeHttpRequest)(nil),                 // 82: fnknock.v1.AuthorizeHttpRequest
+	(*AuthorizeHttpResponse)(nil),                // 83: fnknock.v1.AuthorizeHttpResponse
+	(*VerifyStreamAuthRequest)(nil),              // 84: fnknock.v1.VerifyStreamAuthRequest
+	(*VerifyStreamAuthResponse)(nil),             // 85: fnknock.v1.VerifyStreamAuthResponse
+	(*AuthBridgeReady)(nil),                      // 86: fnknock.v1.AuthBridgeReady
+	(*AuthBridgeEnvelope)(nil),                   // 87: fnknock.v1.AuthBridgeEnvelope
+	(*FnosConnectIngressConfig)(nil),             // 88: fnknock.v1.FnosConnectIngressConfig
+	(*FnosConnectIngressStatus)(nil),             // 89: fnknock.v1.FnosConnectIngressStatus
+	nil,                                          // 90: fnknock.v1.HostLocationResponse.HeadersEntry
+	nil,                                          // 91: fnknock.v1.GeneralBlacklistStatus.RecordsEntry
+	(*emptypb.Empty)(nil),                        // 92: google.protobuf.Empty
 }
 var file_fnknock_v1_gateway_proto_depIdxs = []int32{
 	4,   // 0: fnknock.v1.HeaderList.headers:type_name -> fnknock.v1.Header
-	89,  // 1: fnknock.v1.HostLocationResponse.headers:type_name -> fnknock.v1.HostLocationResponse.HeadersEntry
+	90,  // 1: fnknock.v1.HostLocationResponse.headers:type_name -> fnknock.v1.HostLocationResponse.HeadersEntry
 	7,   // 2: fnknock.v1.HostLocation.response:type_name -> fnknock.v1.HostLocationResponse
 	12,  // 3: fnknock.v1.AdvancedAuthGroup.conditions:type_name -> fnknock.v1.AdvancedAuthCondition
 	13,  // 4: fnknock.v1.AdvancedAuthConfig.groups:type_name -> fnknock.v1.AdvancedAuthGroup
@@ -7794,214 +7919,220 @@ var file_fnknock_v1_gateway_proto_depIdxs = []int32{
 	10,  // 8: fnknock.v1.HostRule.visibility:type_name -> fnknock.v1.HostRuleVisibility
 	14,  // 9: fnknock.v1.HostRule.advanced_auth:type_name -> fnknock.v1.AdvancedAuthConfig
 	11,  // 10: fnknock.v1.GatewayVisibilityConfig.policy:type_name -> fnknock.v1.CompiledIpSet
-	30,  // 11: fnknock.v1.GeneralBlacklistList.items:type_name -> fnknock.v1.GeneralBlacklistRecord
-	30,  // 12: fnknock.v1.GeneralBlacklistMutationResult.items:type_name -> fnknock.v1.GeneralBlacklistRecord
-	90,  // 13: fnknock.v1.GeneralBlacklistStatus.records:type_name -> fnknock.v1.GeneralBlacklistStatus.RecordsEntry
-	37,  // 14: fnknock.v1.WafRuleMatch.matched_variables:type_name -> fnknock.v1.WafMatchedVariable
-	38,  // 15: fnknock.v1.WafEvent.rules:type_name -> fnknock.v1.WafRuleMatch
-	39,  // 16: fnknock.v1.WafEvent.interruption:type_name -> fnknock.v1.WafInterruptionInfo
-	40,  // 17: fnknock.v1.WafDrainResult.events:type_name -> fnknock.v1.WafEvent
-	42,  // 18: fnknock.v1.SslConfig.certificates:type_name -> fnknock.v1.SslDeployedCertificate
-	43,  // 19: fnknock.v1.SslInfo.certificates:type_name -> fnknock.v1.SslDeployedCertificateInfo
-	46,  // 20: fnknock.v1.GatewayLogQueryResult.items:type_name -> fnknock.v1.GatewayLogEntry
-	52,  // 21: fnknock.v1.TrafficStats.by_host:type_name -> fnknock.v1.HostTrafficStats
-	53,  // 22: fnknock.v1.HostActiveIpsStats.items:type_name -> fnknock.v1.HostActiveIpStats
-	15,  // 23: fnknock.v1.Rules.items:type_name -> fnknock.v1.Rule
-	16,  // 24: fnknock.v1.HostRules.items:type_name -> fnknock.v1.HostRule
-	11,  // 25: fnknock.v1.HostRules.visibility_policies:type_name -> fnknock.v1.CompiledIpSet
-	17,  // 26: fnknock.v1.StreamRules.items:type_name -> fnknock.v1.StreamRule
-	34,  // 27: fnknock.v1.WafBundleRequest.config:type_name -> fnknock.v1.WafConfig
-	55,  // 28: fnknock.v1.IptablesRules.items:type_name -> fnknock.v1.IptablesRule
-	4,   // 29: fnknock.v1.AuthContext.extra_headers:type_name -> fnknock.v1.Header
-	75,  // 30: fnknock.v1.VerifyAuthRequest.context:type_name -> fnknock.v1.AuthContext
-	4,   // 31: fnknock.v1.VerifyAuthResponse.response_headers:type_name -> fnknock.v1.Header
-	2,   // 32: fnknock.v1.VerifyAuthResponse.grant_kind:type_name -> fnknock.v1.AuthGrantKind
-	75,  // 33: fnknock.v1.PreflightAuthRequest.context:type_name -> fnknock.v1.AuthContext
-	4,   // 34: fnknock.v1.PreflightAuthResponse.response_headers:type_name -> fnknock.v1.Header
-	75,  // 35: fnknock.v1.AuthorizeHttpRequest.context:type_name -> fnknock.v1.AuthContext
-	0,   // 36: fnknock.v1.AuthorizeHttpRequest.mode:type_name -> fnknock.v1.HttpAuthMode
-	76,  // 37: fnknock.v1.AuthorizeHttpRequest.subdomain_rule_match:type_name -> fnknock.v1.SubdomainRuleMatch
-	80,  // 38: fnknock.v1.AuthorizeHttpResponse.preflight:type_name -> fnknock.v1.PreflightAuthResponse
-	78,  // 39: fnknock.v1.AuthorizeHttpResponse.verify:type_name -> fnknock.v1.VerifyAuthResponse
-	1,   // 40: fnknock.v1.AuthorizeHttpResponse.preflight_cache_scope:type_name -> fnknock.v1.AuthCacheScope
-	1,   // 41: fnknock.v1.AuthorizeHttpResponse.verify_cache_scope:type_name -> fnknock.v1.AuthCacheScope
-	85,  // 42: fnknock.v1.AuthBridgeEnvelope.ready:type_name -> fnknock.v1.AuthBridgeReady
-	77,  // 43: fnknock.v1.AuthBridgeEnvelope.verify_auth_request:type_name -> fnknock.v1.VerifyAuthRequest
-	78,  // 44: fnknock.v1.AuthBridgeEnvelope.verify_auth_response:type_name -> fnknock.v1.VerifyAuthResponse
-	79,  // 45: fnknock.v1.AuthBridgeEnvelope.preflight_auth_request:type_name -> fnknock.v1.PreflightAuthRequest
-	80,  // 46: fnknock.v1.AuthBridgeEnvelope.preflight_auth_response:type_name -> fnknock.v1.PreflightAuthResponse
-	83,  // 47: fnknock.v1.AuthBridgeEnvelope.verify_stream_auth_request:type_name -> fnknock.v1.VerifyStreamAuthRequest
-	84,  // 48: fnknock.v1.AuthBridgeEnvelope.verify_stream_auth_response:type_name -> fnknock.v1.VerifyStreamAuthResponse
-	81,  // 49: fnknock.v1.AuthBridgeEnvelope.authorize_http_request:type_name -> fnknock.v1.AuthorizeHttpRequest
-	82,  // 50: fnknock.v1.AuthBridgeEnvelope.authorize_http_response:type_name -> fnknock.v1.AuthorizeHttpResponse
-	30,  // 51: fnknock.v1.GeneralBlacklistStatus.RecordsEntry.value:type_name -> fnknock.v1.GeneralBlacklistRecord
-	91,  // 52: fnknock.v1.GatewayControlService.GetServerInfo:input_type -> google.protobuf.Empty
-	91,  // 53: fnknock.v1.GatewayControlService.GetGatewayListenerConfig:input_type -> google.protobuf.Empty
-	57,  // 54: fnknock.v1.GatewayControlService.SetGatewayListenerConfig:input_type -> fnknock.v1.GatewayListenerConfig
-	91,  // 55: fnknock.v1.GatewayControlService.ResetAllData:input_type -> google.protobuf.Empty
-	91,  // 56: fnknock.v1.GatewayControlService.RequestShutdown:input_type -> google.protobuf.Empty
-	91,  // 57: fnknock.v1.GatewayControlService.GetRules:input_type -> google.protobuf.Empty
-	58,  // 58: fnknock.v1.GatewayControlService.SetRules:input_type -> fnknock.v1.Rules
-	91,  // 59: fnknock.v1.GatewayControlService.FlushRules:input_type -> google.protobuf.Empty
-	91,  // 60: fnknock.v1.GatewayControlService.GetHostRules:input_type -> google.protobuf.Empty
-	59,  // 61: fnknock.v1.GatewayControlService.SetHostRules:input_type -> fnknock.v1.HostRules
-	91,  // 62: fnknock.v1.GatewayControlService.FlushHostRules:input_type -> google.protobuf.Empty
-	91,  // 63: fnknock.v1.GatewayControlService.GetStreamRules:input_type -> google.protobuf.Empty
-	60,  // 64: fnknock.v1.GatewayControlService.SetStreamRules:input_type -> fnknock.v1.StreamRules
-	91,  // 65: fnknock.v1.GatewayControlService.FlushStreamRules:input_type -> google.protobuf.Empty
-	91,  // 66: fnknock.v1.GatewayControlService.GetAuthConfig:input_type -> google.protobuf.Empty
-	18,  // 67: fnknock.v1.GatewayControlService.SetAuthConfig:input_type -> fnknock.v1.AuthConfig
-	91,  // 68: fnknock.v1.GatewayControlService.GetDefaultRoute:input_type -> google.protobuf.Empty
-	61,  // 69: fnknock.v1.GatewayControlService.SetDefaultRoute:input_type -> fnknock.v1.StringValue
-	91,  // 70: fnknock.v1.GatewayControlService.GetProxyProtocolForce:input_type -> google.protobuf.Empty
-	62,  // 71: fnknock.v1.GatewayControlService.SetProxyProtocolForce:input_type -> fnknock.v1.BoolValue
-	91,  // 72: fnknock.v1.GatewayControlService.GetLocaleConfig:input_type -> google.protobuf.Empty
-	29,  // 73: fnknock.v1.GatewayControlService.SetLocaleConfig:input_type -> fnknock.v1.LocaleConfig
-	91,  // 74: fnknock.v1.GatewayControlService.GetReverseProxyThrottle:input_type -> google.protobuf.Empty
-	20,  // 75: fnknock.v1.GatewayControlService.SetReverseProxyThrottle:input_type -> fnknock.v1.ReverseProxyThrottleConfig
-	91,  // 76: fnknock.v1.GatewayControlService.GetGatewayVisibility:input_type -> google.protobuf.Empty
-	21,  // 77: fnknock.v1.GatewayControlService.SetGatewayVisibility:input_type -> fnknock.v1.GatewayVisibilityConfig
-	91,  // 78: fnknock.v1.GatewayControlService.GetForwardedHeadersConfig:input_type -> google.protobuf.Empty
-	22,  // 79: fnknock.v1.GatewayControlService.SetForwardedHeadersConfig:input_type -> fnknock.v1.OmitTargetsConfig
-	91,  // 80: fnknock.v1.GatewayControlService.GetPreserveHostConfig:input_type -> google.protobuf.Empty
-	22,  // 81: fnknock.v1.GatewayControlService.SetPreserveHostConfig:input_type -> fnknock.v1.OmitTargetsConfig
-	91,  // 82: fnknock.v1.GatewayControlService.GetCrawlerBlockerConfig:input_type -> google.protobuf.Empty
-	23,  // 83: fnknock.v1.GatewayControlService.SetCrawlerBlockerConfig:input_type -> fnknock.v1.CrawlerBlockerConfig
-	91,  // 84: fnknock.v1.GatewayControlService.GetGatewayPortalConfig:input_type -> google.protobuf.Empty
-	24,  // 85: fnknock.v1.GatewayControlService.SetGatewayPortalConfig:input_type -> fnknock.v1.GatewayPortalConfig
-	91,  // 86: fnknock.v1.GatewayControlService.GetGatewayUnmatchedRouteConfig:input_type -> google.protobuf.Empty
-	25,  // 87: fnknock.v1.GatewayControlService.SetGatewayUnmatchedRouteConfig:input_type -> fnknock.v1.GatewayUnmatchedRouteConfig
-	91,  // 88: fnknock.v1.GatewayControlService.GetFnosPortIconHijackConfig:input_type -> google.protobuf.Empty
-	26,  // 89: fnknock.v1.GatewayControlService.SetFnosPortIconHijackConfig:input_type -> fnknock.v1.FnosPortIconHijackConfig
-	91,  // 90: fnknock.v1.GatewayControlService.GetFnosConnectIngressStatus:input_type -> google.protobuf.Empty
-	87,  // 91: fnknock.v1.GatewayControlService.SetFnosConnectIngressConfig:input_type -> fnknock.v1.FnosConnectIngressConfig
-	91,  // 92: fnknock.v1.GatewayControlService.GetReverseProxyThrottleExemptIps:input_type -> google.protobuf.Empty
-	27,  // 93: fnknock.v1.GatewayControlService.SetReverseProxyThrottleExemptIps:input_type -> fnknock.v1.ReverseProxyThrottleExemptIpsRuntime
-	91,  // 94: fnknock.v1.GatewayControlService.GetCommonLocationExemptions:input_type -> google.protobuf.Empty
-	28,  // 95: fnknock.v1.GatewayControlService.SetCommonLocationExemptions:input_type -> fnknock.v1.CommonLocationExemptionsRuntime
-	91,  // 96: fnknock.v1.GatewayLogsService.GetLoggingConfig:input_type -> google.protobuf.Empty
-	19,  // 97: fnknock.v1.GatewayLogsService.SetLoggingConfig:input_type -> fnknock.v1.LoggingConfig
-	91,  // 98: fnknock.v1.GatewayLogsService.GetLoggingDirectory:input_type -> google.protobuf.Empty
-	91,  // 99: fnknock.v1.GatewayLogsService.GetLogDates:input_type -> google.protobuf.Empty
-	48,  // 100: fnknock.v1.GatewayLogsService.QueryLogEntries:input_type -> fnknock.v1.GatewayLogQuery
-	61,  // 101: fnknock.v1.GatewayLogsService.DeleteLogDate:input_type -> fnknock.v1.StringValue
-	65,  // 102: fnknock.v1.SecurityService.ListGeneralBlacklist:input_type -> fnknock.v1.GeneralBlacklistListRequest
-	64,  // 103: fnknock.v1.SecurityService.CheckGeneralBlacklist:input_type -> fnknock.v1.IpListRequest
-	64,  // 104: fnknock.v1.SecurityService.AddGeneralBlacklist:input_type -> fnknock.v1.IpListRequest
-	64,  // 105: fnknock.v1.SecurityService.RemoveGeneralBlacklist:input_type -> fnknock.v1.IpListRequest
-	91,  // 106: fnknock.v1.TrafficService.GetTrafficStats:input_type -> google.protobuf.Empty
-	66,  // 107: fnknock.v1.TrafficService.GetHostActiveIps:input_type -> fnknock.v1.HostRequest
-	91,  // 108: fnknock.v1.WafService.GetWafStatus:input_type -> google.protobuf.Empty
-	34,  // 109: fnknock.v1.WafService.SetWafConfig:input_type -> fnknock.v1.WafConfig
-	67,  // 110: fnknock.v1.WafService.ValidateWafBundle:input_type -> fnknock.v1.WafBundleRequest
-	67,  // 111: fnknock.v1.WafService.ReloadWafBundle:input_type -> fnknock.v1.WafBundleRequest
-	68,  // 112: fnknock.v1.WafService.DrainWafEvents:input_type -> fnknock.v1.WafDrainRequest
-	91,  // 113: fnknock.v1.SslService.GetSslInfo:input_type -> google.protobuf.Empty
-	44,  // 114: fnknock.v1.SslService.SetSslDeployment:input_type -> fnknock.v1.SslConfig
-	42,  // 115: fnknock.v1.SslService.SetSslPem:input_type -> fnknock.v1.SslDeployedCertificate
-	91,  // 116: fnknock.v1.SslService.ClearSsl:input_type -> google.protobuf.Empty
-	71,  // 117: fnknock.v1.FirewallService.InitIptables:input_type -> fnknock.v1.IptablesInitRequest
-	91,  // 118: fnknock.v1.FirewallService.CleanIptables:input_type -> google.protobuf.Empty
-	91,  // 119: fnknock.v1.FirewallService.FlushIptables:input_type -> google.protobuf.Empty
-	63,  // 120: fnknock.v1.FirewallService.AllowIp:input_type -> fnknock.v1.IpRequest
-	63,  // 121: fnknock.v1.FirewallService.BlockIp:input_type -> fnknock.v1.IpRequest
-	63,  // 122: fnknock.v1.FirewallService.RemoveIp:input_type -> fnknock.v1.IpRequest
-	70,  // 123: fnknock.v1.FirewallService.BlockTcpPortForIp:input_type -> fnknock.v1.TcpPortRuleRequest
-	70,  // 124: fnknock.v1.FirewallService.RemoveTcpPortRule:input_type -> fnknock.v1.TcpPortRuleRequest
-	72,  // 125: fnknock.v1.FirewallService.SyncSshFirewall:input_type -> fnknock.v1.SshFirewallSyncRequest
-	73,  // 126: fnknock.v1.FirewallService.ClearSshFirewall:input_type -> fnknock.v1.SshFirewallClearRequest
-	91,  // 127: fnknock.v1.FirewallService.BlockAll:input_type -> google.protobuf.Empty
-	91,  // 128: fnknock.v1.FirewallService.AllowAll:input_type -> google.protobuf.Empty
-	69,  // 129: fnknock.v1.FirewallService.EnsureTcpRedirect:input_type -> fnknock.v1.TcpRedirectRequest
-	69,  // 130: fnknock.v1.FirewallService.ClearTcpRedirect:input_type -> fnknock.v1.TcpRedirectRequest
-	91,  // 131: fnknock.v1.FirewallService.ListIptables:input_type -> google.protobuf.Empty
-	86,  // 132: fnknock.v1.AuthBridgeService.ConnectAuthBridge:input_type -> fnknock.v1.AuthBridgeEnvelope
-	56,  // 133: fnknock.v1.GatewayControlService.GetServerInfo:output_type -> fnknock.v1.ServerInfo
-	57,  // 134: fnknock.v1.GatewayControlService.GetGatewayListenerConfig:output_type -> fnknock.v1.GatewayListenerConfig
-	57,  // 135: fnknock.v1.GatewayControlService.SetGatewayListenerConfig:output_type -> fnknock.v1.GatewayListenerConfig
-	3,   // 136: fnknock.v1.GatewayControlService.ResetAllData:output_type -> fnknock.v1.RpcStatus
-	3,   // 137: fnknock.v1.GatewayControlService.RequestShutdown:output_type -> fnknock.v1.RpcStatus
-	58,  // 138: fnknock.v1.GatewayControlService.GetRules:output_type -> fnknock.v1.Rules
-	58,  // 139: fnknock.v1.GatewayControlService.SetRules:output_type -> fnknock.v1.Rules
-	3,   // 140: fnknock.v1.GatewayControlService.FlushRules:output_type -> fnknock.v1.RpcStatus
-	59,  // 141: fnknock.v1.GatewayControlService.GetHostRules:output_type -> fnknock.v1.HostRules
-	59,  // 142: fnknock.v1.GatewayControlService.SetHostRules:output_type -> fnknock.v1.HostRules
-	3,   // 143: fnknock.v1.GatewayControlService.FlushHostRules:output_type -> fnknock.v1.RpcStatus
-	60,  // 144: fnknock.v1.GatewayControlService.GetStreamRules:output_type -> fnknock.v1.StreamRules
-	60,  // 145: fnknock.v1.GatewayControlService.SetStreamRules:output_type -> fnknock.v1.StreamRules
-	3,   // 146: fnknock.v1.GatewayControlService.FlushStreamRules:output_type -> fnknock.v1.RpcStatus
-	18,  // 147: fnknock.v1.GatewayControlService.GetAuthConfig:output_type -> fnknock.v1.AuthConfig
-	3,   // 148: fnknock.v1.GatewayControlService.SetAuthConfig:output_type -> fnknock.v1.RpcStatus
-	61,  // 149: fnknock.v1.GatewayControlService.GetDefaultRoute:output_type -> fnknock.v1.StringValue
-	3,   // 150: fnknock.v1.GatewayControlService.SetDefaultRoute:output_type -> fnknock.v1.RpcStatus
-	62,  // 151: fnknock.v1.GatewayControlService.GetProxyProtocolForce:output_type -> fnknock.v1.BoolValue
-	62,  // 152: fnknock.v1.GatewayControlService.SetProxyProtocolForce:output_type -> fnknock.v1.BoolValue
-	29,  // 153: fnknock.v1.GatewayControlService.GetLocaleConfig:output_type -> fnknock.v1.LocaleConfig
-	29,  // 154: fnknock.v1.GatewayControlService.SetLocaleConfig:output_type -> fnknock.v1.LocaleConfig
-	20,  // 155: fnknock.v1.GatewayControlService.GetReverseProxyThrottle:output_type -> fnknock.v1.ReverseProxyThrottleConfig
-	20,  // 156: fnknock.v1.GatewayControlService.SetReverseProxyThrottle:output_type -> fnknock.v1.ReverseProxyThrottleConfig
-	21,  // 157: fnknock.v1.GatewayControlService.GetGatewayVisibility:output_type -> fnknock.v1.GatewayVisibilityConfig
-	21,  // 158: fnknock.v1.GatewayControlService.SetGatewayVisibility:output_type -> fnknock.v1.GatewayVisibilityConfig
-	22,  // 159: fnknock.v1.GatewayControlService.GetForwardedHeadersConfig:output_type -> fnknock.v1.OmitTargetsConfig
-	22,  // 160: fnknock.v1.GatewayControlService.SetForwardedHeadersConfig:output_type -> fnknock.v1.OmitTargetsConfig
-	22,  // 161: fnknock.v1.GatewayControlService.GetPreserveHostConfig:output_type -> fnknock.v1.OmitTargetsConfig
-	22,  // 162: fnknock.v1.GatewayControlService.SetPreserveHostConfig:output_type -> fnknock.v1.OmitTargetsConfig
-	23,  // 163: fnknock.v1.GatewayControlService.GetCrawlerBlockerConfig:output_type -> fnknock.v1.CrawlerBlockerConfig
-	23,  // 164: fnknock.v1.GatewayControlService.SetCrawlerBlockerConfig:output_type -> fnknock.v1.CrawlerBlockerConfig
-	24,  // 165: fnknock.v1.GatewayControlService.GetGatewayPortalConfig:output_type -> fnknock.v1.GatewayPortalConfig
-	24,  // 166: fnknock.v1.GatewayControlService.SetGatewayPortalConfig:output_type -> fnknock.v1.GatewayPortalConfig
-	25,  // 167: fnknock.v1.GatewayControlService.GetGatewayUnmatchedRouteConfig:output_type -> fnknock.v1.GatewayUnmatchedRouteConfig
-	25,  // 168: fnknock.v1.GatewayControlService.SetGatewayUnmatchedRouteConfig:output_type -> fnknock.v1.GatewayUnmatchedRouteConfig
-	26,  // 169: fnknock.v1.GatewayControlService.GetFnosPortIconHijackConfig:output_type -> fnknock.v1.FnosPortIconHijackConfig
-	26,  // 170: fnknock.v1.GatewayControlService.SetFnosPortIconHijackConfig:output_type -> fnknock.v1.FnosPortIconHijackConfig
-	88,  // 171: fnknock.v1.GatewayControlService.GetFnosConnectIngressStatus:output_type -> fnknock.v1.FnosConnectIngressStatus
-	88,  // 172: fnknock.v1.GatewayControlService.SetFnosConnectIngressConfig:output_type -> fnknock.v1.FnosConnectIngressStatus
-	27,  // 173: fnknock.v1.GatewayControlService.GetReverseProxyThrottleExemptIps:output_type -> fnknock.v1.ReverseProxyThrottleExemptIpsRuntime
-	27,  // 174: fnknock.v1.GatewayControlService.SetReverseProxyThrottleExemptIps:output_type -> fnknock.v1.ReverseProxyThrottleExemptIpsRuntime
-	28,  // 175: fnknock.v1.GatewayControlService.GetCommonLocationExemptions:output_type -> fnknock.v1.CommonLocationExemptionsRuntime
-	28,  // 176: fnknock.v1.GatewayControlService.SetCommonLocationExemptions:output_type -> fnknock.v1.CommonLocationExemptionsRuntime
-	19,  // 177: fnknock.v1.GatewayLogsService.GetLoggingConfig:output_type -> fnknock.v1.LoggingConfig
-	19,  // 178: fnknock.v1.GatewayLogsService.SetLoggingConfig:output_type -> fnknock.v1.LoggingConfig
-	61,  // 179: fnknock.v1.GatewayLogsService.GetLoggingDirectory:output_type -> fnknock.v1.StringValue
-	47,  // 180: fnknock.v1.GatewayLogsService.GetLogDates:output_type -> fnknock.v1.GatewayLogDates
-	49,  // 181: fnknock.v1.GatewayLogsService.QueryLogEntries:output_type -> fnknock.v1.GatewayLogQueryResult
-	50,  // 182: fnknock.v1.GatewayLogsService.DeleteLogDate:output_type -> fnknock.v1.GatewayLogDeleteResult
-	31,  // 183: fnknock.v1.SecurityService.ListGeneralBlacklist:output_type -> fnknock.v1.GeneralBlacklistList
-	33,  // 184: fnknock.v1.SecurityService.CheckGeneralBlacklist:output_type -> fnknock.v1.GeneralBlacklistStatus
-	32,  // 185: fnknock.v1.SecurityService.AddGeneralBlacklist:output_type -> fnknock.v1.GeneralBlacklistMutationResult
-	32,  // 186: fnknock.v1.SecurityService.RemoveGeneralBlacklist:output_type -> fnknock.v1.GeneralBlacklistMutationResult
-	51,  // 187: fnknock.v1.TrafficService.GetTrafficStats:output_type -> fnknock.v1.TrafficStats
-	54,  // 188: fnknock.v1.TrafficService.GetHostActiveIps:output_type -> fnknock.v1.HostActiveIpsStats
-	35,  // 189: fnknock.v1.WafService.GetWafStatus:output_type -> fnknock.v1.WafStatus
-	35,  // 190: fnknock.v1.WafService.SetWafConfig:output_type -> fnknock.v1.WafStatus
-	36,  // 191: fnknock.v1.WafService.ValidateWafBundle:output_type -> fnknock.v1.WafValidationResult
-	35,  // 192: fnknock.v1.WafService.ReloadWafBundle:output_type -> fnknock.v1.WafStatus
-	41,  // 193: fnknock.v1.WafService.DrainWafEvents:output_type -> fnknock.v1.WafDrainResult
-	45,  // 194: fnknock.v1.SslService.GetSslInfo:output_type -> fnknock.v1.SslInfo
-	3,   // 195: fnknock.v1.SslService.SetSslDeployment:output_type -> fnknock.v1.RpcStatus
-	3,   // 196: fnknock.v1.SslService.SetSslPem:output_type -> fnknock.v1.RpcStatus
-	3,   // 197: fnknock.v1.SslService.ClearSsl:output_type -> fnknock.v1.RpcStatus
-	3,   // 198: fnknock.v1.FirewallService.InitIptables:output_type -> fnknock.v1.RpcStatus
-	3,   // 199: fnknock.v1.FirewallService.CleanIptables:output_type -> fnknock.v1.RpcStatus
-	3,   // 200: fnknock.v1.FirewallService.FlushIptables:output_type -> fnknock.v1.RpcStatus
-	3,   // 201: fnknock.v1.FirewallService.AllowIp:output_type -> fnknock.v1.RpcStatus
-	3,   // 202: fnknock.v1.FirewallService.BlockIp:output_type -> fnknock.v1.RpcStatus
-	3,   // 203: fnknock.v1.FirewallService.RemoveIp:output_type -> fnknock.v1.RpcStatus
-	3,   // 204: fnknock.v1.FirewallService.BlockTcpPortForIp:output_type -> fnknock.v1.RpcStatus
-	3,   // 205: fnknock.v1.FirewallService.RemoveTcpPortRule:output_type -> fnknock.v1.RpcStatus
-	3,   // 206: fnknock.v1.FirewallService.SyncSshFirewall:output_type -> fnknock.v1.RpcStatus
-	3,   // 207: fnknock.v1.FirewallService.ClearSshFirewall:output_type -> fnknock.v1.RpcStatus
-	3,   // 208: fnknock.v1.FirewallService.BlockAll:output_type -> fnknock.v1.RpcStatus
-	3,   // 209: fnknock.v1.FirewallService.AllowAll:output_type -> fnknock.v1.RpcStatus
-	3,   // 210: fnknock.v1.FirewallService.EnsureTcpRedirect:output_type -> fnknock.v1.RpcStatus
-	3,   // 211: fnknock.v1.FirewallService.ClearTcpRedirect:output_type -> fnknock.v1.RpcStatus
-	74,  // 212: fnknock.v1.FirewallService.ListIptables:output_type -> fnknock.v1.IptablesRules
-	86,  // 213: fnknock.v1.AuthBridgeService.ConnectAuthBridge:output_type -> fnknock.v1.AuthBridgeEnvelope
-	133, // [133:214] is the sub-list for method output_type
-	52,  // [52:133] is the sub-list for method input_type
-	52,  // [52:52] is the sub-list for extension type_name
-	52,  // [52:52] is the sub-list for extension extendee
-	0,   // [0:52] is the sub-list for field type_name
+	11,  // 11: fnknock.v1.ReverseProxyThrottleExemptIpsRuntime.policy:type_name -> fnknock.v1.CompiledIpSet
+	11,  // 12: fnknock.v1.CommonLocationExemptionsRuntime.policy:type_name -> fnknock.v1.CompiledIpSet
+	30,  // 13: fnknock.v1.GeneralBlacklistList.items:type_name -> fnknock.v1.GeneralBlacklistRecord
+	30,  // 14: fnknock.v1.GeneralBlacklistMutationResult.items:type_name -> fnknock.v1.GeneralBlacklistRecord
+	91,  // 15: fnknock.v1.GeneralBlacklistStatus.records:type_name -> fnknock.v1.GeneralBlacklistStatus.RecordsEntry
+	37,  // 16: fnknock.v1.WafRuleMatch.matched_variables:type_name -> fnknock.v1.WafMatchedVariable
+	38,  // 17: fnknock.v1.WafEvent.rules:type_name -> fnknock.v1.WafRuleMatch
+	39,  // 18: fnknock.v1.WafEvent.interruption:type_name -> fnknock.v1.WafInterruptionInfo
+	40,  // 19: fnknock.v1.WafDrainResult.events:type_name -> fnknock.v1.WafEvent
+	42,  // 20: fnknock.v1.SslConfig.certificates:type_name -> fnknock.v1.SslDeployedCertificate
+	43,  // 21: fnknock.v1.SslInfo.certificates:type_name -> fnknock.v1.SslDeployedCertificateInfo
+	46,  // 22: fnknock.v1.GatewayLogQueryResult.items:type_name -> fnknock.v1.GatewayLogEntry
+	52,  // 23: fnknock.v1.TrafficStats.by_host:type_name -> fnknock.v1.HostTrafficStats
+	53,  // 24: fnknock.v1.HostActiveIpsStats.items:type_name -> fnknock.v1.HostActiveIpStats
+	15,  // 25: fnknock.v1.Rules.items:type_name -> fnknock.v1.Rule
+	16,  // 26: fnknock.v1.HostRules.items:type_name -> fnknock.v1.HostRule
+	11,  // 27: fnknock.v1.HostRules.visibility_policies:type_name -> fnknock.v1.CompiledIpSet
+	17,  // 28: fnknock.v1.StreamRules.items:type_name -> fnknock.v1.StreamRule
+	34,  // 29: fnknock.v1.WafBundleRequest.config:type_name -> fnknock.v1.WafConfig
+	11,  // 30: fnknock.v1.SshFirewallSyncRequest.policy:type_name -> fnknock.v1.CompiledIpSet
+	11,  // 31: fnknock.v1.WhitelistFirewallSyncRequest.policy:type_name -> fnknock.v1.CompiledIpSet
+	55,  // 32: fnknock.v1.IptablesRules.items:type_name -> fnknock.v1.IptablesRule
+	4,   // 33: fnknock.v1.AuthContext.extra_headers:type_name -> fnknock.v1.Header
+	76,  // 34: fnknock.v1.VerifyAuthRequest.context:type_name -> fnknock.v1.AuthContext
+	4,   // 35: fnknock.v1.VerifyAuthResponse.response_headers:type_name -> fnknock.v1.Header
+	2,   // 36: fnknock.v1.VerifyAuthResponse.grant_kind:type_name -> fnknock.v1.AuthGrantKind
+	76,  // 37: fnknock.v1.PreflightAuthRequest.context:type_name -> fnknock.v1.AuthContext
+	4,   // 38: fnknock.v1.PreflightAuthResponse.response_headers:type_name -> fnknock.v1.Header
+	76,  // 39: fnknock.v1.AuthorizeHttpRequest.context:type_name -> fnknock.v1.AuthContext
+	0,   // 40: fnknock.v1.AuthorizeHttpRequest.mode:type_name -> fnknock.v1.HttpAuthMode
+	77,  // 41: fnknock.v1.AuthorizeHttpRequest.subdomain_rule_match:type_name -> fnknock.v1.SubdomainRuleMatch
+	81,  // 42: fnknock.v1.AuthorizeHttpResponse.preflight:type_name -> fnknock.v1.PreflightAuthResponse
+	79,  // 43: fnknock.v1.AuthorizeHttpResponse.verify:type_name -> fnknock.v1.VerifyAuthResponse
+	1,   // 44: fnknock.v1.AuthorizeHttpResponse.preflight_cache_scope:type_name -> fnknock.v1.AuthCacheScope
+	1,   // 45: fnknock.v1.AuthorizeHttpResponse.verify_cache_scope:type_name -> fnknock.v1.AuthCacheScope
+	86,  // 46: fnknock.v1.AuthBridgeEnvelope.ready:type_name -> fnknock.v1.AuthBridgeReady
+	78,  // 47: fnknock.v1.AuthBridgeEnvelope.verify_auth_request:type_name -> fnknock.v1.VerifyAuthRequest
+	79,  // 48: fnknock.v1.AuthBridgeEnvelope.verify_auth_response:type_name -> fnknock.v1.VerifyAuthResponse
+	80,  // 49: fnknock.v1.AuthBridgeEnvelope.preflight_auth_request:type_name -> fnknock.v1.PreflightAuthRequest
+	81,  // 50: fnknock.v1.AuthBridgeEnvelope.preflight_auth_response:type_name -> fnknock.v1.PreflightAuthResponse
+	84,  // 51: fnknock.v1.AuthBridgeEnvelope.verify_stream_auth_request:type_name -> fnknock.v1.VerifyStreamAuthRequest
+	85,  // 52: fnknock.v1.AuthBridgeEnvelope.verify_stream_auth_response:type_name -> fnknock.v1.VerifyStreamAuthResponse
+	82,  // 53: fnknock.v1.AuthBridgeEnvelope.authorize_http_request:type_name -> fnknock.v1.AuthorizeHttpRequest
+	83,  // 54: fnknock.v1.AuthBridgeEnvelope.authorize_http_response:type_name -> fnknock.v1.AuthorizeHttpResponse
+	30,  // 55: fnknock.v1.GeneralBlacklistStatus.RecordsEntry.value:type_name -> fnknock.v1.GeneralBlacklistRecord
+	92,  // 56: fnknock.v1.GatewayControlService.GetServerInfo:input_type -> google.protobuf.Empty
+	92,  // 57: fnknock.v1.GatewayControlService.GetGatewayListenerConfig:input_type -> google.protobuf.Empty
+	57,  // 58: fnknock.v1.GatewayControlService.SetGatewayListenerConfig:input_type -> fnknock.v1.GatewayListenerConfig
+	92,  // 59: fnknock.v1.GatewayControlService.ResetAllData:input_type -> google.protobuf.Empty
+	92,  // 60: fnknock.v1.GatewayControlService.RequestShutdown:input_type -> google.protobuf.Empty
+	92,  // 61: fnknock.v1.GatewayControlService.GetRules:input_type -> google.protobuf.Empty
+	58,  // 62: fnknock.v1.GatewayControlService.SetRules:input_type -> fnknock.v1.Rules
+	92,  // 63: fnknock.v1.GatewayControlService.FlushRules:input_type -> google.protobuf.Empty
+	92,  // 64: fnknock.v1.GatewayControlService.GetHostRules:input_type -> google.protobuf.Empty
+	59,  // 65: fnknock.v1.GatewayControlService.SetHostRules:input_type -> fnknock.v1.HostRules
+	92,  // 66: fnknock.v1.GatewayControlService.FlushHostRules:input_type -> google.protobuf.Empty
+	92,  // 67: fnknock.v1.GatewayControlService.GetStreamRules:input_type -> google.protobuf.Empty
+	60,  // 68: fnknock.v1.GatewayControlService.SetStreamRules:input_type -> fnknock.v1.StreamRules
+	92,  // 69: fnknock.v1.GatewayControlService.FlushStreamRules:input_type -> google.protobuf.Empty
+	92,  // 70: fnknock.v1.GatewayControlService.GetAuthConfig:input_type -> google.protobuf.Empty
+	18,  // 71: fnknock.v1.GatewayControlService.SetAuthConfig:input_type -> fnknock.v1.AuthConfig
+	92,  // 72: fnknock.v1.GatewayControlService.GetDefaultRoute:input_type -> google.protobuf.Empty
+	61,  // 73: fnknock.v1.GatewayControlService.SetDefaultRoute:input_type -> fnknock.v1.StringValue
+	92,  // 74: fnknock.v1.GatewayControlService.GetProxyProtocolForce:input_type -> google.protobuf.Empty
+	62,  // 75: fnknock.v1.GatewayControlService.SetProxyProtocolForce:input_type -> fnknock.v1.BoolValue
+	92,  // 76: fnknock.v1.GatewayControlService.GetLocaleConfig:input_type -> google.protobuf.Empty
+	29,  // 77: fnknock.v1.GatewayControlService.SetLocaleConfig:input_type -> fnknock.v1.LocaleConfig
+	92,  // 78: fnknock.v1.GatewayControlService.GetReverseProxyThrottle:input_type -> google.protobuf.Empty
+	20,  // 79: fnknock.v1.GatewayControlService.SetReverseProxyThrottle:input_type -> fnknock.v1.ReverseProxyThrottleConfig
+	92,  // 80: fnknock.v1.GatewayControlService.GetGatewayVisibility:input_type -> google.protobuf.Empty
+	21,  // 81: fnknock.v1.GatewayControlService.SetGatewayVisibility:input_type -> fnknock.v1.GatewayVisibilityConfig
+	92,  // 82: fnknock.v1.GatewayControlService.GetForwardedHeadersConfig:input_type -> google.protobuf.Empty
+	22,  // 83: fnknock.v1.GatewayControlService.SetForwardedHeadersConfig:input_type -> fnknock.v1.OmitTargetsConfig
+	92,  // 84: fnknock.v1.GatewayControlService.GetPreserveHostConfig:input_type -> google.protobuf.Empty
+	22,  // 85: fnknock.v1.GatewayControlService.SetPreserveHostConfig:input_type -> fnknock.v1.OmitTargetsConfig
+	92,  // 86: fnknock.v1.GatewayControlService.GetCrawlerBlockerConfig:input_type -> google.protobuf.Empty
+	23,  // 87: fnknock.v1.GatewayControlService.SetCrawlerBlockerConfig:input_type -> fnknock.v1.CrawlerBlockerConfig
+	92,  // 88: fnknock.v1.GatewayControlService.GetGatewayPortalConfig:input_type -> google.protobuf.Empty
+	24,  // 89: fnknock.v1.GatewayControlService.SetGatewayPortalConfig:input_type -> fnknock.v1.GatewayPortalConfig
+	92,  // 90: fnknock.v1.GatewayControlService.GetGatewayUnmatchedRouteConfig:input_type -> google.protobuf.Empty
+	25,  // 91: fnknock.v1.GatewayControlService.SetGatewayUnmatchedRouteConfig:input_type -> fnknock.v1.GatewayUnmatchedRouteConfig
+	92,  // 92: fnknock.v1.GatewayControlService.GetFnosPortIconHijackConfig:input_type -> google.protobuf.Empty
+	26,  // 93: fnknock.v1.GatewayControlService.SetFnosPortIconHijackConfig:input_type -> fnknock.v1.FnosPortIconHijackConfig
+	92,  // 94: fnknock.v1.GatewayControlService.GetFnosConnectIngressStatus:input_type -> google.protobuf.Empty
+	88,  // 95: fnknock.v1.GatewayControlService.SetFnosConnectIngressConfig:input_type -> fnknock.v1.FnosConnectIngressConfig
+	92,  // 96: fnknock.v1.GatewayControlService.GetReverseProxyThrottleExemptIps:input_type -> google.protobuf.Empty
+	27,  // 97: fnknock.v1.GatewayControlService.SetReverseProxyThrottleExemptIps:input_type -> fnknock.v1.ReverseProxyThrottleExemptIpsRuntime
+	92,  // 98: fnknock.v1.GatewayControlService.GetCommonLocationExemptions:input_type -> google.protobuf.Empty
+	28,  // 99: fnknock.v1.GatewayControlService.SetCommonLocationExemptions:input_type -> fnknock.v1.CommonLocationExemptionsRuntime
+	92,  // 100: fnknock.v1.GatewayLogsService.GetLoggingConfig:input_type -> google.protobuf.Empty
+	19,  // 101: fnknock.v1.GatewayLogsService.SetLoggingConfig:input_type -> fnknock.v1.LoggingConfig
+	92,  // 102: fnknock.v1.GatewayLogsService.GetLoggingDirectory:input_type -> google.protobuf.Empty
+	92,  // 103: fnknock.v1.GatewayLogsService.GetLogDates:input_type -> google.protobuf.Empty
+	48,  // 104: fnknock.v1.GatewayLogsService.QueryLogEntries:input_type -> fnknock.v1.GatewayLogQuery
+	61,  // 105: fnknock.v1.GatewayLogsService.DeleteLogDate:input_type -> fnknock.v1.StringValue
+	65,  // 106: fnknock.v1.SecurityService.ListGeneralBlacklist:input_type -> fnknock.v1.GeneralBlacklistListRequest
+	64,  // 107: fnknock.v1.SecurityService.CheckGeneralBlacklist:input_type -> fnknock.v1.IpListRequest
+	64,  // 108: fnknock.v1.SecurityService.AddGeneralBlacklist:input_type -> fnknock.v1.IpListRequest
+	64,  // 109: fnknock.v1.SecurityService.RemoveGeneralBlacklist:input_type -> fnknock.v1.IpListRequest
+	92,  // 110: fnknock.v1.TrafficService.GetTrafficStats:input_type -> google.protobuf.Empty
+	66,  // 111: fnknock.v1.TrafficService.GetHostActiveIps:input_type -> fnknock.v1.HostRequest
+	92,  // 112: fnknock.v1.WafService.GetWafStatus:input_type -> google.protobuf.Empty
+	34,  // 113: fnknock.v1.WafService.SetWafConfig:input_type -> fnknock.v1.WafConfig
+	67,  // 114: fnknock.v1.WafService.ValidateWafBundle:input_type -> fnknock.v1.WafBundleRequest
+	67,  // 115: fnknock.v1.WafService.ReloadWafBundle:input_type -> fnknock.v1.WafBundleRequest
+	68,  // 116: fnknock.v1.WafService.DrainWafEvents:input_type -> fnknock.v1.WafDrainRequest
+	92,  // 117: fnknock.v1.SslService.GetSslInfo:input_type -> google.protobuf.Empty
+	44,  // 118: fnknock.v1.SslService.SetSslDeployment:input_type -> fnknock.v1.SslConfig
+	42,  // 119: fnknock.v1.SslService.SetSslPem:input_type -> fnknock.v1.SslDeployedCertificate
+	92,  // 120: fnknock.v1.SslService.ClearSsl:input_type -> google.protobuf.Empty
+	71,  // 121: fnknock.v1.FirewallService.InitIptables:input_type -> fnknock.v1.IptablesInitRequest
+	92,  // 122: fnknock.v1.FirewallService.CleanIptables:input_type -> google.protobuf.Empty
+	92,  // 123: fnknock.v1.FirewallService.FlushIptables:input_type -> google.protobuf.Empty
+	63,  // 124: fnknock.v1.FirewallService.AllowIp:input_type -> fnknock.v1.IpRequest
+	63,  // 125: fnknock.v1.FirewallService.BlockIp:input_type -> fnknock.v1.IpRequest
+	63,  // 126: fnknock.v1.FirewallService.RemoveIp:input_type -> fnknock.v1.IpRequest
+	70,  // 127: fnknock.v1.FirewallService.BlockTcpPortForIp:input_type -> fnknock.v1.TcpPortRuleRequest
+	70,  // 128: fnknock.v1.FirewallService.RemoveTcpPortRule:input_type -> fnknock.v1.TcpPortRuleRequest
+	72,  // 129: fnknock.v1.FirewallService.SyncSshFirewall:input_type -> fnknock.v1.SshFirewallSyncRequest
+	73,  // 130: fnknock.v1.FirewallService.ClearSshFirewall:input_type -> fnknock.v1.SshFirewallClearRequest
+	74,  // 131: fnknock.v1.FirewallService.SyncWhitelistFirewall:input_type -> fnknock.v1.WhitelistFirewallSyncRequest
+	92,  // 132: fnknock.v1.FirewallService.BlockAll:input_type -> google.protobuf.Empty
+	92,  // 133: fnknock.v1.FirewallService.AllowAll:input_type -> google.protobuf.Empty
+	69,  // 134: fnknock.v1.FirewallService.EnsureTcpRedirect:input_type -> fnknock.v1.TcpRedirectRequest
+	69,  // 135: fnknock.v1.FirewallService.ClearTcpRedirect:input_type -> fnknock.v1.TcpRedirectRequest
+	92,  // 136: fnknock.v1.FirewallService.ListIptables:input_type -> google.protobuf.Empty
+	87,  // 137: fnknock.v1.AuthBridgeService.ConnectAuthBridge:input_type -> fnknock.v1.AuthBridgeEnvelope
+	56,  // 138: fnknock.v1.GatewayControlService.GetServerInfo:output_type -> fnknock.v1.ServerInfo
+	57,  // 139: fnknock.v1.GatewayControlService.GetGatewayListenerConfig:output_type -> fnknock.v1.GatewayListenerConfig
+	57,  // 140: fnknock.v1.GatewayControlService.SetGatewayListenerConfig:output_type -> fnknock.v1.GatewayListenerConfig
+	3,   // 141: fnknock.v1.GatewayControlService.ResetAllData:output_type -> fnknock.v1.RpcStatus
+	3,   // 142: fnknock.v1.GatewayControlService.RequestShutdown:output_type -> fnknock.v1.RpcStatus
+	58,  // 143: fnknock.v1.GatewayControlService.GetRules:output_type -> fnknock.v1.Rules
+	58,  // 144: fnknock.v1.GatewayControlService.SetRules:output_type -> fnknock.v1.Rules
+	3,   // 145: fnknock.v1.GatewayControlService.FlushRules:output_type -> fnknock.v1.RpcStatus
+	59,  // 146: fnknock.v1.GatewayControlService.GetHostRules:output_type -> fnknock.v1.HostRules
+	59,  // 147: fnknock.v1.GatewayControlService.SetHostRules:output_type -> fnknock.v1.HostRules
+	3,   // 148: fnknock.v1.GatewayControlService.FlushHostRules:output_type -> fnknock.v1.RpcStatus
+	60,  // 149: fnknock.v1.GatewayControlService.GetStreamRules:output_type -> fnknock.v1.StreamRules
+	60,  // 150: fnknock.v1.GatewayControlService.SetStreamRules:output_type -> fnknock.v1.StreamRules
+	3,   // 151: fnknock.v1.GatewayControlService.FlushStreamRules:output_type -> fnknock.v1.RpcStatus
+	18,  // 152: fnknock.v1.GatewayControlService.GetAuthConfig:output_type -> fnknock.v1.AuthConfig
+	3,   // 153: fnknock.v1.GatewayControlService.SetAuthConfig:output_type -> fnknock.v1.RpcStatus
+	61,  // 154: fnknock.v1.GatewayControlService.GetDefaultRoute:output_type -> fnknock.v1.StringValue
+	3,   // 155: fnknock.v1.GatewayControlService.SetDefaultRoute:output_type -> fnknock.v1.RpcStatus
+	62,  // 156: fnknock.v1.GatewayControlService.GetProxyProtocolForce:output_type -> fnknock.v1.BoolValue
+	62,  // 157: fnknock.v1.GatewayControlService.SetProxyProtocolForce:output_type -> fnknock.v1.BoolValue
+	29,  // 158: fnknock.v1.GatewayControlService.GetLocaleConfig:output_type -> fnknock.v1.LocaleConfig
+	29,  // 159: fnknock.v1.GatewayControlService.SetLocaleConfig:output_type -> fnknock.v1.LocaleConfig
+	20,  // 160: fnknock.v1.GatewayControlService.GetReverseProxyThrottle:output_type -> fnknock.v1.ReverseProxyThrottleConfig
+	20,  // 161: fnknock.v1.GatewayControlService.SetReverseProxyThrottle:output_type -> fnknock.v1.ReverseProxyThrottleConfig
+	21,  // 162: fnknock.v1.GatewayControlService.GetGatewayVisibility:output_type -> fnknock.v1.GatewayVisibilityConfig
+	21,  // 163: fnknock.v1.GatewayControlService.SetGatewayVisibility:output_type -> fnknock.v1.GatewayVisibilityConfig
+	22,  // 164: fnknock.v1.GatewayControlService.GetForwardedHeadersConfig:output_type -> fnknock.v1.OmitTargetsConfig
+	22,  // 165: fnknock.v1.GatewayControlService.SetForwardedHeadersConfig:output_type -> fnknock.v1.OmitTargetsConfig
+	22,  // 166: fnknock.v1.GatewayControlService.GetPreserveHostConfig:output_type -> fnknock.v1.OmitTargetsConfig
+	22,  // 167: fnknock.v1.GatewayControlService.SetPreserveHostConfig:output_type -> fnknock.v1.OmitTargetsConfig
+	23,  // 168: fnknock.v1.GatewayControlService.GetCrawlerBlockerConfig:output_type -> fnknock.v1.CrawlerBlockerConfig
+	23,  // 169: fnknock.v1.GatewayControlService.SetCrawlerBlockerConfig:output_type -> fnknock.v1.CrawlerBlockerConfig
+	24,  // 170: fnknock.v1.GatewayControlService.GetGatewayPortalConfig:output_type -> fnknock.v1.GatewayPortalConfig
+	24,  // 171: fnknock.v1.GatewayControlService.SetGatewayPortalConfig:output_type -> fnknock.v1.GatewayPortalConfig
+	25,  // 172: fnknock.v1.GatewayControlService.GetGatewayUnmatchedRouteConfig:output_type -> fnknock.v1.GatewayUnmatchedRouteConfig
+	25,  // 173: fnknock.v1.GatewayControlService.SetGatewayUnmatchedRouteConfig:output_type -> fnknock.v1.GatewayUnmatchedRouteConfig
+	26,  // 174: fnknock.v1.GatewayControlService.GetFnosPortIconHijackConfig:output_type -> fnknock.v1.FnosPortIconHijackConfig
+	26,  // 175: fnknock.v1.GatewayControlService.SetFnosPortIconHijackConfig:output_type -> fnknock.v1.FnosPortIconHijackConfig
+	89,  // 176: fnknock.v1.GatewayControlService.GetFnosConnectIngressStatus:output_type -> fnknock.v1.FnosConnectIngressStatus
+	89,  // 177: fnknock.v1.GatewayControlService.SetFnosConnectIngressConfig:output_type -> fnknock.v1.FnosConnectIngressStatus
+	27,  // 178: fnknock.v1.GatewayControlService.GetReverseProxyThrottleExemptIps:output_type -> fnknock.v1.ReverseProxyThrottleExemptIpsRuntime
+	27,  // 179: fnknock.v1.GatewayControlService.SetReverseProxyThrottleExemptIps:output_type -> fnknock.v1.ReverseProxyThrottleExemptIpsRuntime
+	28,  // 180: fnknock.v1.GatewayControlService.GetCommonLocationExemptions:output_type -> fnknock.v1.CommonLocationExemptionsRuntime
+	28,  // 181: fnknock.v1.GatewayControlService.SetCommonLocationExemptions:output_type -> fnknock.v1.CommonLocationExemptionsRuntime
+	19,  // 182: fnknock.v1.GatewayLogsService.GetLoggingConfig:output_type -> fnknock.v1.LoggingConfig
+	19,  // 183: fnknock.v1.GatewayLogsService.SetLoggingConfig:output_type -> fnknock.v1.LoggingConfig
+	61,  // 184: fnknock.v1.GatewayLogsService.GetLoggingDirectory:output_type -> fnknock.v1.StringValue
+	47,  // 185: fnknock.v1.GatewayLogsService.GetLogDates:output_type -> fnknock.v1.GatewayLogDates
+	49,  // 186: fnknock.v1.GatewayLogsService.QueryLogEntries:output_type -> fnknock.v1.GatewayLogQueryResult
+	50,  // 187: fnknock.v1.GatewayLogsService.DeleteLogDate:output_type -> fnknock.v1.GatewayLogDeleteResult
+	31,  // 188: fnknock.v1.SecurityService.ListGeneralBlacklist:output_type -> fnknock.v1.GeneralBlacklistList
+	33,  // 189: fnknock.v1.SecurityService.CheckGeneralBlacklist:output_type -> fnknock.v1.GeneralBlacklistStatus
+	32,  // 190: fnknock.v1.SecurityService.AddGeneralBlacklist:output_type -> fnknock.v1.GeneralBlacklistMutationResult
+	32,  // 191: fnknock.v1.SecurityService.RemoveGeneralBlacklist:output_type -> fnknock.v1.GeneralBlacklistMutationResult
+	51,  // 192: fnknock.v1.TrafficService.GetTrafficStats:output_type -> fnknock.v1.TrafficStats
+	54,  // 193: fnknock.v1.TrafficService.GetHostActiveIps:output_type -> fnknock.v1.HostActiveIpsStats
+	35,  // 194: fnknock.v1.WafService.GetWafStatus:output_type -> fnknock.v1.WafStatus
+	35,  // 195: fnknock.v1.WafService.SetWafConfig:output_type -> fnknock.v1.WafStatus
+	36,  // 196: fnknock.v1.WafService.ValidateWafBundle:output_type -> fnknock.v1.WafValidationResult
+	35,  // 197: fnknock.v1.WafService.ReloadWafBundle:output_type -> fnknock.v1.WafStatus
+	41,  // 198: fnknock.v1.WafService.DrainWafEvents:output_type -> fnknock.v1.WafDrainResult
+	45,  // 199: fnknock.v1.SslService.GetSslInfo:output_type -> fnknock.v1.SslInfo
+	3,   // 200: fnknock.v1.SslService.SetSslDeployment:output_type -> fnknock.v1.RpcStatus
+	3,   // 201: fnknock.v1.SslService.SetSslPem:output_type -> fnknock.v1.RpcStatus
+	3,   // 202: fnknock.v1.SslService.ClearSsl:output_type -> fnknock.v1.RpcStatus
+	3,   // 203: fnknock.v1.FirewallService.InitIptables:output_type -> fnknock.v1.RpcStatus
+	3,   // 204: fnknock.v1.FirewallService.CleanIptables:output_type -> fnknock.v1.RpcStatus
+	3,   // 205: fnknock.v1.FirewallService.FlushIptables:output_type -> fnknock.v1.RpcStatus
+	3,   // 206: fnknock.v1.FirewallService.AllowIp:output_type -> fnknock.v1.RpcStatus
+	3,   // 207: fnknock.v1.FirewallService.BlockIp:output_type -> fnknock.v1.RpcStatus
+	3,   // 208: fnknock.v1.FirewallService.RemoveIp:output_type -> fnknock.v1.RpcStatus
+	3,   // 209: fnknock.v1.FirewallService.BlockTcpPortForIp:output_type -> fnknock.v1.RpcStatus
+	3,   // 210: fnknock.v1.FirewallService.RemoveTcpPortRule:output_type -> fnknock.v1.RpcStatus
+	3,   // 211: fnknock.v1.FirewallService.SyncSshFirewall:output_type -> fnknock.v1.RpcStatus
+	3,   // 212: fnknock.v1.FirewallService.ClearSshFirewall:output_type -> fnknock.v1.RpcStatus
+	3,   // 213: fnknock.v1.FirewallService.SyncWhitelistFirewall:output_type -> fnknock.v1.RpcStatus
+	3,   // 214: fnknock.v1.FirewallService.BlockAll:output_type -> fnknock.v1.RpcStatus
+	3,   // 215: fnknock.v1.FirewallService.AllowAll:output_type -> fnknock.v1.RpcStatus
+	3,   // 216: fnknock.v1.FirewallService.EnsureTcpRedirect:output_type -> fnknock.v1.RpcStatus
+	3,   // 217: fnknock.v1.FirewallService.ClearTcpRedirect:output_type -> fnknock.v1.RpcStatus
+	75,  // 218: fnknock.v1.FirewallService.ListIptables:output_type -> fnknock.v1.IptablesRules
+	87,  // 219: fnknock.v1.AuthBridgeService.ConnectAuthBridge:output_type -> fnknock.v1.AuthBridgeEnvelope
+	138, // [138:220] is the sub-list for method output_type
+	56,  // [56:138] is the sub-list for method input_type
+	56,  // [56:56] is the sub-list for extension type_name
+	56,  // [56:56] is the sub-list for extension extendee
+	0,   // [0:56] is the sub-list for field type_name
 }
 
 func init() { file_fnknock_v1_gateway_proto_init() }
@@ -8010,8 +8141,8 @@ func file_fnknock_v1_gateway_proto_init() {
 		return
 	}
 	file_fnknock_v1_gateway_proto_msgTypes[13].OneofWrappers = []any{}
-	file_fnknock_v1_gateway_proto_msgTypes[72].OneofWrappers = []any{}
-	file_fnknock_v1_gateway_proto_msgTypes[83].OneofWrappers = []any{
+	file_fnknock_v1_gateway_proto_msgTypes[73].OneofWrappers = []any{}
+	file_fnknock_v1_gateway_proto_msgTypes[84].OneofWrappers = []any{
 		(*AuthBridgeEnvelope_Ready)(nil),
 		(*AuthBridgeEnvelope_VerifyAuthRequest)(nil),
 		(*AuthBridgeEnvelope_VerifyAuthResponse)(nil),
@@ -8028,7 +8159,7 @@ func file_fnknock_v1_gateway_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_fnknock_v1_gateway_proto_rawDesc), len(file_fnknock_v1_gateway_proto_rawDesc)),
 			NumEnums:      3,
-			NumMessages:   88,
+			NumMessages:   89,
 			NumExtensions: 0,
 			NumServices:   8,
 		},

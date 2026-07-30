@@ -7,12 +7,33 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
 )
 
 const DefaultSSHFirewallChain = "FN-KNOCK-SSH"
+const (
+	sshNftTableName              = "fnknock_ssh"
+	whitelistNftTableName        = "fnknock_whitelist"
+	whitelistChainName           = "FNK-WHITELIST"
+	whitelistMarkChainName       = "FNK-WL-MARK"
+	whitelistPacketMark          = "0x40000000"
+	whitelistPacketMarkWithMask  = "0x40000000/0x40000000"
+	whitelistPacketMarkClearMask = "0xbfffffff"
+	sshAllowMark                 = "0x10000000"
+	sshAllowMarkWithMask         = "0x10000000/0x10000000"
+	sshBlockMark                 = "0x20000000"
+	sshBlockMarkWithMask         = "0x20000000/0x20000000"
+	sshClassificationClearMask   = "0xcfffffff"
+	sshClassificationMask        = "0x30000000"
+	sshAllowActionChain          = "FNK-SSH-ALLOW"
+	sshBlockActionChain          = "FNK-SSH-BLOCK"
+	sshDefaultActionChain        = "FNK-SSH-DEFAULT"
+	nftIntervalSetMinSourceSize  = 256
+	nftClassifierPriority        = "-1"
+)
 
 type Options struct {
 	ChainName   string
@@ -73,7 +94,10 @@ type Manager struct {
 	runner                     commandRunner
 	baseRulesMu                sync.RWMutex
 	baseFirewallEnabledByTable map[string]bool
+	nftCommand                 string
 	disabled                   bool
+	whitelistPolicyMu          sync.Mutex
+	whitelistNftReady          bool
 }
 
 type TCPPortAccessPolicy struct {
@@ -177,8 +201,24 @@ func NewManager(opts Options) *Manager {
 		ExemptPorts:  opts.ExemptPorts,
 		tables:       tables,
 		runner:       execRunner{useSudo: shouldUseSudo()},
+		nftCommand:   findNftCommand(),
 		disabled:     opts.Disabled || iptablesDisabledByEnvironment(),
 	}
+}
+
+func findNftCommand() string {
+	if runtime.GOOS != "linux" {
+		return ""
+	}
+	if command, err := exec.LookPath("nft"); err == nil {
+		return command
+	}
+	for _, command := range []string{"/usr/sbin/nft", "/sbin/nft"} {
+		if info, err := os.Stat(command); err == nil && !info.IsDir() {
+			return command
+		}
+	}
+	return ""
 }
 
 func iptablesDisabledByEnvironment() bool {
@@ -344,6 +384,12 @@ func (m *Manager) Init() error {
 			Interface("tables", debugArgs(m.tables)).
 			Send()
 	}
+	if err := m.ensureNftWhitelistClassifier(); err != nil {
+		return errors.New(
+			errors.CodeIptablesInitError,
+			fmt.Sprintf("Failed to initialize whitelist nft classifier: %v", err),
+		)
+	}
 	for _, table := range m.tables {
 		if err := m.runTable(table, "-L", m.Chain, "-n"); err != nil {
 			if err := m.runTable(table, "-N", m.Chain); err != nil {
@@ -355,6 +401,12 @@ func (m *Manager) Init() error {
 				}
 				return errors.New(errors.CodeIptablesInitError, fmt.Sprintf("Failed to create chain (%s): %v", table, err))
 			}
+		}
+		if err := m.prepareWhitelistSupportChains(table); err != nil {
+			return errors.New(
+				errors.CodeIptablesInitError,
+				fmt.Sprintf("Failed to initialize whitelist support chains (%s): %v", table, err),
+			)
 		}
 
 		for _, parent := range m.ParentChains {
@@ -416,7 +468,19 @@ func (m *Manager) Flush() error {
 			Interface("tables", debugArgs(m.tables)).
 			Send()
 	}
+	if err := m.ensureNftWhitelistClassifier(); err != nil {
+		return errors.New(
+			errors.CodeIptablesCommandError,
+			fmt.Sprintf("Failed to initialize whitelist nft classifier: %v", err),
+		)
+	}
 	for _, table := range m.tables {
+		if err := m.prepareWhitelistSupportChains(table); err != nil {
+			return errors.New(
+				errors.CodeIptablesCommandError,
+				fmt.Sprintf("Failed to reset whitelist support chains (%s): %v", table, err),
+			)
+		}
 		if err := m.runTable(table, "-F", m.Chain); err != nil {
 			if event := logger.DebugEvent("iptables", "flush_failed"); event != nil {
 				event.Str("table", logger.SanitizeLogString(table)).
@@ -511,6 +575,26 @@ func (m *Manager) ensureChain(table string, chain string) error {
 	return nil
 }
 
+func (m *Manager) prepareWhitelistSupportChains(table string) error {
+	for _, chain := range []string{whitelistChainName, whitelistMarkChainName} {
+		if err := m.ensureChain(table, chain); err != nil {
+			return err
+		}
+		if err := m.runTable(table, "-F", chain); err != nil {
+			return err
+		}
+	}
+	if err := m.runTable(
+		table,
+		"-A", whitelistMarkChainName,
+		"-j", "MARK",
+		"--set-xmark", "0x0/0x40000000",
+	); err != nil {
+		return err
+	}
+	return m.runTable(table, "-A", whitelistMarkChainName, "-j", "ACCEPT")
+}
+
 func (m *Manager) parentChainExists(table string, parent string) bool {
 	return m.runTable(table, "-L", parent, "-n") == nil
 }
@@ -551,6 +635,10 @@ func (m *Manager) clearTCPPortAccessPolicyForTable(table string, chain string, p
 	}
 	_ = m.runTable(table, "-F", chain)
 	_ = m.runTable(table, "-X", chain)
+	for _, actionChain := range sshActionChains() {
+		_ = m.runTable(table, "-F", actionChain)
+		_ = m.runTable(table, "-X", actionChain)
+	}
 }
 
 func (m *Manager) tablesForAccessPolicy(policy TCPPortAccessPolicy) ([]string, error) {
@@ -651,6 +739,61 @@ func (m *Manager) SyncTCPPortAccessPolicy(policy TCPPortAccessPolicy) error {
 		return m.ClearTCPPortAccessPolicy(chain, parents)
 	}
 
+	if m.nftCommand != "" &&
+		len(allowSources)+len(blockSources) >= nftIntervalSetMinSourceSize {
+		if err := m.syncNftTCPPortAccessPolicy(normalizedPolicy); err != nil {
+			return err
+		}
+		activeTables := make(map[string]struct{}, len(tables))
+		for _, table := range tables {
+			activeTables[table] = struct{}{}
+		}
+		for _, table := range m.tables {
+			if _, ok := activeTables[table]; !ok {
+				m.clearTCPPortAccessPolicyForTable(table, chain, parents)
+				continue
+			}
+			if err := m.ensureChain(table, chain); err != nil {
+				return errors.New(
+					errors.CodeIptablesInitError,
+					fmt.Sprintf("Failed to create SSH chain (%s): %v", table, err),
+				)
+			}
+			for _, actionChain := range sshActionChains() {
+				if err := m.ensureChain(table, actionChain); err != nil {
+					return errors.New(
+						errors.CodeIptablesInitError,
+						fmt.Sprintf("Failed to create SSH action chain (%s): %v", table, err),
+					)
+				}
+			}
+			for _, parent := range parents {
+				if !m.parentChainExists(table, parent) {
+					continue
+				}
+				m.deleteParentJumpsToChain(table, parent, chain)
+				for _, port := range ports {
+					if err := m.addTCPPortJump(table, parent, chain, port); err != nil {
+						return errors.New(
+							errors.CodeIptablesInitError,
+							fmt.Sprintf(
+								"Failed to link SSH chain to %s:%d (%s): %v",
+								parent,
+								port,
+								table,
+								err,
+							),
+						)
+					}
+				}
+			}
+			if err := m.applyNftClassifiedTCPPortAccessPolicy(table, normalizedPolicy); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+
 	activeTables := map[string]struct{}{}
 	for _, table := range tables {
 		activeTables[table] = struct{}{}
@@ -699,6 +842,9 @@ func (m *Manager) SyncTCPPortAccessPolicy(policy TCPPortAccessPolicy) error {
 			}
 			return err
 		}
+	}
+	if err := m.clearNftTCPPortAccessPolicy(); err != nil {
+		return err
 	}
 
 	if event := logger.DebugEvent("iptables", "tcp_port_access_policy_sync_end"); event != nil {
@@ -781,6 +927,80 @@ func (m *Manager) applyTCPPortAccessPolicy(table string, policy TCPPortAccessPol
 	return nil
 }
 
+func sshActionChains() []string {
+	return []string{sshAllowActionChain, sshBlockActionChain, sshDefaultActionChain}
+}
+
+func (m *Manager) applyNftClassifiedTCPPortAccessPolicy(
+	table string,
+	policy TCPPortAccessPolicy,
+) error {
+	chain := normalizeChainName(policy.Chain, DefaultSSHFirewallChain)
+	var builder strings.Builder
+	builder.WriteString("*filter\n-F ")
+	builder.WriteString(chain)
+	builder.WriteByte('\n')
+	for _, actionChain := range sshActionChains() {
+		builder.WriteString("-F ")
+		builder.WriteString(actionChain)
+		builder.WriteByte('\n')
+		builder.WriteString("-A ")
+		builder.WriteString(actionChain)
+		builder.WriteString(" -j MARK --set-xmark 0x0/")
+		builder.WriteString(sshClassificationMask)
+		builder.WriteByte('\n')
+	}
+	builder.WriteString("-A ")
+	builder.WriteString(sshAllowActionChain)
+	builder.WriteString(" -j ACCEPT\n-A ")
+	builder.WriteString(sshBlockActionChain)
+	builder.WriteString(" -j DROP\n-A ")
+	builder.WriteString(sshDefaultActionChain)
+	builder.WriteString(" -j ")
+	builder.WriteString(policy.DefaultAction)
+	builder.WriteByte('\n')
+
+	if policy.IncludeLocalCIDRs {
+		builder.WriteString("-A ")
+		builder.WriteString(chain)
+		builder.WriteString(" -i lo -j ACCEPT\n")
+		for _, cidr := range m.localCIDRsForTable(table) {
+			builder.WriteString("-A ")
+			builder.WriteString(chain)
+			builder.WriteString(" -s ")
+			builder.WriteString(cidr)
+			builder.WriteString(" -j ACCEPT\n")
+		}
+	}
+	builder.WriteString("-A ")
+	builder.WriteString(chain)
+	builder.WriteString(" -m mark --mark ")
+	builder.WriteString(sshBlockMarkWithMask)
+	builder.WriteString(" -j ")
+	builder.WriteString(sshBlockActionChain)
+	builder.WriteByte('\n')
+	builder.WriteString("-A ")
+	builder.WriteString(chain)
+	builder.WriteString(" -m mark --mark ")
+	builder.WriteString(sshAllowMarkWithMask)
+	builder.WriteString(" -j ")
+	builder.WriteString(sshAllowActionChain)
+	builder.WriteByte('\n')
+	builder.WriteString("-A ")
+	builder.WriteString(chain)
+	builder.WriteString(" -j ")
+	builder.WriteString(sshDefaultActionChain)
+	builder.WriteString("\nCOMMIT\n")
+
+	if err := m.runTableRestore(table, builder.String()); err != nil {
+		return errors.New(
+			errors.CodeIptablesCommandError,
+			fmt.Sprintf("Failed to apply compact SSH classifier policy (%s): %v", table, err),
+		)
+	}
+	return nil
+}
+
 func (m *Manager) ClearTCPPortAccessPolicy(chain string, parents []string) error {
 	chain = normalizeChainName(chain, DefaultSSHFirewallChain)
 	if len(parents) == 0 {
@@ -792,6 +1012,9 @@ func (m *Manager) ClearTCPPortAccessPolicy(chain string, parents []string) error
 	for _, table := range m.tables {
 		m.clearTCPPortAccessPolicyForTable(table, chain, parents)
 	}
+	if err := m.clearNftTCPPortAccessPolicy(); err != nil {
+		return err
+	}
 	if event := logger.DebugEvent("iptables", "tcp_port_access_policy_cleared"); event != nil {
 		event.Str("chain", logger.SanitizeLogString(chain)).
 			Interface("parent_chains", debugArgs(parents)).
@@ -801,11 +1024,408 @@ func (m *Manager) ClearTCPPortAccessPolicy(chain string, parents []string) error
 	return nil
 }
 
+func (m *Manager) syncNftTCPPortAccessPolicy(policy TCPPortAccessPolicy) error {
+	if m.isDisabled() {
+		return errors.New(errors.CodeIptablesCommandError, "iptables is disabled for this runtime")
+	}
+	allow4, allow6, err := splitNftSources(policy.AllowSources)
+	if err != nil {
+		return err
+	}
+	block4, block6, err := splitNftSources(policy.BlockSources)
+	if err != nil {
+		return err
+	}
+
+	// Ensure the table exists so the following delete+recreate batch is atomic
+	// even on the first successful synchronization.
+	_, _ = m.runner.CombinedOutput(m.nftCommand, "add", "table", "inet", sshNftTableName)
+	script := buildNftTCPPortAccessPolicy(policy, allow4, allow6, block4, block6)
+	output, runErr := m.runner.CombinedOutputWithInput(script, m.nftCommand, "-f", "-")
+	if runErr != nil {
+		return errors.New(
+			errors.CodeIptablesCommandError,
+			fmt.Sprintf(
+				"Failed to atomically apply SSH nft interval policy: %v, output: %s",
+				runErr,
+				logger.SanitizeLogString(string(output)),
+			),
+		)
+	}
+	return nil
+}
+
+func (m *Manager) ensureNftWhitelistClassifier() error {
+	if m.nftCommand == "" || m.isDisabled() {
+		return nil
+	}
+	m.whitelistPolicyMu.Lock()
+	defer m.whitelistPolicyMu.Unlock()
+	if m.whitelistNftReady {
+		return nil
+	}
+	return m.replaceNftWhitelistIPSetLocked(nil, nil)
+}
+
+func (m *Manager) clearNftTCPPortAccessPolicy() error {
+	return m.clearNftTable(sshNftTableName)
+}
+
+func (m *Manager) clearNftTable(table string) error {
+	if m.nftCommand == "" || m.isDisabled() {
+		return nil
+	}
+	output, err := m.runner.CombinedOutput(
+		m.nftCommand,
+		"delete",
+		"table",
+		"inet",
+		table,
+	)
+	if err == nil || nftObjectMissing(output) {
+		return nil
+	}
+	return errors.New(
+		errors.CodeIptablesCommandError,
+		fmt.Sprintf(
+			"Failed to delete nft table %s: %v, output: %s",
+			table,
+			err,
+			logger.SanitizeLogString(string(output)),
+		),
+	)
+}
+
+func nftObjectMissing(output []byte) bool {
+	message := strings.ToLower(string(output))
+	return strings.Contains(message, "no such file or directory") ||
+		strings.Contains(message, "does not exist") ||
+		strings.Contains(message, "not found")
+}
+
+// SyncWhitelistIPSet atomically replaces the complete direct-mode whitelist.
+// Native nft interval sets keep large regional policies compact. On older
+// systems without nft, one iptables-restore transaction per address family
+// provides a compatible, bounded-RPC fallback.
+func (m *Manager) SyncWhitelistIPSet(sources []string) error {
+	m.whitelistPolicyMu.Lock()
+	defer m.whitelistPolicyMu.Unlock()
+
+	if m.isDisabled() {
+		return errors.New(errors.CodeIptablesCommandError, "iptables is disabled for this runtime")
+	}
+	ipv4, ipv6, err := splitNftSources(normalizeSources(sources))
+	if err != nil {
+		return err
+	}
+	for _, table := range m.tables {
+		if err := m.prepareWhitelistSupportChains(table); err != nil {
+			return errors.New(
+				errors.CodeIptablesCommandError,
+				fmt.Sprintf("Failed to prepare whitelist chains (%s): %v", table, err),
+			)
+		}
+	}
+	if m.nftCommand == "" {
+		return m.syncLegacyWhitelistIPSet(ipv4, ipv6)
+	}
+	return m.replaceNftWhitelistIPSetLocked(ipv4, ipv6)
+}
+
+func (m *Manager) replaceNftWhitelistIPSetLocked(ipv4 []string, ipv6 []string) error {
+	// Ensure the table exists so delete+recreate below is one valid atomic
+	// transaction both on first installation and subsequent replacements.
+	_, _ = m.runner.CombinedOutput(
+		m.nftCommand,
+		"add",
+		"table",
+		"inet",
+		whitelistNftTableName,
+	)
+	script := buildNftWhitelistIPSet(m.ParentChains, ipv4, ipv6)
+	output, runErr := m.runner.CombinedOutputWithInput(script, m.nftCommand, "-f", "-")
+	if runErr != nil {
+		return errors.New(
+			errors.CodeIptablesCommandError,
+			fmt.Sprintf(
+				"Failed to atomically apply whitelist nft interval policy: %v, output: %s",
+				runErr,
+				logger.SanitizeLogString(string(output)),
+			),
+		)
+	}
+	m.whitelistNftReady = true
+	return nil
+}
+
+func (m *Manager) ClearWhitelistIPSet() error {
+	m.whitelistPolicyMu.Lock()
+	defer m.whitelistPolicyMu.Unlock()
+	return m.clearWhitelistIPSetLocked()
+}
+
+func (m *Manager) clearWhitelistIPSetLocked() error {
+	if m.nftCommand != "" {
+		if err := m.replaceNftWhitelistIPSetLocked(nil, nil); err != nil {
+			return err
+		}
+	}
+	for _, table := range m.tables {
+		if err := m.ensureChain(table, whitelistChainName); err != nil {
+			return err
+		}
+		if err := m.runTable(table, "-F", whitelistChainName); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (m *Manager) syncLegacyWhitelistIPSet(ipv4 []string, ipv6 []string) error {
+	if err := m.clearNftTable(whitelistNftTableName); err != nil {
+		return err
+	}
+	for _, table := range m.tables {
+		values := ipv4
+		if table == "ip6tables" {
+			values = ipv6
+		}
+		var builder strings.Builder
+		builder.WriteString("*filter\n-F ")
+		builder.WriteString(whitelistChainName)
+		builder.WriteByte('\n')
+		for _, source := range values {
+			builder.WriteString("-A ")
+			builder.WriteString(whitelistChainName)
+			builder.WriteString(" -s ")
+			builder.WriteString(source)
+			builder.WriteString(" -j ACCEPT\n")
+		}
+		builder.WriteString("COMMIT\n")
+		if err := m.runTableRestore(table, builder.String()); err != nil {
+			return errors.New(
+				errors.CodeIptablesCommandError,
+				fmt.Sprintf("Failed to batch apply whitelist policy (%s): %v", table, err),
+			)
+		}
+	}
+	return nil
+}
+
+func buildNftWhitelistIPSet(parents []string, ipv4 []string, ipv6 []string) string {
+	var builder strings.Builder
+	builder.WriteString("delete table inet ")
+	builder.WriteString(whitelistNftTableName)
+	builder.WriteString("\nadd table inet ")
+	builder.WriteString(whitelistNftTableName)
+	builder.WriteByte('\n')
+	writeNftSetForTable(&builder, whitelistNftTableName, "allow4", "ipv4_addr", ipv4)
+	writeNftSetForTable(&builder, whitelistNftTableName, "allow6", "ipv6_addr", ipv6)
+	for _, hook := range nftHooksForParents(parents) {
+		builder.WriteString("add chain inet ")
+		builder.WriteString(whitelistNftTableName)
+		builder.WriteByte(' ')
+		builder.WriteString(hook)
+		builder.WriteString("_mark { type filter hook ")
+		builder.WriteString(hook)
+		builder.WriteString(" priority ")
+		builder.WriteString(nftClassifierPriority)
+		builder.WriteString("; policy accept; }\nadd rule inet ")
+		builder.WriteString(whitelistNftTableName)
+		builder.WriteByte(' ')
+		builder.WriteString(hook)
+		builder.WriteString("_mark meta mark set meta mark & ")
+		builder.WriteString(whitelistPacketMarkClearMask)
+		builder.WriteByte('\n')
+		if len(ipv4) > 0 {
+			builder.WriteString("add rule inet ")
+			builder.WriteString(whitelistNftTableName)
+			builder.WriteByte(' ')
+			builder.WriteString(hook)
+			builder.WriteString("_mark ip saddr @allow4 meta mark set meta mark | ")
+			builder.WriteString(whitelistPacketMark)
+			builder.WriteByte('\n')
+		}
+		if len(ipv6) > 0 {
+			builder.WriteString("add rule inet ")
+			builder.WriteString(whitelistNftTableName)
+			builder.WriteByte(' ')
+			builder.WriteString(hook)
+			builder.WriteString("_mark ip6 saddr @allow6 meta mark set meta mark | ")
+			builder.WriteString(whitelistPacketMark)
+			builder.WriteByte('\n')
+		}
+	}
+	return builder.String()
+}
+
+func splitNftSources(sources []string) ([]string, []string, error) {
+	ipv4 := make([]string, 0, len(sources))
+	ipv6 := make([]string, 0, len(sources))
+	for _, source := range sources {
+		source = strings.TrimSpace(source)
+		if source == "" {
+			continue
+		}
+		if address := net.ParseIP(source); address != nil {
+			if address.To4() != nil {
+				ipv4 = append(ipv4, address.String())
+			} else {
+				ipv6 = append(ipv6, address.String())
+			}
+			continue
+		}
+		address, network, parseErr := net.ParseCIDR(source)
+		if parseErr != nil {
+			return nil, nil, errors.New(errors.CodeBadRequest, "Invalid IP or CIDR")
+		}
+		if address.To4() != nil {
+			ipv4 = append(ipv4, network.String())
+		} else {
+			ipv6 = append(ipv6, network.String())
+		}
+	}
+	return ipv4, ipv6, nil
+}
+
+func buildNftTCPPortAccessPolicy(
+	policy TCPPortAccessPolicy,
+	allow4 []string,
+	allow6 []string,
+	block4 []string,
+	block6 []string,
+) string {
+	var builder strings.Builder
+	builder.WriteString("delete table inet ")
+	builder.WriteString(sshNftTableName)
+	builder.WriteString("\nadd table inet ")
+	builder.WriteString(sshNftTableName)
+	builder.WriteByte('\n')
+	writeNftSet(&builder, "allow4", "ipv4_addr", allow4)
+	writeNftSet(&builder, "allow6", "ipv6_addr", allow6)
+	writeNftSet(&builder, "block4", "ipv4_addr", block4)
+	writeNftSet(&builder, "block6", "ipv6_addr", block6)
+	for _, hook := range nftHooksForParents(policy.ParentChains) {
+		builder.WriteString("add chain inet ")
+		builder.WriteString(sshNftTableName)
+		builder.WriteByte(' ')
+		builder.WriteString(hook)
+		builder.WriteString("_classify { type filter hook ")
+		builder.WriteString(hook)
+		builder.WriteString(" priority ")
+		builder.WriteString(nftClassifierPriority)
+		builder.WriteString("; policy accept; }\nadd rule inet ")
+		builder.WriteString(sshNftTableName)
+		builder.WriteByte(' ')
+		builder.WriteString(hook)
+		builder.WriteString("_classify meta mark set meta mark & ")
+		builder.WriteString(sshClassificationClearMask)
+		builder.WriteByte('\n')
+		writeNftSetMarkRule(&builder, hook, "allow4", "ip", allow4, sshAllowMark)
+		writeNftSetMarkRule(&builder, hook, "allow6", "ip6", allow6, sshAllowMark)
+		writeNftSetMarkRule(&builder, hook, "block4", "ip", block4, sshBlockMark)
+		writeNftSetMarkRule(&builder, hook, "block6", "ip6", block6, sshBlockMark)
+		builder.WriteString("add chain inet ")
+		builder.WriteString(sshNftTableName)
+		builder.WriteByte(' ')
+		builder.WriteString(hook)
+		builder.WriteString("_clear { type filter hook ")
+		builder.WriteString(hook)
+		builder.WriteString(" priority 10; policy accept; }\nadd rule inet ")
+		builder.WriteString(sshNftTableName)
+		builder.WriteByte(' ')
+		builder.WriteString(hook)
+		builder.WriteString("_clear meta mark & ")
+		builder.WriteString(sshClassificationMask)
+		builder.WriteString(" != 0 meta mark set meta mark & ")
+		builder.WriteString(sshClassificationClearMask)
+		builder.WriteByte('\n')
+	}
+	return builder.String()
+}
+
+func writeNftSet(builder *strings.Builder, name string, setType string, values []string) {
+	writeNftSetForTable(builder, sshNftTableName, name, setType, values)
+}
+
+func writeNftSetForTable(
+	builder *strings.Builder,
+	table string,
+	name string,
+	setType string,
+	values []string,
+) {
+	if len(values) == 0 {
+		return
+	}
+	builder.WriteString("add set inet ")
+	builder.WriteString(table)
+	builder.WriteByte(' ')
+	builder.WriteString(name)
+	builder.WriteString(" { type ")
+	builder.WriteString(setType)
+	builder.WriteString("; flags interval; }\nadd element inet ")
+	builder.WriteString(table)
+	builder.WriteByte(' ')
+	builder.WriteString(name)
+	builder.WriteString(" { ")
+	builder.WriteString(strings.Join(values, ", "))
+	builder.WriteString(" }\n")
+}
+
+func writeNftSetMarkRule(
+	builder *strings.Builder,
+	hook string,
+	name string,
+	family string,
+	values []string,
+	mark string,
+) {
+	if len(values) == 0 {
+		return
+	}
+	builder.WriteString("add rule inet ")
+	builder.WriteString(sshNftTableName)
+	builder.WriteByte(' ')
+	builder.WriteString(hook)
+	builder.WriteString("_classify ")
+	builder.WriteString(family)
+	builder.WriteString(" saddr @")
+	builder.WriteString(name)
+	builder.WriteString(" meta mark set meta mark | ")
+	builder.WriteString(mark)
+	builder.WriteByte('\n')
+}
+
+func nftHooksForParents(parents []string) []string {
+	input := false
+	forward := false
+	for _, parent := range parents {
+		switch strings.ToUpper(strings.TrimSpace(parent)) {
+		case "INPUT":
+			input = true
+		case "FORWARD", "DOCKER-USER":
+			forward = true
+		}
+	}
+	hooks := make([]string, 0, 2)
+	if input || (!input && !forward) {
+		hooks = append(hooks, "input")
+	}
+	if forward {
+		hooks = append(hooks, "forward")
+	}
+	return hooks
+}
+
 func (m *Manager) baseRuleCountForTable(table string) int {
 	if !m.baseFirewallEnabledForTable(table) {
-		return 1
+		return 3
 	}
-	count := 2
+	count := 3
+	if m.whitelistNftClassifierReady() {
+		count++
+	}
 	count += len(m.localCIDRsForTable(table))
 	count++
 	if len(m.ExemptPorts) > 0 {
@@ -813,6 +1433,12 @@ func (m *Manager) baseRuleCountForTable(table string) int {
 		count += chunks * 2
 	}
 	return count
+}
+
+func (m *Manager) whitelistNftClassifierReady() bool {
+	m.whitelistPolicyMu.Lock()
+	defer m.whitelistPolicyMu.Unlock()
+	return m.whitelistNftReady
 }
 
 func (m *Manager) baseFirewallEnabledForTable(table string) bool {
@@ -838,6 +1464,20 @@ func (m *Manager) applyBaseRules(table string) error {
 	m.setBaseFirewallEnabledForTable(table, false)
 
 	if err := m.runTable(table, "-A", m.Chain, "-i", "lo", "-j", "ACCEPT"); err != nil {
+		return err
+	}
+	if m.whitelistNftClassifierReady() {
+		if err := m.runTable(
+			table,
+			"-A", m.Chain,
+			"-m", "mark",
+			"--mark", whitelistPacketMarkWithMask,
+			"-j", whitelistMarkChainName,
+		); err != nil {
+			return err
+		}
+	}
+	if err := m.runTable(table, "-A", m.Chain, "-j", whitelistChainName); err != nil {
 		return err
 	}
 	establishedRuleAdded, err := m.appendEstablishedRelatedRule(table)
@@ -945,6 +1585,11 @@ func (m *Manager) Destroy() error {
 			Send()
 	}
 	for _, table := range m.tables {
+		m.clearTCPPortAccessPolicyForTable(
+			table,
+			DefaultSSHFirewallChain,
+			m.ParentChains,
+		)
 		for _, parent := range m.ParentChains {
 			for {
 				if err := m.runTable(table, "-D", parent, "-j", m.Chain); err != nil {
@@ -955,7 +1600,21 @@ func (m *Manager) Destroy() error {
 
 		_ = m.runTable(table, "-F", m.Chain)
 		_ = m.runTable(table, "-X", m.Chain)
+		for _, chain := range []string{whitelistChainName, whitelistMarkChainName} {
+			_ = m.runTable(table, "-F", chain)
+			_ = m.runTable(table, "-X", chain)
+		}
 	}
+	if err := m.clearNftTCPPortAccessPolicy(); err != nil {
+		return err
+	}
+	m.whitelistPolicyMu.Lock()
+	if err := m.clearNftTable(whitelistNftTableName); err != nil {
+		m.whitelistPolicyMu.Unlock()
+		return err
+	}
+	m.whitelistNftReady = false
+	m.whitelistPolicyMu.Unlock()
 	if event := logger.DebugEvent("iptables", "destroy_end"); event != nil {
 		event.Str("chain", logger.SanitizeLogString(m.Chain)).Send()
 	}

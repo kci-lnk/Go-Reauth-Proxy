@@ -5,7 +5,6 @@ import (
 	"net/netip"
 	"strings"
 	"sync"
-	"time"
 
 	compiledipset "go-reauth-proxy/pkg/ipset"
 	"go-reauth-proxy/pkg/models"
@@ -70,10 +69,10 @@ func (r *gatewayTrustedClientIPsRuntime) updateConfig(cfg models.GatewayTrustedC
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	if shouldIgnoreGatewayTrustedClientIPsUpdate(r.config.UpdatedAt, normalized.UpdatedAt) {
-		return false, nil
-	}
-
+	// The Rust control plane serializes and publishes this authoritative full
+	// snapshot. UpdatedAt is diagnostic metadata rather than an ordering token;
+	// using wall time to reject it can keep a revoked IP trusted after a clock
+	// rollback or backup restore.
 	r.config = normalized
 	r.ips = ips
 	r.cidrSet = cidrSet
@@ -165,23 +164,4 @@ func gatewayTrustedEquivalentLoopback(addr netip.Addr) (netip.Addr, bool) {
 	default:
 		return netip.Addr{}, false
 	}
-}
-
-func shouldIgnoreGatewayTrustedClientIPsUpdate(currentUpdatedAt string, nextUpdatedAt string) bool {
-	currentTime, okCurrent := parseGatewayTrustedClientIPsUpdatedAt(currentUpdatedAt)
-	nextTime, okNext := parseGatewayTrustedClientIPsUpdatedAt(nextUpdatedAt)
-	return okCurrent && okNext && nextTime.Before(currentTime)
-}
-
-func parseGatewayTrustedClientIPsUpdatedAt(value string) (time.Time, bool) {
-	trimmed := strings.TrimSpace(value)
-	if trimmed == "" {
-		return time.Time{}, false
-	}
-	parsed, err := time.Parse(time.RFC3339Nano, trimmed)
-	if err == nil {
-		return parsed, true
-	}
-	parsed, err = time.Parse(time.RFC3339, trimmed)
-	return parsed, err == nil
 }

@@ -93,6 +93,7 @@ var sharedProxyBufferPool = newProxyBufferPool(proxyCopyBufferSize)
 type Handler struct {
 	mu                      sync.RWMutex
 	listenerChangeMu        sync.Mutex
+	wafChangeMu             sync.Mutex
 	Rules                   []models.Rule
 	HostRules               []models.HostRule
 	VisibilityPolicies      map[string]models.CompiledIPSet
@@ -1845,6 +1846,8 @@ func (h *Handler) ResetAllData(resetConfig *config.AppConfig) error {
 	if resetConfig == nil {
 		return fmt.Errorf("reset config is required")
 	}
+	h.wafChangeMu.Lock()
+	defer h.wafChangeMu.Unlock()
 
 	loggingConfig := gatewaylog.NormalizeConfig(resetConfig.Logging)
 	forwardedHeaders, _ := normalizeForwardedHeadersConfig(resetConfig.ForwardedHeaders)
@@ -1862,13 +1865,14 @@ func (h *Handler) ResetAllData(resetConfig *config.AppConfig) error {
 		return fmt.Errorf("build reset SSL runtime: %w", err)
 	}
 
-	previousWAF := h.GetWAFConfig()
 	wafConfig := resetConfig.WAF
+	var preparedWAF proxywaf.PreparedState
 	if h.wafRuntime != nil {
-		wafConfig, err = h.wafRuntime.SetConfig(wafConfig)
+		preparedWAF, err = h.wafRuntime.PrepareConfig(wafConfig)
 		if err != nil {
 			return fmt.Errorf("reset WAF runtime: %w", err)
 		}
+		wafConfig = preparedWAF.Config()
 	}
 
 	resetConfig.Rules = []models.Rule{}
@@ -1886,9 +1890,6 @@ func (h *Handler) ResetAllData(resetConfig *config.AppConfig) error {
 	resetConfig.SSLKey = ""
 	if h.configManager != nil {
 		if err := h.configManager.Save(resetConfig); err != nil {
-			if h.wafRuntime != nil {
-				_, _ = h.wafRuntime.SetConfig(previousWAF)
-			}
 			return fmt.Errorf("persist reset gateway config: %w", err)
 		}
 	}
@@ -1906,6 +1907,9 @@ func (h *Handler) ResetAllData(resetConfig *config.AppConfig) error {
 	)
 
 	h.mu.Lock()
+	if h.wafRuntime != nil {
+		h.wafRuntime.CommitPrepared(preparedWAF)
+	}
 	h.Rules = []models.Rule{}
 	h.HostRules = []models.HostRule{}
 	h.VisibilityPolicies = map[string]models.CompiledIPSet{}
@@ -2042,10 +2046,16 @@ func (h *Handler) SetProxyProtocolForce(force bool) error {
 	defer h.listenerChangeMu.Unlock()
 
 	h.mu.Lock()
-	changed := h.ProxyProtocolForce != force
+	previous := h.ProxyProtocolForce
+	changed := previous != force
 	h.ProxyProtocolForce = force
-	h.publishRequestSnapshotLocked()
 	saveErr := h.saveConfigLocked()
+	if saveErr != nil {
+		h.ProxyProtocolForce = previous
+		h.mu.Unlock()
+		return saveErr
+	}
+	h.publishRequestSnapshotLocked()
 	hook := h.getProxyProtocolForceChangeHook()
 	h.mu.Unlock()
 	if event := debugProxyEvent("proxy_protocol_force_set", ""); event != nil {
@@ -2054,7 +2064,7 @@ func (h *Handler) SetProxyProtocolForce(force bool) error {
 	if changed && hook != nil {
 		hook()
 	}
-	return saveErr
+	return nil
 }
 
 func (h *Handler) GetGatewayListenerConfig() models.GatewayListenerConfig {
@@ -2482,16 +2492,19 @@ func (h *Handler) SetSSLDeployment(config models.SSLConfig) error {
 	}
 
 	h.mu.Lock()
-	h.sslBundle.Store(bundle)
+	previous := h.sslConfig
 	h.sslConfig = normalized
 	saveErr := h.saveConfigLocked()
+	if saveErr != nil {
+		h.sslConfig = previous
+		h.mu.Unlock()
+		return saveErr
+	}
+	h.sslBundle.Store(bundle)
 	hook := h.getSSLChangeHook()
 	h.mu.Unlock()
 	if hook != nil {
 		hook()
-	}
-	if saveErr != nil {
-		return saveErr
 	}
 	if event := debugProxyEvent("ssl_deployment_set", ""); event != nil {
 		event.Str("deployment_mode", string(normalized.DeploymentMode)).
@@ -2650,10 +2663,12 @@ func (h *Handler) AddRule(newRule models.Rule) error {
 	if !updated {
 		nextRules = append(nextRules, newRule)
 	}
-	h.Rules = nextRules
-	h.publishRequestSnapshotLocked()
-	if err := h.saveConfigLocked(); err != nil {
-		h.clearAuthCache()
+	previous := h.Rules
+	if err := h.commitConfigMutationLocked(
+		func() { h.Rules = nextRules },
+		func() { h.Rules = previous },
+		h.publishRequestSnapshotLocked,
+	); err != nil {
 		return err
 	}
 	if event := debugProxyEvent("path_rule_upserted", ""); event != nil {
@@ -2677,10 +2692,12 @@ func (h *Handler) SetRules(rules []models.Rule) error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
-	h.Rules = normalized
-	h.publishRequestSnapshotLocked()
-	if err := h.saveConfigLocked(); err != nil {
-		h.clearAuthCache()
+	previous := h.Rules
+	if err := h.commitConfigMutationLocked(
+		func() { h.Rules = normalized },
+		func() { h.Rules = previous },
+		h.publishRequestSnapshotLocked,
+	); err != nil {
 		return err
 	}
 	if event := debugProxyEvent("path_rules_set", ""); event != nil {
@@ -2988,9 +3005,15 @@ func (h *Handler) RemoveRule(path string) {
 			newRules = append(newRules, rule)
 		}
 	}
-	h.Rules = newRules
-	h.publishRequestSnapshotLocked()
-	h.saveConfigLocked()
+	previous := h.Rules
+	if err := h.commitConfigMutationLocked(
+		func() { h.Rules = newRules },
+		func() { h.Rules = previous },
+		h.publishRequestSnapshotLocked,
+	); err != nil {
+		log.Printf("Failed to remove path rule %q: %v", path, err)
+		return
+	}
 	if event := debugProxyEvent("path_rule_removed", ""); event != nil {
 		event.Str("path", logger.SanitizeLogString(path)).
 			Int("path_rule_count", len(h.Rules)).
@@ -3004,10 +3027,12 @@ func (h *Handler) FlushRules() error {
 	defer h.mu.Unlock()
 
 	nextRules := make([]models.Rule, 0)
-	h.Rules = nextRules
-	h.publishRequestSnapshotLocked()
-	if err := h.saveConfigLocked(); err != nil {
-		h.clearAuthCache()
+	previous := h.Rules
+	if err := h.commitConfigMutationLocked(
+		func() { h.Rules = nextRules },
+		func() { h.Rules = previous },
+		h.publishRequestSnapshotLocked,
+	); err != nil {
 		return err
 	}
 	if event := debugProxyEvent("path_rules_flushed", ""); event != nil {
@@ -3588,8 +3613,12 @@ func (h *Handler) SetStreamRules(rules []models.StreamRule) error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
-	h.StreamRules = normalized
-	if err := h.saveConfigLocked(); err != nil {
+	previous := h.StreamRules
+	if err := h.commitConfigMutationLocked(
+		func() { h.StreamRules = normalized },
+		func() { h.StreamRules = previous },
+		nil,
+	); err != nil {
 		return err
 	}
 	if event := debugProxyEvent("stream_rules_set", ""); event != nil {
@@ -3604,8 +3633,13 @@ func (h *Handler) FlushStreamRules() error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
-	h.StreamRules = make([]models.StreamRule, 0)
-	if err := h.saveConfigLocked(); err != nil {
+	previous := h.StreamRules
+	next := make([]models.StreamRule, 0)
+	if err := h.commitConfigMutationLocked(
+		func() { h.StreamRules = next },
+		func() { h.StreamRules = previous },
+		nil,
+	); err != nil {
 		return err
 	}
 	if event := debugProxyEvent("stream_rules_flushed", ""); event != nil {
@@ -3632,13 +3666,16 @@ func (h *Handler) GetDefaultRoute() string {
 func (h *Handler) SetDefaultRoute(route string) error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	if route == "" {
-		h.DefaultRoute = "/__select__"
-	} else {
-		h.DefaultRoute = route
+	normalized := route
+	if normalized == "" {
+		normalized = "/__select__"
 	}
-	h.publishRequestSnapshotLocked()
-	if err := h.saveConfigLocked(); err != nil {
+	previous := h.DefaultRoute
+	if err := h.commitConfigMutationLocked(
+		func() { h.DefaultRoute = normalized },
+		func() { h.DefaultRoute = previous },
+		h.publishRequestSnapshotLocked,
+	); err != nil {
 		return err
 	}
 	if event := debugProxyEvent("default_route_set", ""); event != nil {
@@ -3671,9 +3708,16 @@ func (h *Handler) SetLoggingConfig(cfg models.LoggingConfig) (gatewaylog.ConfigI
 	normalized := gatewaylog.NormalizeConfig(cfg)
 
 	h.mu.Lock()
-	h.LoggingConfig = normalized
-	saveErr := h.saveConfigLocked()
+	previous := h.LoggingConfig
+	saveErr := h.commitConfigMutationLocked(
+		func() { h.LoggingConfig = normalized },
+		func() { h.LoggingConfig = previous },
+		nil,
+	)
 	h.mu.Unlock()
+	if saveErr != nil {
+		return h.GetLoggingConfig(), saveErr
+	}
 	if event := debugProxyEvent("gateway_logging_config_set", ""); event != nil {
 		event.Bool("enabled", normalized.Enabled).
 			Bool("record_localhost", normalized.RecordLocalhost).
@@ -3686,9 +3730,9 @@ func (h *Handler) SetLoggingConfig(cfg models.LoggingConfig) (gatewaylog.ConfigI
 			Enabled:         normalized.Enabled,
 			RecordLocalhost: normalized.RecordLocalhost,
 			MaxDays:         normalized.MaxDays,
-		}, saveErr
+		}, nil
 	}
-	return h.gatewayLogManager.UpdateConfig(normalized), saveErr
+	return h.gatewayLogManager.UpdateConfig(normalized), nil
 }
 
 func (h *Handler) GetLoggingDirectory() gatewaylog.DirectoryInfo {
@@ -3738,7 +3782,7 @@ func (h *Handler) ClearGatewayLogs() error {
 func (h *Handler) GetWAFConfig() models.WAFConfig {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
-	return h.WAFConfig
+	return proxywaf.CopyConfig(h.WAFConfig)
 }
 
 func (h *Handler) GetWAFStatus() proxywaf.Status {
@@ -3752,7 +3796,10 @@ func (h *Handler) SetWAFConfig(cfg models.WAFConfig) (proxywaf.Status, error) {
 	if h.wafRuntime == nil {
 		return proxywaf.Status{}, fmt.Errorf("WAF runtime is not initialized")
 	}
-	normalized, err := h.wafRuntime.SetConfig(cfg)
+	h.wafChangeMu.Lock()
+	defer h.wafChangeMu.Unlock()
+
+	prepared, err := h.wafRuntime.PrepareConfig(cfg)
 	if err != nil {
 		if event := debugProxyEvent("waf_config_set_failed", ""); event != nil {
 			event.Bool("enabled", cfg.Enabled).
@@ -3762,13 +3809,18 @@ func (h *Handler) SetWAFConfig(cfg models.WAFConfig) (proxywaf.Status, error) {
 		}
 		return h.wafRuntime.Status(), err
 	}
+	normalized := prepared.Config()
 	h.mu.Lock()
+	previous := h.WAFConfig
 	h.WAFConfig = normalized
 	saveErr := h.saveConfigLocked()
-	h.mu.Unlock()
 	if saveErr != nil {
+		h.WAFConfig = previous
+		h.mu.Unlock()
 		return h.wafRuntime.Status(), saveErr
 	}
+	status := h.wafRuntime.CommitPrepared(prepared)
+	h.mu.Unlock()
 	if event := debugProxyEvent("waf_config_set", ""); event != nil {
 		event.Bool("enabled", normalized.Enabled).
 			Str("mode", logger.SanitizeLogString(normalized.Mode)).
@@ -3777,7 +3829,7 @@ func (h *Handler) SetWAFConfig(cfg models.WAFConfig) (proxywaf.Status, error) {
 			Int("disabled_path_prefix_count", len(normalized.DisabledPathPrefixes)).
 			Send()
 	}
-	return h.wafRuntime.Status(), nil
+	return status, nil
 }
 
 func (h *Handler) ValidateWAFBundle(cfg models.WAFConfig, bundleID string, bundlePath string) (proxywaf.ValidationResult, error) {
@@ -3800,7 +3852,10 @@ func (h *Handler) ReloadWAFBundle(cfg models.WAFConfig, bundleID string, bundleP
 	if h.wafRuntime == nil {
 		return proxywaf.Status{}, fmt.Errorf("WAF runtime is not initialized")
 	}
-	status, err := h.wafRuntime.Reload(cfg, bundleID, bundlePath)
+	h.wafChangeMu.Lock()
+	defer h.wafChangeMu.Unlock()
+
+	prepared, err := h.wafRuntime.PrepareReload(cfg, bundleID, bundlePath)
 	if err != nil {
 		if event := debugProxyEvent("waf_bundle_reload_failed", ""); event != nil {
 			event.Str("bundle_id", logger.SanitizeLogString(bundleID)).
@@ -3808,16 +3863,20 @@ func (h *Handler) ReloadWAFBundle(cfg models.WAFConfig, bundleID string, bundleP
 				Str("error", logger.SanitizeLogString(err.Error())).
 				Send()
 		}
-		return status, err
+		return h.wafRuntime.Status(), err
 	}
-	normalized := h.wafRuntime.Config()
+	normalized := prepared.Config()
 	h.mu.Lock()
+	previous := h.WAFConfig
 	h.WAFConfig = normalized
 	saveErr := h.saveConfigLocked()
-	h.mu.Unlock()
 	if saveErr != nil {
-		return status, saveErr
+		h.WAFConfig = previous
+		h.mu.Unlock()
+		return h.wafRuntime.Status(), saveErr
 	}
+	status := h.wafRuntime.CommitPrepared(prepared)
+	h.mu.Unlock()
 	if event := debugProxyEvent("waf_bundle_reloaded", ""); event != nil {
 		event.Bool("enabled", status.Enabled).
 			Bool("loaded", status.Loaded).
@@ -3870,9 +3929,12 @@ func (h *Handler) SetAuthConfig(config models.AuthConfig) error {
 
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	h.AuthConfig = config
-	h.publishRequestSnapshotLocked()
-	if err := h.saveConfigLocked(); err != nil {
+	previous := h.AuthConfig
+	if err := h.commitConfigMutationLocked(
+		func() { h.AuthConfig = config },
+		func() { h.AuthConfig = previous },
+		h.publishRequestSnapshotLocked,
+	); err != nil {
 		return err
 	}
 	h.clearAuthCache()
@@ -3949,16 +4011,18 @@ func (h *Handler) AddGeneralBlacklist(ips []string, source string, comment strin
 		runtime = newGeneralBlacklistRuntime(models.GeneralBlacklistConfig{})
 		h.generalBlacklist = runtime
 	}
-	h.mu.Unlock()
-
+	previousRuntime := runtime.getConfig()
+	previousConfigured := h.GeneralBlacklist
 	normalized, result, err := runtime.addMany(ips, source, comment, time.Now())
 	if err != nil {
+		h.mu.Unlock()
 		return models.GeneralBlacklistMutationResult{}, err
 	}
 
-	h.mu.Lock()
 	h.GeneralBlacklist = normalized
 	if err := h.saveConfigLocked(); err != nil {
+		runtime.updateConfig(previousRuntime)
+		h.GeneralBlacklist = previousConfigured
 		h.mu.Unlock()
 		return models.GeneralBlacklistMutationResult{}, err
 	}
@@ -3981,16 +4045,18 @@ func (h *Handler) RemoveGeneralBlacklist(ips []string) (models.GeneralBlacklistM
 		runtime = newGeneralBlacklistRuntime(models.GeneralBlacklistConfig{})
 		h.generalBlacklist = runtime
 	}
-	h.mu.Unlock()
-
+	previousRuntime := runtime.getConfig()
+	previousConfigured := h.GeneralBlacklist
 	normalized, result, err := runtime.removeMany(ips)
 	if err != nil {
+		h.mu.Unlock()
 		return models.GeneralBlacklistMutationResult{}, err
 	}
 
-	h.mu.Lock()
 	h.GeneralBlacklist = normalized
 	if err := h.saveConfigLocked(); err != nil {
+		runtime.updateConfig(previousRuntime)
+		h.GeneralBlacklist = previousConfigured
 		h.mu.Unlock()
 		return models.GeneralBlacklistMutationResult{}, err
 	}
@@ -4233,145 +4299,19 @@ func (h *Handler) GetGeneralBlacklistRecordForClientIP(clientIP string) (models.
 	return runtime.contains(clientIP)
 }
 
-func (h *Handler) SetReverseProxyThrottle(cfg models.ReverseProxyThrottleConfig) error {
-	normalized := normalizeReverseProxyThrottleConfig(cfg)
-
-	h.mu.Lock()
-	h.ReverseProxyThrottle = normalized
-	saveErr := h.saveConfigLocked()
-	throttle := h.reverseProxyThrottle
-	h.mu.Unlock()
-
-	if throttle == nil {
-		h.mu.Lock()
-		if h.reverseProxyThrottle == nil {
-			h.reverseProxyThrottle = newReverseProxyThrottle(normalized)
-			throttle = h.reverseProxyThrottle
-		} else {
-			throttle = h.reverseProxyThrottle
-		}
-		h.mu.Unlock()
-	}
-	if throttle != nil {
-		throttle.updateConfig(normalized)
-	}
-	if event := debugProxyEvent("reverse_proxy_throttle_set", ""); event != nil {
-		event.Bool("enabled", normalized.Enabled).
-			Int("requests_per_second", normalized.RequestsPerSecond).
-			Int("burst", normalized.Burst).
-			Int("block_seconds", normalized.BlockSeconds).
-			Send()
-	}
-	return saveErr
-}
-
-func (h *Handler) SetGatewayVisibility(cfg models.GatewayVisibilityConfig) error {
-	h.mu.Lock()
-	candidatePolicies := copyVisibilityPolicies(h.VisibilityPolicies)
-	candidateSets := make(map[string]*compiledipset.Set, len(h.compiledVisibilityPolicies)+1)
-	for id, set := range h.compiledVisibilityPolicies {
-		candidateSets[id] = set
-	}
-	normalized, set, err := prepareGatewayVisibilityPolicy(cfg, candidatePolicies, candidateSets)
-	if err != nil {
-		h.mu.Unlock()
-		return err
-	}
-	pruneVisibilityPolicies(h.HostRules, normalized, candidatePolicies, candidateSets)
-	if err := h.persistGatewayVisibilityAndPoliciesLocked(normalized, candidatePolicies); err != nil {
-		h.mu.Unlock()
-		return err
-	}
-	h.GatewayVisibility = normalized
-	h.VisibilityPolicies = candidatePolicies
-	h.compiledVisibilityPolicies = candidateSets
-	h.publishRequestSnapshotLocked()
-	visibility := h.gatewayVisibility
-	if visibility == nil {
-		visibility = &gatewayVisibility{}
-		h.gatewayVisibility = visibility
-	}
-	h.mu.Unlock()
-
-	visibility.mu.Lock()
-	visibility.config = normalized
-	visibility.set = set
-	visibility.mu.Unlock()
-
-	rangeCount := 0
-	if set != nil {
-		rangeCount = set.RangeCount()
-	}
-	if event := debugProxyEvent("gateway_visibility_set", ""); event != nil {
-		event.Bool("enabled", normalized.Enabled).
-			Int("range_count", rangeCount).
-			Str("updated_at", logger.SanitizeLogString(normalized.UpdatedAt)).
-			Send()
-	}
-	return nil
-}
-
-func (h *Handler) SetForwardedHeadersConfig(cfg models.ForwardedHeadersConfig) error {
-	normalized, _ := normalizeForwardedHeadersConfig(cfg)
-
-	h.mu.Lock()
-	h.ForwardedHeaders = normalized
-	saveErr := h.saveConfigLocked()
-	forwardedHeaders := h.forwardedHeaders
-	if forwardedHeaders == nil {
-		forwardedHeaders = newForwardedHeadersConfig(normalized)
-		h.forwardedHeaders = forwardedHeaders
-	}
-	h.mu.Unlock()
-	if saveErr != nil {
-		return saveErr
-	}
-
-	forwardedHeaders.updateConfig(normalized)
-	if event := debugProxyEvent("forwarded_headers_config_set", ""); event != nil {
-		event.Bool("enabled", normalized.Enabled).
-			Int("omit_target_count", len(normalized.OmitTargets)).
-			Str("updated_at", logger.SanitizeLogString(normalized.UpdatedAt)).
-			Send()
-	}
-	return nil
-}
-
-func (h *Handler) SetPreserveHostConfig(cfg models.PreserveHostConfig) error {
-	normalized, _ := normalizePreserveHostConfig(cfg)
-
-	h.mu.Lock()
-	h.PreserveHost = normalized
-	saveErr := h.saveConfigLocked()
-	preserveHost := h.preserveHost
-	if preserveHost == nil {
-		preserveHost = newPreserveHostConfig(normalized)
-		h.preserveHost = preserveHost
-	}
-	h.mu.Unlock()
-	if saveErr != nil {
-		return saveErr
-	}
-
-	preserveHost.updateConfig(normalized)
-	if event := debugProxyEvent("preserve_host_config_set", ""); event != nil {
-		event.Bool("enabled", normalized.Enabled).
-			Int("omit_target_count", len(normalized.OmitTargets)).
-			Str("updated_at", logger.SanitizeLogString(normalized.UpdatedAt)).
-			Send()
-	}
-	return nil
-}
-
 func (h *Handler) SetCrawlerBlockerConfig(cfg models.CrawlerBlockerConfig) (models.CrawlerBlockerConfig, error) {
 	normalized := normalizeCrawlerBlockerConfig(cfg)
 
 	h.mu.Lock()
-	h.CrawlerBlocker = normalized
-	saveErr := h.saveConfigLocked()
+	previous := h.CrawlerBlocker
+	saveErr := h.commitConfigMutationLocked(
+		func() { h.CrawlerBlocker = normalized },
+		func() { h.CrawlerBlocker = previous },
+		nil,
+	)
 	h.mu.Unlock()
 	if saveErr != nil {
-		return normalized, saveErr
+		return previous, saveErr
 	}
 
 	if event := debugProxyEvent("crawler_blocker_config_set", ""); event != nil {
@@ -4392,12 +4332,15 @@ func (h *Handler) SetGatewayPortalConfig(cfg models.GatewayPortalConfig) (models
 	normalized := models.NormalizeGatewayPortalConfig(cfg)
 
 	h.mu.Lock()
-	h.GatewayPortal = normalized
-	h.publishRequestSnapshotLocked()
-	saveErr := h.saveConfigLocked()
+	previous := h.GatewayPortal
+	saveErr := h.commitConfigMutationLocked(
+		func() { h.GatewayPortal = normalized },
+		func() { h.GatewayPortal = previous },
+		h.publishRequestSnapshotLocked,
+	)
 	h.mu.Unlock()
 	if saveErr != nil {
-		return normalized, saveErr
+		return previous, saveErr
 	}
 	if event := debugProxyEvent("gateway_portal_config_set", ""); event != nil {
 		event.Bool("enabled", normalized.Enabled).
@@ -4422,16 +4365,14 @@ func (h *Handler) SetGatewayUnmatchedRouteConfig(cfg models.GatewayUnmatchedRout
 
 	h.mu.Lock()
 	previous := h.GatewayUnmatchedRoute
-	h.GatewayUnmatchedRoute = normalized
-	h.publishRequestSnapshotLocked()
-	saveErr := h.saveConfigLocked()
-	if saveErr != nil {
-		h.GatewayUnmatchedRoute = previous
-		h.publishRequestSnapshotLocked()
-	}
+	saveErr := h.commitConfigMutationLocked(
+		func() { h.GatewayUnmatchedRoute = normalized },
+		func() { h.GatewayUnmatchedRoute = previous },
+		h.publishRequestSnapshotLocked,
+	)
 	h.mu.Unlock()
 	if saveErr != nil {
-		return normalized, saveErr
+		return previous, saveErr
 	}
 	if event := debugProxyEvent("gateway_unmatched_route_config_set", ""); event != nil {
 		event.Str("behavior", normalized.Behavior).
@@ -4449,11 +4390,15 @@ func (h *Handler) SetFnosPortIconHijackConfig(cfg models.FnosPortIconHijackConfi
 	}
 
 	h.mu.Lock()
-	h.FnosPortIconHijack = normalized
-	saveErr := h.saveConfigLocked()
+	previous := h.FnosPortIconHijack
+	saveErr := h.commitConfigMutationLocked(
+		func() { h.FnosPortIconHijack = normalized },
+		func() { h.FnosPortIconHijack = previous },
+		nil,
+	)
 	h.mu.Unlock()
 	if saveErr != nil {
-		return normalized, saveErr
+		return previous, saveErr
 	}
 	if event := debugProxyEvent("fnos_port_icon_hijack_config_set", ""); event != nil {
 		event.Bool("enabled", normalized.Enabled).
@@ -4557,386 +4502,6 @@ func (h *Handler) SetCommonLocationExemptions(cfg models.CommonLocationExemption
 			Send()
 	}
 	return nil
-}
-
-type TrafficStats struct {
-	TotalIn     uint64             `json:"total_in"`
-	TotalOut    uint64             `json:"total_out"`
-	ActiveConns int64              `json:"active_conns"`
-	Error5xx    uint64             `json:"error_5xx"`
-	ByHost      []HostTrafficStats `json:"by_host,omitempty"`
-}
-
-type HostTrafficStats struct {
-	Host          string `json:"host"`
-	TotalIn       uint64 `json:"total_in"`
-	TotalOut      uint64 `json:"total_out"`
-	Error5xx      uint64 `json:"error_5xx"`
-	ActiveIPCount int    `json:"active_ip_count"`
-}
-
-type HostActiveIPStats struct {
-	IP          string    `json:"ip"`
-	LastSeenAt  time.Time `json:"last_seen_at"`
-	ActiveConns int64     `json:"active_conns"`
-}
-
-type HostActiveIPsStats struct {
-	Host          string              `json:"host"`
-	WindowSeconds int                 `json:"window_seconds"`
-	Items         []HostActiveIPStats `json:"items"`
-}
-
-type hostTrafficCounters struct {
-	totalIn                     atomic.Uint64
-	totalOut                    atomic.Uint64
-	error5xx                    atomic.Uint64
-	activeIPs                   sync.Map
-	activeIPEntries             atomic.Int64
-	activeIPLastCleanupUnixNano atomic.Int64
-}
-
-type hostActiveIPRecord struct {
-	ip               string
-	lastSeenUnixNano atomic.Int64
-	activeConns      atomic.Int64
-}
-
-func normalizeTrafficHost(host string) string {
-	return strings.TrimSuffix(normalizeRequestHost(host), ".")
-}
-
-const (
-	hostActiveIPWindow          = 2 * time.Minute
-	hostActiveIPCleanupInterval = 30 * time.Second
-	hostActiveIPMaxItems        = 256
-	hostActiveIPHardLimit       = 4096
-)
-
-func (c *hostTrafficCounters) deleteActiveIP(key any) {
-	if c == nil {
-		return
-	}
-	if _, loaded := c.activeIPs.LoadAndDelete(key); loaded {
-		if c.activeIPEntries.Add(-1) < 0 {
-			c.activeIPEntries.Store(0)
-		}
-	}
-}
-
-func (c *hostTrafficCounters) cleanupActiveIPs(now time.Time) {
-	if c == nil {
-		return
-	}
-	cutoff := now.Add(-hostActiveIPWindow).UnixNano()
-	c.activeIPs.Range(func(key, value any) bool {
-		record, ok := value.(*hostActiveIPRecord)
-		if !ok || record == nil {
-			c.deleteActiveIP(key)
-			return true
-		}
-		lastSeen := record.lastSeenUnixNano.Load()
-		activeConns := record.activeConns.Load()
-		if activeConns <= 0 && lastSeen < cutoff {
-			c.deleteActiveIP(key)
-		}
-		return true
-	})
-	c.enforceActiveIPLimit()
-}
-
-func (c *hostTrafficCounters) cleanupActiveIPsIfNeeded(now time.Time) {
-	if c == nil {
-		return
-	}
-	nowUnixNano := now.UnixNano()
-	lastCleanup := c.activeIPLastCleanupUnixNano.Load()
-	if lastCleanup > 0 && nowUnixNano-lastCleanup < int64(hostActiveIPCleanupInterval) {
-		return
-	}
-	if !c.activeIPLastCleanupUnixNano.CompareAndSwap(lastCleanup, nowUnixNano) {
-		return
-	}
-	c.cleanupActiveIPs(now)
-}
-
-func (c *hostTrafficCounters) enforceActiveIPLimit() {
-	if c == nil || c.activeIPEntries.Load() <= hostActiveIPHardLimit {
-		return
-	}
-	type activeIPCandidate struct {
-		key         any
-		lastSeen    int64
-		activeConns int64
-	}
-	candidates := make([]activeIPCandidate, 0)
-	c.activeIPs.Range(func(key, value any) bool {
-		record, ok := value.(*hostActiveIPRecord)
-		if !ok || record == nil {
-			candidates = append(candidates, activeIPCandidate{key: key})
-			return true
-		}
-		candidates = append(candidates, activeIPCandidate{
-			key:         key,
-			lastSeen:    record.lastSeenUnixNano.Load(),
-			activeConns: record.activeConns.Load(),
-		})
-		return true
-	})
-	sort.Slice(candidates, func(i, j int) bool {
-		if (candidates[i].activeConns <= 0) != (candidates[j].activeConns <= 0) {
-			return candidates[i].activeConns <= 0
-		}
-		return candidates[i].lastSeen < candidates[j].lastSeen
-	})
-	for _, candidate := range candidates {
-		if c.activeIPEntries.Load() <= hostActiveIPHardLimit {
-			return
-		}
-		c.deleteActiveIP(candidate.key)
-	}
-}
-
-func (c *hostTrafficCounters) markActiveIP(clientIP string, now time.Time) *hostActiveIPRecord {
-	if c == nil {
-		return nil
-	}
-	ip := normalizeIPAddress(clientIP)
-	if ip == "" {
-		return nil
-	}
-
-	c.cleanupActiveIPsIfNeeded(now)
-	record, loaded := c.activeIPs.Load(ip)
-	activeRecord, ok := record.(*hostActiveIPRecord)
-	if !loaded || !ok || activeRecord == nil {
-		candidate := &hostActiveIPRecord{ip: ip}
-		actual, wasLoaded := c.activeIPs.LoadOrStore(ip, candidate)
-		loaded = wasLoaded
-		if existing, valid := actual.(*hostActiveIPRecord); valid && existing != nil {
-			activeRecord = existing
-		} else {
-			activeRecord = candidate
-		}
-	}
-
-	activeRecord.lastSeenUnixNano.Store(now.UnixNano())
-	activeRecord.activeConns.Add(1)
-	if !loaded {
-		if c.activeIPEntries.Add(1) > hostActiveIPHardLimit {
-			c.cleanupActiveIPs(now)
-		}
-	}
-
-	return activeRecord
-}
-
-func releaseHostActiveIP(record *hostActiveIPRecord, now time.Time) {
-	if record == nil {
-		return
-	}
-	record.lastSeenUnixNano.Store(now.UnixNano())
-	if record.activeConns.Add(-1) < 0 {
-		record.activeConns.Store(0)
-	}
-}
-
-func (c *hostTrafficCounters) activeIPCount(now time.Time) int {
-	if c == nil {
-		return 0
-	}
-	c.cleanupActiveIPs(now)
-
-	cutoff := now.Add(-hostActiveIPWindow).UnixNano()
-	count := 0
-	c.activeIPs.Range(func(key, value any) bool {
-		record, ok := value.(*hostActiveIPRecord)
-		if !ok || record == nil {
-			c.deleteActiveIP(key)
-			return true
-		}
-		lastSeen := record.lastSeenUnixNano.Load()
-		activeConns := record.activeConns.Load()
-		if activeConns <= 0 && lastSeen < cutoff {
-			c.deleteActiveIP(key)
-			return true
-		}
-		if lastSeen > 0 {
-			count++
-		}
-		return true
-	})
-	return count
-}
-
-func (c *hostTrafficCounters) activeIPStats(now time.Time) []HostActiveIPStats {
-	if c == nil {
-		return []HostActiveIPStats{}
-	}
-	c.cleanupActiveIPs(now)
-
-	cutoff := now.Add(-hostActiveIPWindow).UnixNano()
-	items := make([]HostActiveIPStats, 0)
-	c.activeIPs.Range(func(key, value any) bool {
-		record, ok := value.(*hostActiveIPRecord)
-		if !ok || record == nil {
-			c.deleteActiveIP(key)
-			return true
-		}
-
-		lastSeen := record.lastSeenUnixNano.Load()
-		activeConns := record.activeConns.Load()
-		if activeConns <= 0 && lastSeen < cutoff {
-			c.deleteActiveIP(key)
-			return true
-		}
-		if lastSeen <= 0 {
-			return true
-		}
-
-		items = append(items, HostActiveIPStats{
-			IP:          record.ip,
-			LastSeenAt:  time.Unix(0, lastSeen).UTC(),
-			ActiveConns: activeConns,
-		})
-		return true
-	})
-
-	sort.Slice(items, func(i, j int) bool {
-		if items[i].LastSeenAt.Equal(items[j].LastSeenAt) {
-			return items[i].IP < items[j].IP
-		}
-		return items[i].LastSeenAt.After(items[j].LastSeenAt)
-	})
-	if len(items) > hostActiveIPMaxItems {
-		items = items[:hostActiveIPMaxItems]
-	}
-	return items
-}
-
-func (h *Handler) lookupHostTrafficCounters(host string) (*hostTrafficCounters, string) {
-	normalizedHost := normalizeTrafficHost(host)
-	if normalizedHost == "" {
-		return nil, ""
-	}
-	value, ok := h.trafficByHost.Load(normalizedHost)
-	if !ok {
-		return nil, normalizedHost
-	}
-	counters, ok := value.(*hostTrafficCounters)
-	if !ok || counters == nil {
-		return nil, normalizedHost
-	}
-	return counters, normalizedHost
-}
-
-func (h *Handler) getHostTrafficCounters(host string) *hostTrafficCounters {
-	normalizedHost := normalizeTrafficHost(host)
-	if normalizedHost == "" {
-		return nil
-	}
-	if value, ok := h.trafficByHost.Load(normalizedHost); ok {
-		if counters, ok := value.(*hostTrafficCounters); ok {
-			return counters
-		}
-	}
-	counters := &hostTrafficCounters{}
-	actual, _ := h.trafficByHost.LoadOrStore(normalizedHost, counters)
-	if existing, ok := actual.(*hostTrafficCounters); ok {
-		return existing
-	}
-	return counters
-}
-
-func (h *Handler) activeTrafficHosts() map[string]struct{} {
-	h.mu.RLock()
-	defer h.mu.RUnlock()
-
-	hosts := make(map[string]struct{}, len(h.HostRules))
-	for _, rule := range h.HostRules {
-		host := normalizeTrafficHost(rule.Host)
-		if host == "" {
-			continue
-		}
-		hosts[host] = struct{}{}
-	}
-	return hosts
-}
-
-func (h *Handler) GetTrafficStats(timestamp time.Time) TrafficStats {
-	byHost := make([]HostTrafficStats, 0)
-	activeHosts := h.activeTrafficHosts()
-	h.trafficByHost.Range(func(key, value any) bool {
-		host, ok := key.(string)
-		if !ok || host == "" {
-			return true
-		}
-		if _, ok := activeHosts[host]; !ok {
-			h.trafficByHost.Delete(host)
-			return true
-		}
-		counters, ok := value.(*hostTrafficCounters)
-		if !ok || counters == nil {
-			return true
-		}
-		byHost = append(byHost, HostTrafficStats{
-			Host:          host,
-			TotalIn:       counters.totalIn.Load(),
-			TotalOut:      counters.totalOut.Load(),
-			Error5xx:      counters.error5xx.Load(),
-			ActiveIPCount: counters.activeIPCount(timestamp),
-		})
-		return true
-	})
-	sort.Slice(byHost, func(i, j int) bool {
-		return byHost[i].Host < byHost[j].Host
-	})
-
-	return TrafficStats{
-		TotalIn:     h.trafficTotalIn.Load(),
-		TotalOut:    h.trafficTotalOut.Load(),
-		ActiveConns: h.activeLoggedInCount(timestamp),
-		Error5xx:    h.trafficError5xx.Load(),
-		ByHost:      byHost,
-	}
-}
-
-func (h *Handler) GetHostActiveIPs(host string, timestamp time.Time) HostActiveIPsStats {
-	normalizedHost := normalizeTrafficHost(host)
-	result := HostActiveIPsStats{
-		Host:          normalizedHost,
-		WindowSeconds: int(hostActiveIPWindow.Seconds()),
-		Items:         []HostActiveIPStats{},
-	}
-	if normalizedHost == "" {
-		return result
-	}
-
-	activeHosts := h.activeTrafficHosts()
-	if _, ok := activeHosts[normalizedHost]; !ok {
-		h.trafficByHost.Delete(normalizedHost)
-		return result
-	}
-
-	counters, _ := h.lookupHostTrafficCounters(normalizedHost)
-	if counters == nil {
-		return result
-	}
-
-	result.Items = counters.activeIPStats(timestamp)
-	return result
-}
-
-func (h *Handler) AddStreamTraffic(bytesIn, bytesOut uint64, status int) {
-	if bytesIn > 0 {
-		h.trafficTotalIn.Add(bytesIn)
-	}
-	if bytesOut > 0 {
-		h.trafficTotalOut.Add(bytesOut)
-	}
-	if status >= 500 {
-		h.trafficError5xx.Add(1)
-	}
 }
 
 func (h *Handler) LogGatewayEntry(entry gatewaylog.Entry) {

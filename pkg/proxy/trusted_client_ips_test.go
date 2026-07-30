@@ -52,11 +52,11 @@ func TestGatewayTrustedClientIPsRuntimeNormalizesMatchesAndClears(t *testing.T) 
 
 	if updated, err := runtime.updateConfig(models.GatewayTrustedClientIPsRuntime{
 		UpdatedAt: "2026-07-31T00:59:59Z",
-	}); err != nil || updated {
-		t.Fatal("older trusted runtime update was accepted")
+	}); err != nil || !updated {
+		t.Fatal("authoritative trusted runtime update was rejected because its wall clock moved backwards")
 	}
-	if !runtime.contains("192.168.1.8") {
-		t.Fatal("older update unexpectedly cleared the trusted runtime")
+	if runtime.contains("192.168.1.8") {
+		t.Fatal("authoritative empty update did not revoke the trusted runtime")
 	}
 
 	if updated, err := runtime.updateConfig(models.GatewayTrustedClientIPsRuntime{
@@ -68,6 +68,30 @@ func TestGatewayTrustedClientIPsRuntimeNormalizesMatchesAndClears(t *testing.T) 
 	}
 	if runtime.contains("192.168.1.8") || runtime.contains("100.64.0.1") {
 		t.Fatal("empty trusted runtime did not clear exact IPs and CIDRs")
+	}
+}
+
+func TestReverseProxyThrottleExemptSnapshotAcceptsClockRollbackRevocation(t *testing.T) {
+	runtime := newReverseProxyThrottleExemptIPsRuntime(
+		models.ReverseProxyThrottleExemptIPsRuntime{
+			Enabled:   true,
+			IPs:       []string{"203.0.113.8"},
+			UpdatedAt: "2026-07-31T01:00:00Z",
+		},
+	)
+	if !runtime.shouldBypass("203.0.113.8") {
+		t.Fatal("initial throttle exemption was not active")
+	}
+
+	updated, err := runtime.updateConfig(models.ReverseProxyThrottleExemptIPsRuntime{
+		Enabled:   false,
+		UpdatedAt: "2026-07-31T00:59:59Z",
+	})
+	if err != nil || !updated {
+		t.Fatalf("authoritative throttle revocation was rejected after clock rollback: updated=%v err=%v", updated, err)
+	}
+	if runtime.shouldBypass("203.0.113.8") {
+		t.Fatal("clock rollback preserved a revoked throttle exemption")
 	}
 }
 

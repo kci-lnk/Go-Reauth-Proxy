@@ -3,6 +3,7 @@
 package proxy
 
 import (
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"net"
@@ -33,7 +34,9 @@ func fnosConnectOriginalDestinationPort(conn net.Conn) (int, error) {
 	controlErr := rawConn.Control(func(fd uintptr) {
 		if local.IP.To4() != nil {
 			var address unix.RawSockaddrInet4
-			size := uint32(unsafe.Sizeof(address))
+			size := uint32(unix.SizeofSockaddrInet4)
+			// SAFETY: address and size are live, correctly sized stack values
+			// for the duration of this synchronous getsockopt syscall.
 			_, _, errno := unix.Syscall6(
 				unix.SYS_GETSOCKOPT,
 				fd,
@@ -52,7 +55,9 @@ func fnosConnectOriginalDestinationPort(conn net.Conn) (int, error) {
 		}
 
 		var address unix.RawSockaddrInet6
-		size := uint32(unsafe.Sizeof(address))
+		size := uint32(unix.SizeofSockaddrInet6)
+		// SAFETY: address and size are live, correctly sized stack values for
+		// the duration of this synchronous getsockopt syscall.
 		_, _, errno := unix.Syscall6(
 			unix.SYS_GETSOCKOPT,
 			fd,
@@ -81,6 +86,7 @@ func fnosConnectOriginalDestinationPort(conn net.Conn) (int, error) {
 }
 
 func networkPort(value uint16) int {
-	bytes := (*[2]byte)(unsafe.Pointer(&value))
-	return int(bytes[0])<<8 | int(bytes[1])
+	var encoded [2]byte
+	binary.NativeEndian.PutUint16(encoded[:], value)
+	return int(binary.BigEndian.Uint16(encoded[:]))
 }

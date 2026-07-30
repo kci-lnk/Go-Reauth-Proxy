@@ -7,7 +7,6 @@ import (
 	"net/netip"
 	"strings"
 	"sync"
-	"time"
 )
 
 type reverseProxyThrottleExemptIPsRuntime struct {
@@ -60,10 +59,10 @@ func (r *reverseProxyThrottleExemptIPsRuntime) updateConfig(cfg models.ReversePr
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	if shouldIgnoreReverseProxyThrottleExemptIPsUpdate(r.config.UpdatedAt, normalized.UpdatedAt) {
-		return false, nil
-	}
-
+	// This is an authoritative full snapshot published by the serialized
+	// control-plane whitelist transaction. Wall-clock timestamps are metadata,
+	// not ordering tokens: rejecting an older timestamp after a clock rollback
+	// can preserve a revoked security exemption indefinitely.
 	r.config = normalized
 	r.ips = ipSet
 	r.set = set
@@ -144,34 +143,4 @@ func normalizeReverseProxyThrottleExemptIP(value string) (string, netip.Addr, bo
 	}
 
 	return normalizedIP, addr, true
-}
-
-func shouldIgnoreReverseProxyThrottleExemptIPsUpdate(currentUpdatedAt string, nextUpdatedAt string) bool {
-	currentTime, okCurrent := parseReverseProxyThrottleExemptIPsUpdatedAt(currentUpdatedAt)
-	nextTime, okNext := parseReverseProxyThrottleExemptIPsUpdatedAt(nextUpdatedAt)
-
-	if !okCurrent || !okNext {
-		return false
-	}
-
-	return nextTime.Before(currentTime)
-}
-
-func parseReverseProxyThrottleExemptIPsUpdatedAt(value string) (time.Time, bool) {
-	trimmed := strings.TrimSpace(value)
-	if trimmed == "" {
-		return time.Time{}, false
-	}
-
-	parsed, err := time.Parse(time.RFC3339Nano, trimmed)
-	if err == nil {
-		return parsed, true
-	}
-
-	parsed, err = time.Parse(time.RFC3339, trimmed)
-	if err == nil {
-		return parsed, true
-	}
-
-	return time.Time{}, false
 }

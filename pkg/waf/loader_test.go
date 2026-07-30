@@ -1,6 +1,7 @@
 package waf
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -110,6 +111,22 @@ func TestCollectDefinedRuleIDsMatchesLegacy(t *testing.T) {
 		if _, ok := got[id]; !ok {
 			t.Fatalf("missing id %d in %#v", id, got)
 		}
+	}
+}
+
+func TestReadLimitedEnforcesMaximumSize(t *testing.T) {
+	const limit = int64(8)
+
+	got, err := readLimited(bytes.NewReader([]byte("12345678")), limit, "rules.conf")
+	if err != nil {
+		t.Fatalf("read exact limit: %v", err)
+	}
+	if string(got) != "12345678" {
+		t.Fatalf("read exact limit = %q", got)
+	}
+
+	if _, err := readLimited(bytes.NewReader([]byte("123456789")), limit, "rules.conf"); err == nil {
+		t.Fatal("expected oversized rule file to be rejected")
 	}
 }
 

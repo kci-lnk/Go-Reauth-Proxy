@@ -3,6 +3,7 @@ package proxy
 import (
 	"bufio"
 	"bytes"
+	"fmt"
 	"go-reauth-proxy/pkg/config"
 	"go-reauth-proxy/pkg/gatewaylog"
 	"go-reauth-proxy/pkg/models"
@@ -11,6 +12,7 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -134,6 +136,111 @@ func TestGeneralBlacklistPersistsThroughConfigManager(t *testing.T) {
 	}
 	if got := loaded.GeneralBlacklist.Items[0].IP; got != "203.0.113.22" {
 		t.Fatalf("persisted IP = %q, want 203.0.113.22", got)
+	}
+}
+
+func TestGeneralBlacklistMutationRollsBackOnSaveFailure(t *testing.T) {
+	t.Run("add", func(t *testing.T) {
+		handler, manager := newAdditionalProxyTestHandler(t)
+		breakConfigPersistence(t, manager)
+
+		if _, err := handler.AddGeneralBlacklist(
+			[]string{"203.0.113.31"},
+			models.GeneralBlacklistSourceManual,
+			"must rollback",
+		); err == nil {
+			t.Fatal("AddGeneralBlacklist() returned nil error")
+		}
+		if got := handler.GetGeneralBlacklist(); len(got.Items) != 0 {
+			t.Fatalf("configured blacklist after failed add = %#v", got)
+		}
+		if status, err := handler.CheckGeneralBlacklist([]string{"203.0.113.31"}); err != nil {
+			t.Fatalf("CheckGeneralBlacklist() returned error: %v", err)
+		} else if len(status.Records) != 0 {
+			t.Fatalf("runtime blacklist after failed add = %#v", status)
+		}
+	})
+
+	t.Run("remove", func(t *testing.T) {
+		handler, manager := newAdditionalProxyTestHandler(t)
+		if _, err := handler.AddGeneralBlacklist(
+			[]string{"203.0.113.32"},
+			models.GeneralBlacklistSourceManual,
+			"must remain",
+		); err != nil {
+			t.Fatalf("seed blacklist: %v", err)
+		}
+		breakConfigPersistence(t, manager)
+
+		if _, err := handler.RemoveGeneralBlacklist([]string{"203.0.113.32"}); err == nil {
+			t.Fatal("RemoveGeneralBlacklist() returned nil error")
+		}
+		if got := handler.GetGeneralBlacklist(); len(got.Items) != 1 {
+			t.Fatalf("configured blacklist after failed remove = %#v", got)
+		}
+		if status, err := handler.CheckGeneralBlacklist([]string{"203.0.113.32"}); err != nil {
+			t.Fatalf("CheckGeneralBlacklist() returned error: %v", err)
+		} else if len(status.Records) != 1 {
+			t.Fatalf("runtime blacklist after failed remove = %#v", status)
+		}
+	})
+}
+
+func TestConcurrentGeneralBlacklistMutationsPersistTheRuntimeSnapshot(t *testing.T) {
+	handler, manager := newAdditionalProxyTestHandler(t)
+	const setters = 32
+	start := make(chan struct{})
+	errors := make(chan error, setters)
+	var wait sync.WaitGroup
+	for index := range setters {
+		wait.Add(1)
+		go func() {
+			defer wait.Done()
+			<-start
+			_, err := handler.AddGeneralBlacklist(
+				[]string{fmt.Sprintf("203.0.113.%d", index+1)},
+				models.GeneralBlacklistSourceManual,
+				"concurrent",
+			)
+			errors <- err
+		}()
+	}
+	close(start)
+	wait.Wait()
+	close(errors)
+	for err := range errors {
+		if err != nil {
+			t.Fatalf("AddGeneralBlacklist() returned error: %v", err)
+		}
+	}
+
+	runtime := handler.GetGeneralBlacklist()
+	if len(runtime.Items) != setters {
+		t.Fatalf("runtime blacklist item count = %d, want %d", len(runtime.Items), setters)
+	}
+	persisted, err := manager.Load()
+	if err != nil {
+		t.Fatalf("Load() returned error: %v", err)
+	}
+	if len(persisted.GeneralBlacklist.Items) != setters {
+		t.Fatalf("persisted blacklist item count = %d, want %d", len(persisted.GeneralBlacklist.Items), setters)
+	}
+	runtimeIPs := make(map[string]struct{}, setters)
+	for _, item := range runtime.Items {
+		runtimeIPs[item.IP] = struct{}{}
+	}
+	persistedIPs := make(map[string]struct{}, setters)
+	for _, item := range persisted.GeneralBlacklist.Items {
+		persistedIPs[item.IP] = struct{}{}
+	}
+	for index := range setters {
+		ip := fmt.Sprintf("203.0.113.%d", index+1)
+		if _, ok := runtimeIPs[ip]; !ok {
+			t.Fatalf("runtime blacklist is missing %q", ip)
+		}
+		if _, ok := persistedIPs[ip]; !ok {
+			t.Fatalf("persisted blacklist is missing %q", ip)
+		}
 	}
 }
 

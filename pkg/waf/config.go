@@ -78,6 +78,12 @@ func NormalizeConfig(cfg models.WAFConfig, defaultRulesDir string) models.WAFCon
 	return cfg
 }
 
+func CopyConfig(cfg models.WAFConfig) models.WAFConfig {
+	cfg.DisabledHosts = append([]string(nil), cfg.DisabledHosts...)
+	cfg.DisabledPathPrefixes = append([]string(nil), cfg.DisabledPathPrefixes...)
+	return cfg
+}
+
 func IsActive(cfg models.WAFConfig) bool {
 	return cfg.Enabled && cfg.Mode != ModeOff
 }

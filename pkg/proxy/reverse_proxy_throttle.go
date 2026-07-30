@@ -90,6 +90,15 @@ func (t *reverseProxyThrottle) updateConfig(cfg models.ReverseProxyThrottleConfi
 	t.configMu.Unlock()
 }
 
+func (t *reverseProxyThrottle) getConfig() models.ReverseProxyThrottleConfig {
+	if t == nil {
+		return models.ReverseProxyThrottleConfig{}
+	}
+	t.configMu.RLock()
+	defer t.configMu.RUnlock()
+	return t.config
+}
+
 func (t *reverseProxyThrottle) evaluate(clientIP string, now time.Time) reverseProxyThrottleDecision {
 	decision := reverseProxyThrottleDecision{Allowed: true}
 	if t == nil {

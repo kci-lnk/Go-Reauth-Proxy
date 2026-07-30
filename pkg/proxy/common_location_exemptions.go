@@ -55,10 +55,9 @@ func (r *commonLocationExemptionsRuntime) updateConfig(cfg models.CommonLocation
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	if shouldIgnoreReverseProxyThrottleExemptIPsUpdate(r.config.UpdatedAt, normalized.UpdatedAt) {
-		return false, nil
-	}
-
+	// This is an authoritative full snapshot from the serialized Rust control
+	// plane. UpdatedAt is diagnostic metadata, not an ordering token: rejecting
+	// it after a clock rollback can preserve a revoked WAF exemption forever.
 	r.config = normalized
 	r.set = set
 	return true, nil

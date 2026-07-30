@@ -2,8 +2,11 @@ package proxy
 
 import (
 	"errors"
+	"fmt"
 	"net/http/httptest"
 	"path/filepath"
+	"slices"
+	"sync"
 	"testing"
 	"time"
 
@@ -216,6 +219,64 @@ func TestSetProxyProtocolForceSkipsHookWhenUnchanged(t *testing.T) {
 	}
 }
 
+func TestSetProxyProtocolForceRollsBackOnSaveFailure(t *testing.T) {
+	handler, manager := newAdditionalProxyTestHandler(t)
+	before := handler.GetProxyProtocolForce()
+	beforeSnapshot := handler.snapshotForRequest().proxyProtocolForce
+	calls := 0
+	handler.SetProxyProtocolForceChangeHook(func() { calls++ })
+	breakConfigPersistence(t, manager)
+
+	if err := handler.SetProxyProtocolForce(!before); err == nil {
+		t.Fatal("SetProxyProtocolForce() returned nil error")
+	}
+	if got := handler.GetProxyProtocolForce(); got != before {
+		t.Fatalf("configured proxy protocol force = %v, want %v", got, before)
+	}
+	if got := handler.snapshotForRequest().proxyProtocolForce; got != beforeSnapshot {
+		t.Fatalf("snapshot proxy protocol force = %v, want %v", got, beforeSnapshot)
+	}
+	if calls != 0 {
+		t.Fatalf("hook calls = %d, want 0", calls)
+	}
+}
+
+func TestSetSSLDeploymentDoesNotPublishOnSaveFailure(t *testing.T) {
+	handler, manager := newAdditionalProxyTestHandler(t)
+	before := handler.GetSSLDeployment()
+	beforeInfo := handler.GetSSLInfo()
+	calls := 0
+	handler.SetSSLChangeHook(func() { calls++ })
+	certPEM, keyPEM := makeTestCertificatePEM(t, []string{"save-failure.example.test"}, nil)
+	breakConfigPersistence(t, manager)
+
+	err := handler.SetSSLDeployment(models.SSLConfig{
+		Certificates: []models.SSLDeployedCertificate{{
+			ID:        "save-failure",
+			Cert:      certPEM,
+			Key:       keyPEM,
+			IsDefault: true,
+		}},
+	})
+	if err == nil {
+		t.Fatal("SetSSLDeployment() returned nil error")
+	}
+	after := handler.GetSSLDeployment()
+	if after.DeploymentMode != before.DeploymentMode ||
+		len(after.Certificates) != len(before.Certificates) {
+		t.Fatalf("SSL deployment after failure = %#v, want %#v", after, before)
+	}
+	afterInfo := handler.GetSSLInfo()
+	if afterInfo.Enabled != beforeInfo.Enabled ||
+		afterInfo.DeploymentMode != beforeInfo.DeploymentMode ||
+		len(afterInfo.Certificates) != len(beforeInfo.Certificates) {
+		t.Fatalf("SSL runtime after failure = %#v, want %#v", afterInfo, beforeInfo)
+	}
+	if calls != 0 {
+		t.Fatalf("SSL hook calls = %d, want 0", calls)
+	}
+}
+
 func TestSetGatewayListenerConfigDoesNotPersistWhenRuntimeApplyFails(t *testing.T) {
 	handler, manager := newAdditionalProxyTestHandler(t)
 	previous := handler.GetGatewayListenerConfig()
@@ -372,6 +433,446 @@ func TestSetGatewayVisibilityStoresCopy(t *testing.T) {
 	}
 }
 
+func TestConcurrentGatewayVisibilitySettersPublishTheSameFinalConfig(t *testing.T) {
+	handler, _ := newAdditionalProxyTestHandler(t)
+	const setters = 32
+	start := make(chan struct{})
+	errors := make(chan error, setters)
+	var wait sync.WaitGroup
+	for index := range setters {
+		wait.Add(1)
+		go func() {
+			defer wait.Done()
+			<-start
+			errors <- handler.SetGatewayVisibility(models.GatewayVisibilityConfig{
+				Enabled: true,
+				CIDRs:   []string{fmt.Sprintf("10.%d.0.0/16", index)},
+			})
+		}()
+	}
+	close(start)
+	wait.Wait()
+	close(errors)
+	for err := range errors {
+		if err != nil {
+			t.Fatalf("SetGatewayVisibility() returned error: %v", err)
+		}
+	}
+
+	persisted := handler.GetGatewayVisibility()
+	runtime := handler.gatewayVisibility.getConfig()
+	if runtime.Enabled != persisted.Enabled ||
+		runtime.UpdatedAt != persisted.UpdatedAt ||
+		runtime.PolicyID != persisted.PolicyID ||
+		!slices.Equal(runtime.CIDRs, persisted.CIDRs) {
+		t.Fatalf("runtime visibility = %#v, persisted visibility = %#v", runtime, persisted)
+	}
+}
+
+func TestConcurrentRuntimeConfigSettersPublishThePersistedFinalConfig(t *testing.T) {
+	t.Run("reverse proxy throttle", func(t *testing.T) {
+		handler, manager := newAdditionalProxyTestHandler(t)
+		const setters = 32
+		start := make(chan struct{})
+		errors := make(chan error, setters)
+		var wait sync.WaitGroup
+		for index := range setters {
+			wait.Add(1)
+			go func() {
+				defer wait.Done()
+				<-start
+				errors <- handler.SetReverseProxyThrottle(models.ReverseProxyThrottleConfig{
+					Enabled:           true,
+					RequestsPerSecond: index + 1,
+					Burst:             index + 101,
+					BlockSeconds:      index + 201,
+				})
+			}()
+		}
+		close(start)
+		wait.Wait()
+		close(errors)
+		for err := range errors {
+			if err != nil {
+				t.Fatalf("SetReverseProxyThrottle() returned error: %v", err)
+			}
+		}
+		configured := handler.GetReverseProxyThrottle()
+		if runtime := handler.reverseProxyThrottle.getConfig(); runtime != configured {
+			t.Fatalf("runtime throttle = %#v, configured throttle = %#v", runtime, configured)
+		}
+		persisted, err := manager.Load()
+		if err != nil {
+			t.Fatalf("Load() returned error: %v", err)
+		}
+		if persisted.ReverseProxyThrottle != configured {
+			t.Fatalf("persisted throttle = %#v, configured throttle = %#v", persisted.ReverseProxyThrottle, configured)
+		}
+	})
+
+	t.Run("forwarded headers", func(t *testing.T) {
+		handler, manager := newAdditionalProxyTestHandler(t)
+		const setters = 32
+		start := make(chan struct{})
+		errors := make(chan error, setters)
+		var wait sync.WaitGroup
+		for index := range setters {
+			wait.Add(1)
+			go func() {
+				defer wait.Done()
+				<-start
+				errors <- handler.SetForwardedHeadersConfig(models.ForwardedHeadersConfig{
+					Enabled:     true,
+					OmitTargets: []string{fmt.Sprintf("http://127.0.0.1:%d", 8000+index)},
+					UpdatedAt:   fmt.Sprintf("forwarded-%d", index),
+				})
+			}()
+		}
+		close(start)
+		wait.Wait()
+		close(errors)
+		for err := range errors {
+			if err != nil {
+				t.Fatalf("SetForwardedHeadersConfig() returned error: %v", err)
+			}
+		}
+		configured := handler.GetForwardedHeadersConfig()
+		runtime := handler.forwardedHeaders.getConfig()
+		if runtime.Enabled != configured.Enabled ||
+			runtime.UpdatedAt != configured.UpdatedAt ||
+			!slices.Equal(runtime.OmitTargets, configured.OmitTargets) {
+			t.Fatalf("runtime forwarded headers = %#v, configured = %#v", runtime, configured)
+		}
+		persisted, err := manager.Load()
+		if err != nil {
+			t.Fatalf("Load() returned error: %v", err)
+		}
+		if persisted.ForwardedHeaders.Enabled != configured.Enabled ||
+			persisted.ForwardedHeaders.UpdatedAt != configured.UpdatedAt ||
+			!slices.Equal(persisted.ForwardedHeaders.OmitTargets, configured.OmitTargets) {
+			t.Fatalf("persisted forwarded headers = %#v, configured = %#v", persisted.ForwardedHeaders, configured)
+		}
+	})
+
+	t.Run("preserve host", func(t *testing.T) {
+		handler, manager := newAdditionalProxyTestHandler(t)
+		const setters = 32
+		start := make(chan struct{})
+		errors := make(chan error, setters)
+		var wait sync.WaitGroup
+		for index := range setters {
+			wait.Add(1)
+			go func() {
+				defer wait.Done()
+				<-start
+				errors <- handler.SetPreserveHostConfig(models.PreserveHostConfig{
+					Enabled:     index%2 == 0,
+					OmitTargets: []string{fmt.Sprintf("http://127.0.0.1:%d", 9000+index)},
+					UpdatedAt:   fmt.Sprintf("preserve-%d", index),
+				})
+			}()
+		}
+		close(start)
+		wait.Wait()
+		close(errors)
+		for err := range errors {
+			if err != nil {
+				t.Fatalf("SetPreserveHostConfig() returned error: %v", err)
+			}
+		}
+		configured := handler.GetPreserveHostConfig()
+		runtime := handler.preserveHost.getConfig()
+		if runtime.Enabled != configured.Enabled ||
+			runtime.UpdatedAt != configured.UpdatedAt ||
+			!slices.Equal(runtime.OmitTargets, configured.OmitTargets) {
+			t.Fatalf("runtime preserve host = %#v, configured = %#v", runtime, configured)
+		}
+		persisted, err := manager.Load()
+		if err != nil {
+			t.Fatalf("Load() returned error: %v", err)
+		}
+		if persisted.PreserveHost.Enabled != configured.Enabled ||
+			persisted.PreserveHost.UpdatedAt != configured.UpdatedAt ||
+			!slices.Equal(persisted.PreserveHost.OmitTargets, configured.OmitTargets) {
+			t.Fatalf("persisted preserve host = %#v, configured = %#v", persisted.PreserveHost, configured)
+		}
+	})
+}
+
+func TestRuntimeConfigSettersRollbackOnSaveFailure(t *testing.T) {
+	t.Run("reverse proxy throttle", func(t *testing.T) {
+		handler, manager := newAdditionalProxyTestHandler(t)
+		beforeConfigured := handler.GetReverseProxyThrottle()
+		beforeRuntime := handler.reverseProxyThrottle.getConfig()
+		breakConfigPersistence(t, manager)
+
+		err := handler.SetReverseProxyThrottle(models.ReverseProxyThrottleConfig{
+			Enabled:           true,
+			RequestsPerSecond: 1,
+			Burst:             2,
+			BlockSeconds:      3,
+		})
+		if err == nil {
+			t.Fatal("SetReverseProxyThrottle() returned nil error")
+		}
+		if configured := handler.GetReverseProxyThrottle(); configured != beforeConfigured {
+			t.Fatalf("configured throttle after failure = %#v, want %#v", configured, beforeConfigured)
+		}
+		if runtime := handler.reverseProxyThrottle.getConfig(); runtime != beforeRuntime {
+			t.Fatalf("runtime throttle after failure = %#v, want %#v", runtime, beforeRuntime)
+		}
+	})
+
+	t.Run("forwarded headers", func(t *testing.T) {
+		handler, manager := newAdditionalProxyTestHandler(t)
+		beforeConfigured := handler.GetForwardedHeadersConfig()
+		beforeRuntime := handler.forwardedHeaders.getConfig()
+		breakConfigPersistence(t, manager)
+
+		err := handler.SetForwardedHeadersConfig(models.ForwardedHeadersConfig{
+			Enabled:     true,
+			OmitTargets: []string{"http://127.0.0.1:8080"},
+			UpdatedAt:   "changed",
+		})
+		if err == nil {
+			t.Fatal("SetForwardedHeadersConfig() returned nil error")
+		}
+		configured := handler.GetForwardedHeadersConfig()
+		if configured.Enabled != beforeConfigured.Enabled ||
+			configured.UpdatedAt != beforeConfigured.UpdatedAt ||
+			!slices.Equal(configured.OmitTargets, beforeConfigured.OmitTargets) {
+			t.Fatalf("configured forwarded headers after failure = %#v, want %#v", configured, beforeConfigured)
+		}
+		runtime := handler.forwardedHeaders.getConfig()
+		if runtime.Enabled != beforeRuntime.Enabled ||
+			runtime.UpdatedAt != beforeRuntime.UpdatedAt ||
+			!slices.Equal(runtime.OmitTargets, beforeRuntime.OmitTargets) {
+			t.Fatalf("runtime forwarded headers after failure = %#v, want %#v", runtime, beforeRuntime)
+		}
+	})
+
+	t.Run("preserve host", func(t *testing.T) {
+		handler, manager := newAdditionalProxyTestHandler(t)
+		beforeConfigured := handler.GetPreserveHostConfig()
+		beforeRuntime := handler.preserveHost.getConfig()
+		breakConfigPersistence(t, manager)
+
+		err := handler.SetPreserveHostConfig(models.PreserveHostConfig{
+			Enabled:     false,
+			OmitTargets: []string{"http://127.0.0.1:8080"},
+			UpdatedAt:   "changed",
+		})
+		if err == nil {
+			t.Fatal("SetPreserveHostConfig() returned nil error")
+		}
+		configured := handler.GetPreserveHostConfig()
+		if configured.Enabled != beforeConfigured.Enabled ||
+			configured.UpdatedAt != beforeConfigured.UpdatedAt ||
+			!slices.Equal(configured.OmitTargets, beforeConfigured.OmitTargets) {
+			t.Fatalf("configured preserve host after failure = %#v, want %#v", configured, beforeConfigured)
+		}
+		runtime := handler.preserveHost.getConfig()
+		if runtime.Enabled != beforeRuntime.Enabled ||
+			runtime.UpdatedAt != beforeRuntime.UpdatedAt ||
+			!slices.Equal(runtime.OmitTargets, beforeRuntime.OmitTargets) {
+			t.Fatalf("runtime preserve host after failure = %#v, want %#v", runtime, beforeRuntime)
+		}
+	})
+}
+
+func TestPersistedHandlerSettingsRollbackOnSaveFailure(t *testing.T) {
+	t.Run("path rules", func(t *testing.T) {
+		handler, manager := newAdditionalProxyTestHandler(t)
+		beforeSnapshot := handler.snapshotForRequest()
+		breakConfigPersistence(t, manager)
+
+		err := handler.SetRules([]models.Rule{{
+			Path:   "/rollback",
+			Target: "http://127.0.0.1:8080",
+		}})
+		if err == nil {
+			t.Fatal("SetRules() returned nil error")
+		}
+		if got := handler.GetRules(); len(got) != 0 {
+			t.Fatalf("configured rules after failure = %#v", got)
+		}
+		afterSnapshot := handler.snapshotForRequest()
+		if len(afterSnapshot.rules) != len(beforeSnapshot.rules) ||
+			afterSnapshot.routeGeneration != beforeSnapshot.routeGeneration {
+			t.Fatalf("request snapshot changed after failed rule update")
+		}
+	})
+
+	t.Run("stream rules", func(t *testing.T) {
+		handler, manager := newAdditionalProxyTestHandler(t)
+		breakConfigPersistence(t, manager)
+
+		err := handler.SetStreamRules([]models.StreamRule{{
+			Protocol:   models.StreamProtocolTCP,
+			ListenPort: 10001,
+			Target:     "127.0.0.1:10002",
+		}})
+		if err == nil {
+			t.Fatal("SetStreamRules() returned nil error")
+		}
+		if got := handler.GetStreamRules(); len(got) != 0 {
+			t.Fatalf("configured stream rules after failure = %#v", got)
+		}
+	})
+
+	t.Run("default route", func(t *testing.T) {
+		handler, manager := newAdditionalProxyTestHandler(t)
+		before := handler.GetDefaultRoute()
+		beforeSnapshot := handler.snapshotForRequest().defaultRoute
+		breakConfigPersistence(t, manager)
+
+		if err := handler.SetDefaultRoute("/changed"); err == nil {
+			t.Fatal("SetDefaultRoute() returned nil error")
+		}
+		if got := handler.GetDefaultRoute(); got != before {
+			t.Fatalf("configured default route = %q, want %q", got, before)
+		}
+		if got := handler.snapshotForRequest().defaultRoute; got != beforeSnapshot {
+			t.Fatalf("snapshot default route = %q, want %q", got, beforeSnapshot)
+		}
+	})
+
+	t.Run("auth config", func(t *testing.T) {
+		handler, manager := newAdditionalProxyTestHandler(t)
+		before := handler.GetAuthConfig()
+		beforeSnapshot := handler.snapshotForRequest().authConfig
+		breakConfigPersistence(t, manager)
+		next := before
+		next.AuthPort++
+
+		if err := handler.SetAuthConfig(next); err == nil {
+			t.Fatal("SetAuthConfig() returned nil error")
+		}
+		if got := handler.GetAuthConfig(); got != before {
+			t.Fatalf("configured auth config = %#v, want %#v", got, before)
+		}
+		if got := handler.snapshotForRequest().authConfig; got != beforeSnapshot {
+			t.Fatalf("snapshot auth config = %#v, want %#v", got, beforeSnapshot)
+		}
+	})
+
+	t.Run("logging", func(t *testing.T) {
+		handler, manager := newAdditionalProxyTestHandler(t)
+		before := handler.GetLoggingConfig()
+		breakConfigPersistence(t, manager)
+
+		if _, err := handler.SetLoggingConfig(models.LoggingConfig{
+			Enabled:         !before.Enabled,
+			RecordLocalhost: !before.RecordLocalhost,
+			MaxDays:         before.MaxDays + 1,
+		}); err == nil {
+			t.Fatal("SetLoggingConfig() returned nil error")
+		}
+		if got := handler.GetLoggingConfig(); got != before {
+			t.Fatalf("runtime logging config = %#v, want %#v", got, before)
+		}
+	})
+
+	t.Run("WAF", func(t *testing.T) {
+		handler, manager := newAdditionalProxyTestHandler(t)
+		beforeConfig := handler.GetWAFConfig()
+		beforeStatus := handler.GetWAFStatus()
+		next := beforeConfig
+		next.Enabled = !next.Enabled
+		if next.Mode == "" || next.Mode == "off" {
+			next.Mode = "blocking"
+		}
+		breakConfigPersistence(t, manager)
+
+		if _, err := handler.SetWAFConfig(next); err == nil {
+			t.Fatal("SetWAFConfig() returned nil error")
+		}
+		afterConfig := handler.GetWAFConfig()
+		if afterConfig.Enabled != beforeConfig.Enabled ||
+			afterConfig.Mode != beforeConfig.Mode ||
+			afterConfig.RulesDir != beforeConfig.RulesDir {
+			t.Fatalf("configured WAF after failure = %#v, want %#v", afterConfig, beforeConfig)
+		}
+		afterStatus := handler.GetWAFStatus()
+		if afterStatus.Enabled != beforeStatus.Enabled ||
+			afterStatus.Mode != beforeStatus.Mode ||
+			afterStatus.Loaded != beforeStatus.Loaded ||
+			afterStatus.BundleID != beforeStatus.BundleID {
+			t.Fatalf("runtime WAF after failure = %#v, want %#v", afterStatus, beforeStatus)
+		}
+	})
+
+	t.Run("crawler blocker", func(t *testing.T) {
+		handler, manager := newAdditionalProxyTestHandler(t)
+		before := handler.GetCrawlerBlockerConfig()
+		breakConfigPersistence(t, manager)
+
+		if _, err := handler.SetCrawlerBlockerConfig(models.CrawlerBlockerConfig{
+			Enabled:   !before.Enabled,
+			UpdatedAt: "changed",
+		}); err == nil {
+			t.Fatal("SetCrawlerBlockerConfig() returned nil error")
+		}
+		if got := handler.GetCrawlerBlockerConfig(); got != before {
+			t.Fatalf("crawler blocker config = %#v, want %#v", got, before)
+		}
+	})
+
+	t.Run("gateway portal", func(t *testing.T) {
+		handler, manager := newAdditionalProxyTestHandler(t)
+		before := handler.GetGatewayPortalConfig()
+		beforeSnapshot := handler.snapshotForRequest().gatewayPortal
+		breakConfigPersistence(t, manager)
+		next := before
+		next.ShowAppIcon = !next.ShowAppIcon
+
+		if _, err := handler.SetGatewayPortalConfig(next); err == nil {
+			t.Fatal("SetGatewayPortalConfig() returned nil error")
+		}
+		if got := handler.GetGatewayPortalConfig(); got != before {
+			t.Fatalf("gateway portal config = %#v, want %#v", got, before)
+		}
+		if got := handler.snapshotForRequest().gatewayPortal; got != beforeSnapshot {
+			t.Fatalf("snapshot gateway portal = %#v, want %#v", got, beforeSnapshot)
+		}
+	})
+
+	t.Run("gateway unmatched route", func(t *testing.T) {
+		handler, manager := newAdditionalProxyTestHandler(t)
+		before := handler.GetGatewayUnmatchedRouteConfig()
+		beforeSnapshot := handler.snapshotForRequest().unmatchedRoute
+		breakConfigPersistence(t, manager)
+		next := before
+		next.Behavior = models.GatewayUnmatchedRouteBehaviorResetConnection
+
+		if _, err := handler.SetGatewayUnmatchedRouteConfig(next); err == nil {
+			t.Fatal("SetGatewayUnmatchedRouteConfig() returned nil error")
+		}
+		if got := handler.GetGatewayUnmatchedRouteConfig(); got != before {
+			t.Fatalf("gateway unmatched route config = %#v, want %#v", got, before)
+		}
+		if got := handler.snapshotForRequest().unmatchedRoute; got != beforeSnapshot {
+			t.Fatalf("snapshot gateway unmatched route = %#v, want %#v", got, beforeSnapshot)
+		}
+	})
+
+	t.Run("fnos port icon hijack", func(t *testing.T) {
+		handler, manager := newAdditionalProxyTestHandler(t)
+		before := handler.GetFnosPortIconHijackConfig()
+		breakConfigPersistence(t, manager)
+
+		if _, err := handler.SetFnosPortIconHijackConfig(models.FnosPortIconHijackConfig{
+			Enabled:   !before.Enabled,
+			UpdatedAt: "changed",
+		}); err == nil {
+			t.Fatal("SetFnosPortIconHijackConfig() returned nil error")
+		}
+		if got := handler.GetFnosPortIconHijackConfig(); got != before {
+			t.Fatalf("fnOS port icon hijack config = %#v, want %#v", got, before)
+		}
+	})
+}
+
 func TestSetForwardedHeadersConfigStoresCopy(t *testing.T) {
 	handler, _ := newAdditionalProxyTestHandler(t)
 	if err := handler.SetForwardedHeadersConfig(models.ForwardedHeadersConfig{Enabled: true, OmitTargets: []string{"http://127.0.0.1:8080"}}); err != nil {
@@ -393,6 +894,31 @@ func TestSetPreserveHostConfigStoresCopy(t *testing.T) {
 	got.OmitTargets[0] = "http://127.0.0.1:9090"
 	if handler.GetPreserveHostConfig().OmitTargets[0] == "http://127.0.0.1:9090" {
 		t.Fatal("GetPreserveHostConfig() did not return a defensive copy")
+	}
+}
+
+func TestGetWAFConfigReturnsDefensiveCopy(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.WAF.DisabledHosts = []string{"app.example.test"}
+	cfg.WAF.DisabledPathPrefixes = []string{"/private"}
+	handler := NewHandler(
+		7996,
+		7999,
+		nil,
+		cfg,
+		filepath.Join(t.TempDir(), "logs"),
+		nil,
+	)
+	t.Cleanup(handler.gatewayLogManager.Close)
+
+	copy := handler.GetWAFConfig()
+	copy.DisabledHosts[0] = "changed.example.test"
+	copy.DisabledPathPrefixes[0] = "/changed"
+
+	stored := handler.GetWAFConfig()
+	if stored.DisabledHosts[0] != "app.example.test" ||
+		stored.DisabledPathPrefixes[0] != "/private" {
+		t.Fatalf("stored WAF config was mutated through a returned copy: %#v", stored)
 	}
 }
 

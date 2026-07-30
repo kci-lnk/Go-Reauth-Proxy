@@ -83,6 +83,101 @@ func testConfig(rulesDir string, mode string) models.WAFConfig {
 	}
 }
 
+func TestPrepareConfigDoesNotPublishBeforeCommit(t *testing.T) {
+	runtime := NewRuntime(models.WAFConfig{}, t.TempDir())
+	beforeConfig := runtime.Config()
+	beforeStatus := runtime.Status()
+
+	prepared, err := runtime.PrepareConfig(models.WAFConfig{
+		Enabled: true,
+		Mode:    ModeBlocking,
+	})
+	if err != nil {
+		t.Fatalf("PrepareConfig() returned error: %v", err)
+	}
+	if got := runtime.Config(); got.Enabled != beforeConfig.Enabled || got.Mode != beforeConfig.Mode {
+		t.Fatalf("runtime config changed before commit: %#v", got)
+	}
+	if got := runtime.Status(); got.Enabled != beforeStatus.Enabled || got.Loaded != beforeStatus.Loaded {
+		t.Fatalf("runtime status changed before commit: %#v", got)
+	}
+
+	status := runtime.CommitPrepared(prepared)
+	if !runtime.Config().Enabled || !status.Enabled {
+		t.Fatalf("prepared config was not published: config=%#v status=%#v", runtime.Config(), status)
+	}
+}
+
+func TestRuntimeConfigReturnsDefensiveCopies(t *testing.T) {
+	runtime := NewRuntime(models.WAFConfig{
+		DisabledHosts:        []string{"app.example.test"},
+		DisabledPathPrefixes: []string{"/private"},
+	}, t.TempDir())
+
+	copy := runtime.Config()
+	copy.DisabledHosts[0] = "changed.example.test"
+	copy.DisabledPathPrefixes[0] = "/changed"
+
+	stored := runtime.Config()
+	if stored.DisabledHosts[0] != "app.example.test" ||
+		stored.DisabledPathPrefixes[0] != "/private" {
+		t.Fatalf("stored WAF config was mutated through a returned copy: %#v", stored)
+	}
+}
+
+func TestCommitPreparedPublishesOneRuntimeGeneration(t *testing.T) {
+	runtime := NewRuntime(models.WAFConfig{}, t.TempDir())
+	prepared := func(id string) PreparedState {
+		return PreparedState{
+			config: models.WAFConfig{
+				Enabled:        true,
+				Mode:           ModeBlocking,
+				ActiveBundleID: id,
+				DisabledHosts:  []string{id + ".example.test"},
+			},
+			compiled:        &CompiledRuntime{BundleID: id},
+			replaceCompiled: true,
+		}
+	}
+	first := prepared("first")
+	second := prepared("second")
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for range 10_000 {
+			runtime.CommitPrepared(first)
+			runtime.CommitPrepared(second)
+		}
+	}()
+
+	for {
+		select {
+		case <-done:
+			return
+		default:
+			snapshot := runtime.snapshot()
+			id := snapshot.config.ActiveBundleID
+			if id == "" {
+				continue
+			}
+			if snapshot.compiled == nil || snapshot.compiled.BundleID != id {
+				t.Fatalf(
+					"mixed WAF generation: config=%q compiled=%#v",
+					id,
+					snapshot.compiled,
+				)
+			}
+			if _, ok := snapshot.exclusions.disabledHosts[id+".example.test"]; !ok {
+				t.Fatalf(
+					"mixed WAF generation: config=%q exclusions=%#v",
+					id,
+					snapshot.exclusions.disabledHosts,
+				)
+			}
+		}
+	}
+}
+
 func TestRuntimeExclusionConfigMatchesDisabledHostAndPath(t *testing.T) {
 	rt := NewRuntime(models.WAFConfig{
 		Enabled:              true,

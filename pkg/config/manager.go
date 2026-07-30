@@ -2,6 +2,7 @@ package config
 
 import (
 	"encoding/json"
+	"errors"
 	"go-reauth-proxy/pkg/gatewaylog"
 	"go-reauth-proxy/pkg/i18n"
 	"go-reauth-proxy/pkg/logger"
@@ -14,12 +15,15 @@ import (
 )
 
 const (
-	defaultAuthCacheTTLSeconds             = 1
-	defaultAuthCacheUnauthorizedTTLSeconds = 1
-	defaultReverseProxyThrottleRPS         = 100
-	defaultReverseProxyThrottleBurst       = 200
-	defaultReverseProxyThrottleBlockSecs   = 30
+	defaultAuthCacheTTLSeconds                   = 1
+	defaultAuthCacheUnauthorizedTTLSeconds       = 1
+	defaultReverseProxyThrottleRPS               = 100
+	defaultReverseProxyThrottleBurst             = 200
+	defaultReverseProxyThrottleBlockSecs         = 30
+	maxConfigFileBytes                     int64 = 128 << 20
 )
+
+var errConfigFileTooLarge = errors.New("gateway config file is too large")
 
 type AppConfig struct {
 	Rules                []models.Rule                      `json:"rules"`
@@ -405,7 +409,7 @@ func applyMissingReverseProxyThrottleDefaults(cfg *AppConfig, hasReverseProxyThr
 }
 
 func (m *Manager) loadUnlocked() (*AppConfig, bool, bool, error) {
-	data, err := os.ReadFile(m.filePath)
+	data, err := readFileLimited(m.filePath, maxConfigFileBytes)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return defaultConfig(), false, true, nil
@@ -446,8 +450,35 @@ func (m *Manager) saveUnlocked(cfg *AppConfig) error {
 	if err != nil {
 		return err
 	}
+	if int64(len(data)) > maxConfigFileBytes {
+		return errConfigFileTooLarge
+	}
 
-	return writeFileAtomically(m.filePath, data, 0644)
+	return writeFileAtomically(m.filePath, data, 0600)
+}
+
+func readFileLimited(path string, limit int64) ([]byte, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+
+	info, err := file.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if info.Size() > limit {
+		return nil, errConfigFileTooLarge
+	}
+	data, err := io.ReadAll(io.LimitReader(file, limit+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(data)) > limit {
+		return nil, errConfigFileTooLarge
+	}
+	return data, nil
 }
 
 type atomicRenameFunc func(oldPath string, newPath string) error
@@ -460,10 +491,9 @@ func writeFileAtomicallyWithRename(path string, data []byte, perm os.FileMode, r
 	dir := filepath.Dir(path)
 	targetPerm := perm
 	if info, err := os.Stat(path); err == nil {
-		// os.WriteFile preserves the mode of an existing file. Preserve that
-		// behavior when replacing the inode so a manually-hardened config does
-		// not become more permissive after the next save.
-		targetPerm = info.Mode().Perm()
+		// Preserve permissions that are already stricter, but never carry
+		// group/world access onto a replacement containing gateway secrets.
+		targetPerm = info.Mode().Perm() & perm
 	} else if !os.IsNotExist(err) {
 		return err
 	}
@@ -530,6 +560,14 @@ func (m *Manager) Load() (*AppConfig, error) {
 			return nil, err
 		}
 	}
+	if err := hardenConfigPermissions(m.filePath); err != nil {
+		if event := logger.DebugEvent("config", "permissions_failed"); event != nil {
+			event.Str("path", logger.SanitizeLogString(m.filePath)).
+				Str("error", logger.SanitizeLogString(err.Error())).
+				Send()
+		}
+		return nil, err
+	}
 	if event := logger.DebugEvent("config", "load_end"); event != nil {
 		event.Str("path", logger.SanitizeLogString(m.filePath)).
 			Bool("existed", existed).
@@ -543,6 +581,19 @@ func (m *Manager) Load() (*AppConfig, error) {
 			Send()
 	}
 	return cfg, nil
+}
+
+func hardenConfigPermissions(path string) error {
+	info, err := os.Stat(path)
+	if err != nil {
+		return err
+	}
+	current := info.Mode().Perm()
+	hardened := current & 0600
+	if current == hardened {
+		return nil
+	}
+	return os.Chmod(path, hardened)
 }
 
 func (m *Manager) Save(config *AppConfig) error {

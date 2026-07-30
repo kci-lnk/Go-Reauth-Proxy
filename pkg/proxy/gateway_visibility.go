@@ -58,6 +58,16 @@ func newCompiledGatewayVisibility(cfg models.GatewayVisibilityConfig, set *compi
 	return &gatewayVisibility{config: cfg, set: set}
 }
 
+func (v *gatewayVisibility) setCompiledConfig(cfg models.GatewayVisibilityConfig, set *compiledipset.Set) {
+	if v == nil {
+		return
+	}
+	v.mu.Lock()
+	v.config = cfg
+	v.set = set
+	v.mu.Unlock()
+}
+
 func (v *gatewayVisibility) updateConfig(cfg models.GatewayVisibilityConfig) error {
 	if v == nil {
 		return nil
@@ -72,10 +82,7 @@ func (v *gatewayVisibility) updateConfig(cfg models.GatewayVisibilityConfig) err
 		return err
 	}
 
-	v.mu.Lock()
-	v.config = normalized
-	v.set = set
-	v.mu.Unlock()
+	v.setCompiledConfig(normalized, set)
 	return nil
 }
 

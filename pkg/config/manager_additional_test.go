@@ -68,6 +68,16 @@ func TestManagerLoadRejectsInvalidJSON(t *testing.T) {
 	}
 }
 
+func TestReadFileLimitedRejectsOversizedConfig(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	if err := os.WriteFile(path, []byte("123456789"), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	if _, err := readFileLimited(path, 8); !errors.Is(err, errConfigFileTooLarge) {
+		t.Fatalf("readFileLimited() error = %v, want %v", err, errConfigFileTooLarge)
+	}
+}
+
 func TestManagerLoadAppliesMissingAuthCacheDefaults(t *testing.T) {
 	cfg := loadConfigFromJSON(t, `{"auth_config":{"auth_port":7997}}`)
 	if cfg.AuthConfig.AuthCacheTTL != defaultAuthCacheTTLSeconds {
@@ -249,6 +259,39 @@ func TestManagerSaveAtomicallyReplacesAndPreservesExistingMode(t *testing.T) {
 		t.Fatalf("saved config mode = %o, want preserved 600", got)
 	}
 	assertNoAtomicConfigTemps(t, dir, path)
+}
+
+func TestManagerSaveCreatesAndHardensPrivateConfigPermissions(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows does not expose Unix permission bits")
+	}
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.json")
+	manager := NewManager(path)
+	if err := manager.Save(defaultConfig()); err != nil {
+		t.Fatalf("create config: %v", err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat created config: %v", err)
+	}
+	if got := info.Mode().Perm(); got != 0o600 {
+		t.Fatalf("created config mode = %o, want 600", got)
+	}
+
+	if err := os.Chmod(path, 0o644); err != nil {
+		t.Fatalf("make config permissive: %v", err)
+	}
+	if _, err := manager.Load(); err != nil {
+		t.Fatalf("load permissive config: %v", err)
+	}
+	info, err = os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat hardened config: %v", err)
+	}
+	if got := info.Mode().Perm(); got != 0o600 {
+		t.Fatalf("hardened config mode = %o, want 600", got)
+	}
 }
 
 func TestWriteFileAtomicallyRenameFailurePreservesExistingFile(t *testing.T) {

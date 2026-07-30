@@ -27,6 +27,8 @@ const (
 	rulesStateFilename         = "rules-state.json"
 	systemRulesDirName         = "system"
 	customRulesDirName         = "custom"
+	maxRulesStateBytes         = 1 << 20
+	maxRuleFileBytes           = 16 << 20
 )
 
 var (
@@ -261,7 +263,8 @@ func readRulesState(rulesDir string) (rulesState, error) {
 		SystemEnabled: map[string]bool{},
 		CustomEnabled: map[string]bool{},
 	}
-	raw, err := os.ReadFile(filepath.Join(rulesDir, rulesStateFilename))
+	statePath := filepath.Join(rulesDir, rulesStateFilename)
+	raw, err := readFileLimited(statePath, maxRulesStateBytes)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return state, nil
@@ -286,7 +289,7 @@ func collectDefinedRuleIDs(targets []loadTarget) (map[int]struct{}, error) {
 		if target.path == "" || !strings.EqualFold(filepath.Ext(target.path), ".conf") {
 			continue
 		}
-		raw, err := os.ReadFile(target.path)
+		raw, err := readFileLimited(target.path, maxRuleFileBytes)
 		if err != nil {
 			return nil, err
 		}
@@ -333,7 +336,7 @@ func (f updateTargetFilteringFS) Open(name string) (fs.File, error) {
 	}
 	defer file.Close()
 
-	raw, err := io.ReadAll(file)
+	raw, err := readLimited(file, maxRuleFileBytes, name)
 	if err != nil {
 		return nil, err
 	}
@@ -356,6 +359,26 @@ func (f updateTargetFilteringFS) Open(name string) (fs.File, error) {
 			sys:     info.Sys(),
 		},
 	}, nil
+}
+
+func readFileLimited(path string, maxBytes int64) ([]byte, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+	return readLimited(file, maxBytes, path)
+}
+
+func readLimited(reader io.Reader, maxBytes int64, name string) ([]byte, error) {
+	raw, err := io.ReadAll(io.LimitReader(reader, maxBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(raw)) > maxBytes {
+		return nil, fmt.Errorf("%s exceeds maximum size of %d bytes", name, maxBytes)
+	}
+	return raw, nil
 }
 
 func filterMissingUpdateTargetDirectives(raw []byte, definedRuleIDs map[int]struct{}) ([]byte, bool) {

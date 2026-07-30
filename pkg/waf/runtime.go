@@ -30,17 +30,34 @@ var (
 )
 
 type Runtime struct {
-	current         atomic.Value
-	config          atomic.Value
-	exclusions      atomic.Value
+	state           atomic.Pointer[runtimeState]
 	lastError       atomic.Value
 	events          *EventStore
 	defaultRulesDir string
 }
 
+type runtimeState struct {
+	config     models.WAFConfig
+	compiled   *CompiledRuntime
+	exclusions exclusionConfig
+}
+
 type exclusionConfig struct {
 	disabledHosts        map[string]struct{}
 	disabledPathPrefixes []string
+}
+
+// PreparedState is an immutable WAF candidate built without publishing it.
+// CommitPrepared publishes the candidate after its owning configuration has
+// been durably stored.
+type PreparedState struct {
+	config          models.WAFConfig
+	compiled        *CompiledRuntime
+	replaceCompiled bool
+}
+
+func (prepared PreparedState) Config() models.WAFConfig {
+	return CopyConfig(prepared.config)
 }
 
 func NewRuntime(cfg models.WAFConfig, runtimeDir string) *Runtime {
@@ -49,7 +66,7 @@ func NewRuntime(cfg models.WAFConfig, runtimeDir string) *Runtime {
 		events:          NewEventStore(DefaultMaxEvents, DefaultEventTTL),
 		defaultRulesDir: defaultRulesDir,
 	}
-	rt.storeConfig(NormalizeConfig(cfg, defaultRulesDir))
+	rt.state.Store(newRuntimeState(NormalizeConfig(cfg, defaultRulesDir), nil))
 	rt.lastError.Store("")
 	return rt
 }
@@ -58,16 +75,26 @@ func (rt *Runtime) Config() models.WAFConfig {
 	if rt == nil {
 		return NormalizeConfig(models.WAFConfig{}, DefaultRulesDir("."))
 	}
-	cfg, _ := rt.config.Load().(models.WAFConfig)
-	return cfg
+	return CopyConfig(rt.snapshot().config)
 }
 
-func (rt *Runtime) storeConfig(cfg models.WAFConfig) {
-	if rt == nil {
-		return
+func newRuntimeState(cfg models.WAFConfig, compiled *CompiledRuntime) *runtimeState {
+	cfg = CopyConfig(cfg)
+	return &runtimeState{
+		config:     cfg,
+		compiled:   compiled,
+		exclusions: buildExclusionConfig(cfg),
 	}
-	rt.config.Store(cfg)
-	rt.exclusions.Store(buildExclusionConfig(cfg))
+}
+
+func (rt *Runtime) snapshot() *runtimeState {
+	if rt == nil {
+		return &runtimeState{}
+	}
+	if state := rt.state.Load(); state != nil {
+		return state
+	}
+	return &runtimeState{}
 }
 
 func buildExclusionConfig(cfg models.WAFConfig) exclusionConfig {
@@ -84,11 +111,82 @@ func buildExclusionConfig(cfg models.WAFConfig) exclusionConfig {
 	return exclusions
 }
 
+func (rt *Runtime) PrepareConfig(cfg models.WAFConfig) (PreparedState, error) {
+	if rt == nil {
+		return PreparedState{config: cfg}, nil
+	}
+	cfg = NormalizeConfig(cfg, rt.defaultRulesDir)
+	if !IsActive(cfg) {
+		return PreparedState{
+			config:          cfg,
+			replaceCompiled: true,
+		}, nil
+	}
+	if rt.snapshot().compiled == nil {
+		return PreparedState{config: cfg}, nil
+	}
+	compiled, err := buildCompiledRuntime(cfg, rt.defaultRulesDir, "", "")
+	if err != nil {
+		rt.lastError.Store(err.Error())
+		return PreparedState{}, err
+	}
+	return PreparedState{
+		config:          cfg,
+		compiled:        compiled,
+		replaceCompiled: true,
+	}, nil
+}
+
+func (rt *Runtime) PrepareReload(
+	cfg models.WAFConfig,
+	bundleID string,
+	bundlePath string,
+) (PreparedState, error) {
+	if rt == nil {
+		return PreparedState{}, fmt.Errorf("WAF runtime is not initialized")
+	}
+	cfg = NormalizeConfig(cfg, rt.defaultRulesDir)
+	if !IsActive(cfg) {
+		return PreparedState{
+			config:          cfg,
+			replaceCompiled: true,
+		}, nil
+	}
+	compiled, err := buildCompiledRuntime(cfg, rt.defaultRulesDir, bundleID, bundlePath)
+	if err != nil {
+		rt.lastError.Store(err.Error())
+		return PreparedState{}, err
+	}
+	return PreparedState{
+		config:          compiled.Config,
+		compiled:        compiled,
+		replaceCompiled: true,
+	}, nil
+}
+
+func (rt *Runtime) CommitPrepared(prepared PreparedState) Status {
+	if rt == nil {
+		return Status{}
+	}
+	previous := rt.snapshot()
+	compiled := previous.compiled
+	if prepared.replaceCompiled {
+		compiled = prepared.compiled
+	}
+	rt.state.Store(newRuntimeState(prepared.config, compiled))
+	rt.lastError.Store("")
+	if prepared.replaceCompiled && previous.compiled != nil {
+		releaseRuntimeMemorySoon()
+	}
+	return rt.Status()
+}
+
 func (rt *Runtime) Status() Status {
 	if rt == nil {
 		return Status{}
 	}
-	cfg := rt.Config()
+	snapshot := rt.snapshot()
+	cfg := snapshot.config
 	status := Status{
 		Enabled:       cfg.Enabled,
 		Mode:          cfg.Mode,
@@ -98,7 +196,7 @@ func (rt *Runtime) Status() Status {
 	if lastError, _ := rt.lastError.Load().(string); lastError != "" {
 		status.LastError = lastError
 	}
-	if current := rt.compiled(); current != nil {
+	if current := snapshot.compiled; current != nil {
 		status.Loaded = true
 		status.BundleID = current.BundleID
 		status.BundleHash = current.BundleHash
@@ -111,7 +209,7 @@ func (rt *Runtime) Active() bool {
 	if rt == nil {
 		return false
 	}
-	return IsActive(rt.Config())
+	return IsActive(rt.snapshot().config)
 }
 
 func (rt *Runtime) SetConfig(cfg models.WAFConfig) (models.WAFConfig, error) {
@@ -127,41 +225,20 @@ func (rt *Runtime) SetConfig(cfg models.WAFConfig) (models.WAFConfig, error) {
 			Int("disabled_path_prefix_count", len(cfg.DisabledPathPrefixes)).
 			Send()
 	}
-	if !IsActive(cfg) {
-		hadCompiled := rt.compiled() != nil
-		rt.current.Store((*CompiledRuntime)(nil))
-		rt.storeConfig(cfg)
-		rt.lastError.Store("")
-		if hadCompiled {
-			releaseRuntimeMemorySoon()
+	prepared, err := rt.PrepareConfig(cfg)
+	if err != nil {
+		if event := logger.DebugEvent("waf", "config_set_failed"); event != nil {
+			event.Str("error", logger.SanitizeLogString(err.Error())).
+				Str("rules_dir", logger.SanitizeLogString(cfg.RulesDir)).
+				Send()
 		}
-		if event := logger.DebugEvent("waf", "config_set_end"); event != nil {
-			event.Bool("active", false).Send()
-		}
-		return cfg, nil
+		return cfg, err
 	}
-	current := rt.compiled()
-	if current != nil {
-		compiled, err := buildCompiledRuntime(cfg, rt.defaultRulesDir, "", "")
-		if err != nil {
-			rt.lastError.Store(err.Error())
-			if event := logger.DebugEvent("waf", "config_set_failed"); event != nil {
-				event.Str("error", logger.SanitizeLogString(err.Error())).
-					Str("rules_dir", logger.SanitizeLogString(cfg.RulesDir)).
-					Send()
-			}
-			return cfg, err
-		}
-		rt.current.Store(compiled)
-		releaseRuntimeMemorySoon()
-	}
-	rt.storeConfig(cfg)
-	rt.lastError.Store("")
+	status := rt.CommitPrepared(prepared)
 	if event := logger.DebugEvent("waf", "config_set_end"); event != nil {
-		event.Bool("active", IsActive(cfg)).
-			Send()
+		event.Bool("active", status.Enabled && status.Mode != ModeOff).Send()
 	}
-	return cfg, nil
+	return prepared.Config(), nil
 }
 
 func (rt *Runtime) Validate(cfg models.WAFConfig, bundleID string, bundlePath string) (ValidationResult, error) {
@@ -226,26 +303,8 @@ func (rt *Runtime) Reload(cfg models.WAFConfig, bundleID string, bundlePath stri
 			Str("bundle_path", logger.SanitizeLogString(bundlePath)).
 			Send()
 	}
-	if !IsActive(cfg) {
-		hadCompiled := rt.compiled() != nil
-		rt.current.Store((*CompiledRuntime)(nil))
-		rt.storeConfig(cfg)
-		rt.lastError.Store("")
-		if hadCompiled {
-			releaseRuntimeMemorySoon()
-		}
-		if event := logger.DebugEvent("waf", "reload_end"); event != nil {
-			status := rt.Status()
-			event.Bool("enabled", status.Enabled).
-				Bool("loaded", status.Loaded).
-				Int64("duration_ms", time.Since(start).Milliseconds()).
-				Send()
-		}
-		return rt.Status(), nil
-	}
-	compiled, err := buildCompiledRuntime(cfg, rt.defaultRulesDir, bundleID, bundlePath)
+	prepared, err := rt.PrepareReload(cfg, bundleID, bundlePath)
 	if err != nil {
-		rt.lastError.Store(err.Error())
 		if event := logger.DebugEvent("waf", "reload_failed"); event != nil {
 			event.Str("error", logger.SanitizeLogString(err.Error())).
 				Str("bundle_id", logger.SanitizeLogString(bundleID)).
@@ -255,12 +314,8 @@ func (rt *Runtime) Reload(cfg models.WAFConfig, bundleID string, bundlePath stri
 		}
 		return rt.Status(), err
 	}
-	rt.current.Store(compiled)
-	rt.storeConfig(compiled.Config)
-	rt.lastError.Store("")
-	releaseRuntimeMemorySoon()
+	status := rt.CommitPrepared(prepared)
 	if event := logger.DebugEvent("waf", "reload_end"); event != nil {
-		status := rt.Status()
 		event.Bool("enabled", status.Enabled).
 			Bool("loaded", status.Loaded).
 			Str("mode", logger.SanitizeLogString(status.Mode)).
@@ -270,7 +325,7 @@ func (rt *Runtime) Reload(cfg models.WAFConfig, bundleID string, bundlePath stri
 			Int64("duration_ms", time.Since(start).Milliseconds()).
 			Send()
 	}
-	return rt.Status(), nil
+	return status, nil
 }
 
 func (rt *Runtime) Drain(limit int) DrainResult {
@@ -286,11 +341,12 @@ func (rt *Runtime) Evaluate(r *http.Request, ctx EvaluateContext) Decision {
 		return decision
 	}
 	start := time.Now()
-	cfg := rt.Config()
+	snapshot := rt.snapshot()
+	cfg := snapshot.config
 	decision.Enabled = IsActive(cfg)
 	decision.Mode = cfg.Mode
 	decision.DetectionOnly = cfg.Mode == ModeDetection
-	if !decision.Enabled || rt.isExcluded(r) {
+	if !decision.Enabled || isExcludedByConfig(snapshot.exclusions, r) {
 		if event := logger.DebugEvent("waf", "evaluate_skipped"); event != nil {
 			event.Bool("enabled", decision.Enabled).
 				Bool("excluded", decision.Enabled).
@@ -303,7 +359,7 @@ func (rt *Runtime) Evaluate(r *http.Request, ctx EvaluateContext) Decision {
 		}
 		return decision
 	}
-	compiled := rt.compiled()
+	compiled := snapshot.compiled
 	if compiled == nil || compiled.WAF == nil {
 		if event := logger.DebugEvent("waf", "evaluate_skipped"); event != nil {
 			event.Bool("enabled", decision.Enabled).
@@ -447,12 +503,7 @@ func (rt *Runtime) compiled() *CompiledRuntime {
 	if rt == nil {
 		return nil
 	}
-	value := rt.current.Load()
-	if value == nil {
-		return nil
-	}
-	compiled, _ := value.(*CompiledRuntime)
-	return compiled
+	return rt.snapshot().compiled
 }
 
 func releaseRuntimeMemorySoon() {
@@ -467,11 +518,10 @@ func releaseRuntimeMemorySoon() {
 }
 
 func (rt *Runtime) isExcluded(r *http.Request) bool {
-	exclusions := exclusionConfig{}
-	if value := rt.exclusions.Load(); value != nil {
-		exclusions, _ = value.(exclusionConfig)
-	}
+	return isExcludedByConfig(rt.snapshot().exclusions, r)
+}
 
+func isExcludedByConfig(exclusions exclusionConfig, r *http.Request) bool {
 	hasDisabledHosts := len(exclusions.disabledHosts) > 0
 	hasDisabledPathPrefixes := len(exclusions.disabledPathPrefixes) > 0
 	if !hasDisabledHosts && !hasDisabledPathPrefixes {

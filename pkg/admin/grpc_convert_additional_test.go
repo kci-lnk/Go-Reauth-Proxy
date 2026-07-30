@@ -177,6 +177,17 @@ func TestThrottleExemptIPsProtoRoundTrip(t *testing.T) {
 	}
 }
 
+func TestGatewayTrustedClientIPsProtoRoundTrip(t *testing.T) {
+	input := models.GatewayTrustedClientIPsRuntime{
+		IPs:       []string{"198.51.100.7"},
+		CIDRs:     []string{"192.168.0.0/16"},
+		UpdatedAt: "now",
+	}
+	if got := protoToGatewayTrustedClientIPs(gatewayTrustedClientIPsToProto(input)); !reflect.DeepEqual(got, input) {
+		t.Fatalf("round trip = %#v", got)
+	}
+}
+
 func TestCommonLocationExemptionsProtoRoundTrip(t *testing.T) {
 	input := models.CommonLocationExemptionsRuntime{Enabled: true, WAFEnabled: true, CIDRs: []string{"192.168.0.0/16"}, UpdatedAt: "now"}
 	if got := protoToCommonLocationExemptions(commonLocationExemptionsToProto(input)); !reflect.DeepEqual(got, input) {

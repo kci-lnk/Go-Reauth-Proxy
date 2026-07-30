@@ -460,6 +460,12 @@ type ReverseProxyThrottleExemptIPsRuntime struct {
 	UpdatedAt string   `json:"updated_at,omitempty"`
 }
 
+type GatewayTrustedClientIPsRuntime struct {
+	IPs       []string `json:"ips,omitempty"`
+	CIDRs     []string `json:"cidrs,omitempty"`
+	UpdatedAt string   `json:"updated_at,omitempty"`
+}
+
 type LocaleConfig struct {
 	DefaultLocale string `json:"default_locale,omitempty" example:"zh-CN"`
 }

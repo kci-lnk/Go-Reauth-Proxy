@@ -632,6 +632,25 @@ func protoToThrottleExemptIPs(cfg *pb.ReverseProxyThrottleExemptIpsRuntime) mode
 	}
 }
 
+func gatewayTrustedClientIPsToProto(cfg models.GatewayTrustedClientIPsRuntime) *pb.GatewayTrustedClientIpsRuntime {
+	return &pb.GatewayTrustedClientIpsRuntime{
+		Ips:       cfg.IPs,
+		Cidrs:     cfg.CIDRs,
+		UpdatedAt: cfg.UpdatedAt,
+	}
+}
+
+func protoToGatewayTrustedClientIPs(cfg *pb.GatewayTrustedClientIpsRuntime) models.GatewayTrustedClientIPsRuntime {
+	if cfg == nil {
+		return models.GatewayTrustedClientIPsRuntime{}
+	}
+	return models.GatewayTrustedClientIPsRuntime{
+		IPs:       cfg.GetIps(),
+		CIDRs:     cfg.GetCidrs(),
+		UpdatedAt: cfg.GetUpdatedAt(),
+	}
+}
+
 func commonLocationExemptionsToProto(cfg models.CommonLocationExemptionsRuntime) *pb.CommonLocationExemptionsRuntime {
 	return &pb.CommonLocationExemptionsRuntime{
 		Enabled:    cfg.Enabled,

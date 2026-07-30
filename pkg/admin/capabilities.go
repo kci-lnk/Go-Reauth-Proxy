@@ -13,6 +13,7 @@ var commonGatewayCapabilities = []string{
 	"lifecycle",
 	"host_rule_groups_v1",
 	"compiled_visibility_ipset_v1",
+	"trusted_client_ip_bypass_v1",
 	// Auth bridge capability required before the control plane can enable
 	// host-scoped temporary subdomain-rule grants.
 	"subdomain_rule_grant_v1",

@@ -439,6 +439,24 @@ func (s *GRPCServer) SetReverseProxyThrottleExemptIps(ctx context.Context, req *
 	return throttleExemptIPsToProto(s.admin.ProxyHandler.GetReverseProxyThrottleExemptIPs()), nil
 }
 
+func (s *GRPCServer) GetGatewayTrustedClientIps(ctx context.Context, _ *emptypb.Empty) (*pb.GatewayTrustedClientIpsRuntime, error) {
+	if err := s.checkToken(ctx); err != nil {
+		return nil, err
+	}
+	return gatewayTrustedClientIPsToProto(s.admin.ProxyHandler.GetGatewayTrustedClientIPs()), nil
+}
+
+func (s *GRPCServer) SetGatewayTrustedClientIps(ctx context.Context, req *pb.GatewayTrustedClientIpsRuntime) (*pb.GatewayTrustedClientIpsRuntime, error) {
+	if err := s.checkToken(ctx); err != nil {
+		return nil, err
+	}
+	if req == nil {
+		return nil, grpcBadRequest("request is required")
+	}
+	s.admin.ProxyHandler.SetGatewayTrustedClientIPs(protoToGatewayTrustedClientIPs(req))
+	return gatewayTrustedClientIPsToProto(s.admin.ProxyHandler.GetGatewayTrustedClientIPs()), nil
+}
+
 func (s *GRPCServer) GetCommonLocationExemptions(ctx context.Context, _ *emptypb.Empty) (*pb.CommonLocationExemptionsRuntime, error) {
 	if err := s.checkToken(ctx); err != nil {
 		return nil, err

@@ -412,6 +412,40 @@ func TestGatewayControlThrottleExemptIPsRoundTrip(t *testing.T) {
 	}
 }
 
+func TestGatewayControlTrustedClientIPsRoundTripAndClear(t *testing.T) {
+	server := newGatewayControlTestServer(t, "secret")
+	ctx := authTestContext()
+	got, err := server.SetGatewayTrustedClientIps(ctx, &pb.GatewayTrustedClientIpsRuntime{
+		Ips:       []string{"192.168.1.8"},
+		Cidrs:     []string{"100.64.0.7/10"},
+		UpdatedAt: "2026-07-31T01:00:00Z",
+	})
+	if err != nil {
+		t.Fatalf("SetGatewayTrustedClientIps() returned error: %v", err)
+	}
+	if got.GetIps()[0] != "192.168.1.8" || got.GetCidrs()[0] != "100.64.0.0/10" {
+		t.Fatalf("trusted client IPs = %#v", got)
+	}
+
+	read, err := server.GetGatewayTrustedClientIps(ctx, &emptypb.Empty{})
+	if err != nil {
+		t.Fatalf("GetGatewayTrustedClientIps() returned error: %v", err)
+	}
+	if !proto.Equal(got, read) {
+		t.Fatalf("read trusted client IPs = %#v, want %#v", read, got)
+	}
+
+	cleared, err := server.SetGatewayTrustedClientIps(ctx, &pb.GatewayTrustedClientIpsRuntime{
+		UpdatedAt: "2026-07-31T01:00:01Z",
+	})
+	if err != nil {
+		t.Fatalf("clear GatewayTrustedClientIps() returned error: %v", err)
+	}
+	if len(cleared.GetIps()) != 0 || len(cleared.GetCidrs()) != 0 {
+		t.Fatalf("cleared trusted client IPs = %#v", cleared)
+	}
+}
+
 func TestGatewayControlCommonLocationExemptionsRoundTrip(t *testing.T) {
 	server := newGatewayControlTestServer(t, "secret")
 	got, err := server.SetCommonLocationExemptions(authTestContext(), &pb.CommonLocationExemptionsRuntime{Enabled: true, Cidrs: []string{"198.51.100.0/24"}})

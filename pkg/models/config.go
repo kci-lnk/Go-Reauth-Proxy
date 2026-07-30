@@ -75,7 +75,7 @@ type Rule struct {
 
 type HostRule struct {
 	Host             string                `json:"host" example:"redis.example.com"`
-	Target           string                `json:"target" example:"http://127.0.0.1:5173"`
+	Target           string                `json:"target" example:"http://127.0.0.1:5173"` // An optional URL path is the upstream entry path for public /; non-root request paths pass through unchanged.
 	ProtocolMode     string                `json:"protocol_mode,omitempty" example:"auto"`
 	GroupID          string                `json:"group_id,omitempty"`
 	GroupName        string                `json:"group_name,omitempty"`

@@ -72,6 +72,22 @@ func newWebSocketPathRuleProxy(target string, stripPath bool) *httptest.Server {
 	return httptest.NewServer(handler)
 }
 
+func newWebSocketHostRuleProxy(target string) *httptest.Server {
+	handler := &Handler{
+		HostRules: []models.HostRule{
+			{
+				Host:    "photos.example.com",
+				Target:  target,
+				UseAuth: false,
+			},
+		},
+		authCache:      newAuthStateCache(),
+		preflightCache: newPreflightStateCache(),
+	}
+	handler.publishRequestSnapshotLocked()
+	return httptest.NewServer(handler)
+}
+
 func TestPathRuleProxiesWebSocketTargets(t *testing.T) {
 	tests := []struct {
 		name           string
@@ -195,5 +211,47 @@ func TestPathRuleWebSocketTargetSkipsHTMLRewriteAndRootMode(t *testing.T) {
 	}
 	if strings.Contains(body, `href="/chat/asset"`) {
 		t.Fatalf("response body was rewritten for WebSocket target: %s", body)
+	}
+}
+
+func TestHostRuleWebSocketTargetPathActsAsEntryPath(t *testing.T) {
+	upstream, seenRequests := newWebSocketEchoServer(t, false)
+	defer upstream.Close()
+
+	targetAuthority := strings.TrimPrefix(upstream.URL, "http://")
+	proxyServer := newWebSocketHostRuleProxy("ws://" + targetAuthority + "/p")
+	defer proxyServer.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(proxyServer.URL, "http") + "/p/socket?room=photos"
+	headers := http.Header{"Host": []string{"photos.example.com"}}
+	dialer := websocket.Dialer{HandshakeTimeout: 2 * time.Second}
+	conn, _, err := dialer.Dial(wsURL, headers)
+	if err != nil {
+		t.Fatalf("dial proxy websocket: %v", err)
+	}
+	defer conn.Close()
+
+	deadline := time.Now().Add(2 * time.Second)
+	if err := conn.SetReadDeadline(deadline); err != nil {
+		t.Fatalf("set read deadline: %v", err)
+	}
+	if err := conn.SetWriteDeadline(deadline); err != nil {
+		t.Fatalf("set write deadline: %v", err)
+	}
+	if err := conn.WriteMessage(websocket.TextMessage, []byte("ping")); err != nil {
+		t.Fatalf("write websocket message: %v", err)
+	}
+	if _, _, err := conn.ReadMessage(); err != nil {
+		t.Fatalf("read websocket message: %v", err)
+	}
+
+	select {
+	case got := <-seenRequests:
+		want := websocketUpstreamRequest{path: "/p/socket", query: "room=photos"}
+		if got != want {
+			t.Fatalf("upstream request = %+v, want %+v", got, want)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for upstream websocket request")
 	}
 }

@@ -28,6 +28,39 @@ func applyReverseProxyRoutePath(out *url.URL, opts reverseProxyRoutePathOptions)
 	out.RawPath = ""
 }
 
+// applyHostReverseProxyEntryPath treats a Host rule target path as the
+// upstream entry point for the public root, not as a mount prefix.
+//
+// For example, a target of /p maps an incoming / request to /p. Requests for
+// /p/assets/app.js, /login, /assets/app.js, and other non-root paths keep
+// their original paths because a Host mapping proxies the whole origin.
+func applyHostReverseProxyEntryPath(out *url.URL, targetURL *url.URL, incoming *url.URL) {
+	if out == nil {
+		return
+	}
+
+	targetPath := ""
+	if targetURL != nil {
+		targetPath = targetURL.Path
+	}
+
+	requestPath := "/"
+	if incoming != nil {
+		requestPath = incoming.Path
+	}
+
+	out.Path = buildHostReverseProxyEntryPath(targetPath, requestPath)
+	out.RawPath = ""
+}
+
+func buildHostReverseProxyEntryPath(targetPath string, requestPath string) string {
+	requestPath = ensureLeadingSlash(requestPath)
+	if requestPath != "/" || targetPath == "" {
+		return requestPath
+	}
+	return ensureLeadingSlash(targetPath)
+}
+
 func buildReverseProxyRoutePath(targetPath string, requestPath string, stripPath bool, pathPrefix string) string {
 	upstreamPath := ensureLeadingSlash(requestPath)
 	if stripPath {

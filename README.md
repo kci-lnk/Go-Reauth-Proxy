@@ -211,6 +211,13 @@ FN_KNOCK_INTERNAL_RPC_TOKEN=dev-local-token go run ./cmd/server -proxy-port 7999
 - `use_auth=true`：转发前通过 AuthBridge 请求 Rust 后端完成鉴权，并在 HTML 注入悬浮工具栏
 - `use_root_mode=true`：命中后写入 `__proxy_path` cookie 并 302 到 `/`
 
+Host 规则目标中的可选 URL 路径仅作为根请求的上游入口，不作为所有请求的挂载前缀。
+例如目标为 `http://127.0.0.1:19122/p` 时：
+
+- `/` 转发到 `/p`
+- `/p/assets/app.js` 仍转发到 `/p/assets/app.js`
+- `/login`、`/assets/app.js` 等同源公共路径保持不变
+
 未命中时：
 - 请求 `/` 且未配置任何 path/host 规则：返回 Welcome 页面
 - 请求 `/` 且有 path 规则：

@@ -6595,6 +6595,7 @@ func (h *Handler) proxyToHostTarget(w http.ResponseWriter, r *http.Request, snap
 			copyUserAgentHeader(pr.Out, pr.In)
 			stripAdvancedAuthGrantCookie(pr.Out.Header)
 			pr.SetURL(transportTargetURL)
+			applyHostReverseProxyEntryPath(pr.Out.URL, transportTargetURL, pr.In.URL)
 			applyBasicAuthInjection(pr.Out, matchedRule.BasicAuth)
 			applyUpstreamPrivateIPv4HintHeader(pr.Out, transportTargetURL)
 			applyPreserveHostPolicy(pr.Out, pr.In, transportTargetURL, preserveHost)
@@ -6611,6 +6612,7 @@ func (h *Handler) proxyToHostTarget(w http.ResponseWriter, r *http.Request, snap
 					if err == nil {
 						ref.Scheme = transportTargetURL.Scheme
 						ref.Host = transportTargetURL.Host
+						applyHostReverseProxyEntryPath(ref, transportTargetURL, ref)
 						pr.Out.Header.Set("Referer", ref.String())
 					}
 				}
@@ -6688,15 +6690,16 @@ func (h *Handler) proxyToHostTarget(w http.ResponseWriter, r *http.Request, snap
 	}
 
 	if fnosConnectContext(r) == nil && h.maybeProxyFnosPortIconHijackWebSocket(w, r, fnosPortIconHijackWebSocketOptions{
-		targetURL:            transportTargetURL,
-		hostRules:            snapshot.hostRules,
-		clientIP:             clientIP,
-		omitForwardedHeaders: omitForwardedHeaders,
-		preserveHost:         preserveHost,
-		basicAuth:            matchedRule.BasicAuth,
-		rewriteOriginReferer: !preserveHost,
-		stripPath:            false,
-		pathPrefix:           "",
+		targetURL:             transportTargetURL,
+		hostRules:             snapshot.hostRules,
+		clientIP:              clientIP,
+		omitForwardedHeaders:  omitForwardedHeaders,
+		preserveHost:          preserveHost,
+		basicAuth:             matchedRule.BasicAuth,
+		rewriteOriginReferer:  !preserveHost,
+		stripPath:             false,
+		pathPrefix:            "",
+		hostTargetPathIsEntry: true,
 	}) {
 		return
 	}

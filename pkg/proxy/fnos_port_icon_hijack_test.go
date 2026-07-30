@@ -220,6 +220,29 @@ func TestShouldProxyFnosPortIconHijackWebSocketAcceptsTimerType(t *testing.T) {
 	}
 }
 
+func TestBuildFnosPortIconHijackWebSocketURLUsesHostEntryPath(t *testing.T) {
+	targetURL, err := url.Parse("http://127.0.0.1:19122/p")
+	if err != nil {
+		t.Fatalf("parse target URL: %v", err)
+	}
+	incomingURL, err := url.Parse("https://photos.example.com/websocket?type=timer")
+	if err != nil {
+		t.Fatalf("parse incoming URL: %v", err)
+	}
+
+	got := buildFnosPortIconHijackWebSocketURL(targetURL, incomingURL, false, "", true)
+
+	if got.Scheme != "ws" {
+		t.Fatalf("upstream scheme = %q, want ws", got.Scheme)
+	}
+	if got.Path != "/websocket" {
+		t.Fatalf("upstream path = %q, want /websocket", got.Path)
+	}
+	if got.RawQuery != "type=timer" {
+		t.Fatalf("upstream query = %q, want type=timer", got.RawQuery)
+	}
+}
+
 func TestFnosPortIconHijackHTTPResponseRewritesServiceListIgnoringQuery(t *testing.T) {
 	handler := &Handler{
 		ProxyPort: 18080,

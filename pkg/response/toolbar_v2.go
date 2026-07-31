@@ -965,6 +965,8 @@ const toolbarV2Script = `(function(window, document) {
         var link = document.createElement('a');
         link.className = 'app-link';
         link.href = app.href;
+        link.target = '_blank';
+        link.rel = 'noopener noreferrer';
         link.setAttribute('data-group-key', app.groupId && app.groupName ? 'group:' + app.groupId : 'ungrouped');
         link.style.setProperty('--app-index', String(Math.min(index, 12)));
         if (app.active) {
@@ -1004,14 +1006,6 @@ const toolbarV2Script = `(function(window, document) {
         }
         link.appendChild(shell);
         link.appendChild(labelRow);
-        link.addEventListener('click', function(event) {
-            event.preventDefault();
-            var href = link.getAttribute('href') || '/';
-            closeLaunchpad(false);
-            window.setTimeout(function() {
-                window.location.assign(href);
-            }, 120);
-        });
         return link;
     }
 

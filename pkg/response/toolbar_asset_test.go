@@ -57,6 +57,26 @@ func TestToolbarV2RuntimeKeepsFixedDesktopScaleAndCoversTabletViewport(t *testin
 	}
 }
 
+func TestToolbarV2RuntimeUsesNativeSafeNewTabNavigation(t *testing.T) {
+	runtime := string(toolbarV2Runtime)
+	for _, expected := range []string{
+		"link.target = '_blank';",
+		"link.rel = 'noopener noreferrer';",
+	} {
+		if !strings.Contains(runtime, expected) {
+			t.Fatalf("v2 runtime is missing new-tab navigation invariant %q", expected)
+		}
+	}
+	for _, forbidden := range []string{
+		"link.addEventListener('click'",
+		"window.location.assign(href)",
+	} {
+		if strings.Contains(runtime, forbidden) {
+			t.Fatalf("v2 runtime still hijacks application navigation with %q", forbidden)
+		}
+	}
+}
+
 func TestGenerateToolbarInjectsOnlyPayloadAndRuntimeLoader(t *testing.T) {
 	toolbar := GenerateToolbarWithHosts(
 		[]models.Rule{{Path: "/app", Target: "http://127.0.0.1:3000"}},

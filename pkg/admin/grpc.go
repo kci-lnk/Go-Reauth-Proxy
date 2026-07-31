@@ -60,7 +60,7 @@ func (s *GRPCServer) GetServerInfo(ctx context.Context, _ *emptypb.Empty) (*pb.S
 		Version:           version.Version,
 		Os:                runtime.GOOS,
 		Arch:              runtime.GOARCH,
-		ControlApiVersion: version.ControlAPIVersion,
+		ControlApiVersion: uint32(pb.ControlApiVersion_CONTROL_API_VERSION_CURRENT),
 		Capabilities:      gatewayCapabilities(),
 		Commit:            version.Commit,
 	}, nil

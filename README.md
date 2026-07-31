@@ -100,6 +100,8 @@ FN_KNOCK_INTERNAL_RPC_TOKEN=dev-local-token go run ./cmd/server -proxy-port 7999
 
 内部 gRPC 必须配置独立 metadata token：`FN_KNOCK_INTERNAL_RPC_TOKEN`。部署脚本会生成并持久化该 token；手动启动时未设置则拒绝启动。
 
+控制 API 版本没有在本仓库手写常量。唯一来源是相邻 `fn-knock-turborepo/packages/grpc-contracts/proto/fnknock/v1/gateway.proto` 中的 `CONTROL_API_VERSION_CURRENT`，网关响应直接使用生成的 `pb.ControlApiVersion_CONTROL_API_VERSION_CURRENT`。协议升级后在 fn-knock 根目录运行 `npm run fn-knock:grpc:sync-go` 更新本仓库的生成代码；`npm run fn-knock:grpc:check-go`、Windows 构建和正式发版门禁都会拒绝未同步的 stub。
+
 ## 配置文件说明
 
 配置文件默认名：`config.json`

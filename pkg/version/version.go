@@ -6,5 +6,3 @@ var (
 	Version = "2.1.8"
 	Commit  = "unknown"
 )
-
-const ControlAPIVersion uint32 = 5

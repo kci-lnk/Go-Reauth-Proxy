@@ -15,7 +15,6 @@ import (
 	"go-reauth-proxy/pkg/models"
 	"go-reauth-proxy/pkg/proxy"
 	"go-reauth-proxy/pkg/rpcbridge"
-	"go-reauth-proxy/pkg/version"
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
@@ -71,7 +70,7 @@ func TestGatewayControlServerInfoIncludesCompatibilityMetadata(t *testing.T) {
 	if info.GetVersion() == "" || info.GetOs() != runtime.GOOS || info.GetArch() != runtime.GOARCH {
 		t.Fatalf("unexpected server info: %#v", info)
 	}
-	if info.GetControlApiVersion() != version.ControlAPIVersion || len(info.GetCapabilities()) == 0 || info.GetCommit() == "" {
+	if info.GetControlApiVersion() != uint32(pb.ControlApiVersion_CONTROL_API_VERSION_CURRENT) || len(info.GetCapabilities()) == 0 || info.GetCommit() == "" {
 		t.Fatalf("incomplete compatibility metadata: %#v", info)
 	}
 	hasTrustedClientIPBypass := false

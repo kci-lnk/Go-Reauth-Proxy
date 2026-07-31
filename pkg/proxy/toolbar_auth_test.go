@@ -264,8 +264,9 @@ func TestUnavailablePublicHostHidesSelectLinkWithoutAuthenticatedIdentity(t *tes
 		t.Fatalf("anonymous upstream error included select link: %s", body)
 	}
 	targetAddress := strings.TrimPrefix(targetURL, "http://")
-	if body := rec.Body.String(); strings.Contains(body, targetAddress) ||
-		strings.Contains(body, "connection refused") {
+	// The target address is a stable, sensitive detail across platforms. Do not
+	// couple this privacy check to OS-generated connection error wording.
+	if body := rec.Body.String(); strings.Contains(body, targetAddress) {
 		t.Fatalf("default upstream error exposed connection details: %s", body)
 	}
 }
@@ -287,8 +288,10 @@ func TestUnavailablePublicHostCanShowConnectionDetailsForTroubleshooting(t *test
 		t.Fatalf("status = %d, want 504; body = %s", rec.Code, rec.Body.String())
 	}
 	targetAddress := strings.TrimPrefix(targetURL, "http://")
-	if body := rec.Body.String(); !strings.Contains(body, targetAddress) ||
-		!strings.Contains(body, "connection refused") {
+	// Go preserves the target address in net.OpError on every supported OS, but
+	// the accompanying text is platform-specific (for example, Winsock says
+	// "actively refused it" instead of Unix's "connection refused").
+	if body := rec.Body.String(); !strings.Contains(body, targetAddress) {
 		t.Fatalf("detailed upstream error omitted connection details: %s", body)
 	}
 }

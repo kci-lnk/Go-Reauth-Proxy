@@ -16,6 +16,20 @@ import (
 	"go-reauth-proxy/pkg/proxy"
 )
 
+// syscall.WSAECONNRESET is only declared on Windows. Keep its stable Winsock
+// value here so these cross-platform tests can recognize a reset on every OS.
+const windowsConnectionReset syscall.Errno = 10054
+
+func isConnectionResetError(err error) bool {
+	return errors.Is(err, syscall.ECONNRESET) || errors.Is(err, windowsConnectionReset)
+}
+
+func TestConnectionResetErrorRecognizesWinsockReset(t *testing.T) {
+	if !isConnectionResetError(windowsConnectionReset) {
+		t.Fatal("Winsock WSAECONNRESET was not recognized as a connection reset")
+	}
+}
+
 func TestEnvPortDefaultUsesFallbackWhenUnset(t *testing.T) {
 	t.Setenv("GO_REPROXY_PORT", "")
 	if got := envPortDefault("GO_REPROXY_PORT", 7999); got != 7999 {
@@ -252,7 +266,7 @@ func assertHTTP1ConnectionReset(t *testing.T, conn net.Conn) {
 		t.Fatalf("write request: %v", err)
 	}
 	buffer := make([]byte, 1)
-	if n, err := conn.Read(buffer); n != 0 || !errors.Is(err, syscall.ECONNRESET) {
+	if n, err := conn.Read(buffer); n != 0 || !isConnectionResetError(err) {
 		t.Fatalf("read = (%d, %v), want (0, connection reset)", n, err)
 	}
 }

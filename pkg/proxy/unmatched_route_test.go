@@ -27,6 +27,20 @@ import (
 	"go-reauth-proxy/pkg/response"
 )
 
+// syscall.WSAECONNRESET is only declared on Windows. Keep its stable Winsock
+// value here so this cross-platform test can recognize a reset on every OS.
+const windowsConnectionReset syscall.Errno = 10054
+
+func isConnectionResetError(err error) bool {
+	return errors.Is(err, syscall.ECONNRESET) || errors.Is(err, windowsConnectionReset)
+}
+
+func TestConnectionResetErrorRecognizesWinsockReset(t *testing.T) {
+	if !isConnectionResetError(windowsConnectionReset) {
+		t.Fatal("Winsock WSAECONNRESET was not recognized as a connection reset")
+	}
+}
+
 func TestGatewayUnmatchedRouteConfigPersistsRestartsAndResets(t *testing.T) {
 	configPath := filepath.Join(t.TempDir(), "config.json")
 	manager := config.NewManager(configPath)
@@ -334,7 +348,7 @@ func TestResetConnectionHTTP1ClosesWithoutHTTPResponse(t *testing.T) {
 	if len(data) != 0 {
 		t.Fatalf("received an HTTP response before reset: %q", data)
 	}
-	if !errors.Is(readErr, syscall.ECONNRESET) {
+	if !isConnectionResetError(readErr) {
 		t.Fatalf("read error = %v, want connection reset", readErr)
 	}
 }

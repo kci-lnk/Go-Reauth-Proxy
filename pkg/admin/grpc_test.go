@@ -85,6 +85,39 @@ func TestGatewayControlServerInfoIncludesCompatibilityMetadata(t *testing.T) {
 	}
 }
 
+func TestGatewayRuntimeInfoRequiresTokenAndIsStable(t *testing.T) {
+	server := newGatewayControlTestServer(t, "secret")
+	if _, err := server.GetRuntimeInfo(context.Background(), &emptypb.Empty{}); status.Code(err) != codes.Unauthenticated {
+		t.Fatalf("unauthenticated status = %v, want unauthenticated", status.Code(err))
+	}
+
+	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs(rpcbridge.InternalTokenMetadataKey, "secret"))
+	first, err := server.GetRuntimeInfo(ctx, &emptypb.Empty{})
+	if err != nil {
+		t.Fatalf("GetRuntimeInfo first: %v", err)
+	}
+	time.Sleep(2 * time.Millisecond)
+	second, err := server.GetRuntimeInfo(ctx, &emptypb.Empty{})
+	if err != nil {
+		t.Fatalf("GetRuntimeInfo second: %v", err)
+	}
+	if first.GetInstanceId() == "" || first.GetInstanceId() != second.GetInstanceId() {
+		t.Fatalf("instance id changed: %q -> %q", first.GetInstanceId(), second.GetInstanceId())
+	}
+	if first.GetPid() != int64(os.Getpid()) || first.GetPid() != second.GetPid() {
+		t.Fatalf("unexpected pid: %d -> %d", first.GetPid(), second.GetPid())
+	}
+	if second.GetUptimeMs() < first.GetUptimeMs() {
+		t.Fatalf("uptime moved backwards: %d -> %d", first.GetUptimeMs(), second.GetUptimeMs())
+	}
+	if first.GetStartedAtUnixMs() == 0 || first.GetGoVersion() == "" || first.GetGoroutines() == 0 {
+		t.Fatalf("incomplete runtime info: %#v", first)
+	}
+	if first.GetRssBytes() == 0 || second.GetRssBytes() == 0 {
+		t.Fatalf("RSS was not reported: %d -> %d", first.GetRssBytes(), second.GetRssBytes())
+	}
+}
+
 func TestGatewayControlListenerConfigRoundTrip(t *testing.T) {
 	server := newGatewayControlTestServer(t, "secret")
 	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs(rpcbridge.InternalTokenMetadataKey, "secret"))

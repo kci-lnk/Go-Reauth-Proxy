@@ -21,6 +21,7 @@ const _ = grpc.SupportPackageIsVersion9
 
 const (
 	GatewayControlService_GetServerInfo_FullMethodName                    = "/fnknock.v1.GatewayControlService/GetServerInfo"
+	GatewayControlService_GetRuntimeInfo_FullMethodName                   = "/fnknock.v1.GatewayControlService/GetRuntimeInfo"
 	GatewayControlService_GetGatewayListenerConfig_FullMethodName         = "/fnknock.v1.GatewayControlService/GetGatewayListenerConfig"
 	GatewayControlService_SetGatewayListenerConfig_FullMethodName         = "/fnknock.v1.GatewayControlService/SetGatewayListenerConfig"
 	GatewayControlService_ResetAllData_FullMethodName                     = "/fnknock.v1.GatewayControlService/ResetAllData"
@@ -73,6 +74,7 @@ const (
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
 type GatewayControlServiceClient interface {
 	GetServerInfo(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*ServerInfo, error)
+	GetRuntimeInfo(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*GatewayRuntimeInfo, error)
 	GetGatewayListenerConfig(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*GatewayListenerConfig, error)
 	SetGatewayListenerConfig(ctx context.Context, in *GatewayListenerConfig, opts ...grpc.CallOption) (*GatewayListenerConfig, error)
 	// Resets all user-managed gateway configuration and volatile runtime data
@@ -136,6 +138,16 @@ func (c *gatewayControlServiceClient) GetServerInfo(ctx context.Context, in *emp
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(ServerInfo)
 	err := c.cc.Invoke(ctx, GatewayControlService_GetServerInfo_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *gatewayControlServiceClient) GetRuntimeInfo(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*GatewayRuntimeInfo, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GatewayRuntimeInfo)
+	err := c.cc.Invoke(ctx, GatewayControlService_GetRuntimeInfo_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -597,6 +609,7 @@ func (c *gatewayControlServiceClient) SetCommonLocationExemptions(ctx context.Co
 // for forward compatibility.
 type GatewayControlServiceServer interface {
 	GetServerInfo(context.Context, *emptypb.Empty) (*ServerInfo, error)
+	GetRuntimeInfo(context.Context, *emptypb.Empty) (*GatewayRuntimeInfo, error)
 	GetGatewayListenerConfig(context.Context, *emptypb.Empty) (*GatewayListenerConfig, error)
 	SetGatewayListenerConfig(context.Context, *GatewayListenerConfig) (*GatewayListenerConfig, error)
 	// Resets all user-managed gateway configuration and volatile runtime data
@@ -658,6 +671,9 @@ type UnimplementedGatewayControlServiceServer struct{}
 
 func (UnimplementedGatewayControlServiceServer) GetServerInfo(context.Context, *emptypb.Empty) (*ServerInfo, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method GetServerInfo not implemented")
+}
+func (UnimplementedGatewayControlServiceServer) GetRuntimeInfo(context.Context, *emptypb.Empty) (*GatewayRuntimeInfo, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method GetRuntimeInfo not implemented")
 }
 func (UnimplementedGatewayControlServiceServer) GetGatewayListenerConfig(context.Context, *emptypb.Empty) (*GatewayListenerConfig, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method GetGatewayListenerConfig not implemented")
@@ -829,6 +845,24 @@ func _GatewayControlService_GetServerInfo_Handler(srv interface{}, ctx context.C
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(GatewayControlServiceServer).GetServerInfo(ctx, req.(*emptypb.Empty))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _GatewayControlService_GetRuntimeInfo_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(emptypb.Empty)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(GatewayControlServiceServer).GetRuntimeInfo(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: GatewayControlService_GetRuntimeInfo_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(GatewayControlServiceServer).GetRuntimeInfo(ctx, req.(*emptypb.Empty))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -1653,6 +1687,10 @@ var GatewayControlService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "GetServerInfo",
 			Handler:    _GatewayControlService_GetServerInfo_Handler,
+		},
+		{
+			MethodName: "GetRuntimeInfo",
+			Handler:    _GatewayControlService_GetRuntimeInfo_Handler,
 		},
 		{
 			MethodName: "GetGatewayListenerConfig",

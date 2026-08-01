@@ -2,10 +2,16 @@ package admin
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
+	"fmt"
+	"os"
 	"runtime"
 	"sync"
+	"time"
 
 	"go-reauth-proxy/pkg/grpc/pb"
+	operationallog "go-reauth-proxy/pkg/logger"
 	"go-reauth-proxy/pkg/models"
 	"go-reauth-proxy/pkg/rpcbridge"
 	"go-reauth-proxy/pkg/version"
@@ -27,6 +33,9 @@ type GRPCServer struct {
 	admin *Server
 	token string
 
+	instanceID string
+	startedAt  time.Time
+
 	shutdownMu   sync.RWMutex
 	shutdownOnce sync.Once
 	shutdown     func()
@@ -43,9 +52,19 @@ func (s *GRPCServer) SetShutdownRequest(shutdown func()) {
 
 func NewGRPCServer(adminServer *Server, token string) *GRPCServer {
 	return &GRPCServer{
-		admin: adminServer,
-		token: token,
+		admin:      adminServer,
+		token:      token,
+		instanceID: newRuntimeInstanceID(),
+		startedAt:  time.Now(),
 	}
+}
+
+func newRuntimeInstanceID() string {
+	var raw [16]byte
+	if _, err := rand.Read(raw[:]); err == nil {
+		return hex.EncodeToString(raw[:])
+	}
+	return fmt.Sprintf("%d-%d", os.Getpid(), time.Now().UnixNano())
 }
 
 func (s *GRPCServer) checkToken(ctx context.Context) error {
@@ -63,6 +82,29 @@ func (s *GRPCServer) GetServerInfo(ctx context.Context, _ *emptypb.Empty) (*pb.S
 		ControlApiVersion: uint32(pb.ControlApiVersion_CONTROL_API_VERSION_CURRENT),
 		Capabilities:      gatewayCapabilities(),
 		Commit:            version.Commit,
+	}, nil
+}
+
+func (s *GRPCServer) GetRuntimeInfo(ctx context.Context, _ *emptypb.Empty) (*pb.GatewayRuntimeInfo, error) {
+	if err := s.checkToken(ctx); err != nil {
+		return nil, err
+	}
+	var memory runtime.MemStats
+	runtime.ReadMemStats(&memory)
+	uptime := time.Since(s.startedAt)
+	if uptime < 0 {
+		uptime = 0
+	}
+	return &pb.GatewayRuntimeInfo{
+		InstanceId:      s.instanceID,
+		Pid:             int64(os.Getpid()),
+		StartedAtUnixMs: s.startedAt.UnixMilli(),
+		UptimeMs:        uint64(uptime / time.Millisecond),
+		GoVersion:       runtime.Version(),
+		Goroutines:      uint64(runtime.NumGoroutine()),
+		HeapAllocBytes:  memory.HeapAlloc,
+		HeapSysBytes:    memory.HeapSys,
+		RssBytes:        currentProcessRSSBytes(),
 	}, nil
 }
 
@@ -91,9 +133,17 @@ func (s *GRPCServer) SetGatewayListenerConfig(ctx context.Context, req *pb.Gatew
 		)
 	}
 	if err := s.admin.ProxyHandler.SetGatewayListenerConfig(models.GatewayListenerConfig{Scope: scope}); err != nil {
+		operationallog.Diagnostic("ERROR", "gateway_dataplane", "listener_reload_failed", "listener_config_rejected", map[string]any{
+			"listener": scope,
+			"result":   "failed",
+		})
 		return nil, status.Error(codes.Internal, err.Error())
 	}
 	config := s.admin.ProxyHandler.GetGatewayListenerConfig()
+	operationallog.Diagnostic("INFO", "gateway_dataplane", "listener_reloaded", "listener_config_applied", map[string]any{
+		"listener": config.Scope,
+		"result":   "success",
+	})
 	return &pb.GatewayListenerConfig{Scope: config.Scope}, nil
 }
 

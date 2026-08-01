@@ -10,11 +10,13 @@ import (
 	"go-reauth-proxy/pkg/config"
 	"go-reauth-proxy/pkg/events"
 	"go-reauth-proxy/pkg/gatewaylog"
+	"go-reauth-proxy/pkg/grpc/pb"
 	"go-reauth-proxy/pkg/logger"
 	"go-reauth-proxy/pkg/models"
 	"go-reauth-proxy/pkg/proxy"
 	"go-reauth-proxy/pkg/rpcbridge"
 	"go-reauth-proxy/pkg/stream"
+	"go-reauth-proxy/pkg/version"
 	"log"
 	"net"
 	"net/http"
@@ -680,6 +682,7 @@ func run(options runOptions) error {
 				event.Send()
 			}
 			logger.FlushDebugLogger()
+			logger.FlushDiagnosticLogger()
 		})
 	}
 	defer shutdown()
@@ -794,6 +797,7 @@ func run(options runOptions) error {
 		return fmt.Errorf("start proxy stack: %w", err)
 	}
 	grpcServer.SetServingStatus(healthGatewayDataplane, true)
+	logger.Diagnostic("INFO", "gateway_dataplane", "listener_bound", "proxy_stack_started", map[string]any{"status": "healthy"})
 	if event := logger.DebugEvent("server", "proxy_stack_started"); event != nil {
 		event.Interface("proxy_port", logger.SanitizePort(options.ProxyPort)).
 			Str("listen_addr", logger.SanitizeLogString(proxyStack.ListenAddr())).
@@ -828,6 +832,7 @@ func run(options runOptions) error {
 
 func main() {
 	logger.Setup()
+	defer logger.CloseDiagnosticLogger()
 	raiseNoFileLimit()
 
 	adminPort := flag.Int("admin-port", 7996, "Port for the internal gRPC API (0 uses config or default 7996; loopback only)")
@@ -836,10 +841,16 @@ func main() {
 	logsDir := flag.String("logs-dir", os.Getenv("FN_KNOCK_GATEWAY_LOGS_DIR"), "Absolute directory for gateway request logs")
 	wafDir := flag.String("waf-dir", os.Getenv("FN_KNOCK_GATEWAY_WAF_DIR"), "Absolute directory for WAF rules and state")
 	flag.Parse()
+	logger.Diagnostic("INFO", "gateway_process", "started", "process_start", map[string]any{
+		"version": version.Version, "commit": version.Commit,
+		"pid": os.Getpid(), "protocol_version": int(pb.ControlApiVersion_CONTROL_API_VERSION_CURRENT),
+	})
 
 	configPath, err := resolveConfigPath(*configFlag)
 	if err != nil {
+		logger.Diagnostic("ERROR", "gateway_process", "startup_failed", "config_path_invalid", nil)
 		log.Printf("Resolve config path failed: %v", err)
+		logger.FlushDiagnosticLogger()
 		os.Exit(1)
 	}
 	ctx, stopSignals := processSignalContext(context.Background())
@@ -855,8 +866,10 @@ func main() {
 		InternalRPCToken: os.Getenv("FN_KNOCK_INTERNAL_RPC_TOKEN"),
 		DiagnosticsAddr:  os.Getenv(diagnosticsAddrEnv),
 	}); err != nil {
+		logger.Diagnostic("ERROR", "gateway_process", "stopped", "runtime_error", map[string]any{"result": "failed"})
 		log.Printf("Go Reauth Proxy failed: %v", err)
 		logger.FlushDebugLogger()
+		logger.FlushDiagnosticLogger()
 		os.Exit(1)
 	}
 }

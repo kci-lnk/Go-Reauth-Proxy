@@ -11,6 +11,7 @@ var commonGatewayCapabilities = []string{
 	"blacklist",
 	"logs",
 	"lifecycle",
+	"runtime_info_v1",
 	"host_rule_groups_v1",
 	"compiled_visibility_ipset_v1",
 	"trusted_client_ip_bypass_v1",

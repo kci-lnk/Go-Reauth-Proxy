@@ -14,6 +14,7 @@ import (
 
 	"go-reauth-proxy/pkg/diagnostics"
 	"go-reauth-proxy/pkg/grpc/pb"
+	operationallog "go-reauth-proxy/pkg/logger"
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
@@ -324,6 +325,12 @@ func (m *AuthBridgeManager) roundTripOnStream(ctx context.Context, expected *aut
 	resp, err := call.response, call.err
 	shard.Unlock()
 	if err != nil {
+		if errors.Is(err, context.DeadlineExceeded) {
+			operationallog.Diagnostic("WARN", "auth_bridge", "round_trip_timeout", "response_timeout", map[string]any{
+				"duration_ms": int64(authBridgeRoundTripTimeout / time.Millisecond),
+				"queue_depth": len(active.sendQueue),
+			})
+		}
 		return nil, err
 	}
 	return resp, nil
@@ -369,6 +376,9 @@ func (s *authBridgeStream) enqueue(m *AuthBridgeManager, request authBridgeOutbo
 	default:
 		m.observeQueueDepth(s)
 		diagnostics.RecordAuthBridgeQueueDrop()
+		operationallog.Diagnostic("WARN", "auth_bridge", "queue_overflow", "send_queue_full", map[string]any{
+			"queue_depth": len(s.sendQueue),
+		})
 		return ErrAuthBridgeQueueFull
 	}
 }
@@ -466,6 +476,9 @@ func (m *AuthBridgeManager) handleIncoming(stream *authBridgeStream, msg *pb.Aut
 		stream.setCapabilities(ready)
 		if m.stream.Load() == stream {
 			m.notifyReadyChange(true)
+			operationallog.Diagnostic("INFO", "auth_bridge", "ready", "handshake_completed", map[string]any{
+				"status": "ready",
+			})
 		}
 		return
 	}
@@ -497,6 +510,15 @@ func (m *AuthBridgeManager) attachStream(stream pb.AuthBridgeService_ConnectAuth
 	m.notifyReadyChange(false)
 	m.observeQueueDepth(active)
 	go active.writerLoop(m)
+	if previous == nil {
+		operationallog.Diagnostic("INFO", "auth_bridge", "connected", "stream_attached", map[string]any{
+			"status": "connected",
+		})
+	} else {
+		operationallog.Diagnostic("WARN", "auth_bridge", "reconnected", "stream_replaced", map[string]any{
+			"status": "connected",
+		})
+	}
 
 	if previous != nil {
 		previous.close()
@@ -509,6 +531,9 @@ func (m *AuthBridgeManager) detachStream(stream *authBridgeStream) {
 	if m.stream.CompareAndSwap(stream, nil) {
 		m.notifyReadyChange(false)
 		diagnostics.ObserveAuthBridgeQueueDepth(0)
+		operationallog.Diagnostic("WARN", "auth_bridge", "disconnected", "stream_closed", map[string]any{
+			"status": "disconnected",
+		})
 		if active := m.stream.Load(); active != nil {
 			m.observeQueueDepth(active)
 		}

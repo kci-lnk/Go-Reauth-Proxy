@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"go-reauth-proxy/pkg/grpc/pb"
+	"go-reauth-proxy/pkg/logger"
 	"go-reauth-proxy/pkg/rpcbridge"
 
 	"google.golang.org/grpc"
@@ -121,6 +122,7 @@ func startInternalGRPCServer(port int, token string, control pb.GatewayControlSe
 	}
 	log.Printf("Internal gRPC server listening on %s", strings.Join(listenAddrs, ", "))
 	healthServer.SetServingStatus(healthGatewayProcess, healthpb.HealthCheckResponse_SERVING)
+	logger.Diagnostic("INFO", "gateway_process", "ready", "grpc_serving", nil)
 	return runtimeServer, nil
 }
 
@@ -133,6 +135,17 @@ func (s *internalGRPCServer) SetServingStatus(service string, serving bool) {
 		status = healthpb.HealthCheckResponse_SERVING
 	}
 	s.health.SetServingStatus(service, status)
+	component := strings.TrimPrefix(service, "fnknock.gateway.")
+	if component == "process" {
+		component = "gateway_process"
+	} else {
+		component = "gateway_" + component
+	}
+	state := "unhealthy"
+	if serving {
+		state = "healthy"
+	}
+	logger.Diagnostic("INFO", component, "health_status", state, map[string]any{"status": state})
 }
 
 func (s *internalGRPCServer) Stop(ctx context.Context) {
@@ -140,6 +153,7 @@ func (s *internalGRPCServer) Stop(ctx context.Context) {
 		return
 	}
 	s.stopOnce.Do(func() {
+		logger.Diagnostic("INFO", "gateway_process", "stopping", "graceful_shutdown", nil)
 		for _, service := range []string{healthGatewayProcess, healthGatewayDataplane, healthGatewayAuthBridge} {
 			s.health.SetServingStatus(service, healthpb.HealthCheckResponse_NOT_SERVING)
 		}
@@ -161,5 +175,6 @@ func (s *internalGRPCServer) Stop(ctx context.Context) {
 			<-done
 		}
 		s.wg.Wait()
+		logger.Diagnostic("INFO", "gateway_process", "stopped", "graceful_shutdown", nil)
 	})
 }

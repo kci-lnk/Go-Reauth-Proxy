@@ -59,6 +59,7 @@ func Setup() {
 	zerolog.MessageFieldName = "message"
 
 	configureDebugLoggerFromEnv()
+	configureDiagnosticLoggerFromEnv()
 
 	zerologWriter := io.Writer(io.Discard)
 	if ConsoleLoggingEnabled() || BoolEnv(AdminHTTPLogEnv) {

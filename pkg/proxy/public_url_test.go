@@ -458,3 +458,54 @@ func TestBuildPublicAuthLoginURLDoesNotAppendLocalOriginPort(t *testing.T) {
 		t.Fatalf("redirect_uri = %q, want %q", redirectURI, "https://auth.fnknock.cn/private?x=1")
 	}
 }
+
+func TestBuildPublicAuthLoginURLEdgeModeOverridesOriginPort(t *testing.T) {
+	tests := []struct {
+		name       string
+		authConfig models.AuthConfig
+	}{
+		{
+			name: "Aliyun ESA",
+			authConfig: models.AuthConfig{
+				EdgeClientIPEnabled: true,
+				AliyunESAEnabled:    true,
+			},
+		},
+		{
+			name: "Tencent EdgeOne",
+			authConfig: models.AuthConfig{
+				EdgeClientIPEnabled:   true,
+				TencentEdgeOneEnabled: true,
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, "http://fnos.edge.example:7999/", nil)
+			req.Header.Set("X-Forwarded-Host", "fnos.edge.example:7999")
+			req.Header.Set("X-Forwarded-Proto", "https")
+			req.Header.Set("X-Forwarded-Port", "7999")
+
+			tt.authConfig.PublicAuthBaseURL = "https://auth.edge.example:7999"
+			tt.authConfig.PublicHTTPSPort = 7999
+			tt.authConfig.LoginURL = "/login"
+
+			originalURL := buildPublicRequestURL(req, tt.authConfig, "")
+			if originalURL == nil {
+				t.Fatal("buildPublicRequestURL() returned nil")
+			}
+			if got, want := originalURL.String(), "https://fnos.edge.example/"; got != want {
+				t.Fatalf("original URL = %q, want %q", got, want)
+			}
+
+			loginURL := buildPublicAuthLoginURL(tt.authConfig, req, originalURL)
+			if loginURL == nil {
+				t.Fatal("buildPublicAuthLoginURL() returned nil")
+			}
+			if got, want := loginURL.String(), "https://auth.edge.example/login?redirect_uri=https%3A%2F%2Ffnos.edge.example%2F"; got != want {
+				t.Fatalf("login URL = %q, want %q", got, want)
+			}
+		})
+	}
+}

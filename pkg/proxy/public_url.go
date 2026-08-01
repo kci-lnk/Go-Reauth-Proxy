@@ -144,6 +144,14 @@ func splitRequestHostPortFast(host string) (string, string, bool) {
 }
 
 func resolvedPublicPort(r *http.Request, authConfig models.AuthConfig, scheme string, requestHostPort string) string {
+	// Edge providers expose the gateway through the scheme's standard public
+	// port. Their mode must take precedence over persisted ingress ports and
+	// proxy/request headers, which can still describe the origin listener
+	// (typically 7999) rather than the browser-facing endpoint.
+	if authConfig.EdgeClientIPActive() {
+		return ""
+	}
+
 	if configuredPort := configuredPublicPort(authConfig, scheme); configuredPort != "" {
 		return configuredPort
 	}

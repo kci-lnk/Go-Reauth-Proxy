@@ -8285,7 +8285,17 @@ func mergeQueryValues(dst url.Values, src url.Values) {
 }
 
 func applyRequestPortToPublicAuthBase(baseURL *url.URL, r *http.Request, authConfig models.AuthConfig) {
-	if authConfig.EdgeClientIPActive() || baseURL == nil || baseURL.Host == "" || baseURL.Port() != "" {
+	if baseURL == nil || baseURL.Host == "" {
+		return
+	}
+	if authConfig.EdgeClientIPActive() {
+		// The stored public auth URL may predate edge mode and still contain the
+		// origin ingress port. Edge mode is authoritative, so normalize it back
+		// to the browser-facing standard port instead of preserving :7999.
+		baseURL.Host = formatURLHost(baseURL.Hostname(), "", baseURL.Scheme)
+		return
+	}
+	if baseURL.Port() != "" {
 		return
 	}
 

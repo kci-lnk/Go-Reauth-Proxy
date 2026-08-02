@@ -28,18 +28,18 @@ type ControlApiVersion int32
 
 const (
 	ControlApiVersion_CONTROL_API_VERSION_UNSPECIFIED ControlApiVersion = 0
-	ControlApiVersion_CONTROL_API_VERSION_CURRENT     ControlApiVersion = 6
+	ControlApiVersion_CONTROL_API_VERSION_CURRENT     ControlApiVersion = 7
 )
 
 // Enum value maps for ControlApiVersion.
 var (
 	ControlApiVersion_name = map[int32]string{
 		0: "CONTROL_API_VERSION_UNSPECIFIED",
-		6: "CONTROL_API_VERSION_CURRENT",
+		7: "CONTROL_API_VERSION_CURRENT",
 	}
 	ControlApiVersion_value = map[string]int32{
 		"CONTROL_API_VERSION_UNSPECIFIED": 0,
-		"CONTROL_API_VERSION_CURRENT":     6,
+		"CONTROL_API_VERSION_CURRENT":     7,
 	}
 )
 
@@ -4469,6 +4469,1668 @@ func (x *GatewayLogDeleteResult) GetAvailableDates() []string {
 	return nil
 }
 
+// Deep monitoring is deliberately session scoped. Payload bytes are never
+// returned by list/watch calls and must be fetched through StreamPayload.
+type DeepMonitorSession struct {
+	state             protoimpl.MessageState `protogen:"open.v1"`
+	Id                string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
+	Host              string                 `protobuf:"bytes,2,opt,name=host,proto3" json:"host,omitempty"`
+	State             string                 `protobuf:"bytes,3,opt,name=state,proto3" json:"state,omitempty"`
+	StartedAt         string                 `protobuf:"bytes,4,opt,name=started_at,json=startedAt,proto3" json:"started_at,omitempty"`
+	DeadlineAt        string                 `protobuf:"bytes,5,opt,name=deadline_at,json=deadlineAt,proto3" json:"deadline_at,omitempty"`
+	StoppedAt         string                 `protobuf:"bytes,6,opt,name=stopped_at,json=stoppedAt,proto3" json:"stopped_at,omitempty"`
+	StopReason        string                 `protobuf:"bytes,7,opt,name=stop_reason,json=stopReason,proto3" json:"stop_reason,omitempty"`
+	BytesStored       uint64                 `protobuf:"varint,8,opt,name=bytes_stored,json=bytesStored,proto3" json:"bytes_stored,omitempty"`
+	EventCount        uint64                 `protobuf:"varint,9,opt,name=event_count,json=eventCount,proto3" json:"event_count,omitempty"`
+	DroppedEvents     uint64                 `protobuf:"varint,10,opt,name=dropped_events,json=droppedEvents,proto3" json:"dropped_events,omitempty"`
+	QuotaBytes        uint64                 `protobuf:"varint,11,opt,name=quota_bytes,json=quotaBytes,proto3" json:"quota_bytes,omitempty"`
+	PayloadLimitBytes uint64                 `protobuf:"varint,12,opt,name=payload_limit_bytes,json=payloadLimitBytes,proto3" json:"payload_limit_bytes,omitempty"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
+}
+
+func (x *DeepMonitorSession) Reset() {
+	*x = DeepMonitorSession{}
+	mi := &file_fnknock_v1_gateway_proto_msgTypes[49]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DeepMonitorSession) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DeepMonitorSession) ProtoMessage() {}
+
+func (x *DeepMonitorSession) ProtoReflect() protoreflect.Message {
+	mi := &file_fnknock_v1_gateway_proto_msgTypes[49]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DeepMonitorSession.ProtoReflect.Descriptor instead.
+func (*DeepMonitorSession) Descriptor() ([]byte, []int) {
+	return file_fnknock_v1_gateway_proto_rawDescGZIP(), []int{49}
+}
+
+func (x *DeepMonitorSession) GetId() string {
+	if x != nil {
+		return x.Id
+	}
+	return ""
+}
+
+func (x *DeepMonitorSession) GetHost() string {
+	if x != nil {
+		return x.Host
+	}
+	return ""
+}
+
+func (x *DeepMonitorSession) GetState() string {
+	if x != nil {
+		return x.State
+	}
+	return ""
+}
+
+func (x *DeepMonitorSession) GetStartedAt() string {
+	if x != nil {
+		return x.StartedAt
+	}
+	return ""
+}
+
+func (x *DeepMonitorSession) GetDeadlineAt() string {
+	if x != nil {
+		return x.DeadlineAt
+	}
+	return ""
+}
+
+func (x *DeepMonitorSession) GetStoppedAt() string {
+	if x != nil {
+		return x.StoppedAt
+	}
+	return ""
+}
+
+func (x *DeepMonitorSession) GetStopReason() string {
+	if x != nil {
+		return x.StopReason
+	}
+	return ""
+}
+
+func (x *DeepMonitorSession) GetBytesStored() uint64 {
+	if x != nil {
+		return x.BytesStored
+	}
+	return 0
+}
+
+func (x *DeepMonitorSession) GetEventCount() uint64 {
+	if x != nil {
+		return x.EventCount
+	}
+	return 0
+}
+
+func (x *DeepMonitorSession) GetDroppedEvents() uint64 {
+	if x != nil {
+		return x.DroppedEvents
+	}
+	return 0
+}
+
+func (x *DeepMonitorSession) GetQuotaBytes() uint64 {
+	if x != nil {
+		return x.QuotaBytes
+	}
+	return 0
+}
+
+func (x *DeepMonitorSession) GetPayloadLimitBytes() uint64 {
+	if x != nil {
+		return x.PayloadLimitBytes
+	}
+	return 0
+}
+
+type DeepMonitorStartRequest struct {
+	state           protoimpl.MessageState `protogen:"open.v1"`
+	Host            string                 `protobuf:"bytes,1,opt,name=host,proto3" json:"host,omitempty"`
+	DurationSeconds int32                  `protobuf:"varint,2,opt,name=duration_seconds,json=durationSeconds,proto3" json:"duration_seconds,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
+}
+
+func (x *DeepMonitorStartRequest) Reset() {
+	*x = DeepMonitorStartRequest{}
+	mi := &file_fnknock_v1_gateway_proto_msgTypes[50]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DeepMonitorStartRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DeepMonitorStartRequest) ProtoMessage() {}
+
+func (x *DeepMonitorStartRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_fnknock_v1_gateway_proto_msgTypes[50]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DeepMonitorStartRequest.ProtoReflect.Descriptor instead.
+func (*DeepMonitorStartRequest) Descriptor() ([]byte, []int) {
+	return file_fnknock_v1_gateway_proto_rawDescGZIP(), []int{50}
+}
+
+func (x *DeepMonitorStartRequest) GetHost() string {
+	if x != nil {
+		return x.Host
+	}
+	return ""
+}
+
+func (x *DeepMonitorStartRequest) GetDurationSeconds() int32 {
+	if x != nil {
+		return x.DurationSeconds
+	}
+	return 0
+}
+
+type DeepMonitorSessionRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	SessionId     string                 `protobuf:"bytes,1,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DeepMonitorSessionRequest) Reset() {
+	*x = DeepMonitorSessionRequest{}
+	mi := &file_fnknock_v1_gateway_proto_msgTypes[51]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DeepMonitorSessionRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DeepMonitorSessionRequest) ProtoMessage() {}
+
+func (x *DeepMonitorSessionRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_fnknock_v1_gateway_proto_msgTypes[51]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DeepMonitorSessionRequest.ProtoReflect.Descriptor instead.
+func (*DeepMonitorSessionRequest) Descriptor() ([]byte, []int) {
+	return file_fnknock_v1_gateway_proto_rawDescGZIP(), []int{51}
+}
+
+func (x *DeepMonitorSessionRequest) GetSessionId() string {
+	if x != nil {
+		return x.SessionId
+	}
+	return ""
+}
+
+type DeepMonitorExtendRequest struct {
+	state           protoimpl.MessageState `protogen:"open.v1"`
+	SessionId       string                 `protobuf:"bytes,1,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
+	DurationSeconds int32                  `protobuf:"varint,2,opt,name=duration_seconds,json=durationSeconds,proto3" json:"duration_seconds,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
+}
+
+func (x *DeepMonitorExtendRequest) Reset() {
+	*x = DeepMonitorExtendRequest{}
+	mi := &file_fnknock_v1_gateway_proto_msgTypes[52]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DeepMonitorExtendRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DeepMonitorExtendRequest) ProtoMessage() {}
+
+func (x *DeepMonitorExtendRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_fnknock_v1_gateway_proto_msgTypes[52]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DeepMonitorExtendRequest.ProtoReflect.Descriptor instead.
+func (*DeepMonitorExtendRequest) Descriptor() ([]byte, []int) {
+	return file_fnknock_v1_gateway_proto_rawDescGZIP(), []int{52}
+}
+
+func (x *DeepMonitorExtendRequest) GetSessionId() string {
+	if x != nil {
+		return x.SessionId
+	}
+	return ""
+}
+
+func (x *DeepMonitorExtendRequest) GetDurationSeconds() int32 {
+	if x != nil {
+		return x.DurationSeconds
+	}
+	return 0
+}
+
+type DeepMonitorListRequest struct {
+	state          protoimpl.MessageState `protogen:"open.v1"`
+	IncludeExpired bool                   `protobuf:"varint,1,opt,name=include_expired,json=includeExpired,proto3" json:"include_expired,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
+}
+
+func (x *DeepMonitorListRequest) Reset() {
+	*x = DeepMonitorListRequest{}
+	mi := &file_fnknock_v1_gateway_proto_msgTypes[53]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DeepMonitorListRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DeepMonitorListRequest) ProtoMessage() {}
+
+func (x *DeepMonitorListRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_fnknock_v1_gateway_proto_msgTypes[53]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DeepMonitorListRequest.ProtoReflect.Descriptor instead.
+func (*DeepMonitorListRequest) Descriptor() ([]byte, []int) {
+	return file_fnknock_v1_gateway_proto_rawDescGZIP(), []int{53}
+}
+
+func (x *DeepMonitorListRequest) GetIncludeExpired() bool {
+	if x != nil {
+		return x.IncludeExpired
+	}
+	return false
+}
+
+type DeepMonitorSessionList struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Items         []*DeepMonitorSession  `protobuf:"bytes,1,rep,name=items,proto3" json:"items,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DeepMonitorSessionList) Reset() {
+	*x = DeepMonitorSessionList{}
+	mi := &file_fnknock_v1_gateway_proto_msgTypes[54]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DeepMonitorSessionList) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DeepMonitorSessionList) ProtoMessage() {}
+
+func (x *DeepMonitorSessionList) ProtoReflect() protoreflect.Message {
+	mi := &file_fnknock_v1_gateway_proto_msgTypes[54]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DeepMonitorSessionList.ProtoReflect.Descriptor instead.
+func (*DeepMonitorSessionList) Descriptor() ([]byte, []int) {
+	return file_fnknock_v1_gateway_proto_rawDescGZIP(), []int{54}
+}
+
+func (x *DeepMonitorSessionList) GetItems() []*DeepMonitorSession {
+	if x != nil {
+		return x.Items
+	}
+	return nil
+}
+
+type DeepMonitorPayloadRef struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Part          string                 `protobuf:"bytes,1,opt,name=part,proto3" json:"part,omitempty"`
+	ObservedBytes uint64                 `protobuf:"varint,2,opt,name=observed_bytes,json=observedBytes,proto3" json:"observed_bytes,omitempty"`
+	CapturedBytes uint64                 `protobuf:"varint,3,opt,name=captured_bytes,json=capturedBytes,proto3" json:"captured_bytes,omitempty"`
+	Truncated     bool                   `protobuf:"varint,4,opt,name=truncated,proto3" json:"truncated,omitempty"`
+	Sha256        string                 `protobuf:"bytes,5,opt,name=sha256,proto3" json:"sha256,omitempty"`
+	ContentType   string                 `protobuf:"bytes,6,opt,name=content_type,json=contentType,proto3" json:"content_type,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DeepMonitorPayloadRef) Reset() {
+	*x = DeepMonitorPayloadRef{}
+	mi := &file_fnknock_v1_gateway_proto_msgTypes[55]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DeepMonitorPayloadRef) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DeepMonitorPayloadRef) ProtoMessage() {}
+
+func (x *DeepMonitorPayloadRef) ProtoReflect() protoreflect.Message {
+	mi := &file_fnknock_v1_gateway_proto_msgTypes[55]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DeepMonitorPayloadRef.ProtoReflect.Descriptor instead.
+func (*DeepMonitorPayloadRef) Descriptor() ([]byte, []int) {
+	return file_fnknock_v1_gateway_proto_rawDescGZIP(), []int{55}
+}
+
+func (x *DeepMonitorPayloadRef) GetPart() string {
+	if x != nil {
+		return x.Part
+	}
+	return ""
+}
+
+func (x *DeepMonitorPayloadRef) GetObservedBytes() uint64 {
+	if x != nil {
+		return x.ObservedBytes
+	}
+	return 0
+}
+
+func (x *DeepMonitorPayloadRef) GetCapturedBytes() uint64 {
+	if x != nil {
+		return x.CapturedBytes
+	}
+	return 0
+}
+
+func (x *DeepMonitorPayloadRef) GetTruncated() bool {
+	if x != nil {
+		return x.Truncated
+	}
+	return false
+}
+
+func (x *DeepMonitorPayloadRef) GetSha256() string {
+	if x != nil {
+		return x.Sha256
+	}
+	return ""
+}
+
+func (x *DeepMonitorPayloadRef) GetContentType() string {
+	if x != nil {
+		return x.ContentType
+	}
+	return ""
+}
+
+type DeepMonitorTiming struct {
+	state          protoimpl.MessageState `protogen:"open.v1"`
+	TotalMs        int64                  `protobuf:"varint,1,opt,name=total_ms,json=totalMs,proto3" json:"total_ms,omitempty"`
+	DnsMs          int64                  `protobuf:"varint,2,opt,name=dns_ms,json=dnsMs,proto3" json:"dns_ms,omitempty"`
+	ConnectMs      int64                  `protobuf:"varint,3,opt,name=connect_ms,json=connectMs,proto3" json:"connect_ms,omitempty"`
+	TlsMs          int64                  `protobuf:"varint,4,opt,name=tls_ms,json=tlsMs,proto3" json:"tls_ms,omitempty"`
+	RequestWriteMs int64                  `protobuf:"varint,5,opt,name=request_write_ms,json=requestWriteMs,proto3" json:"request_write_ms,omitempty"`
+	TtfbMs         int64                  `protobuf:"varint,6,opt,name=ttfb_ms,json=ttfbMs,proto3" json:"ttfb_ms,omitempty"`
+	UpstreamReadMs int64                  `protobuf:"varint,7,opt,name=upstream_read_ms,json=upstreamReadMs,proto3" json:"upstream_read_ms,omitempty"`
+	AuthMs         int64                  `protobuf:"varint,8,opt,name=auth_ms,json=authMs,proto3" json:"auth_ms,omitempty"`
+	WafMs          int64                  `protobuf:"varint,9,opt,name=waf_ms,json=wafMs,proto3" json:"waf_ms,omitempty"`
+	RouteMs        int64                  `protobuf:"varint,10,opt,name=route_ms,json=routeMs,proto3" json:"route_ms,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
+}
+
+func (x *DeepMonitorTiming) Reset() {
+	*x = DeepMonitorTiming{}
+	mi := &file_fnknock_v1_gateway_proto_msgTypes[56]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DeepMonitorTiming) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DeepMonitorTiming) ProtoMessage() {}
+
+func (x *DeepMonitorTiming) ProtoReflect() protoreflect.Message {
+	mi := &file_fnknock_v1_gateway_proto_msgTypes[56]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DeepMonitorTiming.ProtoReflect.Descriptor instead.
+func (*DeepMonitorTiming) Descriptor() ([]byte, []int) {
+	return file_fnknock_v1_gateway_proto_rawDescGZIP(), []int{56}
+}
+
+func (x *DeepMonitorTiming) GetTotalMs() int64 {
+	if x != nil {
+		return x.TotalMs
+	}
+	return 0
+}
+
+func (x *DeepMonitorTiming) GetDnsMs() int64 {
+	if x != nil {
+		return x.DnsMs
+	}
+	return 0
+}
+
+func (x *DeepMonitorTiming) GetConnectMs() int64 {
+	if x != nil {
+		return x.ConnectMs
+	}
+	return 0
+}
+
+func (x *DeepMonitorTiming) GetTlsMs() int64 {
+	if x != nil {
+		return x.TlsMs
+	}
+	return 0
+}
+
+func (x *DeepMonitorTiming) GetRequestWriteMs() int64 {
+	if x != nil {
+		return x.RequestWriteMs
+	}
+	return 0
+}
+
+func (x *DeepMonitorTiming) GetTtfbMs() int64 {
+	if x != nil {
+		return x.TtfbMs
+	}
+	return 0
+}
+
+func (x *DeepMonitorTiming) GetUpstreamReadMs() int64 {
+	if x != nil {
+		return x.UpstreamReadMs
+	}
+	return 0
+}
+
+func (x *DeepMonitorTiming) GetAuthMs() int64 {
+	if x != nil {
+		return x.AuthMs
+	}
+	return 0
+}
+
+func (x *DeepMonitorTiming) GetWafMs() int64 {
+	if x != nil {
+		return x.WafMs
+	}
+	return 0
+}
+
+func (x *DeepMonitorTiming) GetRouteMs() int64 {
+	if x != nil {
+		return x.RouteMs
+	}
+	return 0
+}
+
+type DeepMonitorWebSocketFrame struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Direction     string                 `protobuf:"bytes,1,opt,name=direction,proto3" json:"direction,omitempty"`
+	Fin           bool                   `protobuf:"varint,2,opt,name=fin,proto3" json:"fin,omitempty"`
+	Rsv1          bool                   `protobuf:"varint,3,opt,name=rsv1,proto3" json:"rsv1,omitempty"`
+	Rsv2          bool                   `protobuf:"varint,4,opt,name=rsv2,proto3" json:"rsv2,omitempty"`
+	Rsv3          bool                   `protobuf:"varint,5,opt,name=rsv3,proto3" json:"rsv3,omitempty"`
+	Opcode        uint32                 `protobuf:"varint,6,opt,name=opcode,proto3" json:"opcode,omitempty"`
+	Masked        bool                   `protobuf:"varint,7,opt,name=masked,proto3" json:"masked,omitempty"`
+	MaskKey       []byte                 `protobuf:"bytes,8,opt,name=mask_key,json=maskKey,proto3" json:"mask_key,omitempty"`
+	PayloadLength uint64                 `protobuf:"varint,9,opt,name=payload_length,json=payloadLength,proto3" json:"payload_length,omitempty"`
+	CloseCode     int32                  `protobuf:"varint,10,opt,name=close_code,json=closeCode,proto3" json:"close_code,omitempty"`
+	CloseReason   string                 `protobuf:"bytes,11,opt,name=close_reason,json=closeReason,proto3" json:"close_reason,omitempty"`
+	Compressed    bool                   `protobuf:"varint,12,opt,name=compressed,proto3" json:"compressed,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DeepMonitorWebSocketFrame) Reset() {
+	*x = DeepMonitorWebSocketFrame{}
+	mi := &file_fnknock_v1_gateway_proto_msgTypes[57]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DeepMonitorWebSocketFrame) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DeepMonitorWebSocketFrame) ProtoMessage() {}
+
+func (x *DeepMonitorWebSocketFrame) ProtoReflect() protoreflect.Message {
+	mi := &file_fnknock_v1_gateway_proto_msgTypes[57]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DeepMonitorWebSocketFrame.ProtoReflect.Descriptor instead.
+func (*DeepMonitorWebSocketFrame) Descriptor() ([]byte, []int) {
+	return file_fnknock_v1_gateway_proto_rawDescGZIP(), []int{57}
+}
+
+func (x *DeepMonitorWebSocketFrame) GetDirection() string {
+	if x != nil {
+		return x.Direction
+	}
+	return ""
+}
+
+func (x *DeepMonitorWebSocketFrame) GetFin() bool {
+	if x != nil {
+		return x.Fin
+	}
+	return false
+}
+
+func (x *DeepMonitorWebSocketFrame) GetRsv1() bool {
+	if x != nil {
+		return x.Rsv1
+	}
+	return false
+}
+
+func (x *DeepMonitorWebSocketFrame) GetRsv2() bool {
+	if x != nil {
+		return x.Rsv2
+	}
+	return false
+}
+
+func (x *DeepMonitorWebSocketFrame) GetRsv3() bool {
+	if x != nil {
+		return x.Rsv3
+	}
+	return false
+}
+
+func (x *DeepMonitorWebSocketFrame) GetOpcode() uint32 {
+	if x != nil {
+		return x.Opcode
+	}
+	return 0
+}
+
+func (x *DeepMonitorWebSocketFrame) GetMasked() bool {
+	if x != nil {
+		return x.Masked
+	}
+	return false
+}
+
+func (x *DeepMonitorWebSocketFrame) GetMaskKey() []byte {
+	if x != nil {
+		return x.MaskKey
+	}
+	return nil
+}
+
+func (x *DeepMonitorWebSocketFrame) GetPayloadLength() uint64 {
+	if x != nil {
+		return x.PayloadLength
+	}
+	return 0
+}
+
+func (x *DeepMonitorWebSocketFrame) GetCloseCode() int32 {
+	if x != nil {
+		return x.CloseCode
+	}
+	return 0
+}
+
+func (x *DeepMonitorWebSocketFrame) GetCloseReason() string {
+	if x != nil {
+		return x.CloseReason
+	}
+	return ""
+}
+
+func (x *DeepMonitorWebSocketFrame) GetCompressed() bool {
+	if x != nil {
+		return x.Compressed
+	}
+	return false
+}
+
+type DeepMonitorEventSummary struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Id            string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
+	SessionId     string                 `protobuf:"bytes,2,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
+	Sequence      uint64                 `protobuf:"varint,3,opt,name=sequence,proto3" json:"sequence,omitempty"`
+	Type          string                 `protobuf:"bytes,4,opt,name=type,proto3" json:"type,omitempty"`
+	Time          string                 `protobuf:"bytes,5,opt,name=time,proto3" json:"time,omitempty"`
+	ExchangeId    string                 `protobuf:"bytes,6,opt,name=exchange_id,json=exchangeId,proto3" json:"exchange_id,omitempty"`
+	ConnectionId  string                 `protobuf:"bytes,7,opt,name=connection_id,json=connectionId,proto3" json:"connection_id,omitempty"`
+	Host          string                 `protobuf:"bytes,8,opt,name=host,proto3" json:"host,omitempty"`
+	Method        string                 `protobuf:"bytes,9,opt,name=method,proto3" json:"method,omitempty"`
+	Path          string                 `protobuf:"bytes,10,opt,name=path,proto3" json:"path,omitempty"`
+	Status        int32                  `protobuf:"varint,11,opt,name=status,proto3" json:"status,omitempty"`
+	ClientIp      string                 `protobuf:"bytes,12,opt,name=client_ip,json=clientIp,proto3" json:"client_ip,omitempty"`
+	Identity      string                 `protobuf:"bytes,13,opt,name=identity,proto3" json:"identity,omitempty"`
+	Direction     string                 `protobuf:"bytes,14,opt,name=direction,proto3" json:"direction,omitempty"`
+	PayloadBytes  uint64                 `protobuf:"varint,15,opt,name=payload_bytes,json=payloadBytes,proto3" json:"payload_bytes,omitempty"`
+	Truncated     bool                   `protobuf:"varint,16,opt,name=truncated,proto3" json:"truncated,omitempty"`
+	Notice        string                 `protobuf:"bytes,17,opt,name=notice,proto3" json:"notice,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DeepMonitorEventSummary) Reset() {
+	*x = DeepMonitorEventSummary{}
+	mi := &file_fnknock_v1_gateway_proto_msgTypes[58]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DeepMonitorEventSummary) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DeepMonitorEventSummary) ProtoMessage() {}
+
+func (x *DeepMonitorEventSummary) ProtoReflect() protoreflect.Message {
+	mi := &file_fnknock_v1_gateway_proto_msgTypes[58]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DeepMonitorEventSummary.ProtoReflect.Descriptor instead.
+func (*DeepMonitorEventSummary) Descriptor() ([]byte, []int) {
+	return file_fnknock_v1_gateway_proto_rawDescGZIP(), []int{58}
+}
+
+func (x *DeepMonitorEventSummary) GetId() string {
+	if x != nil {
+		return x.Id
+	}
+	return ""
+}
+
+func (x *DeepMonitorEventSummary) GetSessionId() string {
+	if x != nil {
+		return x.SessionId
+	}
+	return ""
+}
+
+func (x *DeepMonitorEventSummary) GetSequence() uint64 {
+	if x != nil {
+		return x.Sequence
+	}
+	return 0
+}
+
+func (x *DeepMonitorEventSummary) GetType() string {
+	if x != nil {
+		return x.Type
+	}
+	return ""
+}
+
+func (x *DeepMonitorEventSummary) GetTime() string {
+	if x != nil {
+		return x.Time
+	}
+	return ""
+}
+
+func (x *DeepMonitorEventSummary) GetExchangeId() string {
+	if x != nil {
+		return x.ExchangeId
+	}
+	return ""
+}
+
+func (x *DeepMonitorEventSummary) GetConnectionId() string {
+	if x != nil {
+		return x.ConnectionId
+	}
+	return ""
+}
+
+func (x *DeepMonitorEventSummary) GetHost() string {
+	if x != nil {
+		return x.Host
+	}
+	return ""
+}
+
+func (x *DeepMonitorEventSummary) GetMethod() string {
+	if x != nil {
+		return x.Method
+	}
+	return ""
+}
+
+func (x *DeepMonitorEventSummary) GetPath() string {
+	if x != nil {
+		return x.Path
+	}
+	return ""
+}
+
+func (x *DeepMonitorEventSummary) GetStatus() int32 {
+	if x != nil {
+		return x.Status
+	}
+	return 0
+}
+
+func (x *DeepMonitorEventSummary) GetClientIp() string {
+	if x != nil {
+		return x.ClientIp
+	}
+	return ""
+}
+
+func (x *DeepMonitorEventSummary) GetIdentity() string {
+	if x != nil {
+		return x.Identity
+	}
+	return ""
+}
+
+func (x *DeepMonitorEventSummary) GetDirection() string {
+	if x != nil {
+		return x.Direction
+	}
+	return ""
+}
+
+func (x *DeepMonitorEventSummary) GetPayloadBytes() uint64 {
+	if x != nil {
+		return x.PayloadBytes
+	}
+	return 0
+}
+
+func (x *DeepMonitorEventSummary) GetTruncated() bool {
+	if x != nil {
+		return x.Truncated
+	}
+	return false
+}
+
+func (x *DeepMonitorEventSummary) GetNotice() string {
+	if x != nil {
+		return x.Notice
+	}
+	return ""
+}
+
+type DeepMonitorEvent struct {
+	state                   protoimpl.MessageState     `protogen:"open.v1"`
+	Summary                 *DeepMonitorEventSummary   `protobuf:"bytes,1,opt,name=summary,proto3" json:"summary,omitempty"`
+	Scheme                  string                     `protobuf:"bytes,2,opt,name=scheme,proto3" json:"scheme,omitempty"`
+	Protocol                string                     `protobuf:"bytes,3,opt,name=protocol,proto3" json:"protocol,omitempty"`
+	RequestUri              string                     `protobuf:"bytes,4,opt,name=request_uri,json=requestUri,proto3" json:"request_uri,omitempty"`
+	Upstream                string                     `protobuf:"bytes,5,opt,name=upstream,proto3" json:"upstream,omitempty"`
+	UserAgent               string                     `protobuf:"bytes,6,opt,name=user_agent,json=userAgent,proto3" json:"user_agent,omitempty"`
+	Referer                 string                     `protobuf:"bytes,7,opt,name=referer,proto3" json:"referer,omitempty"`
+	RemoteAddr              string                     `protobuf:"bytes,8,opt,name=remote_addr,json=remoteAddr,proto3" json:"remote_addr,omitempty"`
+	AuthCredentialId        string                     `protobuf:"bytes,9,opt,name=auth_credential_id,json=authCredentialId,proto3" json:"auth_credential_id,omitempty"`
+	AuthCredentialName      string                     `protobuf:"bytes,10,opt,name=auth_credential_name,json=authCredentialName,proto3" json:"auth_credential_name,omitempty"`
+	AuthCredentialMethod    string                     `protobuf:"bytes,11,opt,name=auth_credential_method,json=authCredentialMethod,proto3" json:"auth_credential_method,omitempty"`
+	AuthLinkedTotpId        string                     `protobuf:"bytes,12,opt,name=auth_linked_totp_id,json=authLinkedTotpId,proto3" json:"auth_linked_totp_id,omitempty"`
+	AuthLinkedTotpName      string                     `protobuf:"bytes,13,opt,name=auth_linked_totp_name,json=authLinkedTotpName,proto3" json:"auth_linked_totp_name,omitempty"`
+	AuthDecision            string                     `protobuf:"bytes,14,opt,name=auth_decision,json=authDecision,proto3" json:"auth_decision,omitempty"`
+	RouteType               string                     `protobuf:"bytes,15,opt,name=route_type,json=routeType,proto3" json:"route_type,omitempty"`
+	RouteKey                string                     `protobuf:"bytes,16,opt,name=route_key,json=routeKey,proto3" json:"route_key,omitempty"`
+	TlsVersion              string                     `protobuf:"bytes,17,opt,name=tls_version,json=tlsVersion,proto3" json:"tls_version,omitempty"`
+	TlsCipher               string                     `protobuf:"bytes,18,opt,name=tls_cipher,json=tlsCipher,proto3" json:"tls_cipher,omitempty"`
+	TlsServerName           string                     `protobuf:"bytes,19,opt,name=tls_server_name,json=tlsServerName,proto3" json:"tls_server_name,omitempty"`
+	TlsAlpn                 string                     `protobuf:"bytes,20,opt,name=tls_alpn,json=tlsAlpn,proto3" json:"tls_alpn,omitempty"`
+	ClientRequestHeaders    *HeaderList                `protobuf:"bytes,21,opt,name=client_request_headers,json=clientRequestHeaders,proto3" json:"client_request_headers,omitempty"`
+	UpstreamRequestHeaders  *HeaderList                `protobuf:"bytes,22,opt,name=upstream_request_headers,json=upstreamRequestHeaders,proto3" json:"upstream_request_headers,omitempty"`
+	UpstreamResponseHeaders *HeaderList                `protobuf:"bytes,23,opt,name=upstream_response_headers,json=upstreamResponseHeaders,proto3" json:"upstream_response_headers,omitempty"`
+	ClientResponseHeaders   *HeaderList                `protobuf:"bytes,24,opt,name=client_response_headers,json=clientResponseHeaders,proto3" json:"client_response_headers,omitempty"`
+	Payloads                []*DeepMonitorPayloadRef   `protobuf:"bytes,25,rep,name=payloads,proto3" json:"payloads,omitempty"`
+	Timing                  *DeepMonitorTiming         `protobuf:"bytes,26,opt,name=timing,proto3" json:"timing,omitempty"`
+	WebsocketFrame          *DeepMonitorWebSocketFrame `protobuf:"bytes,27,opt,name=websocket_frame,json=websocketFrame,proto3" json:"websocket_frame,omitempty"`
+	WebsocketSubprotocol    string                     `protobuf:"bytes,28,opt,name=websocket_subprotocol,json=websocketSubprotocol,proto3" json:"websocket_subprotocol,omitempty"`
+	WebsocketExtensions     string                     `protobuf:"bytes,29,opt,name=websocket_extensions,json=websocketExtensions,proto3" json:"websocket_extensions,omitempty"`
+	Error                   string                     `protobuf:"bytes,30,opt,name=error,proto3" json:"error,omitempty"`
+	AuthRuleGroupId         string                     `protobuf:"bytes,31,opt,name=auth_rule_group_id,json=authRuleGroupId,proto3" json:"auth_rule_group_id,omitempty"`
+	AuthGrantState          string                     `protobuf:"bytes,32,opt,name=auth_grant_state,json=authGrantState,proto3" json:"auth_grant_state,omitempty"`
+	WafTraceId              string                     `protobuf:"bytes,33,opt,name=waf_trace_id,json=wafTraceId,proto3" json:"waf_trace_id,omitempty"`
+	WafMode                 string                     `protobuf:"bytes,34,opt,name=waf_mode,json=wafMode,proto3" json:"waf_mode,omitempty"`
+	WafRuleIds              []int32                    `protobuf:"varint,35,rep,packed,name=waf_rule_ids,json=wafRuleIds,proto3" json:"waf_rule_ids,omitempty"`
+	WafAction               string                     `protobuf:"bytes,36,opt,name=waf_action,json=wafAction,proto3" json:"waf_action,omitempty"`
+	WafBundle               string                     `protobuf:"bytes,37,opt,name=waf_bundle,json=wafBundle,proto3" json:"waf_bundle,omitempty"`
+	WafBlocked              bool                       `protobuf:"varint,38,opt,name=waf_blocked,json=wafBlocked,proto3" json:"waf_blocked,omitempty"`
+	GeneralBlacklistBlocked bool                       `protobuf:"varint,39,opt,name=general_blacklist_blocked,json=generalBlacklistBlocked,proto3" json:"general_blacklist_blocked,omitempty"`
+	ClientIpSource          string                     `protobuf:"bytes,40,opt,name=client_ip_source,json=clientIpSource,proto3" json:"client_ip_source,omitempty"`
+	unknownFields           protoimpl.UnknownFields
+	sizeCache               protoimpl.SizeCache
+}
+
+func (x *DeepMonitorEvent) Reset() {
+	*x = DeepMonitorEvent{}
+	mi := &file_fnknock_v1_gateway_proto_msgTypes[59]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DeepMonitorEvent) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DeepMonitorEvent) ProtoMessage() {}
+
+func (x *DeepMonitorEvent) ProtoReflect() protoreflect.Message {
+	mi := &file_fnknock_v1_gateway_proto_msgTypes[59]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DeepMonitorEvent.ProtoReflect.Descriptor instead.
+func (*DeepMonitorEvent) Descriptor() ([]byte, []int) {
+	return file_fnknock_v1_gateway_proto_rawDescGZIP(), []int{59}
+}
+
+func (x *DeepMonitorEvent) GetSummary() *DeepMonitorEventSummary {
+	if x != nil {
+		return x.Summary
+	}
+	return nil
+}
+
+func (x *DeepMonitorEvent) GetScheme() string {
+	if x != nil {
+		return x.Scheme
+	}
+	return ""
+}
+
+func (x *DeepMonitorEvent) GetProtocol() string {
+	if x != nil {
+		return x.Protocol
+	}
+	return ""
+}
+
+func (x *DeepMonitorEvent) GetRequestUri() string {
+	if x != nil {
+		return x.RequestUri
+	}
+	return ""
+}
+
+func (x *DeepMonitorEvent) GetUpstream() string {
+	if x != nil {
+		return x.Upstream
+	}
+	return ""
+}
+
+func (x *DeepMonitorEvent) GetUserAgent() string {
+	if x != nil {
+		return x.UserAgent
+	}
+	return ""
+}
+
+func (x *DeepMonitorEvent) GetReferer() string {
+	if x != nil {
+		return x.Referer
+	}
+	return ""
+}
+
+func (x *DeepMonitorEvent) GetRemoteAddr() string {
+	if x != nil {
+		return x.RemoteAddr
+	}
+	return ""
+}
+
+func (x *DeepMonitorEvent) GetAuthCredentialId() string {
+	if x != nil {
+		return x.AuthCredentialId
+	}
+	return ""
+}
+
+func (x *DeepMonitorEvent) GetAuthCredentialName() string {
+	if x != nil {
+		return x.AuthCredentialName
+	}
+	return ""
+}
+
+func (x *DeepMonitorEvent) GetAuthCredentialMethod() string {
+	if x != nil {
+		return x.AuthCredentialMethod
+	}
+	return ""
+}
+
+func (x *DeepMonitorEvent) GetAuthLinkedTotpId() string {
+	if x != nil {
+		return x.AuthLinkedTotpId
+	}
+	return ""
+}
+
+func (x *DeepMonitorEvent) GetAuthLinkedTotpName() string {
+	if x != nil {
+		return x.AuthLinkedTotpName
+	}
+	return ""
+}
+
+func (x *DeepMonitorEvent) GetAuthDecision() string {
+	if x != nil {
+		return x.AuthDecision
+	}
+	return ""
+}
+
+func (x *DeepMonitorEvent) GetRouteType() string {
+	if x != nil {
+		return x.RouteType
+	}
+	return ""
+}
+
+func (x *DeepMonitorEvent) GetRouteKey() string {
+	if x != nil {
+		return x.RouteKey
+	}
+	return ""
+}
+
+func (x *DeepMonitorEvent) GetTlsVersion() string {
+	if x != nil {
+		return x.TlsVersion
+	}
+	return ""
+}
+
+func (x *DeepMonitorEvent) GetTlsCipher() string {
+	if x != nil {
+		return x.TlsCipher
+	}
+	return ""
+}
+
+func (x *DeepMonitorEvent) GetTlsServerName() string {
+	if x != nil {
+		return x.TlsServerName
+	}
+	return ""
+}
+
+func (x *DeepMonitorEvent) GetTlsAlpn() string {
+	if x != nil {
+		return x.TlsAlpn
+	}
+	return ""
+}
+
+func (x *DeepMonitorEvent) GetClientRequestHeaders() *HeaderList {
+	if x != nil {
+		return x.ClientRequestHeaders
+	}
+	return nil
+}
+
+func (x *DeepMonitorEvent) GetUpstreamRequestHeaders() *HeaderList {
+	if x != nil {
+		return x.UpstreamRequestHeaders
+	}
+	return nil
+}
+
+func (x *DeepMonitorEvent) GetUpstreamResponseHeaders() *HeaderList {
+	if x != nil {
+		return x.UpstreamResponseHeaders
+	}
+	return nil
+}
+
+func (x *DeepMonitorEvent) GetClientResponseHeaders() *HeaderList {
+	if x != nil {
+		return x.ClientResponseHeaders
+	}
+	return nil
+}
+
+func (x *DeepMonitorEvent) GetPayloads() []*DeepMonitorPayloadRef {
+	if x != nil {
+		return x.Payloads
+	}
+	return nil
+}
+
+func (x *DeepMonitorEvent) GetTiming() *DeepMonitorTiming {
+	if x != nil {
+		return x.Timing
+	}
+	return nil
+}
+
+func (x *DeepMonitorEvent) GetWebsocketFrame() *DeepMonitorWebSocketFrame {
+	if x != nil {
+		return x.WebsocketFrame
+	}
+	return nil
+}
+
+func (x *DeepMonitorEvent) GetWebsocketSubprotocol() string {
+	if x != nil {
+		return x.WebsocketSubprotocol
+	}
+	return ""
+}
+
+func (x *DeepMonitorEvent) GetWebsocketExtensions() string {
+	if x != nil {
+		return x.WebsocketExtensions
+	}
+	return ""
+}
+
+func (x *DeepMonitorEvent) GetError() string {
+	if x != nil {
+		return x.Error
+	}
+	return ""
+}
+
+func (x *DeepMonitorEvent) GetAuthRuleGroupId() string {
+	if x != nil {
+		return x.AuthRuleGroupId
+	}
+	return ""
+}
+
+func (x *DeepMonitorEvent) GetAuthGrantState() string {
+	if x != nil {
+		return x.AuthGrantState
+	}
+	return ""
+}
+
+func (x *DeepMonitorEvent) GetWafTraceId() string {
+	if x != nil {
+		return x.WafTraceId
+	}
+	return ""
+}
+
+func (x *DeepMonitorEvent) GetWafMode() string {
+	if x != nil {
+		return x.WafMode
+	}
+	return ""
+}
+
+func (x *DeepMonitorEvent) GetWafRuleIds() []int32 {
+	if x != nil {
+		return x.WafRuleIds
+	}
+	return nil
+}
+
+func (x *DeepMonitorEvent) GetWafAction() string {
+	if x != nil {
+		return x.WafAction
+	}
+	return ""
+}
+
+func (x *DeepMonitorEvent) GetWafBundle() string {
+	if x != nil {
+		return x.WafBundle
+	}
+	return ""
+}
+
+func (x *DeepMonitorEvent) GetWafBlocked() bool {
+	if x != nil {
+		return x.WafBlocked
+	}
+	return false
+}
+
+func (x *DeepMonitorEvent) GetGeneralBlacklistBlocked() bool {
+	if x != nil {
+		return x.GeneralBlacklistBlocked
+	}
+	return false
+}
+
+func (x *DeepMonitorEvent) GetClientIpSource() string {
+	if x != nil {
+		return x.ClientIpSource
+	}
+	return ""
+}
+
+type DeepMonitorQuery struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	SessionId     string                 `protobuf:"bytes,1,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
+	Cursor        string                 `protobuf:"bytes,2,opt,name=cursor,proto3" json:"cursor,omitempty"`
+	Limit         int32                  `protobuf:"varint,3,opt,name=limit,proto3" json:"limit,omitempty"`
+	Type          string                 `protobuf:"bytes,4,opt,name=type,proto3" json:"type,omitempty"`
+	Search        string                 `protobuf:"bytes,5,opt,name=search,proto3" json:"search,omitempty"`
+	Direction     string                 `protobuf:"bytes,6,opt,name=direction,proto3" json:"direction,omitempty"`
+	Method        string                 `protobuf:"bytes,7,opt,name=method,proto3" json:"method,omitempty"`
+	Status        int32                  `protobuf:"varint,8,opt,name=status,proto3" json:"status,omitempty"`
+	ClientIp      string                 `protobuf:"bytes,9,opt,name=client_ip,json=clientIp,proto3" json:"client_ip,omitempty"`
+	Identity      string                 `protobuf:"bytes,10,opt,name=identity,proto3" json:"identity,omitempty"`
+	Path          string                 `protobuf:"bytes,11,opt,name=path,proto3" json:"path,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DeepMonitorQuery) Reset() {
+	*x = DeepMonitorQuery{}
+	mi := &file_fnknock_v1_gateway_proto_msgTypes[60]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DeepMonitorQuery) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DeepMonitorQuery) ProtoMessage() {}
+
+func (x *DeepMonitorQuery) ProtoReflect() protoreflect.Message {
+	mi := &file_fnknock_v1_gateway_proto_msgTypes[60]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DeepMonitorQuery.ProtoReflect.Descriptor instead.
+func (*DeepMonitorQuery) Descriptor() ([]byte, []int) {
+	return file_fnknock_v1_gateway_proto_rawDescGZIP(), []int{60}
+}
+
+func (x *DeepMonitorQuery) GetSessionId() string {
+	if x != nil {
+		return x.SessionId
+	}
+	return ""
+}
+
+func (x *DeepMonitorQuery) GetCursor() string {
+	if x != nil {
+		return x.Cursor
+	}
+	return ""
+}
+
+func (x *DeepMonitorQuery) GetLimit() int32 {
+	if x != nil {
+		return x.Limit
+	}
+	return 0
+}
+
+func (x *DeepMonitorQuery) GetType() string {
+	if x != nil {
+		return x.Type
+	}
+	return ""
+}
+
+func (x *DeepMonitorQuery) GetSearch() string {
+	if x != nil {
+		return x.Search
+	}
+	return ""
+}
+
+func (x *DeepMonitorQuery) GetDirection() string {
+	if x != nil {
+		return x.Direction
+	}
+	return ""
+}
+
+func (x *DeepMonitorQuery) GetMethod() string {
+	if x != nil {
+		return x.Method
+	}
+	return ""
+}
+
+func (x *DeepMonitorQuery) GetStatus() int32 {
+	if x != nil {
+		return x.Status
+	}
+	return 0
+}
+
+func (x *DeepMonitorQuery) GetClientIp() string {
+	if x != nil {
+		return x.ClientIp
+	}
+	return ""
+}
+
+func (x *DeepMonitorQuery) GetIdentity() string {
+	if x != nil {
+		return x.Identity
+	}
+	return ""
+}
+
+func (x *DeepMonitorQuery) GetPath() string {
+	if x != nil {
+		return x.Path
+	}
+	return ""
+}
+
+type DeepMonitorQueryResult struct {
+	state         protoimpl.MessageState     `protogen:"open.v1"`
+	Items         []*DeepMonitorEventSummary `protobuf:"bytes,1,rep,name=items,proto3" json:"items,omitempty"`
+	NextCursor    string                     `protobuf:"bytes,2,opt,name=next_cursor,json=nextCursor,proto3" json:"next_cursor,omitempty"`
+	HasMore       bool                       `protobuf:"varint,3,opt,name=has_more,json=hasMore,proto3" json:"has_more,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DeepMonitorQueryResult) Reset() {
+	*x = DeepMonitorQueryResult{}
+	mi := &file_fnknock_v1_gateway_proto_msgTypes[61]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DeepMonitorQueryResult) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DeepMonitorQueryResult) ProtoMessage() {}
+
+func (x *DeepMonitorQueryResult) ProtoReflect() protoreflect.Message {
+	mi := &file_fnknock_v1_gateway_proto_msgTypes[61]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DeepMonitorQueryResult.ProtoReflect.Descriptor instead.
+func (*DeepMonitorQueryResult) Descriptor() ([]byte, []int) {
+	return file_fnknock_v1_gateway_proto_rawDescGZIP(), []int{61}
+}
+
+func (x *DeepMonitorQueryResult) GetItems() []*DeepMonitorEventSummary {
+	if x != nil {
+		return x.Items
+	}
+	return nil
+}
+
+func (x *DeepMonitorQueryResult) GetNextCursor() string {
+	if x != nil {
+		return x.NextCursor
+	}
+	return ""
+}
+
+func (x *DeepMonitorQueryResult) GetHasMore() bool {
+	if x != nil {
+		return x.HasMore
+	}
+	return false
+}
+
+type DeepMonitorEventRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	SessionId     string                 `protobuf:"bytes,1,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
+	EventId       string                 `protobuf:"bytes,2,opt,name=event_id,json=eventId,proto3" json:"event_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DeepMonitorEventRequest) Reset() {
+	*x = DeepMonitorEventRequest{}
+	mi := &file_fnknock_v1_gateway_proto_msgTypes[62]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DeepMonitorEventRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DeepMonitorEventRequest) ProtoMessage() {}
+
+func (x *DeepMonitorEventRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_fnknock_v1_gateway_proto_msgTypes[62]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DeepMonitorEventRequest.ProtoReflect.Descriptor instead.
+func (*DeepMonitorEventRequest) Descriptor() ([]byte, []int) {
+	return file_fnknock_v1_gateway_proto_rawDescGZIP(), []int{62}
+}
+
+func (x *DeepMonitorEventRequest) GetSessionId() string {
+	if x != nil {
+		return x.SessionId
+	}
+	return ""
+}
+
+func (x *DeepMonitorEventRequest) GetEventId() string {
+	if x != nil {
+		return x.EventId
+	}
+	return ""
+}
+
+type DeepMonitorWatchRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	SessionId     string                 `protobuf:"bytes,1,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
+	AfterSequence uint64                 `protobuf:"varint,2,opt,name=after_sequence,json=afterSequence,proto3" json:"after_sequence,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DeepMonitorWatchRequest) Reset() {
+	*x = DeepMonitorWatchRequest{}
+	mi := &file_fnknock_v1_gateway_proto_msgTypes[63]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DeepMonitorWatchRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DeepMonitorWatchRequest) ProtoMessage() {}
+
+func (x *DeepMonitorWatchRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_fnknock_v1_gateway_proto_msgTypes[63]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DeepMonitorWatchRequest.ProtoReflect.Descriptor instead.
+func (*DeepMonitorWatchRequest) Descriptor() ([]byte, []int) {
+	return file_fnknock_v1_gateway_proto_rawDescGZIP(), []int{63}
+}
+
+func (x *DeepMonitorWatchRequest) GetSessionId() string {
+	if x != nil {
+		return x.SessionId
+	}
+	return ""
+}
+
+func (x *DeepMonitorWatchRequest) GetAfterSequence() uint64 {
+	if x != nil {
+		return x.AfterSequence
+	}
+	return 0
+}
+
+type DeepMonitorPayloadRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	SessionId     string                 `protobuf:"bytes,1,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
+	EventId       string                 `protobuf:"bytes,2,opt,name=event_id,json=eventId,proto3" json:"event_id,omitempty"`
+	Part          string                 `protobuf:"bytes,3,opt,name=part,proto3" json:"part,omitempty"`
+	Offset        uint64                 `protobuf:"varint,4,opt,name=offset,proto3" json:"offset,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DeepMonitorPayloadRequest) Reset() {
+	*x = DeepMonitorPayloadRequest{}
+	mi := &file_fnknock_v1_gateway_proto_msgTypes[64]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DeepMonitorPayloadRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DeepMonitorPayloadRequest) ProtoMessage() {}
+
+func (x *DeepMonitorPayloadRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_fnknock_v1_gateway_proto_msgTypes[64]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DeepMonitorPayloadRequest.ProtoReflect.Descriptor instead.
+func (*DeepMonitorPayloadRequest) Descriptor() ([]byte, []int) {
+	return file_fnknock_v1_gateway_proto_rawDescGZIP(), []int{64}
+}
+
+func (x *DeepMonitorPayloadRequest) GetSessionId() string {
+	if x != nil {
+		return x.SessionId
+	}
+	return ""
+}
+
+func (x *DeepMonitorPayloadRequest) GetEventId() string {
+	if x != nil {
+		return x.EventId
+	}
+	return ""
+}
+
+func (x *DeepMonitorPayloadRequest) GetPart() string {
+	if x != nil {
+		return x.Part
+	}
+	return ""
+}
+
+func (x *DeepMonitorPayloadRequest) GetOffset() uint64 {
+	if x != nil {
+		return x.Offset
+	}
+	return 0
+}
+
+type DeepMonitorPayloadChunk struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Data          []byte                 `protobuf:"bytes,1,opt,name=data,proto3" json:"data,omitempty"`
+	Offset        uint64                 `protobuf:"varint,2,opt,name=offset,proto3" json:"offset,omitempty"`
+	TotalBytes    uint64                 `protobuf:"varint,3,opt,name=total_bytes,json=totalBytes,proto3" json:"total_bytes,omitempty"`
+	Eof           bool                   `protobuf:"varint,4,opt,name=eof,proto3" json:"eof,omitempty"`
+	ContentType   string                 `protobuf:"bytes,5,opt,name=content_type,json=contentType,proto3" json:"content_type,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DeepMonitorPayloadChunk) Reset() {
+	*x = DeepMonitorPayloadChunk{}
+	mi := &file_fnknock_v1_gateway_proto_msgTypes[65]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DeepMonitorPayloadChunk) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DeepMonitorPayloadChunk) ProtoMessage() {}
+
+func (x *DeepMonitorPayloadChunk) ProtoReflect() protoreflect.Message {
+	mi := &file_fnknock_v1_gateway_proto_msgTypes[65]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DeepMonitorPayloadChunk.ProtoReflect.Descriptor instead.
+func (*DeepMonitorPayloadChunk) Descriptor() ([]byte, []int) {
+	return file_fnknock_v1_gateway_proto_rawDescGZIP(), []int{65}
+}
+
+func (x *DeepMonitorPayloadChunk) GetData() []byte {
+	if x != nil {
+		return x.Data
+	}
+	return nil
+}
+
+func (x *DeepMonitorPayloadChunk) GetOffset() uint64 {
+	if x != nil {
+		return x.Offset
+	}
+	return 0
+}
+
+func (x *DeepMonitorPayloadChunk) GetTotalBytes() uint64 {
+	if x != nil {
+		return x.TotalBytes
+	}
+	return 0
+}
+
+func (x *DeepMonitorPayloadChunk) GetEof() bool {
+	if x != nil {
+		return x.Eof
+	}
+	return false
+}
+
+func (x *DeepMonitorPayloadChunk) GetContentType() string {
+	if x != nil {
+		return x.ContentType
+	}
+	return ""
+}
+
 type TrafficStats struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	TotalIn       uint64                 `protobuf:"varint,1,opt,name=total_in,json=totalIn,proto3" json:"total_in,omitempty"`
@@ -4482,7 +6144,7 @@ type TrafficStats struct {
 
 func (x *TrafficStats) Reset() {
 	*x = TrafficStats{}
-	mi := &file_fnknock_v1_gateway_proto_msgTypes[49]
+	mi := &file_fnknock_v1_gateway_proto_msgTypes[66]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4494,7 +6156,7 @@ func (x *TrafficStats) String() string {
 func (*TrafficStats) ProtoMessage() {}
 
 func (x *TrafficStats) ProtoReflect() protoreflect.Message {
-	mi := &file_fnknock_v1_gateway_proto_msgTypes[49]
+	mi := &file_fnknock_v1_gateway_proto_msgTypes[66]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4507,7 +6169,7 @@ func (x *TrafficStats) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TrafficStats.ProtoReflect.Descriptor instead.
 func (*TrafficStats) Descriptor() ([]byte, []int) {
-	return file_fnknock_v1_gateway_proto_rawDescGZIP(), []int{49}
+	return file_fnknock_v1_gateway_proto_rawDescGZIP(), []int{66}
 }
 
 func (x *TrafficStats) GetTotalIn() uint64 {
@@ -4558,7 +6220,7 @@ type HostTrafficStats struct {
 
 func (x *HostTrafficStats) Reset() {
 	*x = HostTrafficStats{}
-	mi := &file_fnknock_v1_gateway_proto_msgTypes[50]
+	mi := &file_fnknock_v1_gateway_proto_msgTypes[67]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4570,7 +6232,7 @@ func (x *HostTrafficStats) String() string {
 func (*HostTrafficStats) ProtoMessage() {}
 
 func (x *HostTrafficStats) ProtoReflect() protoreflect.Message {
-	mi := &file_fnknock_v1_gateway_proto_msgTypes[50]
+	mi := &file_fnknock_v1_gateway_proto_msgTypes[67]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4583,7 +6245,7 @@ func (x *HostTrafficStats) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use HostTrafficStats.ProtoReflect.Descriptor instead.
 func (*HostTrafficStats) Descriptor() ([]byte, []int) {
-	return file_fnknock_v1_gateway_proto_rawDescGZIP(), []int{50}
+	return file_fnknock_v1_gateway_proto_rawDescGZIP(), []int{67}
 }
 
 func (x *HostTrafficStats) GetHost() string {
@@ -4632,7 +6294,7 @@ type HostActiveIpStats struct {
 
 func (x *HostActiveIpStats) Reset() {
 	*x = HostActiveIpStats{}
-	mi := &file_fnknock_v1_gateway_proto_msgTypes[51]
+	mi := &file_fnknock_v1_gateway_proto_msgTypes[68]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4644,7 +6306,7 @@ func (x *HostActiveIpStats) String() string {
 func (*HostActiveIpStats) ProtoMessage() {}
 
 func (x *HostActiveIpStats) ProtoReflect() protoreflect.Message {
-	mi := &file_fnknock_v1_gateway_proto_msgTypes[51]
+	mi := &file_fnknock_v1_gateway_proto_msgTypes[68]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4657,7 +6319,7 @@ func (x *HostActiveIpStats) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use HostActiveIpStats.ProtoReflect.Descriptor instead.
 func (*HostActiveIpStats) Descriptor() ([]byte, []int) {
-	return file_fnknock_v1_gateway_proto_rawDescGZIP(), []int{51}
+	return file_fnknock_v1_gateway_proto_rawDescGZIP(), []int{68}
 }
 
 func (x *HostActiveIpStats) GetIp() string {
@@ -4692,7 +6354,7 @@ type HostActiveIpsStats struct {
 
 func (x *HostActiveIpsStats) Reset() {
 	*x = HostActiveIpsStats{}
-	mi := &file_fnknock_v1_gateway_proto_msgTypes[52]
+	mi := &file_fnknock_v1_gateway_proto_msgTypes[69]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4704,7 +6366,7 @@ func (x *HostActiveIpsStats) String() string {
 func (*HostActiveIpsStats) ProtoMessage() {}
 
 func (x *HostActiveIpsStats) ProtoReflect() protoreflect.Message {
-	mi := &file_fnknock_v1_gateway_proto_msgTypes[52]
+	mi := &file_fnknock_v1_gateway_proto_msgTypes[69]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4717,7 +6379,7 @@ func (x *HostActiveIpsStats) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use HostActiveIpsStats.ProtoReflect.Descriptor instead.
 func (*HostActiveIpsStats) Descriptor() ([]byte, []int) {
-	return file_fnknock_v1_gateway_proto_rawDescGZIP(), []int{52}
+	return file_fnknock_v1_gateway_proto_rawDescGZIP(), []int{69}
 }
 
 func (x *HostActiveIpsStats) GetHost() string {
@@ -4753,7 +6415,7 @@ type IptablesRule struct {
 
 func (x *IptablesRule) Reset() {
 	*x = IptablesRule{}
-	mi := &file_fnknock_v1_gateway_proto_msgTypes[53]
+	mi := &file_fnknock_v1_gateway_proto_msgTypes[70]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4765,7 +6427,7 @@ func (x *IptablesRule) String() string {
 func (*IptablesRule) ProtoMessage() {}
 
 func (x *IptablesRule) ProtoReflect() protoreflect.Message {
-	mi := &file_fnknock_v1_gateway_proto_msgTypes[53]
+	mi := &file_fnknock_v1_gateway_proto_msgTypes[70]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4778,7 +6440,7 @@ func (x *IptablesRule) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use IptablesRule.ProtoReflect.Descriptor instead.
 func (*IptablesRule) Descriptor() ([]byte, []int) {
-	return file_fnknock_v1_gateway_proto_rawDescGZIP(), []int{53}
+	return file_fnknock_v1_gateway_proto_rawDescGZIP(), []int{70}
 }
 
 func (x *IptablesRule) GetIp() string {
@@ -4823,7 +6485,7 @@ type ServerInfo struct {
 
 func (x *ServerInfo) Reset() {
 	*x = ServerInfo{}
-	mi := &file_fnknock_v1_gateway_proto_msgTypes[54]
+	mi := &file_fnknock_v1_gateway_proto_msgTypes[71]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4835,7 +6497,7 @@ func (x *ServerInfo) String() string {
 func (*ServerInfo) ProtoMessage() {}
 
 func (x *ServerInfo) ProtoReflect() protoreflect.Message {
-	mi := &file_fnknock_v1_gateway_proto_msgTypes[54]
+	mi := &file_fnknock_v1_gateway_proto_msgTypes[71]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4848,7 +6510,7 @@ func (x *ServerInfo) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ServerInfo.ProtoReflect.Descriptor instead.
 func (*ServerInfo) Descriptor() ([]byte, []int) {
-	return file_fnknock_v1_gateway_proto_rawDescGZIP(), []int{54}
+	return file_fnknock_v1_gateway_proto_rawDescGZIP(), []int{71}
 }
 
 func (x *ServerInfo) GetVersion() string {
@@ -4912,7 +6574,7 @@ type GatewayRuntimeInfo struct {
 
 func (x *GatewayRuntimeInfo) Reset() {
 	*x = GatewayRuntimeInfo{}
-	mi := &file_fnknock_v1_gateway_proto_msgTypes[55]
+	mi := &file_fnknock_v1_gateway_proto_msgTypes[72]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4924,7 +6586,7 @@ func (x *GatewayRuntimeInfo) String() string {
 func (*GatewayRuntimeInfo) ProtoMessage() {}
 
 func (x *GatewayRuntimeInfo) ProtoReflect() protoreflect.Message {
-	mi := &file_fnknock_v1_gateway_proto_msgTypes[55]
+	mi := &file_fnknock_v1_gateway_proto_msgTypes[72]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4937,7 +6599,7 @@ func (x *GatewayRuntimeInfo) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GatewayRuntimeInfo.ProtoReflect.Descriptor instead.
 func (*GatewayRuntimeInfo) Descriptor() ([]byte, []int) {
-	return file_fnknock_v1_gateway_proto_rawDescGZIP(), []int{55}
+	return file_fnknock_v1_gateway_proto_rawDescGZIP(), []int{72}
 }
 
 func (x *GatewayRuntimeInfo) GetInstanceId() string {
@@ -5013,7 +6675,7 @@ type GatewayListenerConfig struct {
 
 func (x *GatewayListenerConfig) Reset() {
 	*x = GatewayListenerConfig{}
-	mi := &file_fnknock_v1_gateway_proto_msgTypes[56]
+	mi := &file_fnknock_v1_gateway_proto_msgTypes[73]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5025,7 +6687,7 @@ func (x *GatewayListenerConfig) String() string {
 func (*GatewayListenerConfig) ProtoMessage() {}
 
 func (x *GatewayListenerConfig) ProtoReflect() protoreflect.Message {
-	mi := &file_fnknock_v1_gateway_proto_msgTypes[56]
+	mi := &file_fnknock_v1_gateway_proto_msgTypes[73]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5038,7 +6700,7 @@ func (x *GatewayListenerConfig) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GatewayListenerConfig.ProtoReflect.Descriptor instead.
 func (*GatewayListenerConfig) Descriptor() ([]byte, []int) {
-	return file_fnknock_v1_gateway_proto_rawDescGZIP(), []int{56}
+	return file_fnknock_v1_gateway_proto_rawDescGZIP(), []int{73}
 }
 
 func (x *GatewayListenerConfig) GetScope() string {
@@ -5057,7 +6719,7 @@ type Rules struct {
 
 func (x *Rules) Reset() {
 	*x = Rules{}
-	mi := &file_fnknock_v1_gateway_proto_msgTypes[57]
+	mi := &file_fnknock_v1_gateway_proto_msgTypes[74]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5069,7 +6731,7 @@ func (x *Rules) String() string {
 func (*Rules) ProtoMessage() {}
 
 func (x *Rules) ProtoReflect() protoreflect.Message {
-	mi := &file_fnknock_v1_gateway_proto_msgTypes[57]
+	mi := &file_fnknock_v1_gateway_proto_msgTypes[74]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5082,7 +6744,7 @@ func (x *Rules) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Rules.ProtoReflect.Descriptor instead.
 func (*Rules) Descriptor() ([]byte, []int) {
-	return file_fnknock_v1_gateway_proto_rawDescGZIP(), []int{57}
+	return file_fnknock_v1_gateway_proto_rawDescGZIP(), []int{74}
 }
 
 func (x *Rules) GetItems() []*Rule {
@@ -5102,7 +6764,7 @@ type HostRules struct {
 
 func (x *HostRules) Reset() {
 	*x = HostRules{}
-	mi := &file_fnknock_v1_gateway_proto_msgTypes[58]
+	mi := &file_fnknock_v1_gateway_proto_msgTypes[75]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5114,7 +6776,7 @@ func (x *HostRules) String() string {
 func (*HostRules) ProtoMessage() {}
 
 func (x *HostRules) ProtoReflect() protoreflect.Message {
-	mi := &file_fnknock_v1_gateway_proto_msgTypes[58]
+	mi := &file_fnknock_v1_gateway_proto_msgTypes[75]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5127,7 +6789,7 @@ func (x *HostRules) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use HostRules.ProtoReflect.Descriptor instead.
 func (*HostRules) Descriptor() ([]byte, []int) {
-	return file_fnknock_v1_gateway_proto_rawDescGZIP(), []int{58}
+	return file_fnknock_v1_gateway_proto_rawDescGZIP(), []int{75}
 }
 
 func (x *HostRules) GetItems() []*HostRule {
@@ -5153,7 +6815,7 @@ type StreamRules struct {
 
 func (x *StreamRules) Reset() {
 	*x = StreamRules{}
-	mi := &file_fnknock_v1_gateway_proto_msgTypes[59]
+	mi := &file_fnknock_v1_gateway_proto_msgTypes[76]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5165,7 +6827,7 @@ func (x *StreamRules) String() string {
 func (*StreamRules) ProtoMessage() {}
 
 func (x *StreamRules) ProtoReflect() protoreflect.Message {
-	mi := &file_fnknock_v1_gateway_proto_msgTypes[59]
+	mi := &file_fnknock_v1_gateway_proto_msgTypes[76]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5178,7 +6840,7 @@ func (x *StreamRules) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StreamRules.ProtoReflect.Descriptor instead.
 func (*StreamRules) Descriptor() ([]byte, []int) {
-	return file_fnknock_v1_gateway_proto_rawDescGZIP(), []int{59}
+	return file_fnknock_v1_gateway_proto_rawDescGZIP(), []int{76}
 }
 
 func (x *StreamRules) GetItems() []*StreamRule {
@@ -5197,7 +6859,7 @@ type StringValue struct {
 
 func (x *StringValue) Reset() {
 	*x = StringValue{}
-	mi := &file_fnknock_v1_gateway_proto_msgTypes[60]
+	mi := &file_fnknock_v1_gateway_proto_msgTypes[77]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5209,7 +6871,7 @@ func (x *StringValue) String() string {
 func (*StringValue) ProtoMessage() {}
 
 func (x *StringValue) ProtoReflect() protoreflect.Message {
-	mi := &file_fnknock_v1_gateway_proto_msgTypes[60]
+	mi := &file_fnknock_v1_gateway_proto_msgTypes[77]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5222,7 +6884,7 @@ func (x *StringValue) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StringValue.ProtoReflect.Descriptor instead.
 func (*StringValue) Descriptor() ([]byte, []int) {
-	return file_fnknock_v1_gateway_proto_rawDescGZIP(), []int{60}
+	return file_fnknock_v1_gateway_proto_rawDescGZIP(), []int{77}
 }
 
 func (x *StringValue) GetValue() string {
@@ -5241,7 +6903,7 @@ type BoolValue struct {
 
 func (x *BoolValue) Reset() {
 	*x = BoolValue{}
-	mi := &file_fnknock_v1_gateway_proto_msgTypes[61]
+	mi := &file_fnknock_v1_gateway_proto_msgTypes[78]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5253,7 +6915,7 @@ func (x *BoolValue) String() string {
 func (*BoolValue) ProtoMessage() {}
 
 func (x *BoolValue) ProtoReflect() protoreflect.Message {
-	mi := &file_fnknock_v1_gateway_proto_msgTypes[61]
+	mi := &file_fnknock_v1_gateway_proto_msgTypes[78]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5266,7 +6928,7 @@ func (x *BoolValue) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BoolValue.ProtoReflect.Descriptor instead.
 func (*BoolValue) Descriptor() ([]byte, []int) {
-	return file_fnknock_v1_gateway_proto_rawDescGZIP(), []int{61}
+	return file_fnknock_v1_gateway_proto_rawDescGZIP(), []int{78}
 }
 
 func (x *BoolValue) GetValue() bool {
@@ -5285,7 +6947,7 @@ type IpRequest struct {
 
 func (x *IpRequest) Reset() {
 	*x = IpRequest{}
-	mi := &file_fnknock_v1_gateway_proto_msgTypes[62]
+	mi := &file_fnknock_v1_gateway_proto_msgTypes[79]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5297,7 +6959,7 @@ func (x *IpRequest) String() string {
 func (*IpRequest) ProtoMessage() {}
 
 func (x *IpRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_fnknock_v1_gateway_proto_msgTypes[62]
+	mi := &file_fnknock_v1_gateway_proto_msgTypes[79]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5310,7 +6972,7 @@ func (x *IpRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use IpRequest.ProtoReflect.Descriptor instead.
 func (*IpRequest) Descriptor() ([]byte, []int) {
-	return file_fnknock_v1_gateway_proto_rawDescGZIP(), []int{62}
+	return file_fnknock_v1_gateway_proto_rawDescGZIP(), []int{79}
 }
 
 func (x *IpRequest) GetIp() string {
@@ -5331,7 +6993,7 @@ type IpListRequest struct {
 
 func (x *IpListRequest) Reset() {
 	*x = IpListRequest{}
-	mi := &file_fnknock_v1_gateway_proto_msgTypes[63]
+	mi := &file_fnknock_v1_gateway_proto_msgTypes[80]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5343,7 +7005,7 @@ func (x *IpListRequest) String() string {
 func (*IpListRequest) ProtoMessage() {}
 
 func (x *IpListRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_fnknock_v1_gateway_proto_msgTypes[63]
+	mi := &file_fnknock_v1_gateway_proto_msgTypes[80]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5356,7 +7018,7 @@ func (x *IpListRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use IpListRequest.ProtoReflect.Descriptor instead.
 func (*IpListRequest) Descriptor() ([]byte, []int) {
-	return file_fnknock_v1_gateway_proto_rawDescGZIP(), []int{63}
+	return file_fnknock_v1_gateway_proto_rawDescGZIP(), []int{80}
 }
 
 func (x *IpListRequest) GetIps() []string {
@@ -5391,7 +7053,7 @@ type GeneralBlacklistListRequest struct {
 
 func (x *GeneralBlacklistListRequest) Reset() {
 	*x = GeneralBlacklistListRequest{}
-	mi := &file_fnknock_v1_gateway_proto_msgTypes[64]
+	mi := &file_fnknock_v1_gateway_proto_msgTypes[81]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5403,7 +7065,7 @@ func (x *GeneralBlacklistListRequest) String() string {
 func (*GeneralBlacklistListRequest) ProtoMessage() {}
 
 func (x *GeneralBlacklistListRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_fnknock_v1_gateway_proto_msgTypes[64]
+	mi := &file_fnknock_v1_gateway_proto_msgTypes[81]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5416,7 +7078,7 @@ func (x *GeneralBlacklistListRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GeneralBlacklistListRequest.ProtoReflect.Descriptor instead.
 func (*GeneralBlacklistListRequest) Descriptor() ([]byte, []int) {
-	return file_fnknock_v1_gateway_proto_rawDescGZIP(), []int{64}
+	return file_fnknock_v1_gateway_proto_rawDescGZIP(), []int{81}
 }
 
 func (x *GeneralBlacklistListRequest) GetPage() int32 {
@@ -5449,7 +7111,7 @@ type HostRequest struct {
 
 func (x *HostRequest) Reset() {
 	*x = HostRequest{}
-	mi := &file_fnknock_v1_gateway_proto_msgTypes[65]
+	mi := &file_fnknock_v1_gateway_proto_msgTypes[82]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5461,7 +7123,7 @@ func (x *HostRequest) String() string {
 func (*HostRequest) ProtoMessage() {}
 
 func (x *HostRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_fnknock_v1_gateway_proto_msgTypes[65]
+	mi := &file_fnknock_v1_gateway_proto_msgTypes[82]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5474,7 +7136,7 @@ func (x *HostRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use HostRequest.ProtoReflect.Descriptor instead.
 func (*HostRequest) Descriptor() ([]byte, []int) {
-	return file_fnknock_v1_gateway_proto_rawDescGZIP(), []int{65}
+	return file_fnknock_v1_gateway_proto_rawDescGZIP(), []int{82}
 }
 
 func (x *HostRequest) GetHost() string {
@@ -5496,7 +7158,7 @@ type WafBundleRequest struct {
 
 func (x *WafBundleRequest) Reset() {
 	*x = WafBundleRequest{}
-	mi := &file_fnknock_v1_gateway_proto_msgTypes[66]
+	mi := &file_fnknock_v1_gateway_proto_msgTypes[83]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5508,7 +7170,7 @@ func (x *WafBundleRequest) String() string {
 func (*WafBundleRequest) ProtoMessage() {}
 
 func (x *WafBundleRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_fnknock_v1_gateway_proto_msgTypes[66]
+	mi := &file_fnknock_v1_gateway_proto_msgTypes[83]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5521,7 +7183,7 @@ func (x *WafBundleRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WafBundleRequest.ProtoReflect.Descriptor instead.
 func (*WafBundleRequest) Descriptor() ([]byte, []int) {
-	return file_fnknock_v1_gateway_proto_rawDescGZIP(), []int{66}
+	return file_fnknock_v1_gateway_proto_rawDescGZIP(), []int{83}
 }
 
 func (x *WafBundleRequest) GetBundleId() string {
@@ -5561,7 +7223,7 @@ type WafDrainRequest struct {
 
 func (x *WafDrainRequest) Reset() {
 	*x = WafDrainRequest{}
-	mi := &file_fnknock_v1_gateway_proto_msgTypes[67]
+	mi := &file_fnknock_v1_gateway_proto_msgTypes[84]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5573,7 +7235,7 @@ func (x *WafDrainRequest) String() string {
 func (*WafDrainRequest) ProtoMessage() {}
 
 func (x *WafDrainRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_fnknock_v1_gateway_proto_msgTypes[67]
+	mi := &file_fnknock_v1_gateway_proto_msgTypes[84]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5586,7 +7248,7 @@ func (x *WafDrainRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WafDrainRequest.ProtoReflect.Descriptor instead.
 func (*WafDrainRequest) Descriptor() ([]byte, []int) {
-	return file_fnknock_v1_gateway_proto_rawDescGZIP(), []int{67}
+	return file_fnknock_v1_gateway_proto_rawDescGZIP(), []int{84}
 }
 
 func (x *WafDrainRequest) GetLimit() int32 {
@@ -5606,7 +7268,7 @@ type TcpRedirectRequest struct {
 
 func (x *TcpRedirectRequest) Reset() {
 	*x = TcpRedirectRequest{}
-	mi := &file_fnknock_v1_gateway_proto_msgTypes[68]
+	mi := &file_fnknock_v1_gateway_proto_msgTypes[85]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5618,7 +7280,7 @@ func (x *TcpRedirectRequest) String() string {
 func (*TcpRedirectRequest) ProtoMessage() {}
 
 func (x *TcpRedirectRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_fnknock_v1_gateway_proto_msgTypes[68]
+	mi := &file_fnknock_v1_gateway_proto_msgTypes[85]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5631,7 +7293,7 @@ func (x *TcpRedirectRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TcpRedirectRequest.ProtoReflect.Descriptor instead.
 func (*TcpRedirectRequest) Descriptor() ([]byte, []int) {
-	return file_fnknock_v1_gateway_proto_rawDescGZIP(), []int{68}
+	return file_fnknock_v1_gateway_proto_rawDescGZIP(), []int{85}
 }
 
 func (x *TcpRedirectRequest) GetListenPort() int32 {
@@ -5658,7 +7320,7 @@ type TcpPortRuleRequest struct {
 
 func (x *TcpPortRuleRequest) Reset() {
 	*x = TcpPortRuleRequest{}
-	mi := &file_fnknock_v1_gateway_proto_msgTypes[69]
+	mi := &file_fnknock_v1_gateway_proto_msgTypes[86]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5670,7 +7332,7 @@ func (x *TcpPortRuleRequest) String() string {
 func (*TcpPortRuleRequest) ProtoMessage() {}
 
 func (x *TcpPortRuleRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_fnknock_v1_gateway_proto_msgTypes[69]
+	mi := &file_fnknock_v1_gateway_proto_msgTypes[86]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5683,7 +7345,7 @@ func (x *TcpPortRuleRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TcpPortRuleRequest.ProtoReflect.Descriptor instead.
 func (*TcpPortRuleRequest) Descriptor() ([]byte, []int) {
-	return file_fnknock_v1_gateway_proto_rawDescGZIP(), []int{69}
+	return file_fnknock_v1_gateway_proto_rawDescGZIP(), []int{86}
 }
 
 func (x *TcpPortRuleRequest) GetIp() string {
@@ -5711,7 +7373,7 @@ type IptablesInitRequest struct {
 
 func (x *IptablesInitRequest) Reset() {
 	*x = IptablesInitRequest{}
-	mi := &file_fnknock_v1_gateway_proto_msgTypes[70]
+	mi := &file_fnknock_v1_gateway_proto_msgTypes[87]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5723,7 +7385,7 @@ func (x *IptablesInitRequest) String() string {
 func (*IptablesInitRequest) ProtoMessage() {}
 
 func (x *IptablesInitRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_fnknock_v1_gateway_proto_msgTypes[70]
+	mi := &file_fnknock_v1_gateway_proto_msgTypes[87]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5736,7 +7398,7 @@ func (x *IptablesInitRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use IptablesInitRequest.ProtoReflect.Descriptor instead.
 func (*IptablesInitRequest) Descriptor() ([]byte, []int) {
-	return file_fnknock_v1_gateway_proto_rawDescGZIP(), []int{70}
+	return file_fnknock_v1_gateway_proto_rawDescGZIP(), []int{87}
 }
 
 func (x *IptablesInitRequest) GetChainName() string {
@@ -5776,7 +7438,7 @@ type SshFirewallSyncRequest struct {
 
 func (x *SshFirewallSyncRequest) Reset() {
 	*x = SshFirewallSyncRequest{}
-	mi := &file_fnknock_v1_gateway_proto_msgTypes[71]
+	mi := &file_fnknock_v1_gateway_proto_msgTypes[88]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5788,7 +7450,7 @@ func (x *SshFirewallSyncRequest) String() string {
 func (*SshFirewallSyncRequest) ProtoMessage() {}
 
 func (x *SshFirewallSyncRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_fnknock_v1_gateway_proto_msgTypes[71]
+	mi := &file_fnknock_v1_gateway_proto_msgTypes[88]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5801,7 +7463,7 @@ func (x *SshFirewallSyncRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SshFirewallSyncRequest.ProtoReflect.Descriptor instead.
 func (*SshFirewallSyncRequest) Descriptor() ([]byte, []int) {
-	return file_fnknock_v1_gateway_proto_rawDescGZIP(), []int{71}
+	return file_fnknock_v1_gateway_proto_rawDescGZIP(), []int{88}
 }
 
 func (x *SshFirewallSyncRequest) GetChainName() string {
@@ -5870,7 +7532,7 @@ type SshFirewallClearRequest struct {
 
 func (x *SshFirewallClearRequest) Reset() {
 	*x = SshFirewallClearRequest{}
-	mi := &file_fnknock_v1_gateway_proto_msgTypes[72]
+	mi := &file_fnknock_v1_gateway_proto_msgTypes[89]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5882,7 +7544,7 @@ func (x *SshFirewallClearRequest) String() string {
 func (*SshFirewallClearRequest) ProtoMessage() {}
 
 func (x *SshFirewallClearRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_fnknock_v1_gateway_proto_msgTypes[72]
+	mi := &file_fnknock_v1_gateway_proto_msgTypes[89]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5895,7 +7557,7 @@ func (x *SshFirewallClearRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SshFirewallClearRequest.ProtoReflect.Descriptor instead.
 func (*SshFirewallClearRequest) Descriptor() ([]byte, []int) {
-	return file_fnknock_v1_gateway_proto_rawDescGZIP(), []int{72}
+	return file_fnknock_v1_gateway_proto_rawDescGZIP(), []int{89}
 }
 
 func (x *SshFirewallClearRequest) GetChainName() string {
@@ -5922,7 +7584,7 @@ type WhitelistFirewallSyncRequest struct {
 
 func (x *WhitelistFirewallSyncRequest) Reset() {
 	*x = WhitelistFirewallSyncRequest{}
-	mi := &file_fnknock_v1_gateway_proto_msgTypes[73]
+	mi := &file_fnknock_v1_gateway_proto_msgTypes[90]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5934,7 +7596,7 @@ func (x *WhitelistFirewallSyncRequest) String() string {
 func (*WhitelistFirewallSyncRequest) ProtoMessage() {}
 
 func (x *WhitelistFirewallSyncRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_fnknock_v1_gateway_proto_msgTypes[73]
+	mi := &file_fnknock_v1_gateway_proto_msgTypes[90]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5947,7 +7609,7 @@ func (x *WhitelistFirewallSyncRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WhitelistFirewallSyncRequest.ProtoReflect.Descriptor instead.
 func (*WhitelistFirewallSyncRequest) Descriptor() ([]byte, []int) {
-	return file_fnknock_v1_gateway_proto_rawDescGZIP(), []int{73}
+	return file_fnknock_v1_gateway_proto_rawDescGZIP(), []int{90}
 }
 
 func (x *WhitelistFirewallSyncRequest) GetPolicyId() string {
@@ -5973,7 +7635,7 @@ type IptablesRules struct {
 
 func (x *IptablesRules) Reset() {
 	*x = IptablesRules{}
-	mi := &file_fnknock_v1_gateway_proto_msgTypes[74]
+	mi := &file_fnknock_v1_gateway_proto_msgTypes[91]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5985,7 +7647,7 @@ func (x *IptablesRules) String() string {
 func (*IptablesRules) ProtoMessage() {}
 
 func (x *IptablesRules) ProtoReflect() protoreflect.Message {
-	mi := &file_fnknock_v1_gateway_proto_msgTypes[74]
+	mi := &file_fnknock_v1_gateway_proto_msgTypes[91]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5998,7 +7660,7 @@ func (x *IptablesRules) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use IptablesRules.ProtoReflect.Descriptor instead.
 func (*IptablesRules) Descriptor() ([]byte, []int) {
-	return file_fnknock_v1_gateway_proto_rawDescGZIP(), []int{74}
+	return file_fnknock_v1_gateway_proto_rawDescGZIP(), []int{91}
 }
 
 func (x *IptablesRules) GetItems() []*IptablesRule {
@@ -6036,7 +7698,7 @@ type AuthContext struct {
 
 func (x *AuthContext) Reset() {
 	*x = AuthContext{}
-	mi := &file_fnknock_v1_gateway_proto_msgTypes[75]
+	mi := &file_fnknock_v1_gateway_proto_msgTypes[92]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6048,7 +7710,7 @@ func (x *AuthContext) String() string {
 func (*AuthContext) ProtoMessage() {}
 
 func (x *AuthContext) ProtoReflect() protoreflect.Message {
-	mi := &file_fnknock_v1_gateway_proto_msgTypes[75]
+	mi := &file_fnknock_v1_gateway_proto_msgTypes[92]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6061,7 +7723,7 @@ func (x *AuthContext) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AuthContext.ProtoReflect.Descriptor instead.
 func (*AuthContext) Descriptor() ([]byte, []int) {
-	return file_fnknock_v1_gateway_proto_rawDescGZIP(), []int{75}
+	return file_fnknock_v1_gateway_proto_rawDescGZIP(), []int{92}
 }
 
 func (x *AuthContext) GetClientIp() string {
@@ -6215,7 +7877,7 @@ type SubdomainRuleMatch struct {
 
 func (x *SubdomainRuleMatch) Reset() {
 	*x = SubdomainRuleMatch{}
-	mi := &file_fnknock_v1_gateway_proto_msgTypes[76]
+	mi := &file_fnknock_v1_gateway_proto_msgTypes[93]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6227,7 +7889,7 @@ func (x *SubdomainRuleMatch) String() string {
 func (*SubdomainRuleMatch) ProtoMessage() {}
 
 func (x *SubdomainRuleMatch) ProtoReflect() protoreflect.Message {
-	mi := &file_fnknock_v1_gateway_proto_msgTypes[76]
+	mi := &file_fnknock_v1_gateway_proto_msgTypes[93]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6240,7 +7902,7 @@ func (x *SubdomainRuleMatch) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SubdomainRuleMatch.ProtoReflect.Descriptor instead.
 func (*SubdomainRuleMatch) Descriptor() ([]byte, []int) {
-	return file_fnknock_v1_gateway_proto_rawDescGZIP(), []int{76}
+	return file_fnknock_v1_gateway_proto_rawDescGZIP(), []int{93}
 }
 
 func (x *SubdomainRuleMatch) GetHost() string {
@@ -6273,7 +7935,7 @@ type VerifyAuthRequest struct {
 
 func (x *VerifyAuthRequest) Reset() {
 	*x = VerifyAuthRequest{}
-	mi := &file_fnknock_v1_gateway_proto_msgTypes[77]
+	mi := &file_fnknock_v1_gateway_proto_msgTypes[94]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6285,7 +7947,7 @@ func (x *VerifyAuthRequest) String() string {
 func (*VerifyAuthRequest) ProtoMessage() {}
 
 func (x *VerifyAuthRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_fnknock_v1_gateway_proto_msgTypes[77]
+	mi := &file_fnknock_v1_gateway_proto_msgTypes[94]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6298,7 +7960,7 @@ func (x *VerifyAuthRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use VerifyAuthRequest.ProtoReflect.Descriptor instead.
 func (*VerifyAuthRequest) Descriptor() ([]byte, []int) {
-	return file_fnknock_v1_gateway_proto_rawDescGZIP(), []int{77}
+	return file_fnknock_v1_gateway_proto_rawDescGZIP(), []int{94}
 }
 
 func (x *VerifyAuthRequest) GetContext() *AuthContext {
@@ -6331,7 +7993,7 @@ type VerifyAuthResponse struct {
 
 func (x *VerifyAuthResponse) Reset() {
 	*x = VerifyAuthResponse{}
-	mi := &file_fnknock_v1_gateway_proto_msgTypes[78]
+	mi := &file_fnknock_v1_gateway_proto_msgTypes[95]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6343,7 +8005,7 @@ func (x *VerifyAuthResponse) String() string {
 func (*VerifyAuthResponse) ProtoMessage() {}
 
 func (x *VerifyAuthResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_fnknock_v1_gateway_proto_msgTypes[78]
+	mi := &file_fnknock_v1_gateway_proto_msgTypes[95]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6356,7 +8018,7 @@ func (x *VerifyAuthResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use VerifyAuthResponse.ProtoReflect.Descriptor instead.
 func (*VerifyAuthResponse) Descriptor() ([]byte, []int) {
-	return file_fnknock_v1_gateway_proto_rawDescGZIP(), []int{78}
+	return file_fnknock_v1_gateway_proto_rawDescGZIP(), []int{95}
 }
 
 func (x *VerifyAuthResponse) GetSuccess() bool {
@@ -6474,7 +8136,7 @@ type PreflightAuthRequest struct {
 
 func (x *PreflightAuthRequest) Reset() {
 	*x = PreflightAuthRequest{}
-	mi := &file_fnknock_v1_gateway_proto_msgTypes[79]
+	mi := &file_fnknock_v1_gateway_proto_msgTypes[96]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6486,7 +8148,7 @@ func (x *PreflightAuthRequest) String() string {
 func (*PreflightAuthRequest) ProtoMessage() {}
 
 func (x *PreflightAuthRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_fnknock_v1_gateway_proto_msgTypes[79]
+	mi := &file_fnknock_v1_gateway_proto_msgTypes[96]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6499,7 +8161,7 @@ func (x *PreflightAuthRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PreflightAuthRequest.ProtoReflect.Descriptor instead.
 func (*PreflightAuthRequest) Descriptor() ([]byte, []int) {
-	return file_fnknock_v1_gateway_proto_rawDescGZIP(), []int{79}
+	return file_fnknock_v1_gateway_proto_rawDescGZIP(), []int{96}
 }
 
 func (x *PreflightAuthRequest) GetContext() *AuthContext {
@@ -6528,7 +8190,7 @@ type PreflightAuthResponse struct {
 
 func (x *PreflightAuthResponse) Reset() {
 	*x = PreflightAuthResponse{}
-	mi := &file_fnknock_v1_gateway_proto_msgTypes[80]
+	mi := &file_fnknock_v1_gateway_proto_msgTypes[97]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6540,7 +8202,7 @@ func (x *PreflightAuthResponse) String() string {
 func (*PreflightAuthResponse) ProtoMessage() {}
 
 func (x *PreflightAuthResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_fnknock_v1_gateway_proto_msgTypes[80]
+	mi := &file_fnknock_v1_gateway_proto_msgTypes[97]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6553,7 +8215,7 @@ func (x *PreflightAuthResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PreflightAuthResponse.ProtoReflect.Descriptor instead.
 func (*PreflightAuthResponse) Descriptor() ([]byte, []int) {
-	return file_fnknock_v1_gateway_proto_rawDescGZIP(), []int{80}
+	return file_fnknock_v1_gateway_proto_rawDescGZIP(), []int{97}
 }
 
 func (x *PreflightAuthResponse) GetDeny() bool {
@@ -6596,7 +8258,7 @@ type AuthorizeHttpRequest struct {
 
 func (x *AuthorizeHttpRequest) Reset() {
 	*x = AuthorizeHttpRequest{}
-	mi := &file_fnknock_v1_gateway_proto_msgTypes[81]
+	mi := &file_fnknock_v1_gateway_proto_msgTypes[98]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6608,7 +8270,7 @@ func (x *AuthorizeHttpRequest) String() string {
 func (*AuthorizeHttpRequest) ProtoMessage() {}
 
 func (x *AuthorizeHttpRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_fnknock_v1_gateway_proto_msgTypes[81]
+	mi := &file_fnknock_v1_gateway_proto_msgTypes[98]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6621,7 +8283,7 @@ func (x *AuthorizeHttpRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AuthorizeHttpRequest.ProtoReflect.Descriptor instead.
 func (*AuthorizeHttpRequest) Descriptor() ([]byte, []int) {
-	return file_fnknock_v1_gateway_proto_rawDescGZIP(), []int{81}
+	return file_fnknock_v1_gateway_proto_rawDescGZIP(), []int{98}
 }
 
 func (x *AuthorizeHttpRequest) GetContext() *AuthContext {
@@ -6664,7 +8326,7 @@ type AuthorizeHttpResponse struct {
 
 func (x *AuthorizeHttpResponse) Reset() {
 	*x = AuthorizeHttpResponse{}
-	mi := &file_fnknock_v1_gateway_proto_msgTypes[82]
+	mi := &file_fnknock_v1_gateway_proto_msgTypes[99]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6676,7 +8338,7 @@ func (x *AuthorizeHttpResponse) String() string {
 func (*AuthorizeHttpResponse) ProtoMessage() {}
 
 func (x *AuthorizeHttpResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_fnknock_v1_gateway_proto_msgTypes[82]
+	mi := &file_fnknock_v1_gateway_proto_msgTypes[99]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6689,7 +8351,7 @@ func (x *AuthorizeHttpResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AuthorizeHttpResponse.ProtoReflect.Descriptor instead.
 func (*AuthorizeHttpResponse) Descriptor() ([]byte, []int) {
-	return file_fnknock_v1_gateway_proto_rawDescGZIP(), []int{82}
+	return file_fnknock_v1_gateway_proto_rawDescGZIP(), []int{99}
 }
 
 func (x *AuthorizeHttpResponse) GetPreflight() *PreflightAuthResponse {
@@ -6732,7 +8394,7 @@ type VerifyStreamAuthRequest struct {
 
 func (x *VerifyStreamAuthRequest) Reset() {
 	*x = VerifyStreamAuthRequest{}
-	mi := &file_fnknock_v1_gateway_proto_msgTypes[83]
+	mi := &file_fnknock_v1_gateway_proto_msgTypes[100]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6744,7 +8406,7 @@ func (x *VerifyStreamAuthRequest) String() string {
 func (*VerifyStreamAuthRequest) ProtoMessage() {}
 
 func (x *VerifyStreamAuthRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_fnknock_v1_gateway_proto_msgTypes[83]
+	mi := &file_fnknock_v1_gateway_proto_msgTypes[100]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6757,7 +8419,7 @@ func (x *VerifyStreamAuthRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use VerifyStreamAuthRequest.ProtoReflect.Descriptor instead.
 func (*VerifyStreamAuthRequest) Descriptor() ([]byte, []int) {
-	return file_fnknock_v1_gateway_proto_rawDescGZIP(), []int{83}
+	return file_fnknock_v1_gateway_proto_rawDescGZIP(), []int{100}
 }
 
 func (x *VerifyStreamAuthRequest) GetClientIp() string {
@@ -6800,7 +8462,7 @@ type VerifyStreamAuthResponse struct {
 
 func (x *VerifyStreamAuthResponse) Reset() {
 	*x = VerifyStreamAuthResponse{}
-	mi := &file_fnknock_v1_gateway_proto_msgTypes[84]
+	mi := &file_fnknock_v1_gateway_proto_msgTypes[101]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6812,7 +8474,7 @@ func (x *VerifyStreamAuthResponse) String() string {
 func (*VerifyStreamAuthResponse) ProtoMessage() {}
 
 func (x *VerifyStreamAuthResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_fnknock_v1_gateway_proto_msgTypes[84]
+	mi := &file_fnknock_v1_gateway_proto_msgTypes[101]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6825,7 +8487,7 @@ func (x *VerifyStreamAuthResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use VerifyStreamAuthResponse.ProtoReflect.Descriptor instead.
 func (*VerifyStreamAuthResponse) Descriptor() ([]byte, []int) {
-	return file_fnknock_v1_gateway_proto_rawDescGZIP(), []int{84}
+	return file_fnknock_v1_gateway_proto_rawDescGZIP(), []int{101}
 }
 
 func (x *VerifyStreamAuthResponse) GetAllowed() bool {
@@ -6866,7 +8528,7 @@ type AuthBridgeReady struct {
 
 func (x *AuthBridgeReady) Reset() {
 	*x = AuthBridgeReady{}
-	mi := &file_fnknock_v1_gateway_proto_msgTypes[85]
+	mi := &file_fnknock_v1_gateway_proto_msgTypes[102]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6878,7 +8540,7 @@ func (x *AuthBridgeReady) String() string {
 func (*AuthBridgeReady) ProtoMessage() {}
 
 func (x *AuthBridgeReady) ProtoReflect() protoreflect.Message {
-	mi := &file_fnknock_v1_gateway_proto_msgTypes[85]
+	mi := &file_fnknock_v1_gateway_proto_msgTypes[102]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6891,7 +8553,7 @@ func (x *AuthBridgeReady) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AuthBridgeReady.ProtoReflect.Descriptor instead.
 func (*AuthBridgeReady) Descriptor() ([]byte, []int) {
-	return file_fnknock_v1_gateway_proto_rawDescGZIP(), []int{85}
+	return file_fnknock_v1_gateway_proto_rawDescGZIP(), []int{102}
 }
 
 func (x *AuthBridgeReady) GetInstanceId() string {
@@ -6929,7 +8591,7 @@ type AuthBridgeEnvelope struct {
 
 func (x *AuthBridgeEnvelope) Reset() {
 	*x = AuthBridgeEnvelope{}
-	mi := &file_fnknock_v1_gateway_proto_msgTypes[86]
+	mi := &file_fnknock_v1_gateway_proto_msgTypes[103]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6941,7 +8603,7 @@ func (x *AuthBridgeEnvelope) String() string {
 func (*AuthBridgeEnvelope) ProtoMessage() {}
 
 func (x *AuthBridgeEnvelope) ProtoReflect() protoreflect.Message {
-	mi := &file_fnknock_v1_gateway_proto_msgTypes[86]
+	mi := &file_fnknock_v1_gateway_proto_msgTypes[103]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6954,7 +8616,7 @@ func (x *AuthBridgeEnvelope) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AuthBridgeEnvelope.ProtoReflect.Descriptor instead.
 func (*AuthBridgeEnvelope) Descriptor() ([]byte, []int) {
-	return file_fnknock_v1_gateway_proto_rawDescGZIP(), []int{86}
+	return file_fnknock_v1_gateway_proto_rawDescGZIP(), []int{103}
 }
 
 func (x *AuthBridgeEnvelope) GetRequestId() string {
@@ -7123,7 +8785,7 @@ type FnosConnectIngressConfig struct {
 
 func (x *FnosConnectIngressConfig) Reset() {
 	*x = FnosConnectIngressConfig{}
-	mi := &file_fnknock_v1_gateway_proto_msgTypes[87]
+	mi := &file_fnknock_v1_gateway_proto_msgTypes[104]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -7135,7 +8797,7 @@ func (x *FnosConnectIngressConfig) String() string {
 func (*FnosConnectIngressConfig) ProtoMessage() {}
 
 func (x *FnosConnectIngressConfig) ProtoReflect() protoreflect.Message {
-	mi := &file_fnknock_v1_gateway_proto_msgTypes[87]
+	mi := &file_fnknock_v1_gateway_proto_msgTypes[104]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -7148,7 +8810,7 @@ func (x *FnosConnectIngressConfig) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use FnosConnectIngressConfig.ProtoReflect.Descriptor instead.
 func (*FnosConnectIngressConfig) Descriptor() ([]byte, []int) {
-	return file_fnknock_v1_gateway_proto_rawDescGZIP(), []int{87}
+	return file_fnknock_v1_gateway_proto_rawDescGZIP(), []int{104}
 }
 
 func (x *FnosConnectIngressConfig) GetEnabled() bool {
@@ -7182,7 +8844,7 @@ type FnosConnectIngressStatus struct {
 
 func (x *FnosConnectIngressStatus) Reset() {
 	*x = FnosConnectIngressStatus{}
-	mi := &file_fnknock_v1_gateway_proto_msgTypes[88]
+	mi := &file_fnknock_v1_gateway_proto_msgTypes[105]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -7194,7 +8856,7 @@ func (x *FnosConnectIngressStatus) String() string {
 func (*FnosConnectIngressStatus) ProtoMessage() {}
 
 func (x *FnosConnectIngressStatus) ProtoReflect() protoreflect.Message {
-	mi := &file_fnknock_v1_gateway_proto_msgTypes[88]
+	mi := &file_fnknock_v1_gateway_proto_msgTypes[105]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -7207,7 +8869,7 @@ func (x *FnosConnectIngressStatus) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use FnosConnectIngressStatus.ProtoReflect.Descriptor instead.
 func (*FnosConnectIngressStatus) Descriptor() ([]byte, []int) {
-	return file_fnknock_v1_gateway_proto_rawDescGZIP(), []int{88}
+	return file_fnknock_v1_gateway_proto_rawDescGZIP(), []int{105}
 }
 
 func (x *FnosConnectIngressStatus) GetEnabled() bool {
@@ -7711,7 +9373,192 @@ const file_fnknock_v1_gateway_proto_rawDesc = "" +
 	"\x04date\x18\x01 \x01(\tR\x04date\x12\x19\n" +
 	"\blogs_dir\x18\x02 \x01(\tR\alogsDir\x12\x18\n" +
 	"\adeleted\x18\x03 \x01(\bR\adeleted\x12'\n" +
-	"\x0favailable_dates\x18\x04 \x03(\tR\x0eavailableDates\"\xbd\x01\n" +
+	"\x0favailable_dates\x18\x04 \x03(\tR\x0eavailableDates\"\x8a\x03\n" +
+	"\x12DeepMonitorSession\x12\x0e\n" +
+	"\x02id\x18\x01 \x01(\tR\x02id\x12\x12\n" +
+	"\x04host\x18\x02 \x01(\tR\x04host\x12\x14\n" +
+	"\x05state\x18\x03 \x01(\tR\x05state\x12\x1d\n" +
+	"\n" +
+	"started_at\x18\x04 \x01(\tR\tstartedAt\x12\x1f\n" +
+	"\vdeadline_at\x18\x05 \x01(\tR\n" +
+	"deadlineAt\x12\x1d\n" +
+	"\n" +
+	"stopped_at\x18\x06 \x01(\tR\tstoppedAt\x12\x1f\n" +
+	"\vstop_reason\x18\a \x01(\tR\n" +
+	"stopReason\x12!\n" +
+	"\fbytes_stored\x18\b \x01(\x04R\vbytesStored\x12\x1f\n" +
+	"\vevent_count\x18\t \x01(\x04R\n" +
+	"eventCount\x12%\n" +
+	"\x0edropped_events\x18\n" +
+	" \x01(\x04R\rdroppedEvents\x12\x1f\n" +
+	"\vquota_bytes\x18\v \x01(\x04R\n" +
+	"quotaBytes\x12.\n" +
+	"\x13payload_limit_bytes\x18\f \x01(\x04R\x11payloadLimitBytes\"w\n" +
+	"\x17DeepMonitorStartRequest\x12\x12\n" +
+	"\x04host\x18\x01 \x01(\tR\x04host\x12)\n" +
+	"\x10duration_seconds\x18\x02 \x01(\x05R\x0fdurationSecondsJ\x04\b\x03\x10\x04R\x17acknowledge_raw_capture\":\n" +
+	"\x19DeepMonitorSessionRequest\x12\x1d\n" +
+	"\n" +
+	"session_id\x18\x01 \x01(\tR\tsessionId\"d\n" +
+	"\x18DeepMonitorExtendRequest\x12\x1d\n" +
+	"\n" +
+	"session_id\x18\x01 \x01(\tR\tsessionId\x12)\n" +
+	"\x10duration_seconds\x18\x02 \x01(\x05R\x0fdurationSeconds\"A\n" +
+	"\x16DeepMonitorListRequest\x12'\n" +
+	"\x0finclude_expired\x18\x01 \x01(\bR\x0eincludeExpired\"N\n" +
+	"\x16DeepMonitorSessionList\x124\n" +
+	"\x05items\x18\x01 \x03(\v2\x1e.fnknock.v1.DeepMonitorSessionR\x05items\"\xd2\x01\n" +
+	"\x15DeepMonitorPayloadRef\x12\x12\n" +
+	"\x04part\x18\x01 \x01(\tR\x04part\x12%\n" +
+	"\x0eobserved_bytes\x18\x02 \x01(\x04R\robservedBytes\x12%\n" +
+	"\x0ecaptured_bytes\x18\x03 \x01(\x04R\rcapturedBytes\x12\x1c\n" +
+	"\ttruncated\x18\x04 \x01(\bR\ttruncated\x12\x16\n" +
+	"\x06sha256\x18\x05 \x01(\tR\x06sha256\x12!\n" +
+	"\fcontent_type\x18\x06 \x01(\tR\vcontentType\"\xb3\x02\n" +
+	"\x11DeepMonitorTiming\x12\x19\n" +
+	"\btotal_ms\x18\x01 \x01(\x03R\atotalMs\x12\x15\n" +
+	"\x06dns_ms\x18\x02 \x01(\x03R\x05dnsMs\x12\x1d\n" +
+	"\n" +
+	"connect_ms\x18\x03 \x01(\x03R\tconnectMs\x12\x15\n" +
+	"\x06tls_ms\x18\x04 \x01(\x03R\x05tlsMs\x12(\n" +
+	"\x10request_write_ms\x18\x05 \x01(\x03R\x0erequestWriteMs\x12\x17\n" +
+	"\attfb_ms\x18\x06 \x01(\x03R\x06ttfbMs\x12(\n" +
+	"\x10upstream_read_ms\x18\a \x01(\x03R\x0eupstreamReadMs\x12\x17\n" +
+	"\aauth_ms\x18\b \x01(\x03R\x06authMs\x12\x15\n" +
+	"\x06waf_ms\x18\t \x01(\x03R\x05wafMs\x12\x19\n" +
+	"\broute_ms\x18\n" +
+	" \x01(\x03R\arouteMs\"\xdb\x02\n" +
+	"\x19DeepMonitorWebSocketFrame\x12\x1c\n" +
+	"\tdirection\x18\x01 \x01(\tR\tdirection\x12\x10\n" +
+	"\x03fin\x18\x02 \x01(\bR\x03fin\x12\x12\n" +
+	"\x04rsv1\x18\x03 \x01(\bR\x04rsv1\x12\x12\n" +
+	"\x04rsv2\x18\x04 \x01(\bR\x04rsv2\x12\x12\n" +
+	"\x04rsv3\x18\x05 \x01(\bR\x04rsv3\x12\x16\n" +
+	"\x06opcode\x18\x06 \x01(\rR\x06opcode\x12\x16\n" +
+	"\x06masked\x18\a \x01(\bR\x06masked\x12\x19\n" +
+	"\bmask_key\x18\b \x01(\fR\amaskKey\x12%\n" +
+	"\x0epayload_length\x18\t \x01(\x04R\rpayloadLength\x12\x1d\n" +
+	"\n" +
+	"close_code\x18\n" +
+	" \x01(\x05R\tcloseCode\x12!\n" +
+	"\fclose_reason\x18\v \x01(\tR\vcloseReason\x12\x1e\n" +
+	"\n" +
+	"compressed\x18\f \x01(\bR\n" +
+	"compressed\"\xdc\x03\n" +
+	"\x17DeepMonitorEventSummary\x12\x0e\n" +
+	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1d\n" +
+	"\n" +
+	"session_id\x18\x02 \x01(\tR\tsessionId\x12\x1a\n" +
+	"\bsequence\x18\x03 \x01(\x04R\bsequence\x12\x12\n" +
+	"\x04type\x18\x04 \x01(\tR\x04type\x12\x12\n" +
+	"\x04time\x18\x05 \x01(\tR\x04time\x12\x1f\n" +
+	"\vexchange_id\x18\x06 \x01(\tR\n" +
+	"exchangeId\x12#\n" +
+	"\rconnection_id\x18\a \x01(\tR\fconnectionId\x12\x12\n" +
+	"\x04host\x18\b \x01(\tR\x04host\x12\x16\n" +
+	"\x06method\x18\t \x01(\tR\x06method\x12\x12\n" +
+	"\x04path\x18\n" +
+	" \x01(\tR\x04path\x12\x16\n" +
+	"\x06status\x18\v \x01(\x05R\x06status\x12\x1b\n" +
+	"\tclient_ip\x18\f \x01(\tR\bclientIp\x12\x1a\n" +
+	"\bidentity\x18\r \x01(\tR\bidentity\x12\x1c\n" +
+	"\tdirection\x18\x0e \x01(\tR\tdirection\x12#\n" +
+	"\rpayload_bytes\x18\x0f \x01(\x04R\fpayloadBytes\x12\x1c\n" +
+	"\ttruncated\x18\x10 \x01(\bR\ttruncated\x12\x16\n" +
+	"\x06notice\x18\x11 \x01(\tR\x06notice\"\xfb\r\n" +
+	"\x10DeepMonitorEvent\x12=\n" +
+	"\asummary\x18\x01 \x01(\v2#.fnknock.v1.DeepMonitorEventSummaryR\asummary\x12\x16\n" +
+	"\x06scheme\x18\x02 \x01(\tR\x06scheme\x12\x1a\n" +
+	"\bprotocol\x18\x03 \x01(\tR\bprotocol\x12\x1f\n" +
+	"\vrequest_uri\x18\x04 \x01(\tR\n" +
+	"requestUri\x12\x1a\n" +
+	"\bupstream\x18\x05 \x01(\tR\bupstream\x12\x1d\n" +
+	"\n" +
+	"user_agent\x18\x06 \x01(\tR\tuserAgent\x12\x18\n" +
+	"\areferer\x18\a \x01(\tR\areferer\x12\x1f\n" +
+	"\vremote_addr\x18\b \x01(\tR\n" +
+	"remoteAddr\x12,\n" +
+	"\x12auth_credential_id\x18\t \x01(\tR\x10authCredentialId\x120\n" +
+	"\x14auth_credential_name\x18\n" +
+	" \x01(\tR\x12authCredentialName\x124\n" +
+	"\x16auth_credential_method\x18\v \x01(\tR\x14authCredentialMethod\x12-\n" +
+	"\x13auth_linked_totp_id\x18\f \x01(\tR\x10authLinkedTotpId\x121\n" +
+	"\x15auth_linked_totp_name\x18\r \x01(\tR\x12authLinkedTotpName\x12#\n" +
+	"\rauth_decision\x18\x0e \x01(\tR\fauthDecision\x12\x1d\n" +
+	"\n" +
+	"route_type\x18\x0f \x01(\tR\trouteType\x12\x1b\n" +
+	"\troute_key\x18\x10 \x01(\tR\brouteKey\x12\x1f\n" +
+	"\vtls_version\x18\x11 \x01(\tR\n" +
+	"tlsVersion\x12\x1d\n" +
+	"\n" +
+	"tls_cipher\x18\x12 \x01(\tR\ttlsCipher\x12&\n" +
+	"\x0ftls_server_name\x18\x13 \x01(\tR\rtlsServerName\x12\x19\n" +
+	"\btls_alpn\x18\x14 \x01(\tR\atlsAlpn\x12L\n" +
+	"\x16client_request_headers\x18\x15 \x01(\v2\x16.fnknock.v1.HeaderListR\x14clientRequestHeaders\x12P\n" +
+	"\x18upstream_request_headers\x18\x16 \x01(\v2\x16.fnknock.v1.HeaderListR\x16upstreamRequestHeaders\x12R\n" +
+	"\x19upstream_response_headers\x18\x17 \x01(\v2\x16.fnknock.v1.HeaderListR\x17upstreamResponseHeaders\x12N\n" +
+	"\x17client_response_headers\x18\x18 \x01(\v2\x16.fnknock.v1.HeaderListR\x15clientResponseHeaders\x12=\n" +
+	"\bpayloads\x18\x19 \x03(\v2!.fnknock.v1.DeepMonitorPayloadRefR\bpayloads\x125\n" +
+	"\x06timing\x18\x1a \x01(\v2\x1d.fnknock.v1.DeepMonitorTimingR\x06timing\x12N\n" +
+	"\x0fwebsocket_frame\x18\x1b \x01(\v2%.fnknock.v1.DeepMonitorWebSocketFrameR\x0ewebsocketFrame\x123\n" +
+	"\x15websocket_subprotocol\x18\x1c \x01(\tR\x14websocketSubprotocol\x121\n" +
+	"\x14websocket_extensions\x18\x1d \x01(\tR\x13websocketExtensions\x12\x14\n" +
+	"\x05error\x18\x1e \x01(\tR\x05error\x12+\n" +
+	"\x12auth_rule_group_id\x18\x1f \x01(\tR\x0fauthRuleGroupId\x12(\n" +
+	"\x10auth_grant_state\x18  \x01(\tR\x0eauthGrantState\x12 \n" +
+	"\fwaf_trace_id\x18! \x01(\tR\n" +
+	"wafTraceId\x12\x19\n" +
+	"\bwaf_mode\x18\" \x01(\tR\awafMode\x12 \n" +
+	"\fwaf_rule_ids\x18# \x03(\x05R\n" +
+	"wafRuleIds\x12\x1d\n" +
+	"\n" +
+	"waf_action\x18$ \x01(\tR\twafAction\x12\x1d\n" +
+	"\n" +
+	"waf_bundle\x18% \x01(\tR\twafBundle\x12\x1f\n" +
+	"\vwaf_blocked\x18& \x01(\bR\n" +
+	"wafBlocked\x12:\n" +
+	"\x19general_blacklist_blocked\x18' \x01(\bR\x17generalBlacklistBlocked\x12(\n" +
+	"\x10client_ip_source\x18( \x01(\tR\x0eclientIpSource\"\xa6\x02\n" +
+	"\x10DeepMonitorQuery\x12\x1d\n" +
+	"\n" +
+	"session_id\x18\x01 \x01(\tR\tsessionId\x12\x16\n" +
+	"\x06cursor\x18\x02 \x01(\tR\x06cursor\x12\x14\n" +
+	"\x05limit\x18\x03 \x01(\x05R\x05limit\x12\x12\n" +
+	"\x04type\x18\x04 \x01(\tR\x04type\x12\x16\n" +
+	"\x06search\x18\x05 \x01(\tR\x06search\x12\x1c\n" +
+	"\tdirection\x18\x06 \x01(\tR\tdirection\x12\x16\n" +
+	"\x06method\x18\a \x01(\tR\x06method\x12\x16\n" +
+	"\x06status\x18\b \x01(\x05R\x06status\x12\x1b\n" +
+	"\tclient_ip\x18\t \x01(\tR\bclientIp\x12\x1a\n" +
+	"\bidentity\x18\n" +
+	" \x01(\tR\bidentity\x12\x12\n" +
+	"\x04path\x18\v \x01(\tR\x04path\"\x8f\x01\n" +
+	"\x16DeepMonitorQueryResult\x129\n" +
+	"\x05items\x18\x01 \x03(\v2#.fnknock.v1.DeepMonitorEventSummaryR\x05items\x12\x1f\n" +
+	"\vnext_cursor\x18\x02 \x01(\tR\n" +
+	"nextCursor\x12\x19\n" +
+	"\bhas_more\x18\x03 \x01(\bR\ahasMore\"S\n" +
+	"\x17DeepMonitorEventRequest\x12\x1d\n" +
+	"\n" +
+	"session_id\x18\x01 \x01(\tR\tsessionId\x12\x19\n" +
+	"\bevent_id\x18\x02 \x01(\tR\aeventId\"_\n" +
+	"\x17DeepMonitorWatchRequest\x12\x1d\n" +
+	"\n" +
+	"session_id\x18\x01 \x01(\tR\tsessionId\x12%\n" +
+	"\x0eafter_sequence\x18\x02 \x01(\x04R\rafterSequence\"\x81\x01\n" +
+	"\x19DeepMonitorPayloadRequest\x12\x1d\n" +
+	"\n" +
+	"session_id\x18\x01 \x01(\tR\tsessionId\x12\x19\n" +
+	"\bevent_id\x18\x02 \x01(\tR\aeventId\x12\x12\n" +
+	"\x04part\x18\x03 \x01(\tR\x04part\x12\x16\n" +
+	"\x06offset\x18\x04 \x01(\x04R\x06offset\"\x9b\x01\n" +
+	"\x17DeepMonitorPayloadChunk\x12\x12\n" +
+	"\x04data\x18\x01 \x01(\fR\x04data\x12\x16\n" +
+	"\x06offset\x18\x02 \x01(\x04R\x06offset\x12\x1f\n" +
+	"\vtotal_bytes\x18\x03 \x01(\x04R\n" +
+	"totalBytes\x12\x10\n" +
+	"\x03eof\x18\x04 \x01(\bR\x03eof\x12!\n" +
+	"\fcontent_type\x18\x05 \x01(\tR\vcontentType\"\xbd\x01\n" +
 	"\fTrafficStats\x12\x19\n" +
 	"\btotal_in\x18\x01 \x01(\x04R\atotalIn\x12\x1b\n" +
 	"\ttotal_out\x18\x02 \x01(\x04R\btotalOut\x12!\n" +
@@ -7947,7 +9794,7 @@ const file_fnknock_v1_gateway_proto_rawDesc = "" +
 	"last_error\x18\t \x01(\tR\tlastError*Y\n" +
 	"\x11ControlApiVersion\x12#\n" +
 	"\x1fCONTROL_API_VERSION_UNSPECIFIED\x10\x00\x12\x1f\n" +
-	"\x1bCONTROL_API_VERSION_CURRENT\x10\x06*\x9a\x01\n" +
+	"\x1bCONTROL_API_VERSION_CURRENT\x10\a*\x9a\x01\n" +
 	"\fHttpAuthMode\x12\x1e\n" +
 	"\x1aHTTP_AUTH_MODE_UNSPECIFIED\x10\x00\x12!\n" +
 	"\x1dHTTP_AUTH_MODE_PREFLIGHT_ONLY\x10\x01\x12\x1e\n" +
@@ -8018,7 +9865,18 @@ const file_fnknock_v1_gateway_proto_rawDesc = "" +
 	"\x13GetLoggingDirectory\x12\x16.google.protobuf.Empty\x1a\x17.fnknock.v1.StringValue\x12B\n" +
 	"\vGetLogDates\x12\x16.google.protobuf.Empty\x1a\x1b.fnknock.v1.GatewayLogDates\x12Q\n" +
 	"\x0fQueryLogEntries\x12\x1b.fnknock.v1.GatewayLogQuery\x1a!.fnknock.v1.GatewayLogQueryResult\x12L\n" +
-	"\rDeleteLogDate\x12\x17.fnknock.v1.StringValue\x1a\".fnknock.v1.GatewayLogDeleteResult2\x8b\x03\n" +
+	"\rDeleteLogDate\x12\x17.fnknock.v1.StringValue\x1a\".fnknock.v1.GatewayLogDeleteResult2\xfd\x06\n" +
+	"\x12DeepMonitorService\x12S\n" +
+	"\fStartSession\x12#.fnknock.v1.DeepMonitorStartRequest\x1a\x1e.fnknock.v1.DeepMonitorSession\x12U\n" +
+	"\rExtendSession\x12$.fnknock.v1.DeepMonitorExtendRequest\x1a\x1e.fnknock.v1.DeepMonitorSession\x12T\n" +
+	"\vStopSession\x12%.fnknock.v1.DeepMonitorSessionRequest\x1a\x1e.fnknock.v1.DeepMonitorSession\x12V\n" +
+	"\fListSessions\x12\".fnknock.v1.DeepMonitorListRequest\x1a\".fnknock.v1.DeepMonitorSessionList\x12O\n" +
+	"\vQueryEvents\x12\x1c.fnknock.v1.DeepMonitorQuery\x1a\".fnknock.v1.DeepMonitorQueryResult\x12M\n" +
+	"\bGetEvent\x12#.fnknock.v1.DeepMonitorEventRequest\x1a\x1c.fnknock.v1.DeepMonitorEvent\x12Y\n" +
+	"\vWatchEvents\x12#.fnknock.v1.DeepMonitorWatchRequest\x1a#.fnknock.v1.DeepMonitorEventSummary0\x01\x12]\n" +
+	"\rStreamPayload\x12%.fnknock.v1.DeepMonitorPayloadRequest\x1a#.fnknock.v1.DeepMonitorPayloadChunk0\x01\x12d\n" +
+	"\x14StreamSessionArchive\x12%.fnknock.v1.DeepMonitorSessionRequest\x1a#.fnknock.v1.DeepMonitorPayloadChunk0\x01\x12M\n" +
+	"\rDeleteSession\x12%.fnknock.v1.DeepMonitorSessionRequest\x1a\x15.fnknock.v1.RpcStatus2\x8b\x03\n" +
 	"\x0fSecurityService\x12a\n" +
 	"\x14ListGeneralBlacklist\x12'.fnknock.v1.GeneralBlacklistListRequest\x1a .fnknock.v1.GeneralBlacklistList\x12V\n" +
 	"\x15CheckGeneralBlacklist\x12\x19.fnknock.v1.IpListRequest\x1a\".fnknock.v1.GeneralBlacklistStatus\x12\\\n" +
@@ -8074,7 +9932,7 @@ func file_fnknock_v1_gateway_proto_rawDescGZIP() []byte {
 }
 
 var file_fnknock_v1_gateway_proto_enumTypes = make([]protoimpl.EnumInfo, 4)
-var file_fnknock_v1_gateway_proto_msgTypes = make([]protoimpl.MessageInfo, 91)
+var file_fnknock_v1_gateway_proto_msgTypes = make([]protoimpl.MessageInfo, 108)
 var file_fnknock_v1_gateway_proto_goTypes = []any{
 	(ControlApiVersion)(0),                       // 0: fnknock.v1.ControlApiVersion
 	(HttpAuthMode)(0),                            // 1: fnknock.v1.HttpAuthMode
@@ -8129,53 +9987,70 @@ var file_fnknock_v1_gateway_proto_goTypes = []any{
 	(*GatewayLogQuery)(nil),                      // 50: fnknock.v1.GatewayLogQuery
 	(*GatewayLogQueryResult)(nil),                // 51: fnknock.v1.GatewayLogQueryResult
 	(*GatewayLogDeleteResult)(nil),               // 52: fnknock.v1.GatewayLogDeleteResult
-	(*TrafficStats)(nil),                         // 53: fnknock.v1.TrafficStats
-	(*HostTrafficStats)(nil),                     // 54: fnknock.v1.HostTrafficStats
-	(*HostActiveIpStats)(nil),                    // 55: fnknock.v1.HostActiveIpStats
-	(*HostActiveIpsStats)(nil),                   // 56: fnknock.v1.HostActiveIpsStats
-	(*IptablesRule)(nil),                         // 57: fnknock.v1.IptablesRule
-	(*ServerInfo)(nil),                           // 58: fnknock.v1.ServerInfo
-	(*GatewayRuntimeInfo)(nil),                   // 59: fnknock.v1.GatewayRuntimeInfo
-	(*GatewayListenerConfig)(nil),                // 60: fnknock.v1.GatewayListenerConfig
-	(*Rules)(nil),                                // 61: fnknock.v1.Rules
-	(*HostRules)(nil),                            // 62: fnknock.v1.HostRules
-	(*StreamRules)(nil),                          // 63: fnknock.v1.StreamRules
-	(*StringValue)(nil),                          // 64: fnknock.v1.StringValue
-	(*BoolValue)(nil),                            // 65: fnknock.v1.BoolValue
-	(*IpRequest)(nil),                            // 66: fnknock.v1.IpRequest
-	(*IpListRequest)(nil),                        // 67: fnknock.v1.IpListRequest
-	(*GeneralBlacklistListRequest)(nil),          // 68: fnknock.v1.GeneralBlacklistListRequest
-	(*HostRequest)(nil),                          // 69: fnknock.v1.HostRequest
-	(*WafBundleRequest)(nil),                     // 70: fnknock.v1.WafBundleRequest
-	(*WafDrainRequest)(nil),                      // 71: fnknock.v1.WafDrainRequest
-	(*TcpRedirectRequest)(nil),                   // 72: fnknock.v1.TcpRedirectRequest
-	(*TcpPortRuleRequest)(nil),                   // 73: fnknock.v1.TcpPortRuleRequest
-	(*IptablesInitRequest)(nil),                  // 74: fnknock.v1.IptablesInitRequest
-	(*SshFirewallSyncRequest)(nil),               // 75: fnknock.v1.SshFirewallSyncRequest
-	(*SshFirewallClearRequest)(nil),              // 76: fnknock.v1.SshFirewallClearRequest
-	(*WhitelistFirewallSyncRequest)(nil),         // 77: fnknock.v1.WhitelistFirewallSyncRequest
-	(*IptablesRules)(nil),                        // 78: fnknock.v1.IptablesRules
-	(*AuthContext)(nil),                          // 79: fnknock.v1.AuthContext
-	(*SubdomainRuleMatch)(nil),                   // 80: fnknock.v1.SubdomainRuleMatch
-	(*VerifyAuthRequest)(nil),                    // 81: fnknock.v1.VerifyAuthRequest
-	(*VerifyAuthResponse)(nil),                   // 82: fnknock.v1.VerifyAuthResponse
-	(*PreflightAuthRequest)(nil),                 // 83: fnknock.v1.PreflightAuthRequest
-	(*PreflightAuthResponse)(nil),                // 84: fnknock.v1.PreflightAuthResponse
-	(*AuthorizeHttpRequest)(nil),                 // 85: fnknock.v1.AuthorizeHttpRequest
-	(*AuthorizeHttpResponse)(nil),                // 86: fnknock.v1.AuthorizeHttpResponse
-	(*VerifyStreamAuthRequest)(nil),              // 87: fnknock.v1.VerifyStreamAuthRequest
-	(*VerifyStreamAuthResponse)(nil),             // 88: fnknock.v1.VerifyStreamAuthResponse
-	(*AuthBridgeReady)(nil),                      // 89: fnknock.v1.AuthBridgeReady
-	(*AuthBridgeEnvelope)(nil),                   // 90: fnknock.v1.AuthBridgeEnvelope
-	(*FnosConnectIngressConfig)(nil),             // 91: fnknock.v1.FnosConnectIngressConfig
-	(*FnosConnectIngressStatus)(nil),             // 92: fnknock.v1.FnosConnectIngressStatus
-	nil,                                          // 93: fnknock.v1.HostLocationResponse.HeadersEntry
-	nil,                                          // 94: fnknock.v1.GeneralBlacklistStatus.RecordsEntry
-	(*emptypb.Empty)(nil),                        // 95: google.protobuf.Empty
+	(*DeepMonitorSession)(nil),                   // 53: fnknock.v1.DeepMonitorSession
+	(*DeepMonitorStartRequest)(nil),              // 54: fnknock.v1.DeepMonitorStartRequest
+	(*DeepMonitorSessionRequest)(nil),            // 55: fnknock.v1.DeepMonitorSessionRequest
+	(*DeepMonitorExtendRequest)(nil),             // 56: fnknock.v1.DeepMonitorExtendRequest
+	(*DeepMonitorListRequest)(nil),               // 57: fnknock.v1.DeepMonitorListRequest
+	(*DeepMonitorSessionList)(nil),               // 58: fnknock.v1.DeepMonitorSessionList
+	(*DeepMonitorPayloadRef)(nil),                // 59: fnknock.v1.DeepMonitorPayloadRef
+	(*DeepMonitorTiming)(nil),                    // 60: fnknock.v1.DeepMonitorTiming
+	(*DeepMonitorWebSocketFrame)(nil),            // 61: fnknock.v1.DeepMonitorWebSocketFrame
+	(*DeepMonitorEventSummary)(nil),              // 62: fnknock.v1.DeepMonitorEventSummary
+	(*DeepMonitorEvent)(nil),                     // 63: fnknock.v1.DeepMonitorEvent
+	(*DeepMonitorQuery)(nil),                     // 64: fnknock.v1.DeepMonitorQuery
+	(*DeepMonitorQueryResult)(nil),               // 65: fnknock.v1.DeepMonitorQueryResult
+	(*DeepMonitorEventRequest)(nil),              // 66: fnknock.v1.DeepMonitorEventRequest
+	(*DeepMonitorWatchRequest)(nil),              // 67: fnknock.v1.DeepMonitorWatchRequest
+	(*DeepMonitorPayloadRequest)(nil),            // 68: fnknock.v1.DeepMonitorPayloadRequest
+	(*DeepMonitorPayloadChunk)(nil),              // 69: fnknock.v1.DeepMonitorPayloadChunk
+	(*TrafficStats)(nil),                         // 70: fnknock.v1.TrafficStats
+	(*HostTrafficStats)(nil),                     // 71: fnknock.v1.HostTrafficStats
+	(*HostActiveIpStats)(nil),                    // 72: fnknock.v1.HostActiveIpStats
+	(*HostActiveIpsStats)(nil),                   // 73: fnknock.v1.HostActiveIpsStats
+	(*IptablesRule)(nil),                         // 74: fnknock.v1.IptablesRule
+	(*ServerInfo)(nil),                           // 75: fnknock.v1.ServerInfo
+	(*GatewayRuntimeInfo)(nil),                   // 76: fnknock.v1.GatewayRuntimeInfo
+	(*GatewayListenerConfig)(nil),                // 77: fnknock.v1.GatewayListenerConfig
+	(*Rules)(nil),                                // 78: fnknock.v1.Rules
+	(*HostRules)(nil),                            // 79: fnknock.v1.HostRules
+	(*StreamRules)(nil),                          // 80: fnknock.v1.StreamRules
+	(*StringValue)(nil),                          // 81: fnknock.v1.StringValue
+	(*BoolValue)(nil),                            // 82: fnknock.v1.BoolValue
+	(*IpRequest)(nil),                            // 83: fnknock.v1.IpRequest
+	(*IpListRequest)(nil),                        // 84: fnknock.v1.IpListRequest
+	(*GeneralBlacklistListRequest)(nil),          // 85: fnknock.v1.GeneralBlacklistListRequest
+	(*HostRequest)(nil),                          // 86: fnknock.v1.HostRequest
+	(*WafBundleRequest)(nil),                     // 87: fnknock.v1.WafBundleRequest
+	(*WafDrainRequest)(nil),                      // 88: fnknock.v1.WafDrainRequest
+	(*TcpRedirectRequest)(nil),                   // 89: fnknock.v1.TcpRedirectRequest
+	(*TcpPortRuleRequest)(nil),                   // 90: fnknock.v1.TcpPortRuleRequest
+	(*IptablesInitRequest)(nil),                  // 91: fnknock.v1.IptablesInitRequest
+	(*SshFirewallSyncRequest)(nil),               // 92: fnknock.v1.SshFirewallSyncRequest
+	(*SshFirewallClearRequest)(nil),              // 93: fnknock.v1.SshFirewallClearRequest
+	(*WhitelistFirewallSyncRequest)(nil),         // 94: fnknock.v1.WhitelistFirewallSyncRequest
+	(*IptablesRules)(nil),                        // 95: fnknock.v1.IptablesRules
+	(*AuthContext)(nil),                          // 96: fnknock.v1.AuthContext
+	(*SubdomainRuleMatch)(nil),                   // 97: fnknock.v1.SubdomainRuleMatch
+	(*VerifyAuthRequest)(nil),                    // 98: fnknock.v1.VerifyAuthRequest
+	(*VerifyAuthResponse)(nil),                   // 99: fnknock.v1.VerifyAuthResponse
+	(*PreflightAuthRequest)(nil),                 // 100: fnknock.v1.PreflightAuthRequest
+	(*PreflightAuthResponse)(nil),                // 101: fnknock.v1.PreflightAuthResponse
+	(*AuthorizeHttpRequest)(nil),                 // 102: fnknock.v1.AuthorizeHttpRequest
+	(*AuthorizeHttpResponse)(nil),                // 103: fnknock.v1.AuthorizeHttpResponse
+	(*VerifyStreamAuthRequest)(nil),              // 104: fnknock.v1.VerifyStreamAuthRequest
+	(*VerifyStreamAuthResponse)(nil),             // 105: fnknock.v1.VerifyStreamAuthResponse
+	(*AuthBridgeReady)(nil),                      // 106: fnknock.v1.AuthBridgeReady
+	(*AuthBridgeEnvelope)(nil),                   // 107: fnknock.v1.AuthBridgeEnvelope
+	(*FnosConnectIngressConfig)(nil),             // 108: fnknock.v1.FnosConnectIngressConfig
+	(*FnosConnectIngressStatus)(nil),             // 109: fnknock.v1.FnosConnectIngressStatus
+	nil,                                          // 110: fnknock.v1.HostLocationResponse.HeadersEntry
+	nil,                                          // 111: fnknock.v1.GeneralBlacklistStatus.RecordsEntry
+	(*emptypb.Empty)(nil),                        // 112: google.protobuf.Empty
 }
 var file_fnknock_v1_gateway_proto_depIdxs = []int32{
 	5,   // 0: fnknock.v1.HeaderList.headers:type_name -> fnknock.v1.Header
-	93,  // 1: fnknock.v1.HostLocationResponse.headers:type_name -> fnknock.v1.HostLocationResponse.HeadersEntry
+	110, // 1: fnknock.v1.HostLocationResponse.headers:type_name -> fnknock.v1.HostLocationResponse.HeadersEntry
 	8,   // 2: fnknock.v1.HostLocation.response:type_name -> fnknock.v1.HostLocationResponse
 	13,  // 3: fnknock.v1.AdvancedAuthGroup.conditions:type_name -> fnknock.v1.AdvancedAuthCondition
 	14,  // 4: fnknock.v1.AdvancedAuthConfig.groups:type_name -> fnknock.v1.AdvancedAuthGroup
@@ -8190,7 +10065,7 @@ var file_fnknock_v1_gateway_proto_depIdxs = []int32{
 	12,  // 13: fnknock.v1.CommonLocationExemptionsRuntime.policy:type_name -> fnknock.v1.CompiledIpSet
 	32,  // 14: fnknock.v1.GeneralBlacklistList.items:type_name -> fnknock.v1.GeneralBlacklistRecord
 	32,  // 15: fnknock.v1.GeneralBlacklistMutationResult.items:type_name -> fnknock.v1.GeneralBlacklistRecord
-	94,  // 16: fnknock.v1.GeneralBlacklistStatus.records:type_name -> fnknock.v1.GeneralBlacklistStatus.RecordsEntry
+	111, // 16: fnknock.v1.GeneralBlacklistStatus.records:type_name -> fnknock.v1.GeneralBlacklistStatus.RecordsEntry
 	39,  // 17: fnknock.v1.WafRuleMatch.matched_variables:type_name -> fnknock.v1.WafMatchedVariable
 	40,  // 18: fnknock.v1.WafEvent.rules:type_name -> fnknock.v1.WafRuleMatch
 	41,  // 19: fnknock.v1.WafEvent.interruption:type_name -> fnknock.v1.WafInterruptionInfo
@@ -8198,214 +10073,244 @@ var file_fnknock_v1_gateway_proto_depIdxs = []int32{
 	44,  // 21: fnknock.v1.SslConfig.certificates:type_name -> fnknock.v1.SslDeployedCertificate
 	45,  // 22: fnknock.v1.SslInfo.certificates:type_name -> fnknock.v1.SslDeployedCertificateInfo
 	48,  // 23: fnknock.v1.GatewayLogQueryResult.items:type_name -> fnknock.v1.GatewayLogEntry
-	54,  // 24: fnknock.v1.TrafficStats.by_host:type_name -> fnknock.v1.HostTrafficStats
-	55,  // 25: fnknock.v1.HostActiveIpsStats.items:type_name -> fnknock.v1.HostActiveIpStats
-	16,  // 26: fnknock.v1.Rules.items:type_name -> fnknock.v1.Rule
-	17,  // 27: fnknock.v1.HostRules.items:type_name -> fnknock.v1.HostRule
-	12,  // 28: fnknock.v1.HostRules.visibility_policies:type_name -> fnknock.v1.CompiledIpSet
-	18,  // 29: fnknock.v1.StreamRules.items:type_name -> fnknock.v1.StreamRule
-	36,  // 30: fnknock.v1.WafBundleRequest.config:type_name -> fnknock.v1.WafConfig
-	12,  // 31: fnknock.v1.SshFirewallSyncRequest.policy:type_name -> fnknock.v1.CompiledIpSet
-	12,  // 32: fnknock.v1.WhitelistFirewallSyncRequest.policy:type_name -> fnknock.v1.CompiledIpSet
-	57,  // 33: fnknock.v1.IptablesRules.items:type_name -> fnknock.v1.IptablesRule
-	5,   // 34: fnknock.v1.AuthContext.extra_headers:type_name -> fnknock.v1.Header
-	79,  // 35: fnknock.v1.VerifyAuthRequest.context:type_name -> fnknock.v1.AuthContext
-	5,   // 36: fnknock.v1.VerifyAuthResponse.response_headers:type_name -> fnknock.v1.Header
-	3,   // 37: fnknock.v1.VerifyAuthResponse.grant_kind:type_name -> fnknock.v1.AuthGrantKind
-	79,  // 38: fnknock.v1.PreflightAuthRequest.context:type_name -> fnknock.v1.AuthContext
-	5,   // 39: fnknock.v1.PreflightAuthResponse.response_headers:type_name -> fnknock.v1.Header
-	79,  // 40: fnknock.v1.AuthorizeHttpRequest.context:type_name -> fnknock.v1.AuthContext
-	1,   // 41: fnknock.v1.AuthorizeHttpRequest.mode:type_name -> fnknock.v1.HttpAuthMode
-	80,  // 42: fnknock.v1.AuthorizeHttpRequest.subdomain_rule_match:type_name -> fnknock.v1.SubdomainRuleMatch
-	84,  // 43: fnknock.v1.AuthorizeHttpResponse.preflight:type_name -> fnknock.v1.PreflightAuthResponse
-	82,  // 44: fnknock.v1.AuthorizeHttpResponse.verify:type_name -> fnknock.v1.VerifyAuthResponse
-	2,   // 45: fnknock.v1.AuthorizeHttpResponse.preflight_cache_scope:type_name -> fnknock.v1.AuthCacheScope
-	2,   // 46: fnknock.v1.AuthorizeHttpResponse.verify_cache_scope:type_name -> fnknock.v1.AuthCacheScope
-	89,  // 47: fnknock.v1.AuthBridgeEnvelope.ready:type_name -> fnknock.v1.AuthBridgeReady
-	81,  // 48: fnknock.v1.AuthBridgeEnvelope.verify_auth_request:type_name -> fnknock.v1.VerifyAuthRequest
-	82,  // 49: fnknock.v1.AuthBridgeEnvelope.verify_auth_response:type_name -> fnknock.v1.VerifyAuthResponse
-	83,  // 50: fnknock.v1.AuthBridgeEnvelope.preflight_auth_request:type_name -> fnknock.v1.PreflightAuthRequest
-	84,  // 51: fnknock.v1.AuthBridgeEnvelope.preflight_auth_response:type_name -> fnknock.v1.PreflightAuthResponse
-	87,  // 52: fnknock.v1.AuthBridgeEnvelope.verify_stream_auth_request:type_name -> fnknock.v1.VerifyStreamAuthRequest
-	88,  // 53: fnknock.v1.AuthBridgeEnvelope.verify_stream_auth_response:type_name -> fnknock.v1.VerifyStreamAuthResponse
-	85,  // 54: fnknock.v1.AuthBridgeEnvelope.authorize_http_request:type_name -> fnknock.v1.AuthorizeHttpRequest
-	86,  // 55: fnknock.v1.AuthBridgeEnvelope.authorize_http_response:type_name -> fnknock.v1.AuthorizeHttpResponse
-	32,  // 56: fnknock.v1.GeneralBlacklistStatus.RecordsEntry.value:type_name -> fnknock.v1.GeneralBlacklistRecord
-	95,  // 57: fnknock.v1.GatewayControlService.GetServerInfo:input_type -> google.protobuf.Empty
-	95,  // 58: fnknock.v1.GatewayControlService.GetRuntimeInfo:input_type -> google.protobuf.Empty
-	95,  // 59: fnknock.v1.GatewayControlService.GetGatewayListenerConfig:input_type -> google.protobuf.Empty
-	60,  // 60: fnknock.v1.GatewayControlService.SetGatewayListenerConfig:input_type -> fnknock.v1.GatewayListenerConfig
-	95,  // 61: fnknock.v1.GatewayControlService.ResetAllData:input_type -> google.protobuf.Empty
-	95,  // 62: fnknock.v1.GatewayControlService.RequestShutdown:input_type -> google.protobuf.Empty
-	95,  // 63: fnknock.v1.GatewayControlService.GetRules:input_type -> google.protobuf.Empty
-	61,  // 64: fnknock.v1.GatewayControlService.SetRules:input_type -> fnknock.v1.Rules
-	95,  // 65: fnknock.v1.GatewayControlService.FlushRules:input_type -> google.protobuf.Empty
-	95,  // 66: fnknock.v1.GatewayControlService.GetHostRules:input_type -> google.protobuf.Empty
-	62,  // 67: fnknock.v1.GatewayControlService.SetHostRules:input_type -> fnknock.v1.HostRules
-	95,  // 68: fnknock.v1.GatewayControlService.FlushHostRules:input_type -> google.protobuf.Empty
-	95,  // 69: fnknock.v1.GatewayControlService.GetStreamRules:input_type -> google.protobuf.Empty
-	63,  // 70: fnknock.v1.GatewayControlService.SetStreamRules:input_type -> fnknock.v1.StreamRules
-	95,  // 71: fnknock.v1.GatewayControlService.FlushStreamRules:input_type -> google.protobuf.Empty
-	95,  // 72: fnknock.v1.GatewayControlService.GetAuthConfig:input_type -> google.protobuf.Empty
-	19,  // 73: fnknock.v1.GatewayControlService.SetAuthConfig:input_type -> fnknock.v1.AuthConfig
-	95,  // 74: fnknock.v1.GatewayControlService.GetDefaultRoute:input_type -> google.protobuf.Empty
-	64,  // 75: fnknock.v1.GatewayControlService.SetDefaultRoute:input_type -> fnknock.v1.StringValue
-	95,  // 76: fnknock.v1.GatewayControlService.GetProxyProtocolForce:input_type -> google.protobuf.Empty
-	65,  // 77: fnknock.v1.GatewayControlService.SetProxyProtocolForce:input_type -> fnknock.v1.BoolValue
-	95,  // 78: fnknock.v1.GatewayControlService.GetLocaleConfig:input_type -> google.protobuf.Empty
-	31,  // 79: fnknock.v1.GatewayControlService.SetLocaleConfig:input_type -> fnknock.v1.LocaleConfig
-	95,  // 80: fnknock.v1.GatewayControlService.GetReverseProxyThrottle:input_type -> google.protobuf.Empty
-	21,  // 81: fnknock.v1.GatewayControlService.SetReverseProxyThrottle:input_type -> fnknock.v1.ReverseProxyThrottleConfig
-	95,  // 82: fnknock.v1.GatewayControlService.GetGatewayVisibility:input_type -> google.protobuf.Empty
-	22,  // 83: fnknock.v1.GatewayControlService.SetGatewayVisibility:input_type -> fnknock.v1.GatewayVisibilityConfig
-	95,  // 84: fnknock.v1.GatewayControlService.GetForwardedHeadersConfig:input_type -> google.protobuf.Empty
-	23,  // 85: fnknock.v1.GatewayControlService.SetForwardedHeadersConfig:input_type -> fnknock.v1.OmitTargetsConfig
-	95,  // 86: fnknock.v1.GatewayControlService.GetPreserveHostConfig:input_type -> google.protobuf.Empty
-	23,  // 87: fnknock.v1.GatewayControlService.SetPreserveHostConfig:input_type -> fnknock.v1.OmitTargetsConfig
-	95,  // 88: fnknock.v1.GatewayControlService.GetCrawlerBlockerConfig:input_type -> google.protobuf.Empty
-	24,  // 89: fnknock.v1.GatewayControlService.SetCrawlerBlockerConfig:input_type -> fnknock.v1.CrawlerBlockerConfig
-	95,  // 90: fnknock.v1.GatewayControlService.GetGatewayPortalConfig:input_type -> google.protobuf.Empty
-	25,  // 91: fnknock.v1.GatewayControlService.SetGatewayPortalConfig:input_type -> fnknock.v1.GatewayPortalConfig
-	95,  // 92: fnknock.v1.GatewayControlService.GetGatewayUnmatchedRouteConfig:input_type -> google.protobuf.Empty
-	26,  // 93: fnknock.v1.GatewayControlService.SetGatewayUnmatchedRouteConfig:input_type -> fnknock.v1.GatewayUnmatchedRouteConfig
-	95,  // 94: fnknock.v1.GatewayControlService.GetFnosPortIconHijackConfig:input_type -> google.protobuf.Empty
-	27,  // 95: fnknock.v1.GatewayControlService.SetFnosPortIconHijackConfig:input_type -> fnknock.v1.FnosPortIconHijackConfig
-	95,  // 96: fnknock.v1.GatewayControlService.GetFnosConnectIngressStatus:input_type -> google.protobuf.Empty
-	91,  // 97: fnknock.v1.GatewayControlService.SetFnosConnectIngressConfig:input_type -> fnknock.v1.FnosConnectIngressConfig
-	95,  // 98: fnknock.v1.GatewayControlService.GetReverseProxyThrottleExemptIps:input_type -> google.protobuf.Empty
-	28,  // 99: fnknock.v1.GatewayControlService.SetReverseProxyThrottleExemptIps:input_type -> fnknock.v1.ReverseProxyThrottleExemptIpsRuntime
-	95,  // 100: fnknock.v1.GatewayControlService.GetGatewayTrustedClientIps:input_type -> google.protobuf.Empty
-	29,  // 101: fnknock.v1.GatewayControlService.SetGatewayTrustedClientIps:input_type -> fnknock.v1.GatewayTrustedClientIpsRuntime
-	95,  // 102: fnknock.v1.GatewayControlService.GetCommonLocationExemptions:input_type -> google.protobuf.Empty
-	30,  // 103: fnknock.v1.GatewayControlService.SetCommonLocationExemptions:input_type -> fnknock.v1.CommonLocationExemptionsRuntime
-	95,  // 104: fnknock.v1.GatewayLogsService.GetLoggingConfig:input_type -> google.protobuf.Empty
-	20,  // 105: fnknock.v1.GatewayLogsService.SetLoggingConfig:input_type -> fnknock.v1.LoggingConfig
-	95,  // 106: fnknock.v1.GatewayLogsService.GetLoggingDirectory:input_type -> google.protobuf.Empty
-	95,  // 107: fnknock.v1.GatewayLogsService.GetLogDates:input_type -> google.protobuf.Empty
-	50,  // 108: fnknock.v1.GatewayLogsService.QueryLogEntries:input_type -> fnknock.v1.GatewayLogQuery
-	64,  // 109: fnknock.v1.GatewayLogsService.DeleteLogDate:input_type -> fnknock.v1.StringValue
-	68,  // 110: fnknock.v1.SecurityService.ListGeneralBlacklist:input_type -> fnknock.v1.GeneralBlacklistListRequest
-	67,  // 111: fnknock.v1.SecurityService.CheckGeneralBlacklist:input_type -> fnknock.v1.IpListRequest
-	67,  // 112: fnknock.v1.SecurityService.AddGeneralBlacklist:input_type -> fnknock.v1.IpListRequest
-	67,  // 113: fnknock.v1.SecurityService.RemoveGeneralBlacklist:input_type -> fnknock.v1.IpListRequest
-	95,  // 114: fnknock.v1.TrafficService.GetTrafficStats:input_type -> google.protobuf.Empty
-	69,  // 115: fnknock.v1.TrafficService.GetHostActiveIps:input_type -> fnknock.v1.HostRequest
-	95,  // 116: fnknock.v1.WafService.GetWafStatus:input_type -> google.protobuf.Empty
-	36,  // 117: fnknock.v1.WafService.SetWafConfig:input_type -> fnknock.v1.WafConfig
-	70,  // 118: fnknock.v1.WafService.ValidateWafBundle:input_type -> fnknock.v1.WafBundleRequest
-	70,  // 119: fnknock.v1.WafService.ReloadWafBundle:input_type -> fnknock.v1.WafBundleRequest
-	71,  // 120: fnknock.v1.WafService.DrainWafEvents:input_type -> fnknock.v1.WafDrainRequest
-	95,  // 121: fnknock.v1.SslService.GetSslInfo:input_type -> google.protobuf.Empty
-	46,  // 122: fnknock.v1.SslService.SetSslDeployment:input_type -> fnknock.v1.SslConfig
-	44,  // 123: fnknock.v1.SslService.SetSslPem:input_type -> fnknock.v1.SslDeployedCertificate
-	95,  // 124: fnknock.v1.SslService.ClearSsl:input_type -> google.protobuf.Empty
-	74,  // 125: fnknock.v1.FirewallService.InitIptables:input_type -> fnknock.v1.IptablesInitRequest
-	95,  // 126: fnknock.v1.FirewallService.CleanIptables:input_type -> google.protobuf.Empty
-	95,  // 127: fnknock.v1.FirewallService.FlushIptables:input_type -> google.protobuf.Empty
-	66,  // 128: fnknock.v1.FirewallService.AllowIp:input_type -> fnknock.v1.IpRequest
-	66,  // 129: fnknock.v1.FirewallService.BlockIp:input_type -> fnknock.v1.IpRequest
-	66,  // 130: fnknock.v1.FirewallService.RemoveIp:input_type -> fnknock.v1.IpRequest
-	73,  // 131: fnknock.v1.FirewallService.BlockTcpPortForIp:input_type -> fnknock.v1.TcpPortRuleRequest
-	73,  // 132: fnknock.v1.FirewallService.RemoveTcpPortRule:input_type -> fnknock.v1.TcpPortRuleRequest
-	75,  // 133: fnknock.v1.FirewallService.SyncSshFirewall:input_type -> fnknock.v1.SshFirewallSyncRequest
-	76,  // 134: fnknock.v1.FirewallService.ClearSshFirewall:input_type -> fnknock.v1.SshFirewallClearRequest
-	77,  // 135: fnknock.v1.FirewallService.SyncWhitelistFirewall:input_type -> fnknock.v1.WhitelistFirewallSyncRequest
-	95,  // 136: fnknock.v1.FirewallService.BlockAll:input_type -> google.protobuf.Empty
-	95,  // 137: fnknock.v1.FirewallService.AllowAll:input_type -> google.protobuf.Empty
-	72,  // 138: fnknock.v1.FirewallService.EnsureTcpRedirect:input_type -> fnknock.v1.TcpRedirectRequest
-	72,  // 139: fnknock.v1.FirewallService.ClearTcpRedirect:input_type -> fnknock.v1.TcpRedirectRequest
-	95,  // 140: fnknock.v1.FirewallService.ListIptables:input_type -> google.protobuf.Empty
-	90,  // 141: fnknock.v1.AuthBridgeService.ConnectAuthBridge:input_type -> fnknock.v1.AuthBridgeEnvelope
-	58,  // 142: fnknock.v1.GatewayControlService.GetServerInfo:output_type -> fnknock.v1.ServerInfo
-	59,  // 143: fnknock.v1.GatewayControlService.GetRuntimeInfo:output_type -> fnknock.v1.GatewayRuntimeInfo
-	60,  // 144: fnknock.v1.GatewayControlService.GetGatewayListenerConfig:output_type -> fnknock.v1.GatewayListenerConfig
-	60,  // 145: fnknock.v1.GatewayControlService.SetGatewayListenerConfig:output_type -> fnknock.v1.GatewayListenerConfig
-	4,   // 146: fnknock.v1.GatewayControlService.ResetAllData:output_type -> fnknock.v1.RpcStatus
-	4,   // 147: fnknock.v1.GatewayControlService.RequestShutdown:output_type -> fnknock.v1.RpcStatus
-	61,  // 148: fnknock.v1.GatewayControlService.GetRules:output_type -> fnknock.v1.Rules
-	61,  // 149: fnknock.v1.GatewayControlService.SetRules:output_type -> fnknock.v1.Rules
-	4,   // 150: fnknock.v1.GatewayControlService.FlushRules:output_type -> fnknock.v1.RpcStatus
-	62,  // 151: fnknock.v1.GatewayControlService.GetHostRules:output_type -> fnknock.v1.HostRules
-	62,  // 152: fnknock.v1.GatewayControlService.SetHostRules:output_type -> fnknock.v1.HostRules
-	4,   // 153: fnknock.v1.GatewayControlService.FlushHostRules:output_type -> fnknock.v1.RpcStatus
-	63,  // 154: fnknock.v1.GatewayControlService.GetStreamRules:output_type -> fnknock.v1.StreamRules
-	63,  // 155: fnknock.v1.GatewayControlService.SetStreamRules:output_type -> fnknock.v1.StreamRules
-	4,   // 156: fnknock.v1.GatewayControlService.FlushStreamRules:output_type -> fnknock.v1.RpcStatus
-	19,  // 157: fnknock.v1.GatewayControlService.GetAuthConfig:output_type -> fnknock.v1.AuthConfig
-	4,   // 158: fnknock.v1.GatewayControlService.SetAuthConfig:output_type -> fnknock.v1.RpcStatus
-	64,  // 159: fnknock.v1.GatewayControlService.GetDefaultRoute:output_type -> fnknock.v1.StringValue
-	4,   // 160: fnknock.v1.GatewayControlService.SetDefaultRoute:output_type -> fnknock.v1.RpcStatus
-	65,  // 161: fnknock.v1.GatewayControlService.GetProxyProtocolForce:output_type -> fnknock.v1.BoolValue
-	65,  // 162: fnknock.v1.GatewayControlService.SetProxyProtocolForce:output_type -> fnknock.v1.BoolValue
-	31,  // 163: fnknock.v1.GatewayControlService.GetLocaleConfig:output_type -> fnknock.v1.LocaleConfig
-	31,  // 164: fnknock.v1.GatewayControlService.SetLocaleConfig:output_type -> fnknock.v1.LocaleConfig
-	21,  // 165: fnknock.v1.GatewayControlService.GetReverseProxyThrottle:output_type -> fnknock.v1.ReverseProxyThrottleConfig
-	21,  // 166: fnknock.v1.GatewayControlService.SetReverseProxyThrottle:output_type -> fnknock.v1.ReverseProxyThrottleConfig
-	22,  // 167: fnknock.v1.GatewayControlService.GetGatewayVisibility:output_type -> fnknock.v1.GatewayVisibilityConfig
-	22,  // 168: fnknock.v1.GatewayControlService.SetGatewayVisibility:output_type -> fnknock.v1.GatewayVisibilityConfig
-	23,  // 169: fnknock.v1.GatewayControlService.GetForwardedHeadersConfig:output_type -> fnknock.v1.OmitTargetsConfig
-	23,  // 170: fnknock.v1.GatewayControlService.SetForwardedHeadersConfig:output_type -> fnknock.v1.OmitTargetsConfig
-	23,  // 171: fnknock.v1.GatewayControlService.GetPreserveHostConfig:output_type -> fnknock.v1.OmitTargetsConfig
-	23,  // 172: fnknock.v1.GatewayControlService.SetPreserveHostConfig:output_type -> fnknock.v1.OmitTargetsConfig
-	24,  // 173: fnknock.v1.GatewayControlService.GetCrawlerBlockerConfig:output_type -> fnknock.v1.CrawlerBlockerConfig
-	24,  // 174: fnknock.v1.GatewayControlService.SetCrawlerBlockerConfig:output_type -> fnknock.v1.CrawlerBlockerConfig
-	25,  // 175: fnknock.v1.GatewayControlService.GetGatewayPortalConfig:output_type -> fnknock.v1.GatewayPortalConfig
-	25,  // 176: fnknock.v1.GatewayControlService.SetGatewayPortalConfig:output_type -> fnknock.v1.GatewayPortalConfig
-	26,  // 177: fnknock.v1.GatewayControlService.GetGatewayUnmatchedRouteConfig:output_type -> fnknock.v1.GatewayUnmatchedRouteConfig
-	26,  // 178: fnknock.v1.GatewayControlService.SetGatewayUnmatchedRouteConfig:output_type -> fnknock.v1.GatewayUnmatchedRouteConfig
-	27,  // 179: fnknock.v1.GatewayControlService.GetFnosPortIconHijackConfig:output_type -> fnknock.v1.FnosPortIconHijackConfig
-	27,  // 180: fnknock.v1.GatewayControlService.SetFnosPortIconHijackConfig:output_type -> fnknock.v1.FnosPortIconHijackConfig
-	92,  // 181: fnknock.v1.GatewayControlService.GetFnosConnectIngressStatus:output_type -> fnknock.v1.FnosConnectIngressStatus
-	92,  // 182: fnknock.v1.GatewayControlService.SetFnosConnectIngressConfig:output_type -> fnknock.v1.FnosConnectIngressStatus
-	28,  // 183: fnknock.v1.GatewayControlService.GetReverseProxyThrottleExemptIps:output_type -> fnknock.v1.ReverseProxyThrottleExemptIpsRuntime
-	28,  // 184: fnknock.v1.GatewayControlService.SetReverseProxyThrottleExemptIps:output_type -> fnknock.v1.ReverseProxyThrottleExemptIpsRuntime
-	29,  // 185: fnknock.v1.GatewayControlService.GetGatewayTrustedClientIps:output_type -> fnknock.v1.GatewayTrustedClientIpsRuntime
-	29,  // 186: fnknock.v1.GatewayControlService.SetGatewayTrustedClientIps:output_type -> fnknock.v1.GatewayTrustedClientIpsRuntime
-	30,  // 187: fnknock.v1.GatewayControlService.GetCommonLocationExemptions:output_type -> fnknock.v1.CommonLocationExemptionsRuntime
-	30,  // 188: fnknock.v1.GatewayControlService.SetCommonLocationExemptions:output_type -> fnknock.v1.CommonLocationExemptionsRuntime
-	20,  // 189: fnknock.v1.GatewayLogsService.GetLoggingConfig:output_type -> fnknock.v1.LoggingConfig
-	20,  // 190: fnknock.v1.GatewayLogsService.SetLoggingConfig:output_type -> fnknock.v1.LoggingConfig
-	64,  // 191: fnknock.v1.GatewayLogsService.GetLoggingDirectory:output_type -> fnknock.v1.StringValue
-	49,  // 192: fnknock.v1.GatewayLogsService.GetLogDates:output_type -> fnknock.v1.GatewayLogDates
-	51,  // 193: fnknock.v1.GatewayLogsService.QueryLogEntries:output_type -> fnknock.v1.GatewayLogQueryResult
-	52,  // 194: fnknock.v1.GatewayLogsService.DeleteLogDate:output_type -> fnknock.v1.GatewayLogDeleteResult
-	33,  // 195: fnknock.v1.SecurityService.ListGeneralBlacklist:output_type -> fnknock.v1.GeneralBlacklistList
-	35,  // 196: fnknock.v1.SecurityService.CheckGeneralBlacklist:output_type -> fnknock.v1.GeneralBlacklistStatus
-	34,  // 197: fnknock.v1.SecurityService.AddGeneralBlacklist:output_type -> fnknock.v1.GeneralBlacklistMutationResult
-	34,  // 198: fnknock.v1.SecurityService.RemoveGeneralBlacklist:output_type -> fnknock.v1.GeneralBlacklistMutationResult
-	53,  // 199: fnknock.v1.TrafficService.GetTrafficStats:output_type -> fnknock.v1.TrafficStats
-	56,  // 200: fnknock.v1.TrafficService.GetHostActiveIps:output_type -> fnknock.v1.HostActiveIpsStats
-	37,  // 201: fnknock.v1.WafService.GetWafStatus:output_type -> fnknock.v1.WafStatus
-	37,  // 202: fnknock.v1.WafService.SetWafConfig:output_type -> fnknock.v1.WafStatus
-	38,  // 203: fnknock.v1.WafService.ValidateWafBundle:output_type -> fnknock.v1.WafValidationResult
-	37,  // 204: fnknock.v1.WafService.ReloadWafBundle:output_type -> fnknock.v1.WafStatus
-	43,  // 205: fnknock.v1.WafService.DrainWafEvents:output_type -> fnknock.v1.WafDrainResult
-	47,  // 206: fnknock.v1.SslService.GetSslInfo:output_type -> fnknock.v1.SslInfo
-	4,   // 207: fnknock.v1.SslService.SetSslDeployment:output_type -> fnknock.v1.RpcStatus
-	4,   // 208: fnknock.v1.SslService.SetSslPem:output_type -> fnknock.v1.RpcStatus
-	4,   // 209: fnknock.v1.SslService.ClearSsl:output_type -> fnknock.v1.RpcStatus
-	4,   // 210: fnknock.v1.FirewallService.InitIptables:output_type -> fnknock.v1.RpcStatus
-	4,   // 211: fnknock.v1.FirewallService.CleanIptables:output_type -> fnknock.v1.RpcStatus
-	4,   // 212: fnknock.v1.FirewallService.FlushIptables:output_type -> fnknock.v1.RpcStatus
-	4,   // 213: fnknock.v1.FirewallService.AllowIp:output_type -> fnknock.v1.RpcStatus
-	4,   // 214: fnknock.v1.FirewallService.BlockIp:output_type -> fnknock.v1.RpcStatus
-	4,   // 215: fnknock.v1.FirewallService.RemoveIp:output_type -> fnknock.v1.RpcStatus
-	4,   // 216: fnknock.v1.FirewallService.BlockTcpPortForIp:output_type -> fnknock.v1.RpcStatus
-	4,   // 217: fnknock.v1.FirewallService.RemoveTcpPortRule:output_type -> fnknock.v1.RpcStatus
-	4,   // 218: fnknock.v1.FirewallService.SyncSshFirewall:output_type -> fnknock.v1.RpcStatus
-	4,   // 219: fnknock.v1.FirewallService.ClearSshFirewall:output_type -> fnknock.v1.RpcStatus
-	4,   // 220: fnknock.v1.FirewallService.SyncWhitelistFirewall:output_type -> fnknock.v1.RpcStatus
-	4,   // 221: fnknock.v1.FirewallService.BlockAll:output_type -> fnknock.v1.RpcStatus
-	4,   // 222: fnknock.v1.FirewallService.AllowAll:output_type -> fnknock.v1.RpcStatus
-	4,   // 223: fnknock.v1.FirewallService.EnsureTcpRedirect:output_type -> fnknock.v1.RpcStatus
-	4,   // 224: fnknock.v1.FirewallService.ClearTcpRedirect:output_type -> fnknock.v1.RpcStatus
-	78,  // 225: fnknock.v1.FirewallService.ListIptables:output_type -> fnknock.v1.IptablesRules
-	90,  // 226: fnknock.v1.AuthBridgeService.ConnectAuthBridge:output_type -> fnknock.v1.AuthBridgeEnvelope
-	142, // [142:227] is the sub-list for method output_type
-	57,  // [57:142] is the sub-list for method input_type
-	57,  // [57:57] is the sub-list for extension type_name
-	57,  // [57:57] is the sub-list for extension extendee
-	0,   // [0:57] is the sub-list for field type_name
+	53,  // 24: fnknock.v1.DeepMonitorSessionList.items:type_name -> fnknock.v1.DeepMonitorSession
+	62,  // 25: fnknock.v1.DeepMonitorEvent.summary:type_name -> fnknock.v1.DeepMonitorEventSummary
+	6,   // 26: fnknock.v1.DeepMonitorEvent.client_request_headers:type_name -> fnknock.v1.HeaderList
+	6,   // 27: fnknock.v1.DeepMonitorEvent.upstream_request_headers:type_name -> fnknock.v1.HeaderList
+	6,   // 28: fnknock.v1.DeepMonitorEvent.upstream_response_headers:type_name -> fnknock.v1.HeaderList
+	6,   // 29: fnknock.v1.DeepMonitorEvent.client_response_headers:type_name -> fnknock.v1.HeaderList
+	59,  // 30: fnknock.v1.DeepMonitorEvent.payloads:type_name -> fnknock.v1.DeepMonitorPayloadRef
+	60,  // 31: fnknock.v1.DeepMonitorEvent.timing:type_name -> fnknock.v1.DeepMonitorTiming
+	61,  // 32: fnknock.v1.DeepMonitorEvent.websocket_frame:type_name -> fnknock.v1.DeepMonitorWebSocketFrame
+	62,  // 33: fnknock.v1.DeepMonitorQueryResult.items:type_name -> fnknock.v1.DeepMonitorEventSummary
+	71,  // 34: fnknock.v1.TrafficStats.by_host:type_name -> fnknock.v1.HostTrafficStats
+	72,  // 35: fnknock.v1.HostActiveIpsStats.items:type_name -> fnknock.v1.HostActiveIpStats
+	16,  // 36: fnknock.v1.Rules.items:type_name -> fnknock.v1.Rule
+	17,  // 37: fnknock.v1.HostRules.items:type_name -> fnknock.v1.HostRule
+	12,  // 38: fnknock.v1.HostRules.visibility_policies:type_name -> fnknock.v1.CompiledIpSet
+	18,  // 39: fnknock.v1.StreamRules.items:type_name -> fnknock.v1.StreamRule
+	36,  // 40: fnknock.v1.WafBundleRequest.config:type_name -> fnknock.v1.WafConfig
+	12,  // 41: fnknock.v1.SshFirewallSyncRequest.policy:type_name -> fnknock.v1.CompiledIpSet
+	12,  // 42: fnknock.v1.WhitelistFirewallSyncRequest.policy:type_name -> fnknock.v1.CompiledIpSet
+	74,  // 43: fnknock.v1.IptablesRules.items:type_name -> fnknock.v1.IptablesRule
+	5,   // 44: fnknock.v1.AuthContext.extra_headers:type_name -> fnknock.v1.Header
+	96,  // 45: fnknock.v1.VerifyAuthRequest.context:type_name -> fnknock.v1.AuthContext
+	5,   // 46: fnknock.v1.VerifyAuthResponse.response_headers:type_name -> fnknock.v1.Header
+	3,   // 47: fnknock.v1.VerifyAuthResponse.grant_kind:type_name -> fnknock.v1.AuthGrantKind
+	96,  // 48: fnknock.v1.PreflightAuthRequest.context:type_name -> fnknock.v1.AuthContext
+	5,   // 49: fnknock.v1.PreflightAuthResponse.response_headers:type_name -> fnknock.v1.Header
+	96,  // 50: fnknock.v1.AuthorizeHttpRequest.context:type_name -> fnknock.v1.AuthContext
+	1,   // 51: fnknock.v1.AuthorizeHttpRequest.mode:type_name -> fnknock.v1.HttpAuthMode
+	97,  // 52: fnknock.v1.AuthorizeHttpRequest.subdomain_rule_match:type_name -> fnknock.v1.SubdomainRuleMatch
+	101, // 53: fnknock.v1.AuthorizeHttpResponse.preflight:type_name -> fnknock.v1.PreflightAuthResponse
+	99,  // 54: fnknock.v1.AuthorizeHttpResponse.verify:type_name -> fnknock.v1.VerifyAuthResponse
+	2,   // 55: fnknock.v1.AuthorizeHttpResponse.preflight_cache_scope:type_name -> fnknock.v1.AuthCacheScope
+	2,   // 56: fnknock.v1.AuthorizeHttpResponse.verify_cache_scope:type_name -> fnknock.v1.AuthCacheScope
+	106, // 57: fnknock.v1.AuthBridgeEnvelope.ready:type_name -> fnknock.v1.AuthBridgeReady
+	98,  // 58: fnknock.v1.AuthBridgeEnvelope.verify_auth_request:type_name -> fnknock.v1.VerifyAuthRequest
+	99,  // 59: fnknock.v1.AuthBridgeEnvelope.verify_auth_response:type_name -> fnknock.v1.VerifyAuthResponse
+	100, // 60: fnknock.v1.AuthBridgeEnvelope.preflight_auth_request:type_name -> fnknock.v1.PreflightAuthRequest
+	101, // 61: fnknock.v1.AuthBridgeEnvelope.preflight_auth_response:type_name -> fnknock.v1.PreflightAuthResponse
+	104, // 62: fnknock.v1.AuthBridgeEnvelope.verify_stream_auth_request:type_name -> fnknock.v1.VerifyStreamAuthRequest
+	105, // 63: fnknock.v1.AuthBridgeEnvelope.verify_stream_auth_response:type_name -> fnknock.v1.VerifyStreamAuthResponse
+	102, // 64: fnknock.v1.AuthBridgeEnvelope.authorize_http_request:type_name -> fnknock.v1.AuthorizeHttpRequest
+	103, // 65: fnknock.v1.AuthBridgeEnvelope.authorize_http_response:type_name -> fnknock.v1.AuthorizeHttpResponse
+	32,  // 66: fnknock.v1.GeneralBlacklistStatus.RecordsEntry.value:type_name -> fnknock.v1.GeneralBlacklistRecord
+	112, // 67: fnknock.v1.GatewayControlService.GetServerInfo:input_type -> google.protobuf.Empty
+	112, // 68: fnknock.v1.GatewayControlService.GetRuntimeInfo:input_type -> google.protobuf.Empty
+	112, // 69: fnknock.v1.GatewayControlService.GetGatewayListenerConfig:input_type -> google.protobuf.Empty
+	77,  // 70: fnknock.v1.GatewayControlService.SetGatewayListenerConfig:input_type -> fnknock.v1.GatewayListenerConfig
+	112, // 71: fnknock.v1.GatewayControlService.ResetAllData:input_type -> google.protobuf.Empty
+	112, // 72: fnknock.v1.GatewayControlService.RequestShutdown:input_type -> google.protobuf.Empty
+	112, // 73: fnknock.v1.GatewayControlService.GetRules:input_type -> google.protobuf.Empty
+	78,  // 74: fnknock.v1.GatewayControlService.SetRules:input_type -> fnknock.v1.Rules
+	112, // 75: fnknock.v1.GatewayControlService.FlushRules:input_type -> google.protobuf.Empty
+	112, // 76: fnknock.v1.GatewayControlService.GetHostRules:input_type -> google.protobuf.Empty
+	79,  // 77: fnknock.v1.GatewayControlService.SetHostRules:input_type -> fnknock.v1.HostRules
+	112, // 78: fnknock.v1.GatewayControlService.FlushHostRules:input_type -> google.protobuf.Empty
+	112, // 79: fnknock.v1.GatewayControlService.GetStreamRules:input_type -> google.protobuf.Empty
+	80,  // 80: fnknock.v1.GatewayControlService.SetStreamRules:input_type -> fnknock.v1.StreamRules
+	112, // 81: fnknock.v1.GatewayControlService.FlushStreamRules:input_type -> google.protobuf.Empty
+	112, // 82: fnknock.v1.GatewayControlService.GetAuthConfig:input_type -> google.protobuf.Empty
+	19,  // 83: fnknock.v1.GatewayControlService.SetAuthConfig:input_type -> fnknock.v1.AuthConfig
+	112, // 84: fnknock.v1.GatewayControlService.GetDefaultRoute:input_type -> google.protobuf.Empty
+	81,  // 85: fnknock.v1.GatewayControlService.SetDefaultRoute:input_type -> fnknock.v1.StringValue
+	112, // 86: fnknock.v1.GatewayControlService.GetProxyProtocolForce:input_type -> google.protobuf.Empty
+	82,  // 87: fnknock.v1.GatewayControlService.SetProxyProtocolForce:input_type -> fnknock.v1.BoolValue
+	112, // 88: fnknock.v1.GatewayControlService.GetLocaleConfig:input_type -> google.protobuf.Empty
+	31,  // 89: fnknock.v1.GatewayControlService.SetLocaleConfig:input_type -> fnknock.v1.LocaleConfig
+	112, // 90: fnknock.v1.GatewayControlService.GetReverseProxyThrottle:input_type -> google.protobuf.Empty
+	21,  // 91: fnknock.v1.GatewayControlService.SetReverseProxyThrottle:input_type -> fnknock.v1.ReverseProxyThrottleConfig
+	112, // 92: fnknock.v1.GatewayControlService.GetGatewayVisibility:input_type -> google.protobuf.Empty
+	22,  // 93: fnknock.v1.GatewayControlService.SetGatewayVisibility:input_type -> fnknock.v1.GatewayVisibilityConfig
+	112, // 94: fnknock.v1.GatewayControlService.GetForwardedHeadersConfig:input_type -> google.protobuf.Empty
+	23,  // 95: fnknock.v1.GatewayControlService.SetForwardedHeadersConfig:input_type -> fnknock.v1.OmitTargetsConfig
+	112, // 96: fnknock.v1.GatewayControlService.GetPreserveHostConfig:input_type -> google.protobuf.Empty
+	23,  // 97: fnknock.v1.GatewayControlService.SetPreserveHostConfig:input_type -> fnknock.v1.OmitTargetsConfig
+	112, // 98: fnknock.v1.GatewayControlService.GetCrawlerBlockerConfig:input_type -> google.protobuf.Empty
+	24,  // 99: fnknock.v1.GatewayControlService.SetCrawlerBlockerConfig:input_type -> fnknock.v1.CrawlerBlockerConfig
+	112, // 100: fnknock.v1.GatewayControlService.GetGatewayPortalConfig:input_type -> google.protobuf.Empty
+	25,  // 101: fnknock.v1.GatewayControlService.SetGatewayPortalConfig:input_type -> fnknock.v1.GatewayPortalConfig
+	112, // 102: fnknock.v1.GatewayControlService.GetGatewayUnmatchedRouteConfig:input_type -> google.protobuf.Empty
+	26,  // 103: fnknock.v1.GatewayControlService.SetGatewayUnmatchedRouteConfig:input_type -> fnknock.v1.GatewayUnmatchedRouteConfig
+	112, // 104: fnknock.v1.GatewayControlService.GetFnosPortIconHijackConfig:input_type -> google.protobuf.Empty
+	27,  // 105: fnknock.v1.GatewayControlService.SetFnosPortIconHijackConfig:input_type -> fnknock.v1.FnosPortIconHijackConfig
+	112, // 106: fnknock.v1.GatewayControlService.GetFnosConnectIngressStatus:input_type -> google.protobuf.Empty
+	108, // 107: fnknock.v1.GatewayControlService.SetFnosConnectIngressConfig:input_type -> fnknock.v1.FnosConnectIngressConfig
+	112, // 108: fnknock.v1.GatewayControlService.GetReverseProxyThrottleExemptIps:input_type -> google.protobuf.Empty
+	28,  // 109: fnknock.v1.GatewayControlService.SetReverseProxyThrottleExemptIps:input_type -> fnknock.v1.ReverseProxyThrottleExemptIpsRuntime
+	112, // 110: fnknock.v1.GatewayControlService.GetGatewayTrustedClientIps:input_type -> google.protobuf.Empty
+	29,  // 111: fnknock.v1.GatewayControlService.SetGatewayTrustedClientIps:input_type -> fnknock.v1.GatewayTrustedClientIpsRuntime
+	112, // 112: fnknock.v1.GatewayControlService.GetCommonLocationExemptions:input_type -> google.protobuf.Empty
+	30,  // 113: fnknock.v1.GatewayControlService.SetCommonLocationExemptions:input_type -> fnknock.v1.CommonLocationExemptionsRuntime
+	112, // 114: fnknock.v1.GatewayLogsService.GetLoggingConfig:input_type -> google.protobuf.Empty
+	20,  // 115: fnknock.v1.GatewayLogsService.SetLoggingConfig:input_type -> fnknock.v1.LoggingConfig
+	112, // 116: fnknock.v1.GatewayLogsService.GetLoggingDirectory:input_type -> google.protobuf.Empty
+	112, // 117: fnknock.v1.GatewayLogsService.GetLogDates:input_type -> google.protobuf.Empty
+	50,  // 118: fnknock.v1.GatewayLogsService.QueryLogEntries:input_type -> fnknock.v1.GatewayLogQuery
+	81,  // 119: fnknock.v1.GatewayLogsService.DeleteLogDate:input_type -> fnknock.v1.StringValue
+	54,  // 120: fnknock.v1.DeepMonitorService.StartSession:input_type -> fnknock.v1.DeepMonitorStartRequest
+	56,  // 121: fnknock.v1.DeepMonitorService.ExtendSession:input_type -> fnknock.v1.DeepMonitorExtendRequest
+	55,  // 122: fnknock.v1.DeepMonitorService.StopSession:input_type -> fnknock.v1.DeepMonitorSessionRequest
+	57,  // 123: fnknock.v1.DeepMonitorService.ListSessions:input_type -> fnknock.v1.DeepMonitorListRequest
+	64,  // 124: fnknock.v1.DeepMonitorService.QueryEvents:input_type -> fnknock.v1.DeepMonitorQuery
+	66,  // 125: fnknock.v1.DeepMonitorService.GetEvent:input_type -> fnknock.v1.DeepMonitorEventRequest
+	67,  // 126: fnknock.v1.DeepMonitorService.WatchEvents:input_type -> fnknock.v1.DeepMonitorWatchRequest
+	68,  // 127: fnknock.v1.DeepMonitorService.StreamPayload:input_type -> fnknock.v1.DeepMonitorPayloadRequest
+	55,  // 128: fnknock.v1.DeepMonitorService.StreamSessionArchive:input_type -> fnknock.v1.DeepMonitorSessionRequest
+	55,  // 129: fnknock.v1.DeepMonitorService.DeleteSession:input_type -> fnknock.v1.DeepMonitorSessionRequest
+	85,  // 130: fnknock.v1.SecurityService.ListGeneralBlacklist:input_type -> fnknock.v1.GeneralBlacklistListRequest
+	84,  // 131: fnknock.v1.SecurityService.CheckGeneralBlacklist:input_type -> fnknock.v1.IpListRequest
+	84,  // 132: fnknock.v1.SecurityService.AddGeneralBlacklist:input_type -> fnknock.v1.IpListRequest
+	84,  // 133: fnknock.v1.SecurityService.RemoveGeneralBlacklist:input_type -> fnknock.v1.IpListRequest
+	112, // 134: fnknock.v1.TrafficService.GetTrafficStats:input_type -> google.protobuf.Empty
+	86,  // 135: fnknock.v1.TrafficService.GetHostActiveIps:input_type -> fnknock.v1.HostRequest
+	112, // 136: fnknock.v1.WafService.GetWafStatus:input_type -> google.protobuf.Empty
+	36,  // 137: fnknock.v1.WafService.SetWafConfig:input_type -> fnknock.v1.WafConfig
+	87,  // 138: fnknock.v1.WafService.ValidateWafBundle:input_type -> fnknock.v1.WafBundleRequest
+	87,  // 139: fnknock.v1.WafService.ReloadWafBundle:input_type -> fnknock.v1.WafBundleRequest
+	88,  // 140: fnknock.v1.WafService.DrainWafEvents:input_type -> fnknock.v1.WafDrainRequest
+	112, // 141: fnknock.v1.SslService.GetSslInfo:input_type -> google.protobuf.Empty
+	46,  // 142: fnknock.v1.SslService.SetSslDeployment:input_type -> fnknock.v1.SslConfig
+	44,  // 143: fnknock.v1.SslService.SetSslPem:input_type -> fnknock.v1.SslDeployedCertificate
+	112, // 144: fnknock.v1.SslService.ClearSsl:input_type -> google.protobuf.Empty
+	91,  // 145: fnknock.v1.FirewallService.InitIptables:input_type -> fnknock.v1.IptablesInitRequest
+	112, // 146: fnknock.v1.FirewallService.CleanIptables:input_type -> google.protobuf.Empty
+	112, // 147: fnknock.v1.FirewallService.FlushIptables:input_type -> google.protobuf.Empty
+	83,  // 148: fnknock.v1.FirewallService.AllowIp:input_type -> fnknock.v1.IpRequest
+	83,  // 149: fnknock.v1.FirewallService.BlockIp:input_type -> fnknock.v1.IpRequest
+	83,  // 150: fnknock.v1.FirewallService.RemoveIp:input_type -> fnknock.v1.IpRequest
+	90,  // 151: fnknock.v1.FirewallService.BlockTcpPortForIp:input_type -> fnknock.v1.TcpPortRuleRequest
+	90,  // 152: fnknock.v1.FirewallService.RemoveTcpPortRule:input_type -> fnknock.v1.TcpPortRuleRequest
+	92,  // 153: fnknock.v1.FirewallService.SyncSshFirewall:input_type -> fnknock.v1.SshFirewallSyncRequest
+	93,  // 154: fnknock.v1.FirewallService.ClearSshFirewall:input_type -> fnknock.v1.SshFirewallClearRequest
+	94,  // 155: fnknock.v1.FirewallService.SyncWhitelistFirewall:input_type -> fnknock.v1.WhitelistFirewallSyncRequest
+	112, // 156: fnknock.v1.FirewallService.BlockAll:input_type -> google.protobuf.Empty
+	112, // 157: fnknock.v1.FirewallService.AllowAll:input_type -> google.protobuf.Empty
+	89,  // 158: fnknock.v1.FirewallService.EnsureTcpRedirect:input_type -> fnknock.v1.TcpRedirectRequest
+	89,  // 159: fnknock.v1.FirewallService.ClearTcpRedirect:input_type -> fnknock.v1.TcpRedirectRequest
+	112, // 160: fnknock.v1.FirewallService.ListIptables:input_type -> google.protobuf.Empty
+	107, // 161: fnknock.v1.AuthBridgeService.ConnectAuthBridge:input_type -> fnknock.v1.AuthBridgeEnvelope
+	75,  // 162: fnknock.v1.GatewayControlService.GetServerInfo:output_type -> fnknock.v1.ServerInfo
+	76,  // 163: fnknock.v1.GatewayControlService.GetRuntimeInfo:output_type -> fnknock.v1.GatewayRuntimeInfo
+	77,  // 164: fnknock.v1.GatewayControlService.GetGatewayListenerConfig:output_type -> fnknock.v1.GatewayListenerConfig
+	77,  // 165: fnknock.v1.GatewayControlService.SetGatewayListenerConfig:output_type -> fnknock.v1.GatewayListenerConfig
+	4,   // 166: fnknock.v1.GatewayControlService.ResetAllData:output_type -> fnknock.v1.RpcStatus
+	4,   // 167: fnknock.v1.GatewayControlService.RequestShutdown:output_type -> fnknock.v1.RpcStatus
+	78,  // 168: fnknock.v1.GatewayControlService.GetRules:output_type -> fnknock.v1.Rules
+	78,  // 169: fnknock.v1.GatewayControlService.SetRules:output_type -> fnknock.v1.Rules
+	4,   // 170: fnknock.v1.GatewayControlService.FlushRules:output_type -> fnknock.v1.RpcStatus
+	79,  // 171: fnknock.v1.GatewayControlService.GetHostRules:output_type -> fnknock.v1.HostRules
+	79,  // 172: fnknock.v1.GatewayControlService.SetHostRules:output_type -> fnknock.v1.HostRules
+	4,   // 173: fnknock.v1.GatewayControlService.FlushHostRules:output_type -> fnknock.v1.RpcStatus
+	80,  // 174: fnknock.v1.GatewayControlService.GetStreamRules:output_type -> fnknock.v1.StreamRules
+	80,  // 175: fnknock.v1.GatewayControlService.SetStreamRules:output_type -> fnknock.v1.StreamRules
+	4,   // 176: fnknock.v1.GatewayControlService.FlushStreamRules:output_type -> fnknock.v1.RpcStatus
+	19,  // 177: fnknock.v1.GatewayControlService.GetAuthConfig:output_type -> fnknock.v1.AuthConfig
+	4,   // 178: fnknock.v1.GatewayControlService.SetAuthConfig:output_type -> fnknock.v1.RpcStatus
+	81,  // 179: fnknock.v1.GatewayControlService.GetDefaultRoute:output_type -> fnknock.v1.StringValue
+	4,   // 180: fnknock.v1.GatewayControlService.SetDefaultRoute:output_type -> fnknock.v1.RpcStatus
+	82,  // 181: fnknock.v1.GatewayControlService.GetProxyProtocolForce:output_type -> fnknock.v1.BoolValue
+	82,  // 182: fnknock.v1.GatewayControlService.SetProxyProtocolForce:output_type -> fnknock.v1.BoolValue
+	31,  // 183: fnknock.v1.GatewayControlService.GetLocaleConfig:output_type -> fnknock.v1.LocaleConfig
+	31,  // 184: fnknock.v1.GatewayControlService.SetLocaleConfig:output_type -> fnknock.v1.LocaleConfig
+	21,  // 185: fnknock.v1.GatewayControlService.GetReverseProxyThrottle:output_type -> fnknock.v1.ReverseProxyThrottleConfig
+	21,  // 186: fnknock.v1.GatewayControlService.SetReverseProxyThrottle:output_type -> fnknock.v1.ReverseProxyThrottleConfig
+	22,  // 187: fnknock.v1.GatewayControlService.GetGatewayVisibility:output_type -> fnknock.v1.GatewayVisibilityConfig
+	22,  // 188: fnknock.v1.GatewayControlService.SetGatewayVisibility:output_type -> fnknock.v1.GatewayVisibilityConfig
+	23,  // 189: fnknock.v1.GatewayControlService.GetForwardedHeadersConfig:output_type -> fnknock.v1.OmitTargetsConfig
+	23,  // 190: fnknock.v1.GatewayControlService.SetForwardedHeadersConfig:output_type -> fnknock.v1.OmitTargetsConfig
+	23,  // 191: fnknock.v1.GatewayControlService.GetPreserveHostConfig:output_type -> fnknock.v1.OmitTargetsConfig
+	23,  // 192: fnknock.v1.GatewayControlService.SetPreserveHostConfig:output_type -> fnknock.v1.OmitTargetsConfig
+	24,  // 193: fnknock.v1.GatewayControlService.GetCrawlerBlockerConfig:output_type -> fnknock.v1.CrawlerBlockerConfig
+	24,  // 194: fnknock.v1.GatewayControlService.SetCrawlerBlockerConfig:output_type -> fnknock.v1.CrawlerBlockerConfig
+	25,  // 195: fnknock.v1.GatewayControlService.GetGatewayPortalConfig:output_type -> fnknock.v1.GatewayPortalConfig
+	25,  // 196: fnknock.v1.GatewayControlService.SetGatewayPortalConfig:output_type -> fnknock.v1.GatewayPortalConfig
+	26,  // 197: fnknock.v1.GatewayControlService.GetGatewayUnmatchedRouteConfig:output_type -> fnknock.v1.GatewayUnmatchedRouteConfig
+	26,  // 198: fnknock.v1.GatewayControlService.SetGatewayUnmatchedRouteConfig:output_type -> fnknock.v1.GatewayUnmatchedRouteConfig
+	27,  // 199: fnknock.v1.GatewayControlService.GetFnosPortIconHijackConfig:output_type -> fnknock.v1.FnosPortIconHijackConfig
+	27,  // 200: fnknock.v1.GatewayControlService.SetFnosPortIconHijackConfig:output_type -> fnknock.v1.FnosPortIconHijackConfig
+	109, // 201: fnknock.v1.GatewayControlService.GetFnosConnectIngressStatus:output_type -> fnknock.v1.FnosConnectIngressStatus
+	109, // 202: fnknock.v1.GatewayControlService.SetFnosConnectIngressConfig:output_type -> fnknock.v1.FnosConnectIngressStatus
+	28,  // 203: fnknock.v1.GatewayControlService.GetReverseProxyThrottleExemptIps:output_type -> fnknock.v1.ReverseProxyThrottleExemptIpsRuntime
+	28,  // 204: fnknock.v1.GatewayControlService.SetReverseProxyThrottleExemptIps:output_type -> fnknock.v1.ReverseProxyThrottleExemptIpsRuntime
+	29,  // 205: fnknock.v1.GatewayControlService.GetGatewayTrustedClientIps:output_type -> fnknock.v1.GatewayTrustedClientIpsRuntime
+	29,  // 206: fnknock.v1.GatewayControlService.SetGatewayTrustedClientIps:output_type -> fnknock.v1.GatewayTrustedClientIpsRuntime
+	30,  // 207: fnknock.v1.GatewayControlService.GetCommonLocationExemptions:output_type -> fnknock.v1.CommonLocationExemptionsRuntime
+	30,  // 208: fnknock.v1.GatewayControlService.SetCommonLocationExemptions:output_type -> fnknock.v1.CommonLocationExemptionsRuntime
+	20,  // 209: fnknock.v1.GatewayLogsService.GetLoggingConfig:output_type -> fnknock.v1.LoggingConfig
+	20,  // 210: fnknock.v1.GatewayLogsService.SetLoggingConfig:output_type -> fnknock.v1.LoggingConfig
+	81,  // 211: fnknock.v1.GatewayLogsService.GetLoggingDirectory:output_type -> fnknock.v1.StringValue
+	49,  // 212: fnknock.v1.GatewayLogsService.GetLogDates:output_type -> fnknock.v1.GatewayLogDates
+	51,  // 213: fnknock.v1.GatewayLogsService.QueryLogEntries:output_type -> fnknock.v1.GatewayLogQueryResult
+	52,  // 214: fnknock.v1.GatewayLogsService.DeleteLogDate:output_type -> fnknock.v1.GatewayLogDeleteResult
+	53,  // 215: fnknock.v1.DeepMonitorService.StartSession:output_type -> fnknock.v1.DeepMonitorSession
+	53,  // 216: fnknock.v1.DeepMonitorService.ExtendSession:output_type -> fnknock.v1.DeepMonitorSession
+	53,  // 217: fnknock.v1.DeepMonitorService.StopSession:output_type -> fnknock.v1.DeepMonitorSession
+	58,  // 218: fnknock.v1.DeepMonitorService.ListSessions:output_type -> fnknock.v1.DeepMonitorSessionList
+	65,  // 219: fnknock.v1.DeepMonitorService.QueryEvents:output_type -> fnknock.v1.DeepMonitorQueryResult
+	63,  // 220: fnknock.v1.DeepMonitorService.GetEvent:output_type -> fnknock.v1.DeepMonitorEvent
+	62,  // 221: fnknock.v1.DeepMonitorService.WatchEvents:output_type -> fnknock.v1.DeepMonitorEventSummary
+	69,  // 222: fnknock.v1.DeepMonitorService.StreamPayload:output_type -> fnknock.v1.DeepMonitorPayloadChunk
+	69,  // 223: fnknock.v1.DeepMonitorService.StreamSessionArchive:output_type -> fnknock.v1.DeepMonitorPayloadChunk
+	4,   // 224: fnknock.v1.DeepMonitorService.DeleteSession:output_type -> fnknock.v1.RpcStatus
+	33,  // 225: fnknock.v1.SecurityService.ListGeneralBlacklist:output_type -> fnknock.v1.GeneralBlacklistList
+	35,  // 226: fnknock.v1.SecurityService.CheckGeneralBlacklist:output_type -> fnknock.v1.GeneralBlacklistStatus
+	34,  // 227: fnknock.v1.SecurityService.AddGeneralBlacklist:output_type -> fnknock.v1.GeneralBlacklistMutationResult
+	34,  // 228: fnknock.v1.SecurityService.RemoveGeneralBlacklist:output_type -> fnknock.v1.GeneralBlacklistMutationResult
+	70,  // 229: fnknock.v1.TrafficService.GetTrafficStats:output_type -> fnknock.v1.TrafficStats
+	73,  // 230: fnknock.v1.TrafficService.GetHostActiveIps:output_type -> fnknock.v1.HostActiveIpsStats
+	37,  // 231: fnknock.v1.WafService.GetWafStatus:output_type -> fnknock.v1.WafStatus
+	37,  // 232: fnknock.v1.WafService.SetWafConfig:output_type -> fnknock.v1.WafStatus
+	38,  // 233: fnknock.v1.WafService.ValidateWafBundle:output_type -> fnknock.v1.WafValidationResult
+	37,  // 234: fnknock.v1.WafService.ReloadWafBundle:output_type -> fnknock.v1.WafStatus
+	43,  // 235: fnknock.v1.WafService.DrainWafEvents:output_type -> fnknock.v1.WafDrainResult
+	47,  // 236: fnknock.v1.SslService.GetSslInfo:output_type -> fnknock.v1.SslInfo
+	4,   // 237: fnknock.v1.SslService.SetSslDeployment:output_type -> fnknock.v1.RpcStatus
+	4,   // 238: fnknock.v1.SslService.SetSslPem:output_type -> fnknock.v1.RpcStatus
+	4,   // 239: fnknock.v1.SslService.ClearSsl:output_type -> fnknock.v1.RpcStatus
+	4,   // 240: fnknock.v1.FirewallService.InitIptables:output_type -> fnknock.v1.RpcStatus
+	4,   // 241: fnknock.v1.FirewallService.CleanIptables:output_type -> fnknock.v1.RpcStatus
+	4,   // 242: fnknock.v1.FirewallService.FlushIptables:output_type -> fnknock.v1.RpcStatus
+	4,   // 243: fnknock.v1.FirewallService.AllowIp:output_type -> fnknock.v1.RpcStatus
+	4,   // 244: fnknock.v1.FirewallService.BlockIp:output_type -> fnknock.v1.RpcStatus
+	4,   // 245: fnknock.v1.FirewallService.RemoveIp:output_type -> fnknock.v1.RpcStatus
+	4,   // 246: fnknock.v1.FirewallService.BlockTcpPortForIp:output_type -> fnknock.v1.RpcStatus
+	4,   // 247: fnknock.v1.FirewallService.RemoveTcpPortRule:output_type -> fnknock.v1.RpcStatus
+	4,   // 248: fnknock.v1.FirewallService.SyncSshFirewall:output_type -> fnknock.v1.RpcStatus
+	4,   // 249: fnknock.v1.FirewallService.ClearSshFirewall:output_type -> fnknock.v1.RpcStatus
+	4,   // 250: fnknock.v1.FirewallService.SyncWhitelistFirewall:output_type -> fnknock.v1.RpcStatus
+	4,   // 251: fnknock.v1.FirewallService.BlockAll:output_type -> fnknock.v1.RpcStatus
+	4,   // 252: fnknock.v1.FirewallService.AllowAll:output_type -> fnknock.v1.RpcStatus
+	4,   // 253: fnknock.v1.FirewallService.EnsureTcpRedirect:output_type -> fnknock.v1.RpcStatus
+	4,   // 254: fnknock.v1.FirewallService.ClearTcpRedirect:output_type -> fnknock.v1.RpcStatus
+	95,  // 255: fnknock.v1.FirewallService.ListIptables:output_type -> fnknock.v1.IptablesRules
+	107, // 256: fnknock.v1.AuthBridgeService.ConnectAuthBridge:output_type -> fnknock.v1.AuthBridgeEnvelope
+	162, // [162:257] is the sub-list for method output_type
+	67,  // [67:162] is the sub-list for method input_type
+	67,  // [67:67] is the sub-list for extension type_name
+	67,  // [67:67] is the sub-list for extension extendee
+	0,   // [0:67] is the sub-list for field type_name
 }
 
 func init() { file_fnknock_v1_gateway_proto_init() }
@@ -8414,8 +10319,8 @@ func file_fnknock_v1_gateway_proto_init() {
 		return
 	}
 	file_fnknock_v1_gateway_proto_msgTypes[13].OneofWrappers = []any{}
-	file_fnknock_v1_gateway_proto_msgTypes[75].OneofWrappers = []any{}
-	file_fnknock_v1_gateway_proto_msgTypes[86].OneofWrappers = []any{
+	file_fnknock_v1_gateway_proto_msgTypes[92].OneofWrappers = []any{}
+	file_fnknock_v1_gateway_proto_msgTypes[103].OneofWrappers = []any{
 		(*AuthBridgeEnvelope_Ready)(nil),
 		(*AuthBridgeEnvelope_VerifyAuthRequest)(nil),
 		(*AuthBridgeEnvelope_VerifyAuthResponse)(nil),
@@ -8432,9 +10337,9 @@ func file_fnknock_v1_gateway_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_fnknock_v1_gateway_proto_rawDesc), len(file_fnknock_v1_gateway_proto_rawDesc)),
 			NumEnums:      4,
-			NumMessages:   91,
+			NumMessages:   108,
 			NumExtensions: 0,
-			NumServices:   8,
+			NumServices:   9,
 		},
 		GoTypes:           file_fnknock_v1_gateway_proto_goTypes,
 		DependencyIndexes: file_fnknock_v1_gateway_proto_depIdxs,

@@ -122,6 +122,14 @@ func (h *Handler) proxyFnosPortIconHijackWebSocket(w http.ResponseWriter, r *htt
 		return err
 	}
 	defer clientConn.Close()
+	monitorTrace := deepMonitorFromRequest(r)
+	if monitorTrace != nil {
+		responseHeaders := http.Header{}
+		if resp != nil {
+			responseHeaders = resp.Header.Clone()
+		}
+		monitorTrace.recordCustomWebSocketOpen(r, upstreamURL.String(), requestHeader, responseHeaders, upstreamConn.Subprotocol())
+	}
 
 	maxLifetime := options.webSocketMaxLifetime
 	if maxLifetime <= 0 {
@@ -129,9 +137,14 @@ func (h *Handler) proxyFnosPortIconHijackWebSocket(w http.ResponseWriter, r *htt
 	}
 
 	var upstreamTransform func(int, []byte) (int, []byte, error)
+	upstreamObservedDirection := "upstream_to_client"
 	if shouldRewriteFnosPortIconHijackWebSocketPayload(r) {
+		upstreamObservedDirection = "gateway_to_client"
 		responseEndpoint := h.fnosPortIconHijackPublicEndpoint()
 		upstreamTransform = func(messageType int, payload []byte) (int, []byte, error) {
+			if monitorTrace != nil {
+				monitorTrace.recordWebSocketMessage("upstream_to_gateway", messageType, payload)
+			}
 			if messageType != websocket.TextMessage {
 				return messageType, payload, nil
 			}
@@ -152,10 +165,18 @@ func (h *Handler) proxyFnosPortIconHijackWebSocket(w http.ResponseWriter, r *htt
 	defer lifetimeTimer.Stop()
 	errCh := make(chan error, 2)
 	go func() {
-		errCh <- relayWebSocketMessages(clientConn, upstreamConn, upstreamTransform)
+		errCh <- relayWebSocketMessages(clientConn, upstreamConn, upstreamTransform, func(messageType int, payload []byte) {
+			if monitorTrace != nil {
+				monitorTrace.recordWebSocketMessage(upstreamObservedDirection, messageType, payload)
+			}
+		})
 	}()
 	go func() {
-		errCh <- relayWebSocketMessages(upstreamConn, clientConn, nil)
+		errCh <- relayWebSocketMessages(upstreamConn, clientConn, nil, func(messageType int, payload []byte) {
+			if monitorTrace != nil {
+				monitorTrace.recordWebSocketMessage("client_to_upstream", messageType, payload)
+			}
+		})
 	}()
 
 	select {
@@ -415,7 +436,7 @@ func cleanFnosPortIconHijackPath(rawPath string) string {
 	return cleanPath
 }
 
-func relayWebSocketMessages(dst *websocket.Conn, src *websocket.Conn, transform func(int, []byte) (int, []byte, error)) error {
+func relayWebSocketMessages(dst *websocket.Conn, src *websocket.Conn, transform func(int, []byte) (int, []byte, error), observe func(int, []byte)) error {
 	for {
 		messageType, payload, err := src.ReadMessage()
 		if err != nil {
@@ -426,6 +447,9 @@ func relayWebSocketMessages(dst *websocket.Conn, src *websocket.Conn, transform 
 			if err != nil {
 				return err
 			}
+		}
+		if observe != nil {
+			observe(messageType, payload)
 		}
 		if err := dst.WriteMessage(messageType, payload); err != nil {
 			return err

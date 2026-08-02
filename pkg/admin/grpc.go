@@ -24,6 +24,7 @@ import (
 type GRPCServer struct {
 	pb.UnimplementedGatewayControlServiceServer
 	pb.UnimplementedGatewayLogsServiceServer
+	pb.UnimplementedDeepMonitorServiceServer
 	pb.UnimplementedSecurityServiceServer
 	pb.UnimplementedTrafficServiceServer
 	pb.UnimplementedWafServiceServer

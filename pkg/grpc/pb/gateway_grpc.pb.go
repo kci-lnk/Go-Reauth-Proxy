@@ -2170,6 +2170,460 @@ var GatewayLogsService_ServiceDesc = grpc.ServiceDesc{
 }
 
 const (
+	DeepMonitorService_StartSession_FullMethodName         = "/fnknock.v1.DeepMonitorService/StartSession"
+	DeepMonitorService_ExtendSession_FullMethodName        = "/fnknock.v1.DeepMonitorService/ExtendSession"
+	DeepMonitorService_StopSession_FullMethodName          = "/fnknock.v1.DeepMonitorService/StopSession"
+	DeepMonitorService_ListSessions_FullMethodName         = "/fnknock.v1.DeepMonitorService/ListSessions"
+	DeepMonitorService_QueryEvents_FullMethodName          = "/fnknock.v1.DeepMonitorService/QueryEvents"
+	DeepMonitorService_GetEvent_FullMethodName             = "/fnknock.v1.DeepMonitorService/GetEvent"
+	DeepMonitorService_WatchEvents_FullMethodName          = "/fnknock.v1.DeepMonitorService/WatchEvents"
+	DeepMonitorService_StreamPayload_FullMethodName        = "/fnknock.v1.DeepMonitorService/StreamPayload"
+	DeepMonitorService_StreamSessionArchive_FullMethodName = "/fnknock.v1.DeepMonitorService/StreamSessionArchive"
+	DeepMonitorService_DeleteSession_FullMethodName        = "/fnknock.v1.DeepMonitorService/DeleteSession"
+)
+
+// DeepMonitorServiceClient is the client API for DeepMonitorService service.
+//
+// For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
+type DeepMonitorServiceClient interface {
+	StartSession(ctx context.Context, in *DeepMonitorStartRequest, opts ...grpc.CallOption) (*DeepMonitorSession, error)
+	ExtendSession(ctx context.Context, in *DeepMonitorExtendRequest, opts ...grpc.CallOption) (*DeepMonitorSession, error)
+	StopSession(ctx context.Context, in *DeepMonitorSessionRequest, opts ...grpc.CallOption) (*DeepMonitorSession, error)
+	ListSessions(ctx context.Context, in *DeepMonitorListRequest, opts ...grpc.CallOption) (*DeepMonitorSessionList, error)
+	QueryEvents(ctx context.Context, in *DeepMonitorQuery, opts ...grpc.CallOption) (*DeepMonitorQueryResult, error)
+	GetEvent(ctx context.Context, in *DeepMonitorEventRequest, opts ...grpc.CallOption) (*DeepMonitorEvent, error)
+	WatchEvents(ctx context.Context, in *DeepMonitorWatchRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[DeepMonitorEventSummary], error)
+	StreamPayload(ctx context.Context, in *DeepMonitorPayloadRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[DeepMonitorPayloadChunk], error)
+	StreamSessionArchive(ctx context.Context, in *DeepMonitorSessionRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[DeepMonitorPayloadChunk], error)
+	DeleteSession(ctx context.Context, in *DeepMonitorSessionRequest, opts ...grpc.CallOption) (*RpcStatus, error)
+}
+
+type deepMonitorServiceClient struct {
+	cc grpc.ClientConnInterface
+}
+
+func NewDeepMonitorServiceClient(cc grpc.ClientConnInterface) DeepMonitorServiceClient {
+	return &deepMonitorServiceClient{cc}
+}
+
+func (c *deepMonitorServiceClient) StartSession(ctx context.Context, in *DeepMonitorStartRequest, opts ...grpc.CallOption) (*DeepMonitorSession, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(DeepMonitorSession)
+	err := c.cc.Invoke(ctx, DeepMonitorService_StartSession_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *deepMonitorServiceClient) ExtendSession(ctx context.Context, in *DeepMonitorExtendRequest, opts ...grpc.CallOption) (*DeepMonitorSession, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(DeepMonitorSession)
+	err := c.cc.Invoke(ctx, DeepMonitorService_ExtendSession_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *deepMonitorServiceClient) StopSession(ctx context.Context, in *DeepMonitorSessionRequest, opts ...grpc.CallOption) (*DeepMonitorSession, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(DeepMonitorSession)
+	err := c.cc.Invoke(ctx, DeepMonitorService_StopSession_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *deepMonitorServiceClient) ListSessions(ctx context.Context, in *DeepMonitorListRequest, opts ...grpc.CallOption) (*DeepMonitorSessionList, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(DeepMonitorSessionList)
+	err := c.cc.Invoke(ctx, DeepMonitorService_ListSessions_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *deepMonitorServiceClient) QueryEvents(ctx context.Context, in *DeepMonitorQuery, opts ...grpc.CallOption) (*DeepMonitorQueryResult, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(DeepMonitorQueryResult)
+	err := c.cc.Invoke(ctx, DeepMonitorService_QueryEvents_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *deepMonitorServiceClient) GetEvent(ctx context.Context, in *DeepMonitorEventRequest, opts ...grpc.CallOption) (*DeepMonitorEvent, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(DeepMonitorEvent)
+	err := c.cc.Invoke(ctx, DeepMonitorService_GetEvent_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *deepMonitorServiceClient) WatchEvents(ctx context.Context, in *DeepMonitorWatchRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[DeepMonitorEventSummary], error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	stream, err := c.cc.NewStream(ctx, &DeepMonitorService_ServiceDesc.Streams[0], DeepMonitorService_WatchEvents_FullMethodName, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	x := &grpc.GenericClientStream[DeepMonitorWatchRequest, DeepMonitorEventSummary]{ClientStream: stream}
+	if err := x.ClientStream.SendMsg(in); err != nil {
+		return nil, err
+	}
+	if err := x.ClientStream.CloseSend(); err != nil {
+		return nil, err
+	}
+	return x, nil
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type DeepMonitorService_WatchEventsClient = grpc.ServerStreamingClient[DeepMonitorEventSummary]
+
+func (c *deepMonitorServiceClient) StreamPayload(ctx context.Context, in *DeepMonitorPayloadRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[DeepMonitorPayloadChunk], error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	stream, err := c.cc.NewStream(ctx, &DeepMonitorService_ServiceDesc.Streams[1], DeepMonitorService_StreamPayload_FullMethodName, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	x := &grpc.GenericClientStream[DeepMonitorPayloadRequest, DeepMonitorPayloadChunk]{ClientStream: stream}
+	if err := x.ClientStream.SendMsg(in); err != nil {
+		return nil, err
+	}
+	if err := x.ClientStream.CloseSend(); err != nil {
+		return nil, err
+	}
+	return x, nil
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type DeepMonitorService_StreamPayloadClient = grpc.ServerStreamingClient[DeepMonitorPayloadChunk]
+
+func (c *deepMonitorServiceClient) StreamSessionArchive(ctx context.Context, in *DeepMonitorSessionRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[DeepMonitorPayloadChunk], error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	stream, err := c.cc.NewStream(ctx, &DeepMonitorService_ServiceDesc.Streams[2], DeepMonitorService_StreamSessionArchive_FullMethodName, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	x := &grpc.GenericClientStream[DeepMonitorSessionRequest, DeepMonitorPayloadChunk]{ClientStream: stream}
+	if err := x.ClientStream.SendMsg(in); err != nil {
+		return nil, err
+	}
+	if err := x.ClientStream.CloseSend(); err != nil {
+		return nil, err
+	}
+	return x, nil
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type DeepMonitorService_StreamSessionArchiveClient = grpc.ServerStreamingClient[DeepMonitorPayloadChunk]
+
+func (c *deepMonitorServiceClient) DeleteSession(ctx context.Context, in *DeepMonitorSessionRequest, opts ...grpc.CallOption) (*RpcStatus, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(RpcStatus)
+	err := c.cc.Invoke(ctx, DeepMonitorService_DeleteSession_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// DeepMonitorServiceServer is the server API for DeepMonitorService service.
+// All implementations must embed UnimplementedDeepMonitorServiceServer
+// for forward compatibility.
+type DeepMonitorServiceServer interface {
+	StartSession(context.Context, *DeepMonitorStartRequest) (*DeepMonitorSession, error)
+	ExtendSession(context.Context, *DeepMonitorExtendRequest) (*DeepMonitorSession, error)
+	StopSession(context.Context, *DeepMonitorSessionRequest) (*DeepMonitorSession, error)
+	ListSessions(context.Context, *DeepMonitorListRequest) (*DeepMonitorSessionList, error)
+	QueryEvents(context.Context, *DeepMonitorQuery) (*DeepMonitorQueryResult, error)
+	GetEvent(context.Context, *DeepMonitorEventRequest) (*DeepMonitorEvent, error)
+	WatchEvents(*DeepMonitorWatchRequest, grpc.ServerStreamingServer[DeepMonitorEventSummary]) error
+	StreamPayload(*DeepMonitorPayloadRequest, grpc.ServerStreamingServer[DeepMonitorPayloadChunk]) error
+	StreamSessionArchive(*DeepMonitorSessionRequest, grpc.ServerStreamingServer[DeepMonitorPayloadChunk]) error
+	DeleteSession(context.Context, *DeepMonitorSessionRequest) (*RpcStatus, error)
+	mustEmbedUnimplementedDeepMonitorServiceServer()
+}
+
+// UnimplementedDeepMonitorServiceServer must be embedded to have
+// forward compatible implementations.
+//
+// NOTE: this should be embedded by value instead of pointer to avoid a nil
+// pointer dereference when methods are called.
+type UnimplementedDeepMonitorServiceServer struct{}
+
+func (UnimplementedDeepMonitorServiceServer) StartSession(context.Context, *DeepMonitorStartRequest) (*DeepMonitorSession, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method StartSession not implemented")
+}
+func (UnimplementedDeepMonitorServiceServer) ExtendSession(context.Context, *DeepMonitorExtendRequest) (*DeepMonitorSession, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ExtendSession not implemented")
+}
+func (UnimplementedDeepMonitorServiceServer) StopSession(context.Context, *DeepMonitorSessionRequest) (*DeepMonitorSession, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method StopSession not implemented")
+}
+func (UnimplementedDeepMonitorServiceServer) ListSessions(context.Context, *DeepMonitorListRequest) (*DeepMonitorSessionList, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ListSessions not implemented")
+}
+func (UnimplementedDeepMonitorServiceServer) QueryEvents(context.Context, *DeepMonitorQuery) (*DeepMonitorQueryResult, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method QueryEvents not implemented")
+}
+func (UnimplementedDeepMonitorServiceServer) GetEvent(context.Context, *DeepMonitorEventRequest) (*DeepMonitorEvent, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method GetEvent not implemented")
+}
+func (UnimplementedDeepMonitorServiceServer) WatchEvents(*DeepMonitorWatchRequest, grpc.ServerStreamingServer[DeepMonitorEventSummary]) error {
+	return status.Errorf(codes.Unimplemented, "method WatchEvents not implemented")
+}
+func (UnimplementedDeepMonitorServiceServer) StreamPayload(*DeepMonitorPayloadRequest, grpc.ServerStreamingServer[DeepMonitorPayloadChunk]) error {
+	return status.Errorf(codes.Unimplemented, "method StreamPayload not implemented")
+}
+func (UnimplementedDeepMonitorServiceServer) StreamSessionArchive(*DeepMonitorSessionRequest, grpc.ServerStreamingServer[DeepMonitorPayloadChunk]) error {
+	return status.Errorf(codes.Unimplemented, "method StreamSessionArchive not implemented")
+}
+func (UnimplementedDeepMonitorServiceServer) DeleteSession(context.Context, *DeepMonitorSessionRequest) (*RpcStatus, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method DeleteSession not implemented")
+}
+func (UnimplementedDeepMonitorServiceServer) mustEmbedUnimplementedDeepMonitorServiceServer() {}
+func (UnimplementedDeepMonitorServiceServer) testEmbeddedByValue()                            {}
+
+// UnsafeDeepMonitorServiceServer may be embedded to opt out of forward compatibility for this service.
+// Use of this interface is not recommended, as added methods to DeepMonitorServiceServer will
+// result in compilation errors.
+type UnsafeDeepMonitorServiceServer interface {
+	mustEmbedUnimplementedDeepMonitorServiceServer()
+}
+
+func RegisterDeepMonitorServiceServer(s grpc.ServiceRegistrar, srv DeepMonitorServiceServer) {
+	// If the following call pancis, it indicates UnimplementedDeepMonitorServiceServer was
+	// embedded by pointer and is nil.  This will cause panics if an
+	// unimplemented method is ever invoked, so we test this at initialization
+	// time to prevent it from happening at runtime later due to I/O.
+	if t, ok := srv.(interface{ testEmbeddedByValue() }); ok {
+		t.testEmbeddedByValue()
+	}
+	s.RegisterService(&DeepMonitorService_ServiceDesc, srv)
+}
+
+func _DeepMonitorService_StartSession_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(DeepMonitorStartRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(DeepMonitorServiceServer).StartSession(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: DeepMonitorService_StartSession_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(DeepMonitorServiceServer).StartSession(ctx, req.(*DeepMonitorStartRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _DeepMonitorService_ExtendSession_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(DeepMonitorExtendRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(DeepMonitorServiceServer).ExtendSession(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: DeepMonitorService_ExtendSession_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(DeepMonitorServiceServer).ExtendSession(ctx, req.(*DeepMonitorExtendRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _DeepMonitorService_StopSession_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(DeepMonitorSessionRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(DeepMonitorServiceServer).StopSession(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: DeepMonitorService_StopSession_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(DeepMonitorServiceServer).StopSession(ctx, req.(*DeepMonitorSessionRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _DeepMonitorService_ListSessions_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(DeepMonitorListRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(DeepMonitorServiceServer).ListSessions(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: DeepMonitorService_ListSessions_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(DeepMonitorServiceServer).ListSessions(ctx, req.(*DeepMonitorListRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _DeepMonitorService_QueryEvents_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(DeepMonitorQuery)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(DeepMonitorServiceServer).QueryEvents(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: DeepMonitorService_QueryEvents_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(DeepMonitorServiceServer).QueryEvents(ctx, req.(*DeepMonitorQuery))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _DeepMonitorService_GetEvent_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(DeepMonitorEventRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(DeepMonitorServiceServer).GetEvent(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: DeepMonitorService_GetEvent_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(DeepMonitorServiceServer).GetEvent(ctx, req.(*DeepMonitorEventRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _DeepMonitorService_WatchEvents_Handler(srv interface{}, stream grpc.ServerStream) error {
+	m := new(DeepMonitorWatchRequest)
+	if err := stream.RecvMsg(m); err != nil {
+		return err
+	}
+	return srv.(DeepMonitorServiceServer).WatchEvents(m, &grpc.GenericServerStream[DeepMonitorWatchRequest, DeepMonitorEventSummary]{ServerStream: stream})
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type DeepMonitorService_WatchEventsServer = grpc.ServerStreamingServer[DeepMonitorEventSummary]
+
+func _DeepMonitorService_StreamPayload_Handler(srv interface{}, stream grpc.ServerStream) error {
+	m := new(DeepMonitorPayloadRequest)
+	if err := stream.RecvMsg(m); err != nil {
+		return err
+	}
+	return srv.(DeepMonitorServiceServer).StreamPayload(m, &grpc.GenericServerStream[DeepMonitorPayloadRequest, DeepMonitorPayloadChunk]{ServerStream: stream})
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type DeepMonitorService_StreamPayloadServer = grpc.ServerStreamingServer[DeepMonitorPayloadChunk]
+
+func _DeepMonitorService_StreamSessionArchive_Handler(srv interface{}, stream grpc.ServerStream) error {
+	m := new(DeepMonitorSessionRequest)
+	if err := stream.RecvMsg(m); err != nil {
+		return err
+	}
+	return srv.(DeepMonitorServiceServer).StreamSessionArchive(m, &grpc.GenericServerStream[DeepMonitorSessionRequest, DeepMonitorPayloadChunk]{ServerStream: stream})
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type DeepMonitorService_StreamSessionArchiveServer = grpc.ServerStreamingServer[DeepMonitorPayloadChunk]
+
+func _DeepMonitorService_DeleteSession_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(DeepMonitorSessionRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(DeepMonitorServiceServer).DeleteSession(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: DeepMonitorService_DeleteSession_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(DeepMonitorServiceServer).DeleteSession(ctx, req.(*DeepMonitorSessionRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+// DeepMonitorService_ServiceDesc is the grpc.ServiceDesc for DeepMonitorService service.
+// It's only intended for direct use with grpc.RegisterService,
+// and not to be introspected or modified (even as a copy)
+var DeepMonitorService_ServiceDesc = grpc.ServiceDesc{
+	ServiceName: "fnknock.v1.DeepMonitorService",
+	HandlerType: (*DeepMonitorServiceServer)(nil),
+	Methods: []grpc.MethodDesc{
+		{
+			MethodName: "StartSession",
+			Handler:    _DeepMonitorService_StartSession_Handler,
+		},
+		{
+			MethodName: "ExtendSession",
+			Handler:    _DeepMonitorService_ExtendSession_Handler,
+		},
+		{
+			MethodName: "StopSession",
+			Handler:    _DeepMonitorService_StopSession_Handler,
+		},
+		{
+			MethodName: "ListSessions",
+			Handler:    _DeepMonitorService_ListSessions_Handler,
+		},
+		{
+			MethodName: "QueryEvents",
+			Handler:    _DeepMonitorService_QueryEvents_Handler,
+		},
+		{
+			MethodName: "GetEvent",
+			Handler:    _DeepMonitorService_GetEvent_Handler,
+		},
+		{
+			MethodName: "DeleteSession",
+			Handler:    _DeepMonitorService_DeleteSession_Handler,
+		},
+	},
+	Streams: []grpc.StreamDesc{
+		{
+			StreamName:    "WatchEvents",
+			Handler:       _DeepMonitorService_WatchEvents_Handler,
+			ServerStreams: true,
+		},
+		{
+			StreamName:    "StreamPayload",
+			Handler:       _DeepMonitorService_StreamPayload_Handler,
+			ServerStreams: true,
+		},
+		{
+			StreamName:    "StreamSessionArchive",
+			Handler:       _DeepMonitorService_StreamSessionArchive_Handler,
+			ServerStreams: true,
+		},
+	},
+	Metadata: "fnknock/v1/gateway.proto",
+}
+
+const (
 	SecurityService_ListGeneralBlacklist_FullMethodName   = "/fnknock.v1.SecurityService/ListGeneralBlacklist"
 	SecurityService_CheckGeneralBlacklist_FullMethodName  = "/fnknock.v1.SecurityService/CheckGeneralBlacklist"
 	SecurityService_AddGeneralBlacklist_FullMethodName    = "/fnknock.v1.SecurityService/AddGeneralBlacklist"

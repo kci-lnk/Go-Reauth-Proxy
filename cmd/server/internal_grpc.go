@@ -61,6 +61,9 @@ func startInternalGRPCServer(port int, token string, control pb.GatewayControlSe
 	if logs, ok := control.(pb.GatewayLogsServiceServer); ok {
 		pb.RegisterGatewayLogsServiceServer(server, logs)
 	}
+	if deepMonitor, ok := control.(pb.DeepMonitorServiceServer); ok {
+		pb.RegisterDeepMonitorServiceServer(server, deepMonitor)
+	}
 	if security, ok := control.(pb.SecurityServiceServer); ok {
 		pb.RegisterSecurityServiceServer(server, security)
 	}

@@ -11,6 +11,7 @@ import (
 	stderrors "errors"
 	"fmt"
 	"go-reauth-proxy/pkg/config"
+	"go-reauth-proxy/pkg/deepmonitor"
 	"go-reauth-proxy/pkg/diagnostics"
 	"go-reauth-proxy/pkg/errors"
 	"go-reauth-proxy/pkg/events"
@@ -124,9 +125,10 @@ type Handler struct {
 	routeGeneration         string
 	routeIncarnations       map[string]routeIncarnation
 
-	configManager     *config.Manager
-	sslConfig         models.SSLConfig
-	gatewayLogManager *gatewaylog.Manager
+	configManager      *config.Manager
+	sslConfig          models.SSLConfig
+	gatewayLogManager  *gatewaylog.Manager
+	deepMonitorManager *deepmonitor.Manager
 
 	trafficTotalIn  atomic.Uint64
 	trafficTotalOut atomic.Uint64
@@ -166,10 +168,15 @@ func (h *Handler) SetAuthBridgeManager(manager *rpcbridge.AuthBridgeManager) {
 }
 
 func (h *Handler) Close() {
-	if h == nil || h.gatewayLogManager == nil {
+	if h == nil {
 		return
 	}
-	h.gatewayLogManager.Close()
+	if h.gatewayLogManager != nil {
+		h.gatewayLogManager.Close()
+	}
+	if h.deepMonitorManager != nil {
+		h.deepMonitorManager.Close()
+	}
 }
 
 func (h *Handler) authBridgeManager() authBridgeClient {
@@ -1609,6 +1616,10 @@ func NewHandler(adminPort int, proxyPort int, cfgManager *config.Manager, initia
 	}
 	pruneVisibilityPolicies(initialHostRules, initialVisibility, initialPolicies, initialCompiledPolicies)
 
+	deepMonitorManager, deepMonitorErr := deepmonitor.NewManager(logsDir)
+	if deepMonitorErr != nil {
+		log.Printf("Failed to initialize deep monitor storage: %v", deepMonitorErr)
+	}
 	h := &Handler{
 		Rules:                      initialCfg.Rules,
 		HostRules:                  initialHostRules,
@@ -1634,6 +1645,7 @@ func NewHandler(adminPort int, proxyPort int, cfgManager *config.Manager, initia
 		configManager:              cfgManager,
 		sslConfig:                  copySSLConfig(initialCfg.SSL),
 		gatewayLogManager:          gatewaylog.NewManager(logsDir, logConfig),
+		deepMonitorManager:         deepMonitorManager,
 		fnAppMockService:           newFNAppMockServiceFromEnv(),
 		proxyTransport:             newProxyTransport(),
 		authCache:                  newAuthStateCache(),
@@ -4934,6 +4946,7 @@ type trafficResponseWriter struct {
 	http.ResponseWriter
 	handler       *Handler
 	metrics       *requestTrafficMetrics
+	deepMonitor   *deepMonitorRequest
 	skipAccessLog bool
 }
 
@@ -4941,6 +4954,9 @@ func (tw *trafficResponseWriter) WriteHeader(statusCode int) {
 	if !tw.metrics.wroteHeader {
 		tw.metrics.wroteHeader = true
 		tw.metrics.statusCode = statusCode
+		if tw.deepMonitor != nil {
+			tw.deepMonitor.captureClientHeader(tw.Header())
+		}
 	}
 	tw.ResponseWriter.WriteHeader(statusCode)
 }
@@ -4952,6 +4968,9 @@ func (tw *trafficResponseWriter) Write(p []byte) (int, error) {
 	n, err := tw.ResponseWriter.Write(p)
 	if n > 0 {
 		tw.metrics.addOut(tw.handler, uint64(n))
+		if tw.deepMonitor != nil {
+			tw.deepMonitor.captureClientBody(p[:n])
+		}
 	}
 	return n, err
 }
@@ -5004,6 +5023,8 @@ func wrapRequestBodyForTraffic(r *http.Request, h *Handler, metrics *requestTraf
 
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
+	deepMonitorTrace := h.beginDeepMonitor(r, start)
+	r = withDeepMonitor(r, deepMonitorTrace)
 	requestID := ""
 	if logger.DebugEnabled() {
 		requestID = logger.NextDebugRequestID()
@@ -5031,7 +5052,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	var clientIP string
 	loggedStatusCode := 0
 
-	tw := &trafficResponseWriter{ResponseWriter: w, handler: h, metrics: metrics}
+	tw := &trafficResponseWriter{ResponseWriter: w, handler: h, metrics: metrics, deepMonitor: deepMonitorTrace}
 	w = tw
 	if event := debugProxyEvent("request_start", requestID); event != nil {
 		event.Str("method", r.Method).
@@ -5072,6 +5093,10 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		if clientIP != "" {
 			accessEntry.RemoteIP = clientIP
+		}
+		if deepMonitorTrace != nil {
+			deepMonitorTrace.captureClientHeader(tw.Header())
+			deepMonitorTrace.finish(r, accessEntry)
 		}
 		if !tw.skipAccessLog && h.gatewayLogManager != nil {
 			h.gatewayLogManager.Log(accessEntry)
@@ -5128,6 +5153,9 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	trustedClientIP := h.IsGatewayTrustedClientIP(clientIP)
 	accessEntry.RemoteIP = clientIP
+	if deepMonitorTrace != nil {
+		deepMonitorTrace.setClientIP(clientIP)
+	}
 	if event := debugProxyEvent("client_ip_resolved", requestID); event != nil {
 		event.Str("client_ip", logger.SanitizeLogString(clientIP)).
 			Bool("trusted_client_ip", trustedClientIP).
@@ -5187,6 +5215,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	routeTimingStarted := time.Now()
 	matchedHostRule := matchHostRule(r, snapshot)
 	if fnosConnect != nil {
 		matchedHostRule = &fnosConnect.hostRule
@@ -5396,6 +5425,9 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		matchedRule,
 	)
 	r = withAuthRouteIdentity(r, routedBackend.cacheIdentity())
+	if deepMonitorTrace != nil {
+		deepMonitorTrace.addRouteDuration(time.Since(routeTimingStarted))
+	}
 	if !h.allowReverseProxyRequest(w, r, clientIP, isAuthRoute, matchedHostRule, matchedHostLocation, matchedRule, trustedClientIP, requestID) {
 		return
 	}
@@ -5414,6 +5446,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.mu.RUnlock()
 		wafBypassedByCommonLocation := commonLocationExemptions != nil && commonLocationExemptions.shouldBypassWAF(clientIP)
 		if !trustedClientIP && !wafBypassedByCommonLocation {
+			wafTimingStarted := time.Now()
 			decision := wafRuntime.Evaluate(r, proxywaf.EvaluateContext{
 				ClientIP:   clientIP,
 				RouteType:  wafRouteType,
@@ -5422,6 +5455,9 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				Scheme:     requestScheme(r),
 				RemoteAddr: r.RemoteAddr,
 			})
+			if deepMonitorTrace != nil {
+				deepMonitorTrace.addWAFDuration(time.Since(wafTimingStarted))
+			}
 			if event := debugProxyEvent("waf_evaluated", requestID); event != nil {
 				event.Bool("enabled", decision.Enabled).
 					Bool("allowed", decision.Allowed).
@@ -5475,8 +5511,20 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	isMatch := isSelectRoute || isAuthRoute || matchedHostRule != nil || matchedRule != nil || r.URL.Path == "/"
 	accessEntry.Matched = isMatch
 	accessEntry.AccessMode = accessMode
+	var authTimingStarted time.Time
+	finishAuthTiming := func() {
+		if authTimingStarted.IsZero() {
+			return
+		}
+		if deepMonitorTrace != nil {
+			deepMonitorTrace.addAuthDuration(time.Since(authTimingStarted))
+		}
+		authTimingStarted = time.Time{}
+	}
+	defer finishAuthTiming()
 	var preparedAuth *authCheckExecution
 	if shouldRunPreflightForRoute(isSelectRoute, isAuthRoute, matchedHostRule, matchedRule) {
+		authTimingStarted = time.Now()
 		if strings.TrimSpace(snapshot.authConfig.AuthURL) != "" {
 			requestAuth = newRequestAuthContext(r, clientIP, authContextAccessMode, routedBackend)
 		}
@@ -5552,6 +5600,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				Str("access_mode", accessMode).
 				Send()
 		}
+		finishAuthTiming()
 	} else {
 		if event := debugProxyEvent("preflight_skipped_auth_not_required", requestID); event != nil {
 			event.Bool("matched", isMatch).
@@ -5576,7 +5625,9 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		accessEntry.RouteType = "select"
 		accessEntry.RouteKey = r.URL.Path
 		accessEntry.AuthRequired = true
+		authTimingStarted = time.Now()
 		authResult := h.handleSelectRoute(w, r, snapshot, clientIP, requestID, requestAuth, preparedAuth)
+		finishAuthTiming()
 		applyAuthResultToLogEntry(&accessEntry, authResult)
 		if event := debugProxyEvent("select_route_served", requestID); event != nil {
 			event.Bool("auth_required", accessEntry.AuthRequired).
@@ -5626,7 +5677,9 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		accessEntry.AuthRequired = matchedHostRule.UseAuth && snapshot.authConfig.AuthURL != ""
 		authResult := authCheckResult{allowed: true, decision: "not_required"}
 		if accessEntry.AuthRequired {
+			authTimingStarted = time.Now()
 			authResult = h.checkAuth(w, r, snapshot.authConfig, clientIP, matchedHostRule.AccessMode, authUpstreamTarget, requestID, requestAuth, preparedAuth)
+			finishAuthTiming()
 			applyAuthResultToLogEntry(&accessEntry, authResult)
 			if !authResult.allowed {
 				if authResult.decision == "denied" {
@@ -5643,7 +5696,9 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			if requestAuth == nil {
 				requestAuth = newRequestAuthContext(r, clientIP, "", routedBackend)
 			}
+			authTimingStarted = time.Now()
 			authResult = h.checkAuthForToolbar(w, r, snapshot.authConfig, clientIP, requestID, requestAuth)
+			finishAuthTiming()
 			applyAuthResultToLogEntry(&accessEntry, authResult)
 		} else {
 			accessEntry.AuthDecision = authResult.decision
@@ -5691,7 +5746,9 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			if requestAuth == nil {
 				requestAuth = newRequestAuthContext(r, clientIP, "", routedBackend)
 			}
+			authTimingStarted = time.Now()
 			authResult = h.checkAuthForToolbar(w, r, snapshot.authConfig, clientIP, requestID, requestAuth)
+			finishAuthTiming()
 			applyAuthResultToLogEntry(&accessEntry, authResult)
 		}
 		if event := debugProxyEvent("route_not_found", requestID); event != nil {
@@ -5721,7 +5778,9 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	authResult := authCheckResult{allowed: true, decision: "not_required"}
 	if accessEntry.AuthRequired {
+		authTimingStarted = time.Now()
 		authResult = h.checkAuth(w, r, snapshot.authConfig, clientIP, "", matchedRule.Target, requestID, requestAuth, preparedAuth)
+		finishAuthTiming()
 		applyAuthResultToLogEntry(&accessEntry, authResult)
 		if !authResult.allowed {
 			if authResult.decision == "denied" {
@@ -5738,7 +5797,9 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if requestAuth == nil {
 			requestAuth = newRequestAuthContext(r, clientIP, "", routedBackend)
 		}
+		authTimingStarted = time.Now()
 		authResult = h.checkAuthForToolbar(w, r, snapshot.authConfig, clientIP, requestID, requestAuth)
+		finishAuthTiming()
 		applyAuthResultToLogEntry(&accessEntry, authResult)
 	} else {
 		accessEntry.AuthDecision = authResult.decision
@@ -5844,7 +5905,7 @@ func (h *Handler) handleAuthProxyRoute(w http.ResponseWriter, r *http.Request, s
 	if transport == nil {
 		transport = newProxyTransport()
 	}
-	proxy.Transport = transport
+	proxy.Transport = h.monitoredTransport(transport)
 
 	originalDirector := proxy.Director
 	proxy.Director = func(req *http.Request) {
@@ -6282,6 +6343,9 @@ func serveHostLocationResponse(w http.ResponseWriter, location models.HostLocati
 }
 
 func (h *Handler) proxyToHostLocationTarget(w http.ResponseWriter, r *http.Request, snapshot requestSnapshot, matchedRule models.HostRule, location models.HostLocation, clientIP string, authResult authCheckResult, requestID string) {
+	if trace := deepMonitorFromRequest(r); trace != nil {
+		trace.setConnectionIdentity(clientIP, authResult)
+	}
 	targetRuntime := reverseProxyTargetRuntimeFor(snapshot, location.Target)
 	if targetRuntime.err != nil {
 		if event := debugProxyEvent("reverse_proxy_target_invalid", requestID); event != nil {
@@ -6322,7 +6386,7 @@ func (h *Handler) proxyToHostLocationTarget(w http.ResponseWriter, r *http.Reque
 	}
 
 	proxy := &httputil.ReverseProxy{
-		Transport:  transport,
+		Transport:  h.monitoredTransport(transport),
 		BufferPool: sharedProxyBufferPool,
 		Rewrite: func(pr *httputil.ProxyRequest) {
 			applyForwardedHeaderPolicy(pr.Out, pr.In, clientIP, omitForwardedHeaders)
@@ -6461,6 +6525,9 @@ func (h *Handler) proxyToHostLocationTarget(w http.ResponseWriter, r *http.Reque
 }
 
 func (h *Handler) proxyToHostTarget(w http.ResponseWriter, r *http.Request, snapshot requestSnapshot, matchedRule models.HostRule, clientIP string, authResult authCheckResult, requestID string) {
+	if trace := deepMonitorFromRequest(r); trace != nil {
+		trace.setConnectionIdentity(clientIP, authResult)
+	}
 	targetRuntime := reverseProxyTargetRuntimeFor(snapshot, matchedRule.Target)
 	if targetRuntime.err != nil {
 		if event := debugProxyEvent("reverse_proxy_target_invalid", requestID); event != nil {
@@ -6505,7 +6572,7 @@ func (h *Handler) proxyToHostTarget(w http.ResponseWriter, r *http.Request, snap
 	}
 
 	proxy := &httputil.ReverseProxy{
-		Transport:  transport,
+		Transport:  h.monitoredTransport(transport),
 		BufferPool: sharedProxyBufferPool,
 		Rewrite: func(pr *httputil.ProxyRequest) {
 			applyForwardedHeaderPolicy(pr.Out, pr.In, clientIP, omitForwardedHeaders)
@@ -6629,6 +6696,9 @@ func (h *Handler) proxyToHostTarget(w http.ResponseWriter, r *http.Request, snap
 }
 
 func (h *Handler) proxyToRuleTarget(w http.ResponseWriter, r *http.Request, snapshot requestSnapshot, matchedRule models.Rule, clientIP string, authResult authCheckResult, requestID string) {
+	if trace := deepMonitorFromRequest(r); trace != nil {
+		trace.setConnectionIdentity(clientIP, authResult)
+	}
 	targetRuntime := reverseProxyTargetRuntimeFor(snapshot, matchedRule.Target)
 	if targetRuntime.err != nil {
 		if event := debugProxyEvent("reverse_proxy_target_invalid", requestID); event != nil {
@@ -6665,7 +6735,7 @@ func (h *Handler) proxyToRuleTarget(w http.ResponseWriter, r *http.Request, snap
 			Send()
 	}
 	proxy := &httputil.ReverseProxy{
-		Transport:  transport,
+		Transport:  h.monitoredTransport(transport),
 		BufferPool: sharedProxyBufferPool,
 		Rewrite: func(pr *httputil.ProxyRequest) {
 			applyForwardedHeaderPolicy(pr.Out, pr.In, clientIP, false)

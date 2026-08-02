@@ -10,6 +10,7 @@ var commonGatewayCapabilities = []string{
 	"waf",
 	"blacklist",
 	"logs",
+	"deep_monitor_v1",
 	"lifecycle",
 	"runtime_info_v1",
 	"host_rule_groups_v1",

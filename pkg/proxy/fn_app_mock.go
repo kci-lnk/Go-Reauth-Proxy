@@ -211,6 +211,10 @@ func (s *fnAppMockService) serveUnauthorizedWebsocket(w http.ResponseWriter, r *
 		return err
 	}
 	defer conn.Close()
+	monitorTrace := deepMonitorFromRequest(r)
+	if monitorTrace != nil {
+		monitorTrace.recordCustomWebSocketOpen(r, upstreamTarget, r.Header, headers, conn.Subprotocol())
+	}
 
 	if readLimit := s.resolvedUnauthorizedWSReadLimit(); readLimit > 0 {
 		conn.SetReadLimit(readLimit)
@@ -220,12 +224,15 @@ func (s *fnAppMockService) serveUnauthorizedWebsocket(w http.ResponseWriter, r *
 		return err
 	}
 
-	request, err := readFNAppMockRequest(conn)
+	request, rawRequest, err := readFNAppMockRequest(conn)
 	if err != nil {
-		return s.handleUnauthorizedWSReadError(conn, "", err)
+		return s.handleUnauthorizedWSReadError(conn, "", err, monitorTrace)
+	}
+	if monitorTrace != nil {
+		monitorTrace.recordWebSocketMessage("client_to_gateway", websocket.TextMessage, rawRequest)
 	}
 	if request.Req != "util.crypto.getRSAPub" {
-		return s.failUnauthorizedWebsocket(conn, resolveFNAppFailureReqID(request.ReqID, ""))
+		return s.failUnauthorizedWebsocket(conn, resolveFNAppFailureReqID(request.ReqID, ""), monitorTrace)
 	}
 
 	response := struct {
@@ -241,7 +248,14 @@ func (s *fnAppMockService) serveUnauthorizedWebsocket(w http.ResponseWriter, r *
 		Result:    "succ",
 		ReqID:     request.ReqID,
 	}
-	if err := conn.WriteJSON(response); err != nil {
+	responsePayload, err := json.Marshal(response)
+	if err != nil {
+		return err
+	}
+	if monitorTrace != nil {
+		monitorTrace.recordWebSocketMessage("gateway_to_client", websocket.TextMessage, responsePayload)
+	}
+	if err := conn.WriteMessage(websocket.TextMessage, responsePayload); err != nil {
 		return err
 	}
 
@@ -249,12 +263,15 @@ func (s *fnAppMockService) serveUnauthorizedWebsocket(w http.ResponseWriter, r *
 		return err
 	}
 
-	request, err = readFNAppMockRequest(conn)
+	request, rawRequest, err = readFNAppMockRequest(conn)
 	if err != nil {
-		return s.handleUnauthorizedWSReadError(conn, response.ReqID, err)
+		return s.handleUnauthorizedWSReadError(conn, response.ReqID, err, monitorTrace)
+	}
+	if monitorTrace != nil {
+		monitorTrace.recordWebSocketMessage("client_to_gateway", websocket.TextMessage, rawRequest)
 	}
 
-	return s.failUnauthorizedWebsocket(conn, resolveFNAppFailureReqID(request.ReqID, response.ReqID))
+	return s.failUnauthorizedWebsocket(conn, resolveFNAppFailureReqID(request.ReqID, response.ReqID), monitorTrace)
 }
 
 var errFNAppUnexpectedWSMessageType = errors.New("unexpected FN App websocket message type")
@@ -264,20 +281,20 @@ type fnAppMockRequest struct {
 	ReqID string `json:"reqid"`
 }
 
-func readFNAppMockRequest(conn *websocket.Conn) (fnAppMockRequest, error) {
+func readFNAppMockRequest(conn *websocket.Conn) (fnAppMockRequest, []byte, error) {
 	messageType, payload, err := conn.ReadMessage()
 	if err != nil {
-		return fnAppMockRequest{}, err
+		return fnAppMockRequest{}, nil, err
 	}
 	if messageType != websocket.TextMessage {
-		return fnAppMockRequest{}, errFNAppUnexpectedWSMessageType
+		return fnAppMockRequest{}, payload, errFNAppUnexpectedWSMessageType
 	}
 
 	var request fnAppMockRequest
 	if err := json.Unmarshal(payload, &request); err != nil {
-		return fnAppMockRequest{}, err
+		return fnAppMockRequest{}, payload, err
 	}
-	return request, nil
+	return request, payload, nil
 }
 
 func (s *fnAppMockService) resolvedUnauthorizedWSIdleTimeout() time.Duration {
@@ -305,15 +322,15 @@ func (s *fnAppMockService) resetUnauthorizedWSReadDeadline(conn *websocket.Conn)
 	return conn.SetReadDeadline(time.Now().Add(s.resolvedUnauthorizedWSIdleTimeout()))
 }
 
-func (s *fnAppMockService) handleUnauthorizedWSReadError(conn *websocket.Conn, previousReqID string, err error) error {
+func (s *fnAppMockService) handleUnauthorizedWSReadError(conn *websocket.Conn, previousReqID string, err error, monitorTrace *deepMonitorRequest) error {
 	if err == nil || isFNAppConnectionTermination(err) {
 		return nil
 	}
-	return s.failUnauthorizedWebsocket(conn, nextReqID(previousReqID))
+	return s.failUnauthorizedWebsocket(conn, nextReqID(previousReqID), monitorTrace)
 }
 
-func (s *fnAppMockService) failUnauthorizedWebsocket(conn *websocket.Conn, reqID string) error {
-	if err := sendFNAppPasswordFailure(conn, reqID); err != nil {
+func (s *fnAppMockService) failUnauthorizedWebsocket(conn *websocket.Conn, reqID string, monitorTrace *deepMonitorRequest) error {
+	if err := sendFNAppPasswordFailure(conn, reqID, monitorTrace); err != nil {
 		return err
 	}
 
@@ -349,7 +366,7 @@ func isFNAppConnectionTermination(err error) bool {
 	return errors.As(err, &netErr) && netErr.Timeout()
 }
 
-func sendFNAppPasswordFailure(conn *websocket.Conn, reqID string) error {
+func sendFNAppPasswordFailure(conn *websocket.Conn, reqID string, monitorTrace *deepMonitorRequest) error {
 	response := struct {
 		Errno  int    `json:"errno"`
 		Result string `json:"result"`
@@ -360,7 +377,14 @@ func sendFNAppPasswordFailure(conn *websocket.Conn, reqID string) error {
 		ReqID:  reqID,
 	}
 
-	if err := conn.WriteJSON(response); err != nil {
+	payload, err := json.Marshal(response)
+	if err != nil {
+		return err
+	}
+	if monitorTrace != nil {
+		monitorTrace.recordWebSocketMessage("gateway_to_client", websocket.TextMessage, payload)
+	}
+	if err := conn.WriteMessage(websocket.TextMessage, payload); err != nil {
 		return err
 	}
 

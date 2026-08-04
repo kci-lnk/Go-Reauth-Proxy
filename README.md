@@ -1,116 +1,121 @@
+<div align="center">
+
 # Go Reauth Proxy
 
-一个基于 Go 的本地优先反向代理，支持：
-- 路由规则热更新
-- 全局认证接入（登录跳转 + Rust AuthBridge 鉴权/预检）
-- 同端口 HTTP/HTTPS（动态证书切换）
-- 内部 gRPC 控制面（`GO_BACKEND_PORT`，仅绑定 loopback）
-- iptables/ip6tables 白黑名单与默认拒绝策略
+**FN-Knock 的高性能 Go 网关数据面**
+
+统一承载 HTTP(S)、WebSocket、TCP 与 UDP 流量，提供认证接入、动态路由、WAF、流量治理和本机 gRPC 控制面。
+
+![Go](https://img.shields.io/badge/Go-1.25%2B-00ADD8?logo=go&logoColor=white)
+![Control Plane](https://img.shields.io/badge/Control%20Plane-gRPC-244C5A?logo=google&logoColor=white)
+![Protocols](https://img.shields.io/badge/Protocols-HTTP%2FS%20%C2%B7%20WS%20%C2%B7%20TCP%20%C2%B7%20UDP-5C4EE5)
+![Platforms](https://img.shields.io/badge/Platforms-Linux%20%C2%B7%20macOS%20%C2%B7%20Windows-6C757D)
+[![License](https://img.shields.io/badge/License-MIT-2EA44F.svg)](./LICENSE)
+
+</div>
+
+> [!IMPORTANT]
+> 本仓库是 FN-Knock 的网关进程，不是独立的管理后台或认证服务。启动后会等待 Rust 后端建立 AuthBridge gRPC 长连接；两端必须使用相同的 `FN_KNOCK_INTERNAL_RPC_TOKEN`。
+
+## 项目简介
+
+Go Reauth Proxy 部署在应用与客户端之间，将多个本地、内网或远程服务收口到统一入口。数据面负责高并发转发和安全策略执行，Rust 后端通过仅监听回环地址的 gRPC 控制面管理配置、承载认证决策并对接前端管理界面。
+
+| 能力 | 说明 |
+| --- | --- |
+| 多协议代理 | HTTP/HTTPS、WebSocket、TCP、UDP |
+| 灵活路由 | Host、路径前缀、Host Location、默认路由与 TCP/UDP 端口规则 |
+| 统一认证 | AuthBridge 联合鉴权、预检、登录跳转、认证缓存与高级策略 |
+| TLS 入口 | HTTP/HTTPS 同端口、证书热更新、单证书与 Multi-SNI |
+| 安全防护 | Coraza WAF、全局黑名单、访问范围、爬虫拦截、限流与 Linux iptables |
+| 可观测性 | 访问日志、流量统计、活跃 IP、诊断端点与 Deep Monitor |
+| 动态控制 | 配置热更新、原子持久化、本机 gRPC 控制面与健康检查 |
 
 ## 目录
 
-- [项目定位](#项目定位)
-- [核心能力](#核心能力)
 - [运行架构](#运行架构)
+- [核心特性](#核心特性)
 - [快速开始](#快速开始)
-- [配置文件说明](#配置文件说明)
-- [规则匹配与转发行为](#规则匹配与转发行为)
-- [认证与内部通信](#认证与内部通信)
+- [路由配置](#路由配置)
+- [认证与 TLS](#认证与-tls)
+- [安全与流量治理](#安全与流量治理)
 - [内部 gRPC 控制面](#内部-grpc-控制面)
-- [iptables 说明](#iptables-说明)
-- [日志与可观测性](#日志与可观测性)
-- [项目结构](#项目结构)
-- [开发命令](#开发命令)
-- [注意事项](#注意事项)
-- [License](#license)
-
-## 项目定位
-
-`go-reauth-proxy` 适合部署在内网或本机网关位置，把多个本地服务统一收口到一个代理端口，并通过独立认证服务做访问控制。
-
-它的设计重点是：
-- 内部 gRPC 控制面只监听 `127.0.0.1` / `::1`
-- Go-Rust 内部通信使用 gRPC，不保留 HTTP fallback
-- 代理目标限制为内网/回环地址
-- 配置改动自动持久化到 `config.json`
-
-## 核心能力
-
-- 动态路由规则（`POST /api/rules` 全量替换）
-- 路径前缀匹配 + `StripPath` + HTML 绝对路径重写
-- `UseAuth` 场景下自动插入悬浮切换工具栏
-- `UseRootMode` 支持：将命中路径写入 cookie 后重定向到根路径
-- 认证前置预检（通过 AuthBridge 返回 deny/redirect 决策）
-- 认证失败自动跳转到 `/__auth__/login?redirect_uri=...`
-- 动态 SSL 证书上传/清除（同一代理端口自动启停 HTTPS）
-- 代理流量统计（入/出字节、活跃登录用户、5xx 计数）
-- iptables/ip6tables 链初始化、白名单、黑名单、block-all/allow-all
+- [配置参考](#配置参考)
+- [日志与诊断](#日志与诊断)
+- [开发与构建](#开发与构建)
+- [部署注意事项](#部署注意事项)
 
 ## 运行架构
 
-- 代理服务端口：默认 `7999`
-- 内部 gRPC 端口：默认 `7996`（`GO_BACKEND_PORT` / `-admin-port`，固定绑定 loopback）
-- 认证服务端口：默认 `7997`（Rust HTTP 认证页面与登录 API，由 `auth_config.auth_port` 指定）
+```mermaid
+flowchart LR
+    Client["客户端"] -->|"HTTP(S) / WebSocket<br/>默认 :7999"| Gateway["Go Reauth Proxy<br/>路由 · WAF · 限流 · TLS"]
+    Client -->|"TCP / UDP<br/>规则监听端口"| Streams["Stream Manager"]
 
-代理端口通过 `cmux` 同时处理：
-- 明文 HTTP
-- TLS(HTTPS)
+    Gateway -->|"Host / Path / Location"| Upstream["上游服务"]
+    Streams -->|"TCP / UDP"| StreamUpstream["流式上游"]
 
-当配置了证书后，明文 HTTP 请求会被 `307` 重定向到 HTTPS。
+    Gateway <-->|"AuthBridge stream<br/>AuthorizeHttp / VerifyStreamAuth"| Rust["FN-Knock Rust Backend<br/>认证 · 管理 API · Web UI"]
+    Rust -->|"gRPC 控制面<br/>127.0.0.1 / ::1 :7996"| Control["Gateway Services"]
+    Control --> Gateway
+```
 
-Rust 后端作为客户端连接 `127.0.0.1:${GO_BACKEND_PORT}`，建立长生命周期 AuthBridge stream。Go 通过该 stream 发送联合 `AuthorizeHttp`（旧后端自动回退 `VerifyAuth` + `PreflightAuth`）和 `VerifyStreamAuth` 请求，不再直接通过 HTTP 请求 Rust 鉴权接口。
+默认端口：
 
-滚动发布联合鉴权协议时应先发布 Rust 后端、再发布 Go 网关；Go 会通过 `authorize_http_v1` capability 协商，在旧 Rust 后端上自动保持原有双调用流程。
+| 端口 | 角色 | 暴露范围 |
+| --- | --- | --- |
+| `7999` | HTTP/HTTPS/WebSocket 代理入口 | 由 `gateway_listener.scope` 控制 |
+| `7996` | 内部 gRPC 控制面 | 固定为 `127.0.0.1` / `::1` |
+| `7997` | Rust 认证 HTTP 服务 | 由 `auth_config.auth_port` 指定 |
 
-`proxy_protocol_force=true` 时，代理监听地址会从 `0.0.0.0/::` 切换为 `127.0.0.1/::1`，并优先从 `X-Forwarded-For` / `X-Real-IP` 获取客户端 IP。
+代理入口使用 `cmux` 在同一端口识别明文 HTTP 与 TLS。部署证书后，符合条件的 HTTP 请求会以 `307 Temporary Redirect` 跳转到 HTTPS。
 
-`gateway_listener.scope` 独立控制代理监听范围，取值为 `loopback` 或 `all`。Windows 新配置默认 `loopback`，其他平台为兼容旧部署默认 `all`；`proxy_protocol_force=true` 始终拥有更高优先级并保持只监听 loopback。
+## 核心特性
+
+### 路由与转发
+
+- Host 精确匹配、路径最长前缀匹配和默认 Host/路径路由
+- Host 规则支持独立 Location、可用时段、HTTP/1.1 / HTTP/2 策略和 Host 保留
+- 路径规则支持 `StripPath`、HTML 绝对路径重写和根路径模式
+- WebSocket 自动升级与双向转发
+- TCP/UDP 监听规则热更新，可按规则启用认证
+- 内置应用选择页、悬浮工具栏、图标与多语言响应页面
+
+### 认证与访问控制
+
+- Rust AuthBridge 长连接承载 HTTP 和 TCP/UDP 鉴权
+- `AuthorizeHttp` 联合鉴权，并兼容旧后端的 `VerifyAuth + PreflightAuth` 流程
+- 登录跳转、短时鉴权缓存、Host 高级认证策略与临时授权
+- 全局、Host 级访问范围及可信客户端 IP 绕过策略
+- 阿里云 ESA、腾讯 EdgeOne 与标准转发头来源 IP 识别
+
+### 安全与可观测性
+
+- Coraza WAF：`off`、`detection`、`blocking` 三种模式
+- 基于客户端 IP 的令牌桶限流与超限临时阻断
+- 全局黑名单、爬虫拦截和常见路径例外策略
+- Linux iptables/ip6tables 白名单、黑名单、SSH 防火墙与端口重定向
+- 请求日志、流量计数、活跃连接/IP、5xx 统计
+- Deep Monitor 按 Host 捕获 HTTP 交换与 WebSocket 帧，支持查询和归档导出
 
 ## 快速开始
 
-### 1. 环境要求
+### 环境要求
 
-- Go `1.26.5+`（见 `go.mod`；模块语言版本仍兼容 Go 1.25）
-- 可选：`task`（推荐）
-- 若使用防火墙 API：Linux + `iptables/ip6tables` + `sudo` 权限
+- Go `1.25+`；仓库通过 `toolchain` 指定 Go `1.26.5`
+- 可选：[Task](https://taskfile.dev/) 用于统一执行构建与测试命令
+- 配套的 FN-Knock Rust 后端，用于建立 AuthBridge 和管理网关
+- 使用防火墙能力时需要 Linux、`iptables` / `ip6tables` 及相应权限
 
-### 2. 启动
+### 1. 准备配置
 
-使用 Task：
-
-```bash
-export FN_KNOCK_INTERNAL_RPC_TOKEN=dev-local-token
-task run -- -proxy-port 7999 -admin-port 7996 -c ./config.json
-```
-
-或直接运行：
-
-```bash
-FN_KNOCK_INTERNAL_RPC_TOKEN=dev-local-token go run ./cmd/server -proxy-port 7999 -admin-port 7996 -c ./config.json
-```
-
-可用启动参数：
-- `-proxy-port`：代理端口，默认 `7999`
-- `-admin-port`：管理端口，默认 `7996`。传 `0` 时回退到配置文件 `admin_port`
-- `-c`：配置文件路径（可传目录，自动补 `config.json`）
-
-### 3. 内部契约
-
-`7996` 默认是内部 gRPC 端口，不提供 HTTP Admin API 或浏览器文档页面。控制面由 Rust 后端通过共享 proto 调用，浏览器管理后台继续访问 Rust 后端暴露的 HTTP 管理接口。
-
-内部 gRPC 必须配置独立 metadata token：`FN_KNOCK_INTERNAL_RPC_TOKEN`。部署脚本会生成并持久化该 token；手动启动时未设置则拒绝启动。
-
-控制 API 版本没有在本仓库手写常量。唯一来源是相邻 `fn-knock-turborepo/packages/grpc-contracts/proto/fnknock/v1/gateway.proto` 中的 `CONTROL_API_VERSION_CURRENT`，网关响应直接使用生成的 `pb.ControlApiVersion_CONTROL_API_VERSION_CURRENT`。协议升级后在 fn-knock 根目录运行 `npm run fn-knock:grpc:sync-go` 更新本仓库的生成代码；`npm run fn-knock:grpc:check-go`、Windows 构建和正式发版门禁都会拒绝未同步的 stub。
-
-## 配置文件说明
-
-配置文件默认名：`config.json`
-
-默认值（首次运行自动写入）：
+首次启动会在配置路径创建默认 `config.json`。开发环境也可以从最小配置开始：
 
 ```json
 {
   "rules": [],
+  "host_rules": [],
+  "stream_rules": [],
   "default_route": "/__select__",
   "auth_config": {
     "auth_port": 7997,
@@ -118,14 +123,10 @@ FN_KNOCK_INTERNAL_RPC_TOKEN=dev-local-token go run ./cmd/server -proxy-port 7999
     "login_url": "/login",
     "logout_url": "/api/auth/logout",
     "preflight_url": "/api/auth/preflight",
-    "edge_client_ip_enabled": false,
-    "aliyun_esa_enabled": false,
-    "tencent_edgeone_enabled": false,
-    "public_http_port": 80,
-    "public_https_port": 443
+    "auth_cache_ttl_seconds": 1,
+    "auth_cache_unauthorized_ttl_seconds": 1
   },
   "admin_port": 7996,
-  "proxy_protocol_force": false,
   "gateway_listener": {
     "scope": "all"
   },
@@ -134,69 +135,87 @@ FN_KNOCK_INTERNAL_RPC_TOKEN=dev-local-token go run ./cmd/server -proxy-port 7999
     "requests_per_second": 100,
     "burst": 200,
     "block_seconds": 30
-  },
-  "iptables_chain_name": "",
-  "ssl_cert": "",
-  "ssl_key": ""
-}
-```
-
-字段说明：
-
-- `rules`: 路由规则数组
-- `default_route`: 根路径 `/` 的默认去向，默认 `"/__select__"`
-- `auth_config`: 全局认证配置
-- `auth_config.edge_client_ip_enabled`: 边缘网络来源 IP 识别总开关；关闭时 `aliyun_esa_enabled` 与 `tencent_edgeone_enabled` 都不生效
-- `auth_config.aliyun_esa_enabled`: 启用阿里云 ESA 模式；与 `tencent_edgeone_enabled` 互斥；来源 IP 优先读取 `Ali-Real-Client-IP`，缺失时回退到 `X-Forwarded-For`
-- `auth_config.tencent_edgeone_enabled`: 启用腾讯 EdgeOne 模式；与 `aliyun_esa_enabled` 互斥；来源 IP 优先读取 `EO-Connecting-IP`，缺失时回退到 `X-Forwarded-For`
-- `auth_config.public_http_port`: 可选，显式指定对外暴露的 HTTP 端口
-- `auth_config.public_https_port`: 可选，显式指定对外暴露的 HTTPS 端口
-- `admin_port`: 内部 gRPC 端口（仅在 `-admin-port=0` 时作为回退）
-- `proxy_protocol_force`: 是否强制按 PROXY protocol 场景处理来源 IP
-- `gateway_listener.scope`: 代理监听范围；Windows 新安装默认 `loopback`，显式允许局域网访问时设置为 `all`
-- `reverse_proxy_throttle`: 反代数据面节流配置，作用于命中 host/path 规则的请求以及 `__auth__` 认证代理路径，不影响 `admin-port`、`/__select__`
-- `reverse_proxy_throttle.enabled`: 是否启用节流
-- `reverse_proxy_throttle.requests_per_second`: 单个客户端 IP 每秒允许的请求数
-- `reverse_proxy_throttle.burst`: 单个客户端 IP 可瞬时突发的令牌数
-- `reverse_proxy_throttle.block_seconds`: 超限后直接断开连接的封禁时长；被中断的请求不会写 access log
-- `iptables_chain_name`: iptables 链名（默认 `REAUTH_FW`）
-- `ssl_cert` / `ssl_key`: PEM 证书与私钥（由控制面写入）
-
-一个常见配置示例：
-
-```json
-{
-  "reverse_proxy_throttle": {
-    "enabled": true,
-    "requests_per_second": 100,
-    "burst": 200,
-    "block_seconds": 30
   }
 }
 ```
 
-当网关运行在非标准本地端口上，但前面存在 NAT 或转发时，这两个字段可用于修正网关生成的公开跳转地址。
+### 2. 启动网关
 
-例如本地监听 `7999`，并希望外部访问 `http://fnos.fnknock.xyz/` 时跳转到 `https://fnos.fnknock.xyz:7999/`，可配置：
+先确保 Rust 后端会使用同一个内部 RPC token 连接网关，然后运行：
 
-```json
-{
-  "auth_config": {
-    "public_http_port": 80,
-    "public_https_port": 7999,
-    "public_auth_base_url": "https://auth.fnknock.xyz:7999"
-  }
-}
+```bash
+export FN_KNOCK_INTERNAL_RPC_TOKEN='replace-with-a-long-random-token'
+task run -- -proxy-port 7999 -admin-port 7996 -c ./config.json
 ```
 
-## 规则匹配与转发行为
+不使用 Task：
 
-单条规则结构：
+```bash
+FN_KNOCK_INTERNAL_RPC_TOKEN='replace-with-a-long-random-token' \
+  go run ./cmd/server -proxy-port 7999 -admin-port 7996 -c ./config.json
+```
+
+> [!NOTE]
+> 网关最多等待 AuthBridge 就绪 60 秒，成功后才开放代理监听端口。没有配套 Rust 后端时，进程会因等待超时退出。
+
+### 3. 启动参数
+
+| 参数 | 默认值 | 说明 |
+| --- | --- | --- |
+| `-proxy-port` | `7999` | HTTP/HTTPS 反向代理端口 |
+| `-admin-port` | `7996` | 内部 gRPC 端口；传 `0` 时使用配置值 |
+| `-c` | 可执行文件目录下的 `config.json` | 配置文件或配置目录路径 |
+| `-logs-dir` | 配置目录下的默认日志目录 | 网关访问日志目录，必须为绝对路径 |
+| `-waf-dir` | 配置目录下的 `waf` | WAF 规则与状态目录，必须为绝对路径 |
+
+## 路由配置
+
+三类规则都通过内部 gRPC 控制面全量更新，并原子写回 `config.json`。
+
+### Host 路由
+
+适合为不同域名映射独立应用：
 
 ```json
 {
-  "path": "/app",
+  "host": "app.example.com",
   "target": "http://127.0.0.1:8080",
+  "protocol_mode": "auto",
+  "use_auth": true,
+  "access_mode": "login_first",
+  "preserve_host": true,
+  "visibility": {
+    "mode": "inherit"
+  },
+  "title": "Example App",
+  "locations": [
+    {
+      "path": "/api",
+      "match": "prefix",
+      "action": "proxy",
+      "target": "http://127.0.0.1:9000",
+      "strip_path": false
+    }
+  ]
+}
+```
+
+- `host` 为精确域名，不接受路径或通配符
+- `protocol_mode` 可为 `auto`、`http1`、`http2`
+- `locations` 可将 Host 下的路径转发到不同上游，或直接返回固定响应
+- `disabled`、`availability`、`visibility` 可控制规则启用状态、时段和来源范围
+- `basic_auth` 用于向可信上游注入 Basic Auth，不是面向访客的登录机制
+
+Host 目标中可附带入口路径。例如 `http://127.0.0.1:19122/p` 仅把公开根请求 `/` 映射到 `/p`；`/assets/app.js` 等非根路径仍按原路径转发。
+
+### 路径路由
+
+适合在同一个 Host 下按前缀挂载服务：
+
+```json
+{
+  "path": "/grafana",
+  "target": "http://127.0.0.1:3000",
   "use_auth": true,
   "strip_path": true,
   "rewrite_html": true,
@@ -204,139 +223,217 @@ FN_KNOCK_INTERNAL_RPC_TOKEN=dev-local-token go run ./cmd/server -proxy-port 7999
 }
 ```
 
-行为细节：
+- 多条规则按最长路径前缀匹配
+- 非根规则收到 `/grafana` 时会重定向到 `/grafana/`
+- `strip_path` 删除匹配前缀后再转发
+- `rewrite_html` 为 HTML 中的绝对 `href`、`src`、`action` 与 `<base href>` 补上挂载前缀
+- `use_root_mode` 将命中路径写入 `__proxy_path` Cookie 后跳转到 `/`
 
-- 按最长前缀匹配 `path`
-- `GET /app` 会 301 到 `/app/`（规则非 `/` 时）
-- `strip_path=true`：转发时去掉匹配前缀
-- `rewrite_html=true`：重写 HTML 中 `href/src/action/<base href>` 的绝对路径
-- `use_auth=true`：转发前通过 AuthBridge 请求 Rust 后端完成鉴权，并在 HTML 注入悬浮工具栏
-- `use_root_mode=true`：命中后写入 `__proxy_path` cookie 并 302 到 `/`
+根路径没有直接命中时，网关依次考虑默认 Host、`__proxy_path`、`default_route`，最后进入 `/__select__` 或返回未匹配页面。该行为也可以通过 `unmatched_route` 调整为直接重置连接。
 
-Host 规则目标中的可选 URL 路径仅作为根请求的上游入口，不作为所有请求的挂载前缀。
-例如目标为 `http://127.0.0.1:19122/p` 时：
+### TCP / UDP 路由
 
-- `/` 转发到 `/p`
-- `/p/assets/app.js` 仍转发到 `/p/assets/app.js`
-- `/login`、`/assets/app.js` 等同源公共路径保持不变
+```json
+{
+  "protocol": "tcp",
+  "listen_port": 3307,
+  "target": "127.0.0.1:3306",
+  "use_auth": true
+}
+```
 
-未命中时：
-- 请求 `/` 且未配置任何 path/host 规则：返回 Welcome 页面
-- 请求 `/` 且有 path 规则：
-  - 若 `__proxy_path` cookie 对应到某条规则，则优先按该规则转发
-  - 若 `default_route` 对应到某条规则，则按该规则转发
-  - 否则跳转到 `/__select__`
-- 其他未命中场景（包括 host 未命中，或仅配置 host 规则时访问 `/`）：返回 No Matching Route 页面（404）
+`protocol` 支持 `tcp` 和 `udp`。监听端口不能与网关内部端口冲突，也不能转发回相同的本地监听地址。开启 `use_auth` 后，连接或会话建立前会通过 AuthBridge 执行 `VerifyStreamAuth`。
 
-## 认证与内部通信
+## 认证与 TLS
 
-Go 数据面不再直接通过 HTTP 请求 `auth_config.auth_url` 或 `auth_config.preflight_url`。鉴权由 Rust 后端建立的 AuthBridge gRPC stream 承载：
+### AuthBridge 流程
 
-- HTTP 数据面鉴权：Go 发送 `VerifyAuth`
-- HTTP 预检：Go 发送 `PreflightAuth`；bridge 短暂失败时进入 cooldown 并跳过预检，不阻断主请求
-- TCP/UDP Stream 鉴权：Go 发送 `VerifyStreamAuth`
+1. Rust 后端以客户端身份连接 `127.0.0.1:7996`，建立长生命周期 AuthBridge stream。
+2. 请求命中 `use_auth=true` 的规则后，Go 将 Cookie、Authorization、来源 IP 和路由上下文发送给 Rust。
+3. Rust 返回允许、拒绝或重定向决策；未登录用户会进入 `/__auth__/login?redirect_uri=...`。
+4. `/__auth__/*` 由网关转发到 `auth_config.auth_port` 指定的 Rust HTTP 认证服务。
 
-Go 会把以下请求上下文放入 typed `AuthContext`：
+联合鉴权协议通过 `authorize_http_v1` capability 协商。滚动升级时应先发布 Rust 后端，再发布 Go 网关；旧 Rust 后端会自动继续使用双调用流程。
 
-- `Cookie`
-- `Authorization`
-- `Ali-Real-Client-IP`（启用 `auth_config.edge_client_ip_enabled=true` 且 `auth_config.aliyun_esa_enabled=true` 时）
-- `EO-Connecting-IP`（启用 `auth_config.edge_client_ip_enabled=true` 且 `auth_config.tencent_edgeone_enabled=true` 时）
-- `X-Real-IP`
-- `X-Forwarded-For`
-- `X-Forwarded-Path`
+### TLS 入口
 
-### 内置认证代理路径
+- `single_active`：部署一个活动证书
+- `multi_sni`：按 SNI 选择多个证书，支持精确域名和合法的单级通配符
+- 最低 TLS 版本为 TLS 1.2
+- Host 规则可按 SNI 独立选择 HTTP/1.1、HTTP/2 或自动协商
+- 证书热更新后会安全淘汰受影响的空闲连接
 
-- `/__auth__/login` -> `auth_config.login_url`
-- `/__auth__/api/auth/logout` -> `auth_config.logout_url`
-- `/__auth__/*` -> 透传到 Rust HTTP 认证服务对应路径
+如果网关位于 NAT、端口映射或边缘代理之后，可通过公开端口和认证地址修正跳转 URL：
+
+```json
+{
+  "auth_config": {
+    "public_http_port": 80,
+    "public_https_port": 443,
+    "public_auth_base_url": "https://auth.example.com"
+  }
+}
+```
+
+## 安全与流量治理
+
+### WAF
+
+WAF 基于 [Coraza](https://coraza.io/)，从 `waf.rules_dir` 加载规则包：
+
+| 模式 | 行为 |
+| --- | --- |
+| `off` | 不执行 WAF |
+| `detection` | 记录命中事件，但不阻断请求 |
+| `blocking` | 按规则与异常阈值阻断请求 |
+
+配置支持 paranoia level、入站/出站异常阈值、请求体限制，以及按 Host 或路径前缀停用 WAF。WAF 默认未启用。
+
+### 反向代理限流
+
+`reverse_proxy_throttle` 对命中的 Host/Path 规则和 `/__auth__` 代理路径按客户端 IP 限流，不影响内部 gRPC、应用选择页和未命中页面。超限后连接会在 `block_seconds` 内被直接拒绝。
+
+### Linux 防火墙
+
+Linux 构建提供 `firewall.iptables` capability，可管理 iptables/ip6tables、自定义链、白名单、黑名单、SSH 防火墙和 TCP 重定向。非 Linux 平台仍注册 `FirewallService`，但方法统一返回 gRPC `Unimplemented`。
+
+防火墙链初始化的基础顺序为：
+
+1. 放行 loopback
+2. 放行 `ESTABLISHED,RELATED`
+3. 放行配置的本地网段、ICMP 和例外端口
+4. 应用白名单/黑名单规则
+5. 默认拒绝其余流量
+
+默认自定义链名为 `REAUTH_FW`，父链为 `INPUT` 与 `DOCKER-USER`。
 
 ## 内部 gRPC 控制面
 
-`GO_BACKEND_PORT` 上启动的是纯 gRPC server，只服务本机 Rust 后端，不提供 Go Admin HTTP 兼容层。内部调用使用独立 metadata token `FN_KNOCK_INTERNAL_RPC_TOKEN` 校验；该 token 不应复用会暴露给浏览器认证页的 `HMAC_SECRET`。
+控制面固定绑定 `127.0.0.1` 与 `::1`，所有 unary、stream 和标准 health 请求都要求携带 `FN_KNOCK_INTERNAL_RPC_TOKEN` 对应的 metadata。这里没有 HTTP Admin API，浏览器管理后台应访问 Rust 后端提供的 HTTP API。
 
-当前 Go 侧实现的服务包括：
+| 服务 | 职责 |
+| --- | --- |
+| `GatewayControlService` | 运行信息、路由、认证、监听范围及网关策略 |
+| `GatewayLogsService` | 日志配置、日期查询、分页读取与删除 |
+| `DeepMonitorService` | 监控会话、事件流、Payload 与归档 |
+| `SecurityService` | 全局黑名单与安全状态 |
+| `TrafficService` | 流量统计、Host 活跃 IP |
+| `WafService` | WAF 状态、配置、规则验证与事件流 |
+| `SslService` | 证书部署、查询与清除 |
+| `FirewallService` | Linux 防火墙与端口重定向 |
+| `AuthBridgeService` | HTTP/TCP/UDP 鉴权双向流 |
 
-- `GatewayControlService`
-- `GatewayLogsService`
-- `SecurityService`
-- `TrafficService`
-- `WafService`
-- `SslService`
-- `FirewallService`
-- `AuthBridgeService`
+健康检查服务名：
 
-标准 `grpc.health.v1` 服务同时注册并受相同 token 保护，服务名为 `fnknock.gateway.process`、`fnknock.gateway.dataplane` 和 `fnknock.gateway.auth_bridge`。`ServerInfo` 暴露版本、OS/架构、控制协议版本、commit 与 capability；`RequestShutdown` 用于服务监督进程触发幂等优雅退出。
+- `fnknock.gateway.process`
+- `fnknock.gateway.dataplane`
+- `fnknock.gateway.auth_bridge`
 
-非 Linux 平台仍注册 `FirewallService`，但所有方法统一返回 gRPC `Unimplemented`，并且 `ServerInfo.capabilities` 不包含 `firewall.iptables`。
-
-浏览器管理后台应访问 Rust 后端 HTTP 管理接口，由 Rust 负责把前端 JSON envelope 映射到 Go gRPC 控制面。
-
-## iptables 说明
-
-`init` 后会创建/重建自定义链，并应用基础规则：
-
-1. 放行 `lo`
-2. 放行 `ESTABLISHED,RELATED`
-3. 放行本地网段（v4/v6）
-4. 放行 ICMP（IPv4 `icmp` / IPv6 `ipv6-icmp`）
-5. 放行 `exempt_ports`
-6. 默认 `DROP`
-
-说明：
-- 默认链名：`REAUTH_FW`
-- 默认父链：`INPUT` 和 `DOCKER-USER`
-- 命令通过 `sudo iptables` / `sudo ip6tables` 执行
-
-## 日志与可观测性
-
-- 控制台常规日志默认不输出，避免内部控制面轮询和反代运行日志刷屏；需要排查时可设置 `GO_REPROXY_LOG=1` 开启
-- 反代访问明细写入日志文件，由配置项 `logging.enabled` 控制，默认关闭
-- 可选设置 `GO_REPROXY_DIAGNOSTICS_ADDR=127.0.0.1:6060` 开启 `/debug/pprof/*` 与 `/debug/metrics`；只接受 loopback 地址，并要求请求携带 `x-fn-knock-internal-rpc-token: $FN_KNOCK_INTERNAL_RPC_TOKEN`（或同值 Bearer token）。未设置时不会启动诊断监听器
-- `TrafficService` 返回：
-  - `total_in` / `total_out`
-  - `active_conns`（最近 2 分钟活跃已登录身份）
-  - `error_5xx`
-  - `by_host[].active_ip_count`（子域名最近 2 分钟活跃 IP 数）
-- 活跃 IP 查询返回单个子域名最近 2 分钟活跃 IP 列表，包含 IP、最近活跃时间和当前未结束请求数
-
-## 项目结构
-
-```text
-cmd/server/           # 网关入口与内部 gRPC server
-pkg/admin/            # gRPC 控制面服务实现
-pkg/grpc/pb/          # 生成的 Go gRPC/protobuf 代码
-pkg/rpcbridge/        # AuthBridge 管理器与内部 token 校验
-pkg/proxy/            # 反向代理核心逻辑
-pkg/config/           # 配置加载与持久化
-pkg/iptables/         # iptables 管理
-pkg/response/         # 内置页面与响应封装
-pkg/middleware/       # 日志/CORS 中间件
-```
-
-## 开发命令
+控制协议的唯一来源是相邻 FN-Knock 仓库中的 `packages/grpc-contracts/proto/fnknock/v1/gateway.proto`。同步生成代码：
 
 ```bash
-task build            # 构建 macOS、Linux 与 Windows 目标
-task build:mac
-task build:linux
-task build:linux-arm64
-task build:linux-arm
-task build:windows    # Windows x86_64，CGO=0，不使用 UPX
-task run
-task test
-task docs
+# 在 fn-knock 根目录执行
+npm run fn-knock:grpc:sync-go
+npm run fn-knock:grpc:check-go
 ```
 
-## 注意事项
+## 配置参考
 
-- 内部 gRPC 控制面仅监听本地回环地址，不会对外暴露
-- 代理目标不再限制为内网地址；仅阻止把目标直接指向本机管理端口
-- `POST /api/rules` 是全量覆盖，不是增量追加
-- SSL 证书与私钥会写入 `config.json` 明文保存，请注意文件权限
-- `GO_BACKEND_PORT` 是 gRPC 协议，不能再用 `curl http://127.0.0.1:7996/api/...` 访问 Go 控制面
+配置由 gRPC 控制面热更新并原子持久化。运行中的网关应优先通过 Rust 后端管理，避免手工编辑与控制面更新互相覆盖。
+
+| 顶层字段 | 用途 |
+| --- | --- |
+| `rules` | 路径前缀规则 |
+| `host_rules` | Host 与 Host Location 规则 |
+| `stream_rules` | TCP/UDP 监听规则 |
+| `default_route` | 根路径默认路由，默认为 `/__select__` |
+| `auth_config` | 认证服务、缓存、公开 URL 与边缘来源 IP 设置 |
+| `admin_port` | 内部 gRPC 端口；仅在 `-admin-port=0` 时作为回退 |
+| `gateway_listener.scope` | `all` 或 `loopback`；当前默认 `all` |
+| `proxy_protocol_force` | 强制 PROXY protocol 场景；启用时代理只监听 loopback |
+| `reverse_proxy_throttle` | 请求速率、突发容量与阻断时长 |
+| `visibility` / `visibility_policies` | 全局与规则级编译 IP 集策略 |
+| `forwarded_headers` / `preserve_host` | 转发头和原始 Host 策略 |
+| `crawler_blocker` / `general_blacklist` | 爬虫和 IP 黑名单 |
+| `portal` / `unmatched_route` | 应用选择页与未命中行为 |
+| `logging` | 访问日志开关、本机请求记录与保留天数 |
+| `waf` | Coraza WAF 模式、规则包和阈值 |
+| `ssl` | `single_active` / `multi_sni` 证书部署 |
+| `locale` | 内置页面默认语言 |
+| `iptables_chain_name` | Linux 自定义防火墙链名 |
+
+边缘来源 IP 识别由 `auth_config.edge_client_ip_enabled` 总开关控制。阿里云 ESA 与腾讯 EdgeOne 模式互斥；同时配置时会保留腾讯 EdgeOne。未启用受信边缘模式时，不应信任来自公网客户端自行提交的厂商来源头。
+
+## 日志与诊断
+
+| 环境变量 | 说明 |
+| --- | --- |
+| `FN_KNOCK_INTERNAL_RPC_TOKEN` | 必填，内部 gRPC 共享 token |
+| `GO_REPROXY_PORT` | `-proxy-port` 的环境变量默认值 |
+| `FN_KNOCK_GATEWAY_LOGS_DIR` | 访问日志绝对目录 |
+| `FN_KNOCK_GATEWAY_WAF_DIR` | WAF 规则与状态绝对目录 |
+| `GO_REPROXY_LOG=1` | 开启常规控制台日志 |
+| `GO_REPROXY_DEBUG_LOG=1` | 开启结构化调试日志 |
+| `GO_REPROXY_DEBUG_LOG_DIR` | 调试日志目录 |
+| `GO_REPROXY_DIAGNOSTICS_ADDR` | 开启 loopback 诊断监听，如 `127.0.0.1:6060` |
+| `FN_KNOCK_DISABLE_IPTABLES=1` | 禁用 iptables 能力 |
+| `FN_KNOCK_IPTABLES_USE_SUDO` | 控制 iptables 命令是否通过 `sudo` 执行 |
+
+访问日志由 `logging.enabled` 控制，默认关闭。`TrafficService` 提供总入站/出站字节、活跃身份、5xx、Host 活跃 IP 等运行统计。
+
+诊断监听提供 `/debug/pprof/*` 与 `/debug/metrics`，只接受 loopback 地址，并要求请求携带：
+
+```text
+x-fn-knock-internal-rpc-token: <FN_KNOCK_INTERNAL_RPC_TOKEN>
+```
+
+也可使用同值的 Bearer token。未设置 `GO_REPROXY_DIAGNOSTICS_ADDR` 时不会启动诊断服务。
+
+## 开发与构建
+
+```bash
+task build              # 构建全部支持的平台
+task build:mac          # macOS ARM64
+task build:linux        # Linux AMD64
+task build:linux-arm64  # Linux ARM64
+task build:linux-arm    # Linux ARMv7
+task build:windows      # Windows AMD64
+
+task run                # 本地运行
+task test               # 全量测试
+task test:race          # Race Detector
+task bench:hot          # 热路径基准测试
+task bench:all          # 全量基准测试
+```
+
+项目结构：
+
+```text
+cmd/server/          进程入口、HTTP/TLS 监听与内部 gRPC Server
+pkg/proxy/           HTTP(S)、WebSocket、认证和策略执行核心
+pkg/stream/          TCP/UDP 监听、会话与转发
+pkg/admin/           gRPC 控制面服务实现
+pkg/rpcbridge/       AuthBridge 与内部 token 校验
+pkg/waf/             Coraza 规则加载、运行时与事件
+pkg/deepmonitor/     深度监控会话、存储与归档
+pkg/gatewaylog/      网关访问日志
+pkg/iptables/        Linux iptables/ip6tables 管理
+pkg/config/          配置默认值、加载与原子持久化
+pkg/grpc/pb/         生成的 Protobuf / gRPC Go 代码
+pkg/response/        内置页面、工具栏与错误响应
+pkg/i18n/            内置页面多语言资源
+```
+
+## 部署注意事项
+
+- 内部 gRPC 端口不是 HTTP 服务，不能使用 `curl http://127.0.0.1:7996/...` 访问。
+- `SetRules`、`SetHostRules`、`SetStreamRules` 都是全量替换，不是增量追加。
+- 反向代理目标可以是外部地址；安全校验只会阻止目标直接指向本机管理端口。请自行限制不可信的管理权限。
+- 当前 HTTPS 上游连接会跳过上游证书校验，只应连接受信网络中的上游服务。
+- 证书私钥、上游 Basic Auth 和其他敏感配置会持久化到 `config.json`，请严格控制文件权限与备份范围。
+- `gateway_listener.scope=all` 会对外监听；不需要局域网访问时应改为 `loopback`。
+- WAF、黑名单和 iptables 都可能中断真实流量，生产启用前应先使用检测模式或在受控环境验证。
 
 ## License
 
-[MIT](./LICENSE)
+本项目基于 [MIT License](./LICENSE) 开源。

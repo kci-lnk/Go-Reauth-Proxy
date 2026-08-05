@@ -193,6 +193,9 @@ func TestStartProxyServersBindsEphemeralLoopbackPort(t *testing.T) {
 	if !strings.Contains(addr, "127.0.0.1:") && !strings.Contains(addr, "[::1]:") {
 		t.Fatalf("listen addr = %q", addr)
 	}
+	if strings.Count(addr, "127.0.0.1:") < 2 {
+		t.Fatalf("listen addr = %q, missing dedicated managed Cloudflare listener", addr)
+	}
 }
 
 func TestStartProxyServersResetsUnmatchedHTTP1Connection(t *testing.T) {

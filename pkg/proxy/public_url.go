@@ -10,6 +10,12 @@ import (
 	"strings"
 )
 
+// ManagedCloudflareIngressPort is a dedicated loopback listener used by
+// fn-knock-managed Cloudflare Tunnels. Keeping it distinct from the normal
+// ingress gives security-sensitive client IP resolution a transport-level
+// trust boundary instead of trusting request headers alone.
+const ManagedCloudflareIngressPort = 17999
+
 func BuildHTTPSRedirectURL(r *http.Request, authConfig models.AuthConfig) string {
 	target := buildPublicRequestURL(r, authConfig, "https")
 	if target == nil {
@@ -148,7 +154,7 @@ func resolvedPublicPort(r *http.Request, authConfig models.AuthConfig, scheme st
 	// port. Their mode must take precedence over persisted ingress ports and
 	// proxy/request headers, which can still describe the origin listener
 	// (typically 7999) rather than the browser-facing endpoint.
-	if authConfig.EdgeClientIPActive() {
+	if authConfig.EdgeClientIPActive() || isCloudflareEdgeRequest(r, scheme) {
 		return ""
 	}
 
@@ -165,6 +171,64 @@ func resolvedPublicPort(r *http.Request, authConfig models.AuthConfig, scheme st
 	}
 
 	return ""
+}
+
+func isCloudflareEdgeRequest(r *http.Request, scheme string) bool {
+	if r == nil {
+		return false
+	}
+
+	visitorScheme := cloudflareVisitorScheme(canonicalHeaderValue(r.Header, "Cf-Visitor"))
+	if visitorScheme == "" || visitorScheme != normalizePublicSchemeValue(scheme) {
+		return false
+	}
+	if !isValidCloudflareRay(canonicalHeaderValue(r.Header, "Cf-Ray")) {
+		return false
+	}
+
+	connectingIP := firstForwardedValue(canonicalHeaderValue(r.Header, "Cf-Connecting-Ip"))
+	return net.ParseIP(strings.TrimSpace(connectingIP)) != nil
+}
+
+func isManagedCloudflareTunnelIngress(r *http.Request) bool {
+	if r == nil {
+		return false
+	}
+	localAddr, ok := r.Context().Value(http.LocalAddrContextKey).(net.Addr)
+	if !ok || localAddr == nil {
+		return false
+	}
+
+	switch value := localAddr.(type) {
+	case *net.TCPAddr:
+		return value.IP.IsLoopback() && value.Port == ManagedCloudflareIngressPort
+	case *net.UDPAddr:
+		return value.IP.IsLoopback() && value.Port == ManagedCloudflareIngressPort
+	default:
+		host, port, err := net.SplitHostPort(localAddr.String())
+		return err == nil && net.ParseIP(strings.Trim(host, "[]")).IsLoopback() &&
+			port == strconv.Itoa(ManagedCloudflareIngressPort)
+	}
+}
+
+func isValidCloudflareRay(value string) bool {
+	rayID, colo, ok := strings.Cut(strings.TrimSpace(firstForwardedValue(value)), "-")
+	if !ok || len(rayID) < 8 || len(colo) != 3 {
+		return false
+	}
+	for i := 0; i < len(rayID); i++ {
+		c := rayID[i]
+		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')) {
+			return false
+		}
+	}
+	for i := 0; i < len(colo); i++ {
+		c := colo[i]
+		if !((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9')) {
+			return false
+		}
+	}
+	return true
 }
 
 func publicRequestScheme(r *http.Request) string {

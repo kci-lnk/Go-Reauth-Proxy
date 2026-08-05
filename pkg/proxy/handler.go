@@ -586,6 +586,14 @@ func newRouteGeneration() string {
 }
 
 func resolveClientIP(r *http.Request, authConfig models.AuthConfig, proxyProtocolForce bool) string {
+	if isManagedCloudflareTunnelIngress(r) {
+		// The managed Tunnel has its own loopback destination, so only
+		// Cloudflare's edge-generated single-IP header is authoritative here.
+		// Never fall back to X-Forwarded-For: Cloudflare preserves client-sent
+		// XFF values and appends to them, making the first value attacker-owned.
+		return normalizeIPAddress(r.Header.Get("CF-Connecting-IP"))
+	}
+
 	if authConfig.TencentEdgeOneActive() {
 		if ip := normalizeIPAddress(r.Header.Get("EO-Connecting-IP")); ip != "" {
 			return ip
@@ -8358,10 +8366,11 @@ func applyRequestPortToPublicAuthBase(baseURL *url.URL, r *http.Request, authCon
 	if baseURL == nil || baseURL.Host == "" {
 		return
 	}
-	if authConfig.EdgeClientIPActive() {
+	if authConfig.EdgeClientIPActive() || isCloudflareEdgeRequest(r, baseURL.Scheme) {
 		// The stored public auth URL may predate edge mode and still contain the
-		// origin ingress port. Edge mode is authoritative, so normalize it back
-		// to the browser-facing standard port instead of preserving :7999.
+		// origin ingress port. Edge mode and verified Cloudflare edge requests
+		// are authoritative, so normalize it back to the browser-facing standard
+		// port instead of preserving :7999.
 		baseURL.Host = formatURLHost(baseURL.Hostname(), "", baseURL.Scheme)
 		return
 	}

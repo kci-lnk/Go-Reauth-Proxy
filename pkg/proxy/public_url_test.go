@@ -22,6 +22,14 @@ func requestWithLocalPort(req *http.Request, port int) *http.Request {
 	))
 }
 
+func requestWithLocalAddress(req *http.Request, ip string, port int) *http.Request {
+	return req.WithContext(context.WithValue(
+		req.Context(),
+		http.LocalAddrContextKey,
+		&net.TCPAddr{IP: net.ParseIP(ip), Port: port},
+	))
+}
+
 func TestBuildHTTPSRedirectURLDoesNotUseLocalOriginPort(t *testing.T) {
 	req := requestWithLocalPort(
 		httptest.NewRequest(http.MethodGet, "http://auth.fnknock.cn/", nil),
@@ -507,5 +515,171 @@ func TestBuildPublicAuthLoginURLEdgeModeOverridesOriginPort(t *testing.T) {
 				t.Fatalf("login URL = %q, want %q", got, want)
 			}
 		})
+	}
+}
+
+func TestBuildPublicAuthLoginURLCloudflareTunnelOverridesOriginPort(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "http://app-5920.tu.wxlnk.com:7999/", nil)
+	req.Header.Set("X-Forwarded-Host", "app-5920.tu.wxlnk.com:7999")
+	req.Header.Set("X-Forwarded-Proto", "https")
+	req.Header.Set("X-Forwarded-Port", "7999")
+	req.Header.Set("CF-Ray", "a261079199891d1c-SIN")
+	req.Header.Set("CF-Visitor", `{"scheme":"https"}`)
+	req.Header.Set("CF-Connecting-IP", "203.0.113.7")
+
+	authConfig := models.AuthConfig{
+		PublicAuthBaseURL: "https://auth.tu.wxlnk.com:7999",
+		PublicHTTPSPort:   7999,
+		LoginURL:          "/login",
+	}
+	originalURL := buildPublicRequestURL(req, authConfig, "")
+	if originalURL == nil {
+		t.Fatal("buildPublicRequestURL() returned nil")
+	}
+	if got, want := originalURL.String(), "https://app-5920.tu.wxlnk.com/"; got != want {
+		t.Fatalf("original URL = %q, want %q", got, want)
+	}
+
+	loginURL := buildPublicAuthLoginURL(authConfig, req, originalURL)
+	if loginURL == nil {
+		t.Fatal("buildPublicAuthLoginURL() returned nil")
+	}
+	if got, want := loginURL.String(), "https://auth.tu.wxlnk.com/login?redirect_uri=https%3A%2F%2Fapp-5920.tu.wxlnk.com%2F"; got != want {
+		t.Fatalf("login URL = %q, want %q", got, want)
+	}
+}
+
+func TestCloudflareEdgeRequestRequiresVerifiedHeaderSet(t *testing.T) {
+	tests := []struct {
+		name    string
+		headers map[string]string
+		scheme  string
+		want    bool
+	}{
+		{
+			name: "valid",
+			headers: map[string]string{
+				"CF-Ray":           "a261079199891d1c-SIN",
+				"CF-Visitor":       `{"scheme":"https"}`,
+				"CF-Connecting-IP": "203.0.113.7",
+			},
+			scheme: "https",
+			want:   true,
+		},
+		{
+			name: "missing ray",
+			headers: map[string]string{
+				"CF-Visitor":       `{"scheme":"https"}`,
+				"CF-Connecting-IP": "203.0.113.7",
+			},
+			scheme: "https",
+		},
+		{
+			name: "invalid connecting ip",
+			headers: map[string]string{
+				"CF-Ray":           "a261079199891d1c-SIN",
+				"CF-Visitor":       `{"scheme":"https"}`,
+				"CF-Connecting-IP": "not-an-ip",
+			},
+			scheme: "https",
+		},
+		{
+			name: "visitor scheme mismatch",
+			headers: map[string]string{
+				"CF-Ray":           "a261079199891d1c-SIN",
+				"CF-Visitor":       `{"scheme":"http"}`,
+				"CF-Connecting-IP": "2001:db8::7",
+			},
+			scheme: "https",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, "http://app.example/", nil)
+			for key, value := range tt.headers {
+				req.Header.Set(key, value)
+			}
+			if got := isCloudflareEdgeRequest(req, tt.scheme); got != tt.want {
+				t.Fatalf("isCloudflareEdgeRequest() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestManagedCloudflareTunnelIngressUsesDedicatedLoopbackDestination(t *testing.T) {
+	tests := []struct {
+		name    string
+		localIP string
+		port    int
+		want    bool
+	}{
+		{name: "managed cloudflare ingress", localIP: "127.0.0.1", port: ManagedCloudflareIngressPort, want: true},
+		{name: "ordinary loopback ingress", localIP: "127.0.0.1", port: 7999},
+		{name: "managed port on lan", localIP: "192.168.1.10", port: ManagedCloudflareIngressPort},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := requestWithLocalAddress(
+				httptest.NewRequest(http.MethodGet, "http://app.example/", nil),
+				tt.localIP,
+				tt.port,
+			)
+			if got := isManagedCloudflareTunnelIngress(req); got != tt.want {
+				t.Fatalf("isManagedCloudflareTunnelIngress() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestResolveClientIPManagedCloudflareIngressIgnoresSpoofedForwardedHeaders(t *testing.T) {
+	req := requestWithLocalAddress(
+		httptest.NewRequest(http.MethodGet, "http://app.example/", nil),
+		"127.0.0.1",
+		ManagedCloudflareIngressPort,
+	)
+	req.RemoteAddr = "127.0.0.1:49952"
+	req.Header.Set("CF-Connecting-IP", "198.51.100.25")
+	req.Header.Set("X-Forwarded-For", "192.168.1.100")
+	req.Header.Set("X-Real-IP", "192.168.1.100")
+
+	if got, want := resolveClientIP(req, models.AuthConfig{}, true), "198.51.100.25"; got != want {
+		t.Fatalf("resolveClientIP() = %q, want %q", got, want)
+	}
+}
+
+func TestResolveClientIPManagedCloudflareIngressFailsClosed(t *testing.T) {
+	for _, connectingIP := range []string{"", "not-an-ip", "198.51.100.25, 192.168.1.100"} {
+		t.Run(connectingIP, func(t *testing.T) {
+			req := requestWithLocalAddress(
+				httptest.NewRequest(http.MethodGet, "http://app.example/", nil),
+				"127.0.0.1",
+				ManagedCloudflareIngressPort,
+			)
+			req.RemoteAddr = "127.0.0.1:49952"
+			req.Header.Set("CF-Connecting-IP", connectingIP)
+			req.Header.Set("X-Forwarded-For", "192.168.1.100")
+			req.Header.Set("X-Real-IP", "192.168.1.100")
+
+			if got := resolveClientIP(req, models.AuthConfig{}, true); got != "" {
+				t.Fatalf("resolveClientIP() = %q, want fail-closed empty IP", got)
+			}
+		})
+	}
+}
+
+func TestResolveClientIPOrdinaryIngressPreservesExistingProxyProtocolBehavior(t *testing.T) {
+	req := requestWithLocalAddress(
+		httptest.NewRequest(http.MethodGet, "http://app.example/", nil),
+		"127.0.0.1",
+		7999,
+	)
+	req.RemoteAddr = "127.0.0.1:49952"
+	req.Header.Set("CF-Connecting-IP", "198.51.100.25")
+	req.Header.Set("X-Forwarded-For", "192.168.1.100")
+
+	if got, want := resolveClientIP(req, models.AuthConfig{}, true), "192.168.1.100"; got != want {
+		t.Fatalf("resolveClientIP() = %q, want existing non-Cloudflare behavior %q", got, want)
 	}
 }

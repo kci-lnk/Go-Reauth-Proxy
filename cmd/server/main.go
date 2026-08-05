@@ -322,23 +322,32 @@ func isClosedConnErr(err error) bool {
 }
 
 func startProxyServers(host string, proxyPort int, proxyHandler *proxy.Handler, httpServer *http.Server, httpsServer *http.Server) (func(), string, error) {
-	hosts := []string{host}
+	type listenTarget struct {
+		host string
+		port int
+	}
+	targets := []listenTarget{{host: host, port: proxyPort}}
 	if host == "0.0.0.0" {
-		hosts = append(hosts, "::")
+		targets = append(targets, listenTarget{host: "::", port: proxyPort})
 	}
 	if host == "127.0.0.1" {
-		hosts = append(hosts, "::1")
+		targets = append(targets, listenTarget{host: "::1", port: proxyPort})
 	}
+	managedCloudflarePort := proxy.ManagedCloudflareIngressPort
+	if proxyPort == 0 {
+		managedCloudflarePort = 0
+	}
+	targets = append(targets, listenTarget{host: "127.0.0.1", port: managedCloudflarePort})
 
 	var listeners []net.Listener
 	var listenAddrs []string
 	var listenerClosers []net.Listener
-	for _, listenHost := range hosts {
+	for _, target := range targets {
 		network := "tcp4"
-		if strings.Contains(listenHost, ":") {
+		if strings.Contains(target.host, ":") {
 			network = "tcp6"
 		}
-		addr := net.JoinHostPort(listenHost, strconv.Itoa(proxyPort))
+		addr := net.JoinHostPort(target.host, strconv.Itoa(target.port))
 		tcpListener, err := net.Listen(network, addr)
 		if err != nil {
 			if network == "tcp6" {

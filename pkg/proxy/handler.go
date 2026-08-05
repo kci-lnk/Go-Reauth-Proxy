@@ -8366,11 +8366,11 @@ func applyRequestPortToPublicAuthBase(baseURL *url.URL, r *http.Request, authCon
 	if baseURL == nil || baseURL.Host == "" {
 		return
 	}
-	if authConfig.EdgeClientIPActive() || isCloudflareEdgeRequest(r, baseURL.Scheme) {
+	if authConfig.EdgeClientIPActive() || isManagedCloudflareTunnelIngress(r) || isCloudflareEdgeRequest(r, baseURL.Scheme) {
 		// The stored public auth URL may predate edge mode and still contain the
-		// origin ingress port. Edge mode and verified Cloudflare edge requests
-		// are authoritative, so normalize it back to the browser-facing standard
-		// port instead of preserving :7999.
+		// origin ingress port. Edge mode and trusted Cloudflare ingress are
+		// authoritative, so normalize it back to the browser-facing standard port
+		// instead of preserving :7999.
 		baseURL.Host = formatURLHost(baseURL.Hostname(), "", baseURL.Scheme)
 		return
 	}

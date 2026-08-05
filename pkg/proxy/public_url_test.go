@@ -549,6 +549,38 @@ func TestBuildPublicAuthLoginURLCloudflareTunnelOverridesOriginPort(t *testing.T
 	}
 }
 
+func TestBuildPublicAuthLoginURLManagedCloudflareIngressOverridesOriginPortWithoutEdgeHeaders(t *testing.T) {
+	req := requestWithLocalAddress(
+		httptest.NewRequest(http.MethodGet, "http://app-5920.tu.wxlnk.com:7999/", nil),
+		"127.0.0.1",
+		ManagedCloudflareIngressPort,
+	)
+	req.Header.Set("X-Forwarded-Host", "app-5920.tu.wxlnk.com:7999")
+	req.Header.Set("X-Forwarded-Proto", "https")
+	req.Header.Set("X-Forwarded-Port", "7999")
+
+	authConfig := models.AuthConfig{
+		PublicAuthBaseURL: "https://auth.tu.wxlnk.com:7999",
+		PublicHTTPSPort:   7999,
+		LoginURL:          "/login",
+	}
+	originalURL := buildPublicRequestURL(req, authConfig, "")
+	if originalURL == nil {
+		t.Fatal("buildPublicRequestURL() returned nil")
+	}
+	if got, want := originalURL.String(), "https://app-5920.tu.wxlnk.com/"; got != want {
+		t.Fatalf("original URL = %q, want %q", got, want)
+	}
+
+	loginURL := buildPublicAuthLoginURL(authConfig, req, originalURL)
+	if loginURL == nil {
+		t.Fatal("buildPublicAuthLoginURL() returned nil")
+	}
+	if got, want := loginURL.String(), "https://auth.tu.wxlnk.com/login?redirect_uri=https%3A%2F%2Fapp-5920.tu.wxlnk.com%2F"; got != want {
+		t.Fatalf("login URL = %q, want %q", got, want)
+	}
+}
+
 func TestCloudflareEdgeRequestRequiresVerifiedHeaderSet(t *testing.T) {
 	tests := []struct {
 		name    string

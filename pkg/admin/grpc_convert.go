@@ -1009,6 +1009,68 @@ func logEntryToProto(entry gatewaylog.Entry) *pb.GatewayLogEntry {
 		GeneralBlacklistBlocked: entry.GeneralBlacklistBlocked,
 		AuthRuleGroupId:         entry.AuthRuleGroupID,
 		AuthGrantState:          entry.AuthGrantState,
+		ClientIp:                gatewaylog.EffectiveClientIP(entry),
+	}
+}
+
+func logAnalyticsBucketsToProto(items []gatewaylog.AnalyticsBucket) []*pb.GatewayLogAnalyticsBucket {
+	result := make([]*pb.GatewayLogAnalyticsBucket, 0, len(items))
+	for _, item := range items {
+		result = append(result, &pb.GatewayLogAnalyticsBucket{Key: item.Key, Count: item.Count})
+	}
+	return result
+}
+
+func logAnalyticsResultToProto(result gatewaylog.AnalyticsResult) *pb.GatewayLogAnalyticsResult {
+	series := make([]*pb.GatewayLogAnalyticsPoint, 0, len(result.Series))
+	for _, point := range result.Series {
+		series = append(series, &pb.GatewayLogAnalyticsPoint{
+			BucketStart:  point.BucketStart,
+			Requests:     point.Requests,
+			ClientErrors: point.ClientErrors,
+			ServerErrors: point.ServerErrors,
+		})
+	}
+	clients := make([]*pb.GatewayLogAnalyticsClient, 0, len(result.Clients))
+	for _, client := range result.Clients {
+		clients = append(clients, &pb.GatewayLogAnalyticsClient{Ip: client.IP, Count: client.Count})
+	}
+	return &pb.GatewayLogAnalyticsResult{
+		FromDate:       result.FromDate,
+		ToDate:         result.ToDate,
+		Timezone:       result.Timezone,
+		Granularity:    result.Granularity,
+		AvailableDates: result.AvailableDates,
+		Summary: &pb.GatewayLogAnalyticsSummary{
+			Requests:          result.Summary.Requests,
+			UniqueClients:     result.Summary.UniqueClients,
+			ClientErrors:      result.Summary.ClientErrors,
+			ServerErrors:      result.Summary.ServerErrors,
+			AverageDurationMs: result.Summary.AverageDurationMs,
+			P95DurationMs:     result.Summary.P95DurationMs,
+			BytesIn:           result.Summary.BytesIn,
+			BytesOut:          result.Summary.BytesOut,
+			ServerErrorRate:   result.Summary.ServerErrorRate,
+		},
+		Series:           series,
+		Paths:            logAnalyticsBucketsToProto(result.Paths),
+		Routes:           logAnalyticsBucketsToProto(result.Routes),
+		Hosts:            logAnalyticsBucketsToProto(result.Hosts),
+		Upstreams:        logAnalyticsBucketsToProto(result.Upstreams),
+		Referrers:        logAnalyticsBucketsToProto(result.Referrers),
+		UtmSources:       logAnalyticsBucketsToProto(result.UTMSources),
+		UtmMediums:       logAnalyticsBucketsToProto(result.UTMMediums),
+		UtmCampaigns:     logAnalyticsBucketsToProto(result.UTMCampaigns),
+		Devices:          logAnalyticsBucketsToProto(result.Devices),
+		Browsers:         logAnalyticsBucketsToProto(result.Browsers),
+		OperatingSystems: logAnalyticsBucketsToProto(result.OperatingSystems),
+		Statuses:         logAnalyticsBucketsToProto(result.Statuses),
+		Methods:          logAnalyticsBucketsToProto(result.Methods),
+		LatencyBands:     logAnalyticsBucketsToProto(result.LatencyBands),
+		AuthDecisions:    logAnalyticsBucketsToProto(result.AuthDecisions),
+		WafActions:       logAnalyticsBucketsToProto(result.WAFActions),
+		Clients:          clients,
+		InvalidEntries:   result.InvalidEntries,
 	}
 }
 

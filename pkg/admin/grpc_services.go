@@ -563,6 +563,20 @@ func (s *GRPCServer) QueryLogEntries(ctx context.Context, req *pb.GatewayLogQuer
 	return logQueryResultToProto(result), nil
 }
 
+func (s *GRPCServer) AnalyzeLogEntries(ctx context.Context, req *pb.GatewayLogAnalyticsQuery) (*pb.GatewayLogAnalyticsResult, error) {
+	if err := s.checkToken(ctx); err != nil {
+		return nil, err
+	}
+	if req == nil {
+		return nil, grpcBadRequest("request is required")
+	}
+	result, err := s.admin.ProxyHandler.AnalyzeLogEntries(req.GetFromDate(), req.GetToDate())
+	if err != nil {
+		return nil, grpcBadRequest("%v", err)
+	}
+	return logAnalyticsResultToProto(result), nil
+}
+
 func (s *GRPCServer) DeleteLogDate(ctx context.Context, req *pb.StringValue) (*pb.GatewayLogDeleteResult, error) {
 	if err := s.checkToken(ctx); err != nil {
 		return nil, err

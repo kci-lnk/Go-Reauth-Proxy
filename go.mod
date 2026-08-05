@@ -8,6 +8,7 @@ require (
 	github.com/corazawaf/coraza/v3 v3.7.0
 	github.com/gorilla/mux v1.8.1
 	github.com/gorilla/websocket v1.5.3
+	github.com/medama-io/go-useragent v1.2.3
 	github.com/pires/go-proxyproto v0.11.0
 	github.com/rs/zerolog v1.34.0
 	github.com/soheilhy/cmux v0.1.5
@@ -20,6 +21,7 @@ require (
 )
 
 require (
+	github.com/boyter/go-string v1.0.5 // indirect
 	github.com/corazawaf/libinjection-go v0.3.2 // indirect
 	github.com/goccy/go-json v0.10.5 // indirect
 	github.com/goccy/go-yaml v1.18.0 // indirect

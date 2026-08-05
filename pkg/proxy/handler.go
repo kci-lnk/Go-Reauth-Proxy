@@ -3776,6 +3776,13 @@ func (h *Handler) QueryLogEntries(date string, page int, limit int, search strin
 	return h.gatewayLogManager.Query(date, page, limit, search, status, loggedIn, credential, cursor, pagination)
 }
 
+func (h *Handler) AnalyzeLogEntries(fromDate string, toDate string) (gatewaylog.AnalyticsResult, error) {
+	if h.gatewayLogManager == nil {
+		return gatewaylog.AnalyticsResult{}, nil
+	}
+	return h.gatewayLogManager.Analyze(fromDate, toDate)
+}
+
 func (h *Handler) DeleteLogDate(date string) (gatewaylog.DeleteResult, error) {
 	if h.gatewayLogManager == nil {
 		return gatewaylog.DeleteResult{}, nil
@@ -5101,6 +5108,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		if clientIP != "" {
 			accessEntry.RemoteIP = clientIP
+			accessEntry.ClientIP = clientIP
 		}
 		if deepMonitorTrace != nil {
 			deepMonitorTrace.captureClientHeader(tw.Header())
@@ -5161,6 +5169,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	trustedClientIP := h.IsGatewayTrustedClientIP(clientIP)
 	accessEntry.RemoteIP = clientIP
+	accessEntry.ClientIP = clientIP
 	if deepMonitorTrace != nil {
 		deepMonitorTrace.setClientIP(clientIP)
 	}

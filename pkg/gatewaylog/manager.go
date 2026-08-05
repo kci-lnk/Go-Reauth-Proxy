@@ -21,6 +21,7 @@ import (
 	"go-reauth-proxy/pkg/models"
 
 	"github.com/rs/zerolog"
+	"golang.org/x/sync/singleflight"
 )
 
 const (
@@ -85,6 +86,7 @@ type Entry struct {
 	GeneralBlacklistBlocked bool   `json:"general_blacklist_blocked,omitempty"`
 	AuthRuleGroupID         string `json:"auth_rule_group_id,omitempty"`
 	AuthGrantState          string `json:"auth_grant_state,omitempty"`
+	ClientIP                string `json:"client_ip,omitempty"`
 }
 
 type ConfigInfo struct {
@@ -352,6 +354,9 @@ type Manager struct {
 	droppedLogEntries atomic.Uint64
 	lastDropWarnNano  atomic.Int64
 	entryPool         sync.Pool
+	analyticsMu       sync.Mutex
+	analyticsCache    map[string]cachedDailyAnalytics
+	analyticsGroup    singleflight.Group
 }
 
 func NormalizeConfig(cfg models.LoggingConfig) models.LoggingConfig {
@@ -369,12 +374,13 @@ func NewManager(logsDir string, cfg models.LoggingConfig) *Manager {
 	logger := zerolog.New(writer).With().Timestamp().Logger()
 
 	m := &Manager{
-		config:     normalized,
-		logsDir:    logsDir,
-		writer:     writer,
-		logger:     logger,
-		flushQueue: make(chan chan struct{}),
-		done:       make(chan struct{}),
+		config:         normalized,
+		logsDir:        logsDir,
+		writer:         writer,
+		logger:         logger,
+		flushQueue:     make(chan chan struct{}),
+		done:           make(chan struct{}),
+		analyticsCache: make(map[string]cachedDailyAnalytics),
 	}
 	m.entryPool.New = func() any { return new(Entry) }
 	m.recordLocalhost.Store(normalized.RecordLocalhost)
@@ -623,6 +629,7 @@ func (m *Manager) writeLogEntry(entry *Entry) {
 		Int64("duration_ms", entry.DurationMs).
 		Str("remote_ip", entry.RemoteIP).
 		Str("remote_addr", entry.RemoteAddr).
+		Str("client_ip", entry.ClientIP).
 		Str("user_agent", entry.UserAgent).
 		Str("referer", entry.Referer).
 		Bool("logged_in", entry.LoggedIn).
@@ -751,6 +758,7 @@ func (m *Manager) DeleteDate(date string) (DeleteResult, error) {
 	if err != nil {
 		return DeleteResult{}, err
 	}
+	m.invalidateAnalyticsDate(selectedDate)
 
 	dates, err := m.listDates(true)
 	if err != nil {

@@ -154,19 +154,22 @@ func TestGatewayTrustedClientIPBypassesAllGatewaySecurityFilters(t *testing.T) {
 			name: "crawler blocker",
 			setup: func(t *testing.T, handler *Handler) {
 				t.Helper()
-				handler.CrawlerBlocker = models.CrawlerBlockerConfig{Enabled: true}
+				if _, err := handler.SetCrawlerBlockerConfig(models.CrawlerBlockerConfig{Enabled: true}); err != nil {
+					t.Fatalf("set crawler blocker: %v", err)
+				}
 			},
 		},
 		{
 			name: "general blacklist conflict",
 			setup: func(t *testing.T, handler *Handler) {
 				t.Helper()
-				handler.generalBlacklist = newGeneralBlacklistRuntime(models.GeneralBlacklistConfig{
-					Items: []models.GeneralBlacklistRecord{{
-						IP:     clientIP,
-						Source: models.GeneralBlacklistSourceManual,
-					}},
-				})
+				if _, err := handler.AddGeneralBlacklist(
+					[]string{clientIP},
+					models.GeneralBlacklistSourceManual,
+					"",
+				); err != nil {
+					t.Fatalf("add general blacklist: %v", err)
+				}
 			},
 		},
 		{
@@ -286,7 +289,9 @@ func TestGatewayTrustedClientIPRemovalAppliesToNextRequest(t *testing.T) {
 	}}); err != nil {
 		t.Fatalf("set path rule: %v", err)
 	}
-	handler.CrawlerBlocker = models.CrawlerBlockerConfig{Enabled: true}
+	if _, err := handler.SetCrawlerBlockerConfig(models.CrawlerBlockerConfig{Enabled: true}); err != nil {
+		t.Fatalf("set crawler blocker: %v", err)
+	}
 	handler.SetGatewayTrustedClientIPs(models.GatewayTrustedClientIPsRuntime{
 		IPs:       []string{clientIP},
 		UpdatedAt: "2026-07-31T01:00:00Z",
@@ -561,7 +566,9 @@ func TestGatewayTrustedClientIPStillEnforcesProtocolAndAvailability(t *testing.T
 			if err := handler.SetHostRules([]models.HostRule{test.rule}); err != nil {
 				t.Fatalf("set host rule: %v", err)
 			}
-			handler.CrawlerBlocker = models.CrawlerBlockerConfig{Enabled: true}
+			if _, err := handler.SetCrawlerBlockerConfig(models.CrawlerBlockerConfig{Enabled: true}); err != nil {
+				t.Fatalf("set crawler blocker: %v", err)
+			}
 			handler.SetGatewayTrustedClientIPs(models.GatewayTrustedClientIPsRuntime{
 				IPs:       []string{clientIP},
 				UpdatedAt: "2026-07-31T01:00:00Z",

@@ -43,8 +43,9 @@ type runtimeState struct {
 }
 
 type exclusionConfig struct {
-	disabledHosts        map[string]struct{}
-	disabledPathPrefixes []string
+	disabledHosts             map[string]struct{}
+	disabledPathPrefixes      []string
+	disabledPathMatchPrefixes []string
 }
 
 // PreparedState is an immutable WAF candidate built without publishing it.
@@ -99,14 +100,20 @@ func (rt *Runtime) snapshot() *runtimeState {
 
 func buildExclusionConfig(cfg models.WAFConfig) exclusionConfig {
 	exclusions := exclusionConfig{
-		disabledHosts:        make(map[string]struct{}, len(cfg.DisabledHosts)),
-		disabledPathPrefixes: append([]string(nil), cfg.DisabledPathPrefixes...),
+		disabledHosts:             make(map[string]struct{}, len(cfg.DisabledHosts)),
+		disabledPathPrefixes:      append([]string(nil), cfg.DisabledPathPrefixes...),
+		disabledPathMatchPrefixes: make([]string, len(cfg.DisabledPathPrefixes)),
 	}
 	for _, disabledHost := range cfg.DisabledHosts {
 		host := normalizeHost(disabledHost)
 		if host != "" {
 			exclusions.disabledHosts[host] = struct{}{}
 		}
+	}
+	// Precompute the match prefix for every configured path prefix so the
+	// per-request exclusion check never allocates (TrimRight) or re-normalizes.
+	for i, prefix := range cfg.DisabledPathPrefixes {
+		exclusions.disabledPathMatchPrefixes[i] = strings.TrimRight(prefix, "/") + "/"
 	}
 	return exclusions
 }
@@ -346,7 +353,7 @@ func (rt *Runtime) Evaluate(r *http.Request, ctx EvaluateContext) Decision {
 	decision.Enabled = IsActive(cfg)
 	decision.Mode = cfg.Mode
 	decision.DetectionOnly = cfg.Mode == ModeDetection
-	if !decision.Enabled || isExcludedByConfig(snapshot.exclusions, r) {
+	if !decision.Enabled || isExcludedByConfig(&snapshot.exclusions, r) {
 		if event := logger.DebugEvent("waf", "evaluate_skipped"); event != nil {
 			event.Bool("enabled", decision.Enabled).
 				Bool("excluded", decision.Enabled).
@@ -518,10 +525,13 @@ func releaseRuntimeMemorySoon() {
 }
 
 func (rt *Runtime) isExcluded(r *http.Request) bool {
-	return isExcludedByConfig(rt.snapshot().exclusions, r)
+	return isExcludedByConfig(&rt.snapshot().exclusions, r)
 }
 
-func isExcludedByConfig(exclusions exclusionConfig, r *http.Request) bool {
+// isExcludedByConfig receives a pointer because exclusionConfig holds three
+// slice headers; passing it by value would copy 72 bytes on every WAF request
+// even when no exclusions are configured (the default).
+func isExcludedByConfig(exclusions *exclusionConfig, r *http.Request) bool {
 	hasDisabledHosts := len(exclusions.disabledHosts) > 0
 	hasDisabledPathPrefixes := len(exclusions.disabledPathPrefixes) > 0
 	if !hasDisabledHosts && !hasDisabledPathPrefixes {
@@ -538,14 +548,48 @@ func isExcludedByConfig(exclusions exclusionConfig, r *http.Request) bool {
 	if !hasDisabledPathPrefixes {
 		return false
 	}
-	requestPath := filepath.ToSlash(filepath.Clean(r.URL.Path))
-	if !strings.HasPrefix(requestPath, "/") {
+	requestPath := r.URL.Path
+	if requestPath == "" {
+		requestPath = "/"
+	} else if !strings.HasPrefix(requestPath, "/") {
 		requestPath = "/" + requestPath
 	}
-	for _, prefix := range exclusions.disabledPathPrefixes {
-		if prefix == "/" || requestPath == prefix || strings.HasPrefix(requestPath, strings.TrimRight(prefix, "/")+"/") {
+	// ServeHTTP already canonicalizes URL paths, so the common case is
+	// already normalized. Only fall back to path cleaning for paths that may
+	// contain dot segments, duplicate slashes, or backslashes; this keeps the
+	// hot path allocation-free.
+	if needsPathNormalization(requestPath) {
+		requestPath = filepath.ToSlash(filepath.Clean(requestPath))
+	}
+	for i, prefix := range exclusions.disabledPathPrefixes {
+		if requestPath == prefix || strings.HasPrefix(requestPath, exclusions.disabledPathMatchPrefixes[i]) {
 			return true
 		}
+	}
+	return false
+}
+
+// needsPathNormalization reports whether p may contain dot segments, duplicate
+// slashes, or backslashes that require filepath.Clean/ToSlash processing.
+func needsPathNormalization(p string) bool {
+	prev := byte('/')
+	for i := 1; i < len(p); i++ {
+		c := p[i]
+		switch {
+		case c == '\\':
+			return true
+		case c == '/' && prev == '/':
+			return true
+		case c == '.' && prev == '/':
+			next := byte(0)
+			if i+1 < len(p) {
+				next = p[i+1]
+			}
+			if next == 0 || next == '/' || next == '.' {
+				return true
+			}
+		}
+		prev = c
 	}
 	return false
 }
@@ -563,6 +607,11 @@ func (r requestBodyReadCloser) Close() error {
 }
 
 var errRequestBodyInspectionBufferLimit = errors.New("request body inspection buffer limit exceeded")
+
+// requestBodyInspectionInitialCapacity preallocates the replay buffer used
+// while Coraza inspects the request body. Most inspected bodies are small
+// JSON/forms, and preallocating avoids repeated bytes.Buffer growth copies.
+const requestBodyInspectionInitialCapacity = 4 * 1024
 
 type requestBodyInspectionBuffer struct {
 	bytes.Buffer
@@ -585,6 +634,13 @@ func readAndRestoreRequestBody(tx interface {
 }, r *http.Request, limit int64) (*types.Interruption, error) {
 	originalBody := r.Body
 	buffered := &requestBodyInspectionBuffer{limit: limit}
+	initialCapacity := requestBodyInspectionInitialCapacity
+	if limit > 0 && int64(initialCapacity) > limit {
+		initialCapacity = int(limit)
+	}
+	if initialCapacity > 0 {
+		buffered.Grow(initialCapacity)
+	}
 	tee := io.TeeReader(originalBody, buffered)
 	it, _, err := tx.ReadRequestBodyFrom(tee)
 	r.Body = requestBodyReadCloser{

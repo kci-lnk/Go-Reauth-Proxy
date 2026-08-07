@@ -194,6 +194,13 @@ func (h *Handler) monitoredTransport(base http.RoundTripper) http.RoundTripper {
 	if base == nil {
 		base = http.DefaultTransport
 	}
+	// The deep-monitor transport wrapper is stateless per request: it resolves
+	// the active trace from the request context. Reuse the Handler's shared
+	// wrapper for the common proxy transport instead of allocating a new one
+	// per proxied request.
+	if h != nil && h.proxyRoundTripper != nil && base == h.proxyTransport {
+		return h.proxyRoundTripper
+	}
 	return deepMonitorTransport{base: base}
 }
 

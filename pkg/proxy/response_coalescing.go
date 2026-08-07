@@ -12,12 +12,71 @@ import (
 )
 
 const (
-	proxyResponseCoalesceBufferSize = 1024 * 1024
-	proxyResponseCoalesceMaxLatency = 10 * time.Millisecond
-	proxyResponseDirectWriteSize    = proxyCopyBufferSize
+	proxyResponseCoalesceSmallBufferSize  = 16 * 1024
+	proxyResponseCoalesceMediumBufferSize = 256 * 1024
+	proxyResponseCoalesceBufferSize       = 1024 * 1024
+	proxyResponseCoalesceMaxLatency       = 10 * time.Millisecond
+	proxyResponseDirectWriteSize          = proxyCopyBufferSize
 )
 
-var proxyResponseCoalesceBufferPool = newProxyBufferPool(proxyResponseCoalesceBufferSize)
+var (
+	proxyResponseCoalesceSmallBufferPool  = newExactSizeBufferPool(proxyResponseCoalesceSmallBufferSize)
+	proxyResponseCoalesceMediumBufferPool = newExactSizeBufferPool(proxyResponseCoalesceMediumBufferSize)
+	proxyResponseCoalesceBufferPool       = newExactSizeBufferPool(proxyResponseCoalesceBufferSize)
+)
+
+// newExactSizeBufferPool returns a pool whose Get always yields a buffer with
+// exactly the requested capacity. Unlike proxyBufferPool (whose empty-pool
+// fallback allocates proxyCopyBufferSize), tiered coalescing buffers must keep
+// their declared size so growth can reliably move to the next tier.
+func newExactSizeBufferPool(size int) sync.Pool {
+	return sync.Pool{
+		New: func() any {
+			buf := make([]byte, size)
+			return &buf
+		},
+	}
+}
+
+func acquireExactSizeBuffer(pool *sync.Pool) []byte {
+	bufp := pool.Get().(*[]byte)
+	return (*bufp)[:0]
+}
+
+func releaseExactSizeBuffer(pool *sync.Pool, buf []byte) {
+	buf = buf[:cap(buf)]
+	pool.Put(&buf)
+}
+
+func acquireProxyResponseCoalesceBuffer() []byte {
+	return acquireExactSizeBuffer(&proxyResponseCoalesceSmallBufferPool)
+}
+
+func releaseProxyResponseCoalesceBuffer(buf []byte) {
+	if buf == nil {
+		return
+	}
+	switch cap(buf) {
+	case proxyResponseCoalesceSmallBufferSize:
+		releaseExactSizeBuffer(&proxyResponseCoalesceSmallBufferPool, buf)
+	case proxyResponseCoalesceMediumBufferSize:
+		releaseExactSizeBuffer(&proxyResponseCoalesceMediumBufferPool, buf)
+	default:
+		releaseExactSizeBuffer(&proxyResponseCoalesceBufferPool, buf)
+	}
+}
+
+func growProxyResponseCoalesceBuffer(buf []byte) []byte {
+	var next []byte
+	if cap(buf) < proxyResponseCoalesceMediumBufferSize {
+		next = acquireExactSizeBuffer(&proxyResponseCoalesceMediumBufferPool)
+	} else {
+		next = acquireExactSizeBuffer(&proxyResponseCoalesceBufferPool)
+	}
+	next = append(next, buf...)
+	releaseProxyResponseCoalesceBuffer(buf)
+	return next
+}
 
 // proxyResponseCoalescer combines successive writes for bulk, unknown-length
 // responses. ReverseProxy otherwise flushes every write for these responses,
@@ -112,18 +171,21 @@ func (w *proxyResponseCoalescer) Write(p []byte) (int, error) {
 		return n, err
 	}
 	if w.buffer == nil {
-		w.buffer = proxyResponseCoalesceBufferPool.Get()
-		w.buffer = w.buffer[:0]
+		w.buffer = acquireProxyResponseCoalesceBuffer()
 	}
 
 	accepted := 0
 	for len(p) > 0 {
 		available := cap(w.buffer) - len(w.buffer)
 		if available == 0 {
-			if err := w.flushBufferLocked(); err != nil {
-				return accepted, err
+			if cap(w.buffer) >= proxyResponseCoalesceBufferSize {
+				if err := w.flushBufferLocked(); err != nil {
+					return accepted, err
+				}
+			} else {
+				w.buffer = growProxyResponseCoalesceBuffer(w.buffer)
 			}
-			available = cap(w.buffer)
+			available = cap(w.buffer) - len(w.buffer)
 		}
 
 		next := len(p)
@@ -134,7 +196,10 @@ func (w *proxyResponseCoalescer) Write(p []byte) (int, error) {
 		p = p[next:]
 		accepted += next
 
-		if len(w.buffer) == cap(w.buffer) {
+		// Smaller tiers grow into the next size class; only a full max-size
+		// buffer is flushed immediately (matching the previous single-tier
+		// behavior where the 1 MiB buffer was written as soon as it filled).
+		if len(w.buffer) == cap(w.buffer) && cap(w.buffer) >= proxyResponseCoalesceBufferSize {
 			if err := w.flushBufferLocked(); err != nil {
 				return accepted, err
 			}
@@ -235,7 +300,7 @@ func (w *proxyResponseCoalescer) finish(completed bool) {
 	w.mu.Unlock()
 
 	if buffer != nil {
-		proxyResponseCoalesceBufferPool.Put(buffer)
+		releaseProxyResponseCoalesceBuffer(buffer)
 	}
 }
 

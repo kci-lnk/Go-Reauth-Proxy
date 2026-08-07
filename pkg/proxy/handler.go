@@ -139,6 +139,7 @@ type Handler struct {
 	loggedInActive             sync.Map
 	authBridge                 authBridgeClient
 	proxyTransport             *http.Transport
+	proxyRoundTripper          http.RoundTripper
 	preflightSkipUntilUnixNano atomic.Int64
 	authCache                  authStateCache
 	preflightCache             preflightStateCache
@@ -219,6 +220,15 @@ type requestSnapshot struct {
 	proxyProtocolForce bool
 	routeGeneration    string
 	routeIDs           map[string]string
+	// Runtime security policies are updated in place under their own locks
+	// (pointers are stable for the lifetime of the Handler), so publishing the
+	// pointers in the request snapshot keeps the per-request path free of the
+	// coarse handler lock while reads always observe the latest policy.
+	trustedClientIPs         *gatewayTrustedClientIPsRuntime
+	generalBlacklist         *generalBlacklistRuntime
+	commonLocationExemptions *commonLocationExemptionsRuntime
+	gatewayVisibility        *gatewayVisibility
+	crawlerBlocker           models.CrawlerBlockerConfig
 }
 
 type routeIncarnation struct {
@@ -539,25 +549,30 @@ func (h *Handler) buildRequestSnapshotLocked() *requestSnapshot {
 	toolbarRules, toolbarHostRules := buildToolbarRouteSnapshot(rules, hostRules, targets)
 
 	return &requestSnapshot{
-		rules:              rules,
-		rulesByLength:      rulesByLength,
-		rulesByPath:        rulesByPath,
-		hostRules:          hostRules,
-		hostRulesByHost:    hostRulesByHost,
-		hostVisibility:     hostVisibility,
-		advancedAuth:       advancedAuth,
-		defaultHostRule:    defaultHostRule,
-		targets:            targets,
-		toolbarRules:       toolbarRules,
-		toolbarHostRules:   toolbarHostRules,
-		defaultRoute:       h.DefaultRoute,
-		defaultRule:        defaultRule,
-		authConfig:         h.AuthConfig,
-		gatewayPortal:      models.NormalizeGatewayPortalConfig(h.GatewayPortal),
-		unmatchedRoute:     models.NormalizeGatewayUnmatchedRouteConfig(h.GatewayUnmatchedRoute),
-		proxyProtocolForce: h.ProxyProtocolForce,
-		routeGeneration:    h.routeGeneration,
-		routeIDs:           routeIncarnationIDs(h.routeIncarnations),
+		rules:                    rules,
+		rulesByLength:            rulesByLength,
+		rulesByPath:              rulesByPath,
+		hostRules:                hostRules,
+		hostRulesByHost:          hostRulesByHost,
+		hostVisibility:           hostVisibility,
+		advancedAuth:             advancedAuth,
+		defaultHostRule:          defaultHostRule,
+		targets:                  targets,
+		toolbarRules:             toolbarRules,
+		toolbarHostRules:         toolbarHostRules,
+		defaultRoute:             h.DefaultRoute,
+		defaultRule:              defaultRule,
+		authConfig:               h.AuthConfig,
+		gatewayPortal:            models.NormalizeGatewayPortalConfig(h.GatewayPortal),
+		unmatchedRoute:           models.NormalizeGatewayUnmatchedRouteConfig(h.GatewayUnmatchedRoute),
+		proxyProtocolForce:       h.ProxyProtocolForce,
+		routeGeneration:          h.routeGeneration,
+		routeIDs:                 routeIncarnationIDs(h.routeIncarnations),
+		trustedClientIPs:         h.trustedClientIPs,
+		generalBlacklist:         h.generalBlacklist,
+		commonLocationExemptions: h.commonLocationExemptions,
+		gatewayVisibility:        h.gatewayVisibility,
+		crawlerBlocker:           h.CrawlerBlocker,
 	}
 }
 
@@ -1655,7 +1670,6 @@ func NewHandler(adminPort int, proxyPort int, cfgManager *config.Manager, initia
 		gatewayLogManager:          gatewaylog.NewManager(logsDir, logConfig),
 		deepMonitorManager:         deepMonitorManager,
 		fnAppMockService:           newFNAppMockServiceFromEnv(),
-		proxyTransport:             newProxyTransport(),
 		authCache:                  newAuthStateCache(),
 		preflightCache:             newPreflightStateCache(),
 		generalBlacklist:           newGeneralBlacklistRuntime(initialCfg.GeneralBlacklist),
@@ -1666,6 +1680,8 @@ func NewHandler(adminPort int, proxyPort int, cfgManager *config.Manager, initia
 		compiledVisibilityPolicies: initialCompiledPolicies,
 	}
 	h.GeneralBlacklist = h.generalBlacklist.getConfig()
+	h.proxyTransport = newProxyTransport()
+	h.proxyRoundTripper = deepMonitorTransport{base: h.proxyTransport}
 	if models.NormalizeGatewayListenerScope(h.GatewayListener.Scope) == "" {
 		h.GatewayListener.Scope = models.GatewayListenerScopeAll
 	}
@@ -4193,9 +4209,7 @@ func (h *Handler) IsClientIPVisible(clientIP string) bool {
 }
 
 func (h *Handler) IsClientIPVisibleForHost(clientIP string, rule *models.HostRule, snapshot requestSnapshot) bool {
-	h.mu.RLock()
-	visibility := h.gatewayVisibility
-	h.mu.RUnlock()
+	visibility := snapshot.gatewayVisibility
 
 	if visibility == nil {
 		return true
@@ -4334,7 +4348,7 @@ func (h *Handler) SetCrawlerBlockerConfig(cfg models.CrawlerBlockerConfig) (mode
 	saveErr := h.commitConfigMutationLocked(
 		func() { h.CrawlerBlocker = normalized },
 		func() { h.CrawlerBlocker = previous },
-		nil,
+		h.publishRequestSnapshotLocked,
 	)
 	h.mu.Unlock()
 	if saveErr != nil {
@@ -5167,7 +5181,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	} else {
 		clientIP = resolveClientIP(r, snapshot.authConfig, snapshot.proxyProtocolForce)
 	}
-	trustedClientIP := h.IsGatewayTrustedClientIP(clientIP)
+	trustedClientIP := snapshot.trustedClientIPs != nil && snapshot.trustedClientIPs.contains(clientIP)
 	accessEntry.RemoteIP = clientIP
 	accessEntry.ClientIP = clientIP
 	if deepMonitorTrace != nil {
@@ -5185,7 +5199,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			Send()
 	}
 
-	crawlerBlocker := h.GetCrawlerBlockerConfig()
+	crawlerBlocker := snapshot.crawlerBlocker
 	if !trustedClientIP && fnosConnect == nil && crawlerBlocker.Enabled {
 		if isCrawlerBlockerRobotsPath(r.URL.Path) {
 			accessEntry.RouteType = "crawler_blocker"
@@ -5215,7 +5229,12 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if blacklistRecord, blocked := h.GetGeneralBlacklistRecordForClientIP(clientIP); !trustedClientIP && blocked {
+	var blacklistRecord models.GeneralBlacklistRecord
+	blacklistBlocked := false
+	if snapshot.generalBlacklist != nil {
+		blacklistRecord, blacklistBlocked = snapshot.generalBlacklist.contains(clientIP)
+	}
+	if !trustedClientIP && blacklistBlocked {
 		accessEntry.RouteType = "general_blacklist"
 		accessEntry.RouteKey = blacklistRecord.IP
 		accessEntry.AuthDecision = "general_blacklist_blocked"
@@ -5458,9 +5477,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	)
 	wafRuntime := h.wafRuntime
 	if wafRuntime != nil && wafRuntime.Active() {
-		h.mu.RLock()
-		commonLocationExemptions := h.commonLocationExemptions
-		h.mu.RUnlock()
+		commonLocationExemptions := snapshot.commonLocationExemptions
 		wafBypassedByCommonLocation := commonLocationExemptions != nil && commonLocationExemptions.shouldBypassWAF(clientIP)
 		if !trustedClientIP && !wafBypassedByCommonLocation {
 			wafTimingStarted := time.Now()

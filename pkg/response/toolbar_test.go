@@ -111,6 +111,34 @@ func TestGenerateToolbarPayloadIsValidJSON(t *testing.T) {
 	}
 }
 
+func TestToolbarVersionsPlaceWOLShortcutBeforeLogout(t *testing.T) {
+	toolbar := GenerateToolbarWithHosts(
+		nil,
+		nil,
+		"/app",
+		"",
+		"",
+		models.GatewayPortalConfig{ShowWOL: true},
+	)
+	payload := extractToolbarPayloadForTest(t, toolbar)
+	if !strings.Contains(payload, `"show_wol":true`) {
+		t.Fatalf("toolbar payload omitted show_wol: %s", payload)
+	}
+	for name, entry := range map[string]struct {
+		script string
+		logout string
+	}{
+		"v1": {script: toolbarTemplate, logout: `href="/__auth__/api/auth/logout"`},
+		"v2": {script: toolbarV2Script, logout: "var logoutButton"},
+	} {
+		wol := strings.Index(entry.script, "/__wol__")
+		logout := strings.Index(entry.script, entry.logout)
+		if wol < 0 || logout < 0 || wol > logout {
+			t.Fatalf("%s toolbar does not place WOL before logout", name)
+		}
+	}
+}
+
 func TestGenerateToolbarPayloadIncludesFreeIconDragMode(t *testing.T) {
 	toolbar := GenerateToolbarWithHosts(
 		[]models.Rule{{Path: `/app</script>`}},

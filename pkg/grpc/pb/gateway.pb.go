@@ -28,18 +28,18 @@ type ControlApiVersion int32
 
 const (
 	ControlApiVersion_CONTROL_API_VERSION_UNSPECIFIED ControlApiVersion = 0
-	ControlApiVersion_CONTROL_API_VERSION_CURRENT     ControlApiVersion = 8
+	ControlApiVersion_CONTROL_API_VERSION_CURRENT     ControlApiVersion = 9
 )
 
 // Enum value maps for ControlApiVersion.
 var (
 	ControlApiVersion_name = map[int32]string{
 		0: "CONTROL_API_VERSION_UNSPECIFIED",
-		8: "CONTROL_API_VERSION_CURRENT",
+		9: "CONTROL_API_VERSION_CURRENT",
 	}
 	ControlApiVersion_value = map[string]int32{
 		"CONTROL_API_VERSION_UNSPECIFIED": 0,
-		"CONTROL_API_VERSION_CURRENT":     8,
+		"CONTROL_API_VERSION_CURRENT":     9,
 	}
 )
 
@@ -1874,6 +1874,7 @@ type GatewayPortalConfig struct {
 	ShowAppIcon   bool                   `protobuf:"varint,3,opt,name=show_app_icon,json=showAppIcon,proto3" json:"show_app_icon,omitempty"`
 	IconDragMode  string                 `protobuf:"bytes,4,opt,name=icon_drag_mode,json=iconDragMode,proto3" json:"icon_drag_mode,omitempty"`
 	Version       string                 `protobuf:"bytes,5,opt,name=version,proto3" json:"version,omitempty"`
+	ShowWol       bool                   `protobuf:"varint,6,opt,name=show_wol,json=showWol,proto3" json:"show_wol,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1941,6 +1942,13 @@ func (x *GatewayPortalConfig) GetVersion() string {
 		return x.Version
 	}
 	return ""
+}
+
+func (x *GatewayPortalConfig) GetShowWol() bool {
+	if x != nil {
+		return x.ShowWol
+	}
+	return false
 }
 
 type GatewayUnmatchedRouteConfig struct {
@@ -9675,13 +9683,14 @@ const file_fnknock_v1_gateway_proto_rawDesc = "" +
 	"\x14CrawlerBlockerConfig\x12\x18\n" +
 	"\aenabled\x18\x01 \x01(\bR\aenabled\x12\x1d\n" +
 	"\n" +
-	"updated_at\x18\x02 \x01(\tR\tupdatedAt\"\xb8\x01\n" +
+	"updated_at\x18\x02 \x01(\tR\tupdatedAt\"\xd3\x01\n" +
 	"\x13GatewayPortalConfig\x12\x18\n" +
 	"\aenabled\x18\x01 \x01(\bR\aenabled\x12#\n" +
 	"\rdisplay_style\x18\x02 \x01(\tR\fdisplayStyle\x12\"\n" +
 	"\rshow_app_icon\x18\x03 \x01(\bR\vshowAppIcon\x12$\n" +
 	"\x0eicon_drag_mode\x18\x04 \x01(\tR\ficonDragMode\x12\x18\n" +
-	"\aversion\x18\x05 \x01(\tR\aversion\"m\n" +
+	"\aversion\x18\x05 \x01(\tR\aversion\x12\x19\n" +
+	"\bshow_wol\x18\x06 \x01(\bR\ashowWol\"m\n" +
 	"\x1bGatewayUnmatchedRouteConfig\x12\x1a\n" +
 	"\bbehavior\x18\x01 \x01(\tR\bbehavior\x122\n" +
 	"\x15upstream_error_detail\x18\x02 \x01(\tR\x13upstreamErrorDetail\"S\n" +
@@ -10425,7 +10434,7 @@ const file_fnknock_v1_gateway_proto_rawDesc = "" +
 	"last_error\x18\t \x01(\tR\tlastError*Y\n" +
 	"\x11ControlApiVersion\x12#\n" +
 	"\x1fCONTROL_API_VERSION_UNSPECIFIED\x10\x00\x12\x1f\n" +
-	"\x1bCONTROL_API_VERSION_CURRENT\x10\b*\x9a\x01\n" +
+	"\x1bCONTROL_API_VERSION_CURRENT\x10\t*\x9a\x01\n" +
 	"\fHttpAuthMode\x12\x1e\n" +
 	"\x1aHTTP_AUTH_MODE_UNSPECIFIED\x10\x00\x12!\n" +
 	"\x1dHTTP_AUTH_MODE_PREFLIGHT_ONLY\x10\x01\x12\x1e\n" +

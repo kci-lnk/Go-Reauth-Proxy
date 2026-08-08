@@ -44,6 +44,26 @@ func TestSelectPageRemainsAvailableWhenPortalToolbarDisabled(t *testing.T) {
 	}
 }
 
+func TestSelectPagePlacesWOLShortcutBeforeLogout(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "http://gateway.example.com/__select__", nil)
+	rec := httptest.NewRecorder()
+
+	SelectPage(rec, req, nil, nil, models.GatewayPortalConfig{ShowWOL: true})
+
+	body := rec.Body.String()
+	if !strings.Contains(body, `class="header-actions"`) {
+		t.Fatal("select page does not group WOL and logout in the header action area")
+	}
+	if !strings.Contains(body, `m9 10 3-3 3 3`) || strings.Contains(body, `m9 10 2 2 4-4`) {
+		t.Fatal("select page does not render the canonical MonitorUp icon")
+	}
+	wol := strings.Index(body, `href="/__wol__"`)
+	logout := strings.Index(body, `id="logout-modal"`)
+	if wol < 0 || logout < 0 || wol > logout {
+		t.Fatalf("select page does not place WOL before logout: %s", body)
+	}
+}
+
 func TestSelectPageFiltersWebSocketHostRules(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "http://gateway.example.com/__select__", nil)
 	rec := httptest.NewRecorder()

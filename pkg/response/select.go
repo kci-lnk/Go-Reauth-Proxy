@@ -189,7 +189,15 @@ const selectStyle = `
     max-width: 42rem;
   }
 
-  /* Logout button */
+  /* Header actions */
+  .header-actions {
+    display: flex;
+    flex: 0 0 auto;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 0.5rem;
+    min-width: 7.5rem;
+  }
   .btn-logout {
     display: inline-flex;
     align-items: center;
@@ -206,6 +214,8 @@ const selectStyle = `
     white-space: nowrap;
     font-family: inherit;
     line-height: 1.5;
+    justify-content: flex-start;
+    text-decoration: none;
   }
   .btn-logout:hover {
     background: rgba(255, 255, 255, 0.96);
@@ -486,6 +496,10 @@ const selectStyle = `
       width: 100%;
       justify-content: center;
     }
+    .header-actions {
+      width: 100%;
+      min-width: 0;
+    }
     .route-card {
       padding: 1rem 1.25rem;
       min-height: auto;
@@ -511,14 +525,20 @@ const selectContent = `
 					<p class="header-desc">{{index .Labels "selectDescription"}}</p>
 				</div>
 			</div>
-			<button onclick="document.getElementById('logout-modal').classList.add('active')" class="btn-logout">
-				<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-					<path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/>
-					<polyline points="16 17 21 12 16 7"/>
-					<line x1="21" y1="12" x2="9" y2="12"/>
-				</svg>
-				{{index .Labels "logout"}}
-			</button>
+			<div class="header-actions">
+				{{if .GatewayPortal.ShowWOL}}<a href="/__wol__" class="btn-logout">
+					<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 10 3-3 3 3"/><path d="M12 13V7"/><rect width="20" height="14" x="2" y="3" rx="2"/><path d="M12 17v4"/><path d="M8 21h8"/></svg>
+					{{index .Labels "wolShortcut"}}
+				</a>{{end}}
+				<button onclick="document.getElementById('logout-modal').classList.add('active')" class="btn-logout">
+					<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+						<path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/>
+						<polyline points="16 17 21 12 16 7"/>
+						<line x1="21" y1="12" x2="9" y2="12"/>
+					</svg>
+					{{index .Labels "logout"}}
+				</button>
+			</div>
 		</div>
 	</div>
 

@@ -48,7 +48,7 @@ func TestGatewayPortalConfigPreservesExplicitDisabledValue(t *testing.T) {
 }
 
 func TestNewGatewayPortalConfigPreservesExplicitDisabledValue(t *testing.T) {
-	cfg := NewGatewayPortalConfig(false, GatewayPortalDisplayStyleTitle, true, GatewayPortalIconDragModeFree, GatewayPortalVersionV2)
+	cfg := NewGatewayPortalConfig(false, GatewayPortalDisplayStyleTitle, true, GatewayPortalIconDragModeFree, GatewayPortalVersionV2, false)
 
 	normalized := NormalizeGatewayPortalConfig(cfg)
 	if normalized.Enabled {

@@ -235,6 +235,16 @@ const toolbarTemplate = `
             background-color: #f9fafb;
             color: #111827;
         }
+        .wol-menu-label {
+            display: inline-flex;
+            align-items: center;
+            gap: 9px;
+        }
+        .wol-menu-label svg {
+            width: 18px;
+            height: 18px;
+            flex: none;
+        }
         .menu-item-icon {
             width: 18px;
             height: 18px;
@@ -479,6 +489,7 @@ const toolbarTemplate = `
 	            </div>
 	            <div class="menu-scroll"></div>
 	            <div class="menu-divider"></div>
+	            ${toolbarData.show_wol ? '<a href="/__wol__" class="menu-item wol-btn"><span class="wol-menu-label"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 10 3-3 3 3"></path><path d="M12 13V7"></path><rect width="20" height="14" x="2" y="3" rx="2"></rect><path d="M12 17v4"></path><path d="M8 21h8"></path></svg>'+label('wol', 'Wake-on-LAN')+'</span></a>' : ''}
 	            <a href="/__auth__/api/auth/logout" class="menu-item logout-btn">${label('logout', 'Logout')}</a>
 	        </div>
             <div id="fab">
@@ -1115,6 +1126,7 @@ func init() {
 }
 
 type toolbarLabels struct {
+	WOL                string `json:"wol"`
 	Logout             string `json:"logout"`
 	LogoutTitle        string `json:"logoutTitle"`
 	LogoutMessage      string `json:"logoutMessage"`
@@ -1323,6 +1335,7 @@ func GenerateToolbarWithPrefilteredHostsForLocale(locale string, filteredRules [
 	normalizedExcludedHost := normalizeToolbarHost(excludedHost)
 
 	labels := toolbarLabels{
+		WOL:                i18n.T(locale, "gateway.wolShortcut"),
 		Logout:             i18n.T(locale, "gateway.logout"),
 		LogoutTitle:        i18n.T(locale, "gateway.logoutConfirmTitle"),
 		LogoutMessage:      i18n.T(locale, "gateway.logoutConfirmMessage"),
@@ -1406,7 +1419,12 @@ func writeToolbarPayloadJSON(b *strings.Builder, rules []models.Rule, hostRules 
 	if portalConfig.ShowAppIcon {
 		b.WriteString(`,"show_app_icon":true`)
 	}
-	b.WriteString(`,"labels":{"logout":`)
+	if portalConfig.ShowWOL {
+		b.WriteString(`,"show_wol":true`)
+	}
+	b.WriteString(`,"labels":{"wol":`)
+	writeJSONString(b, labels.WOL)
+	b.WriteString(`,"logout":`)
 	writeJSONString(b, labels.Logout)
 	b.WriteString(`,"logoutTitle":`)
 	writeJSONString(b, labels.LogoutTitle)
@@ -1438,7 +1456,7 @@ func writeToolbarPayloadJSON(b *strings.Builder, rules []models.Rule, hostRules 
 func estimateToolbarPayloadSize(rules []models.Rule, hostRules []models.HostRule, currentPath string, currentHost string, normalizedExcludedHost string, portalConfig models.GatewayPortalConfig, labels toolbarLabels) int {
 	size := 192 + len(currentPath) + len(currentHost) +
 		len(portalConfig.IconDragMode) +
-		len(labels.Logout) + len(labels.LogoutTitle) + len(labels.LogoutMessage) +
+		len(labels.WOL) + len(labels.Logout) + len(labels.LogoutTitle) + len(labels.LogoutMessage) +
 		len(labels.Cancel) + len(labels.Confirm) + len(labels.Go) + len(labels.NoRoutesConfigured)
 	size += len(labels.Ungrouped) + len(labels.Applications) + len(labels.All) +
 		len(labels.MoreActions) + len(labels.Close) + len(labels.Current)

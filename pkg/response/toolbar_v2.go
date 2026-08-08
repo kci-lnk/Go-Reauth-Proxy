@@ -239,6 +239,21 @@ button, a {
 .account-menu-item:hover {
     background: rgba(255, 59, 48, 0.1);
 }
+.account-menu-item.wol-link {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    color: var(--launchpad-text);
+    text-decoration: none;
+}
+.account-menu-item.wol-link:hover {
+    background: rgba(255, 255, 255, 0.16);
+}
+.account-menu-item.wol-link svg {
+    width: 18px;
+    height: 18px;
+    flex: none;
+}
 .category-region {
     flex: 0 0 auto;
     padding: 0 clamp(20px, 2.2vw, 32px) 10px;
@@ -863,6 +878,24 @@ const toolbarV2Script = `(function(window, document) {
     var accountMenu = document.createElement('div');
     accountMenu.className = 'account-menu';
     accountMenu.setAttribute('role', 'menu');
+    if (toolbarData.show_wol) {
+        var wolLink = document.createElement('a');
+        wolLink.href = '/__wol__';
+        wolLink.className = 'account-menu-item wol-link';
+        wolLink.setAttribute('role', 'menuitem');
+        var wolIcon = document.createElementNS(svgNamespace, 'svg');
+        wolIcon.setAttribute('viewBox', '0 0 24 24');
+        wolIcon.setAttribute('fill', 'none');
+        wolIcon.setAttribute('stroke', 'currentColor');
+        wolIcon.setAttribute('stroke-width', '2');
+        wolIcon.setAttribute('stroke-linecap', 'round');
+        wolIcon.setAttribute('stroke-linejoin', 'round');
+        wolIcon.setAttribute('aria-hidden', 'true');
+        [['path','d','m9 10 3-3 3 3'],['path','d','M12 13V7'],['rect','width','20','height','14','x','2','y','3','rx','2'],['path','d','M12 17v4'],['path','d','M8 21h8']].forEach(function(spec){var node=document.createElementNS(svgNamespace,spec[0]);for(var index=1;index<spec.length;index+=2)node.setAttribute(spec[index],spec[index+1]);wolIcon.appendChild(node)});
+        wolLink.appendChild(wolIcon);
+        wolLink.appendChild(document.createTextNode(label('wol', 'Wake-on-LAN')));
+        accountMenu.appendChild(wolLink);
+    }
     var logoutButton = document.createElement('button');
     logoutButton.type = 'button';
     logoutButton.className = 'account-menu-item';

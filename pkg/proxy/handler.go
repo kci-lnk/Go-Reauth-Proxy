@@ -2243,6 +2243,8 @@ func classifyReverseProxyRouteType(requestPath string, isAuthRoute bool, matched
 		return "auth_proxy"
 	case requestPath == "/__select__":
 		return "select"
+	case requestPath == "/__wol__":
+		return "wol"
 	case matchedHostRule != nil && matchedHostLocation != nil:
 		return "host_location"
 	case matchedHostRule != nil:
@@ -2267,7 +2269,7 @@ func wafRouteContext(r *http.Request, snapshot requestSnapshot, isAuthRoute bool
 			upstream = localServiceBaseURL(snapshot.authConfig.AuthPort)
 		}
 		return routeType, requestPath, upstream
-	case requestPath == "/__select__":
+	case requestPath == "/__select__" || requestPath == "/__wol__":
 		return routeType, requestPath, ""
 	case matchedHostRule != nil && matchedHostLocation != nil:
 		upstream := ""
@@ -4269,6 +4271,9 @@ func gatewayVisibilityRouteContext(r *http.Request, snapshot requestSnapshot, ru
 	if requestPath == "/__select__" {
 		return "select", requestPath
 	}
+	if requestPath == "/__wol__" {
+		return "wol", requestPath
+	}
 
 	matchedHostLocation := matchHostLocation(r, rule)
 	if rule != nil {
@@ -5333,6 +5338,9 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	isSelectRoute := fnosConnect == nil && r.URL.Path == "/__select__"
+	isWOLPath := fnosConnect == nil && r.URL.Path == "/__wol__"
+	isWOLRoute := isWOLPath && snapshot.gatewayPortal.ShowWOL
+	isBuiltinAuthRoute := isSelectRoute || isWOLRoute
 	isAuthRoute := fnosConnect == nil && strings.HasPrefix(r.URL.Path, "/__auth__/")
 	matchedHostLocation := matchHostLocation(r, matchedHostRule)
 	if matchedHostRule != nil {
@@ -5388,7 +5396,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	resetUnmatchedConnection := snapshot.unmatchedRoute.Behavior ==
 		models.GatewayUnmatchedRouteBehaviorResetConnection
-	if !resetUnmatchedConnection && matchedRule == nil && needsSlashRedirect == "" && matchedHostRule == nil && !isSelectRoute && !isAuthRoute {
+	if !resetUnmatchedConnection && matchedRule == nil && needsSlashRedirect == "" && matchedHostRule == nil && !isBuiltinAuthRoute && !isAuthRoute {
 		defaultHostRule := snapshot.defaultHostRule
 		if defaultHostRule != nil && !hostRuleAvailableNow(defaultHostRule, start) {
 			defaultHostRule = nil
@@ -5418,7 +5426,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		matchedRule = snapshot.defaultRule
 	}
 	if resetUnmatchedConnection && matchedRule == nil && needsSlashRedirect == "" &&
-		matchedHostRule == nil && !isSelectRoute && !isAuthRoute {
+		matchedHostRule == nil && !isBuiltinAuthRoute && !isAuthRoute {
 		accessEntry.RouteType = "unmatched_route_blocked"
 		accessEntry.RouteKey = requestHostForRouting(r)
 		accessEntry.AuthDecision = "connection_reset"
@@ -5528,7 +5536,19 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	if matchedHostRule != nil && matchedHostRule.UseAuth && !isAuthRoute && !isSelectRoute &&
+	if isWOLPath && !isWOLRoute {
+		// Keep the built-in path reserved even while its shortcut is disabled.
+		// Otherwise a broad user path/host rule could unexpectedly expose an
+		// upstream at /__wol__, contradicting the feature's fail-closed boundary.
+		accessEntry.Matched = false
+		accessEntry.RouteType = "not_found"
+		accessEntry.RouteKey = r.URL.Path
+		accessEntry.Upstream = ""
+		loggedStatusCode = http.StatusNotFound
+		response.RouteNotFound(w, r, nil, false)
+		return
+	}
+	if matchedHostRule != nil && matchedHostRule.UseAuth && !isAuthRoute && !isBuiltinAuthRoute &&
 		normalizeRequestHost(matchedHostRule.Host) != normalizeRequestHost(snapshot.authConfig.AuthHost) {
 		host := normalizeRequestHost(matchedHostRule.Host)
 		withAdvancedAuthPolicyVersion(r, matchedHostRule.AdvancedAuth.PolicyVersion)
@@ -5542,7 +5562,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	wrapRequestBodyForTraffic(r, h, metrics)
-	isMatch := isSelectRoute || isAuthRoute || matchedHostRule != nil || matchedRule != nil || r.URL.Path == "/"
+	isMatch := isBuiltinAuthRoute || isAuthRoute || matchedHostRule != nil || matchedRule != nil || r.URL.Path == "/"
 	accessEntry.Matched = isMatch
 	accessEntry.AccessMode = accessMode
 	var authTimingStarted time.Time
@@ -5557,14 +5577,14 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	defer finishAuthTiming()
 	var preparedAuth *authCheckExecution
-	if shouldRunPreflightForRoute(isSelectRoute, isAuthRoute, matchedHostRule, matchedRule) {
+	if shouldRunPreflightForRoute(isBuiltinAuthRoute, isAuthRoute, matchedHostRule, matchedRule) {
 		authTimingStarted = time.Now()
 		if strings.TrimSpace(snapshot.authConfig.AuthURL) != "" {
 			requestAuth = newRequestAuthContext(r, clientIP, authContextAccessMode, routedBackend)
 		}
 		preflight := preflightDecision{}
 		verifyRequired := strings.TrimSpace(snapshot.authConfig.AuthURL) != "" && !isAuthRoute &&
-			(isSelectRoute || (matchedHostRule != nil && matchedHostRule.UseAuth) || (matchedRule != nil && matchedRule.UseAuth))
+			(isBuiltinAuthRoute || (matchedHostRule != nil && matchedHostRule.UseAuth) || (matchedRule != nil && matchedRule.UseAuth))
 		if verifyRequired {
 			if combined, used := h.executeCombinedHTTPAuth(r, snapshot.authConfig, clientIP, authContextAccessMode, isMatch, requestID, requestAuth); used {
 				preflight = combined.preflight
@@ -5669,6 +5689,16 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				Str("auth_decision", authResult.decision).
 				Send()
 		}
+		return
+	}
+	if isWOLRoute {
+		accessEntry.RouteType = "wol"
+		accessEntry.RouteKey = r.URL.Path
+		accessEntry.AuthRequired = true
+		authTimingStarted = time.Now()
+		authResult := h.handleWOLRoute(w, r, snapshot, clientIP, requestID, requestAuth, preparedAuth)
+		finishAuthTiming()
+		applyAuthResultToLogEntry(&accessEntry, authResult)
 		return
 	}
 	if isAuthRoute {
@@ -5886,13 +5916,47 @@ func (h *Handler) handleSelectRoute(w http.ResponseWriter, r *http.Request, snap
 	}
 
 	applyNoStoreCacheHeaders(w.Header())
+	portal := snapshot.gatewayPortal
+	portal.ShowWOL = portal.ShowWOL && authResultAllowsWOL(authResult)
 	response.SelectPageWithPrefilteredRoutes(
 		w,
 		r,
 		snapshot.toolbarRules,
 		filterAvailableHostRulesByAuthScope(snapshot.toolbarHostRules, authResult, time.Now()),
-		snapshot.gatewayPortal,
+		portal,
 	)
+	return authResult
+}
+
+func authResultAllowsWOL(authResult authCheckResult) bool {
+	if !authResult.subdomainAccessCustom {
+		return true
+	}
+	_, allowed := authResult.allowedSubdomainHosts["__builtin_wol__"]
+	return allowed
+}
+
+func gatewayPortalForAuth(portal models.GatewayPortalConfig, authResult authCheckResult) models.GatewayPortalConfig {
+	portal.ShowWOL = portal.ShowWOL && authResultAllowsWOL(authResult)
+	return portal
+}
+
+func (h *Handler) handleWOLRoute(w http.ResponseWriter, r *http.Request, snapshot requestSnapshot, clientIP string, requestID string, requestAuth *requestAuthContext, prepared *authCheckExecution) authCheckResult {
+	authResult := h.checkAuth(w, r, snapshot.authConfig, clientIP, "", "", requestID, requestAuth, prepared)
+	if !authResult.allowed {
+		return authResult
+	}
+	if !authResult.authenticated {
+		applyNoStoreCacheHeaders(w.Header())
+		http.Redirect(w, r, authLoginRedirectLocation(snapshot.authConfig, r), http.StatusFound)
+		return authCheckResult{decision: "redirected"}
+	}
+	if !authResultAllowsWOL(authResult) {
+		response.AccessDenied(w, r)
+		return authCheckResult{decision: "scope_denied", statusCode: http.StatusForbidden}
+	}
+	applyNoStoreCacheHeaders(w.Header())
+	response.WOLPage(w, r)
 	return authResult
 }
 
@@ -6531,7 +6595,7 @@ func (h *Handler) proxyToHostLocationTarget(w http.ResponseWriter, r *http.Reque
 					r.URL.Path,
 					matchedRule.Host,
 					snapshot.authConfig.AuthHost,
-					snapshot.gatewayPortal,
+					gatewayPortalForAuth(snapshot.gatewayPortal, authResult),
 				)
 			},
 			requestID: requestID,
@@ -6701,7 +6765,7 @@ func (h *Handler) proxyToHostTarget(w http.ResponseWriter, r *http.Request, snap
 					r.URL.Path,
 					matchedRule.Host,
 					snapshot.authConfig.AuthHost,
-					snapshot.gatewayPortal,
+					gatewayPortalForAuth(snapshot.gatewayPortal, authResult),
 				)
 			},
 			requestID: requestID,
@@ -6869,7 +6933,7 @@ func (h *Handler) proxyToRuleTarget(w http.ResponseWriter, r *http.Request, snap
 			rewritePrefix: strings.TrimSuffix(matchedRule.Path, "/"),
 			toolbar:       needsToolbar,
 			toolbarHTML: func() string {
-				return response.GenerateToolbarWithPrefilteredHostsForRequest(r, snapshot.toolbarRules, nil, matchedRule.Path, "", "", snapshot.gatewayPortal)
+				return response.GenerateToolbarWithPrefilteredHostsForRequest(r, snapshot.toolbarRules, nil, matchedRule.Path, "", "", gatewayPortalForAuth(snapshot.gatewayPortal, authResult))
 			},
 			requestID: requestID,
 			routeType: "path_rule",

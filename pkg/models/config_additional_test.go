@@ -184,6 +184,16 @@ func TestGatewayPortalConfigShowAppIconPreserved(t *testing.T) {
 	}
 }
 
+func TestGatewayPortalConfigShowWOLPreserved(t *testing.T) {
+	var cfg GatewayPortalConfig
+	if err := json.Unmarshal([]byte(`{"enabled":true,"show_wol":true}`), &cfg); err != nil {
+		t.Fatalf("unmarshal gateway portal config: %v", err)
+	}
+	if normalized := NormalizeGatewayPortalConfig(cfg); !normalized.ShowWOL {
+		t.Fatal("NormalizeGatewayPortalConfig() discarded show_wol")
+	}
+}
+
 func TestGatewayPortalConfigUnmarshalRejectsMalformedJSON(t *testing.T) {
 	var cfg GatewayPortalConfig
 

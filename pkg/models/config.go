@@ -345,6 +345,7 @@ type GatewayPortalConfig struct {
 	Enabled      bool   `json:"enabled" example:"true"`
 	DisplayStyle string `json:"display_style,omitempty" example:"domain"`
 	ShowAppIcon  bool   `json:"show_app_icon,omitempty" example:"false"`
+	ShowWOL      bool   `json:"show_wol,omitempty" example:"false"`
 	IconDragMode string `json:"icon_drag_mode,omitempty" example:"corners"`
 	Version      string `json:"version,omitempty" example:"v1"`
 	enabledSet   bool
@@ -352,11 +353,12 @@ type GatewayPortalConfig struct {
 
 // NewGatewayPortalConfig builds a portal config whose enabled value was
 // explicitly supplied by a caller rather than inferred from a legacy payload.
-func NewGatewayPortalConfig(enabled bool, displayStyle string, showAppIcon bool, iconDragMode string, version string) GatewayPortalConfig {
+func NewGatewayPortalConfig(enabled bool, displayStyle string, showAppIcon bool, iconDragMode string, version string, showWOL bool) GatewayPortalConfig {
 	return GatewayPortalConfig{
 		Enabled:      enabled,
 		DisplayStyle: displayStyle,
 		ShowAppIcon:  showAppIcon,
+		ShowWOL:      showWOL,
 		IconDragMode: iconDragMode,
 		Version:      version,
 		enabledSet:   true,
@@ -368,6 +370,7 @@ func (cfg *GatewayPortalConfig) UnmarshalJSON(data []byte) error {
 		Enabled      *bool  `json:"enabled"`
 		DisplayStyle string `json:"display_style"`
 		ShowAppIcon  bool   `json:"show_app_icon"`
+		ShowWOL      bool   `json:"show_wol"`
 		IconDragMode string `json:"icon_drag_mode"`
 		Version      string `json:"version"`
 	}
@@ -383,6 +386,7 @@ func (cfg *GatewayPortalConfig) UnmarshalJSON(data []byte) error {
 	}
 	cfg.DisplayStyle = raw.DisplayStyle
 	cfg.ShowAppIcon = raw.ShowAppIcon
+	cfg.ShowWOL = raw.ShowWOL
 	cfg.IconDragMode = raw.IconDragMode
 	cfg.Version = raw.Version
 	return nil
@@ -397,6 +401,7 @@ func NormalizeGatewayPortalConfig(cfg GatewayPortalConfig) GatewayPortalConfig {
 	normalized := GatewayPortalConfig{
 		Enabled:     enabled,
 		ShowAppIcon: cfg.ShowAppIcon,
+		ShowWOL:     cfg.ShowWOL,
 		IconDragMode: func() string {
 			if cfg.IconDragMode == GatewayPortalIconDragModeFree {
 				return GatewayPortalIconDragModeFree

@@ -576,6 +576,7 @@ func gatewayPortalToProto(cfg models.GatewayPortalConfig) *pb.GatewayPortalConfi
 		Enabled:      cfg.Enabled,
 		DisplayStyle: cfg.DisplayStyle,
 		ShowAppIcon:  cfg.ShowAppIcon,
+		ShowWol:      cfg.ShowWOL,
 		IconDragMode: cfg.IconDragMode,
 		Version:      cfg.Version,
 	}
@@ -591,6 +592,7 @@ func protoToGatewayPortal(cfg *pb.GatewayPortalConfig) models.GatewayPortalConfi
 		cfg.GetShowAppIcon(),
 		cfg.GetIconDragMode(),
 		cfg.GetVersion(),
+		cfg.GetShowWol(),
 	)
 }
 

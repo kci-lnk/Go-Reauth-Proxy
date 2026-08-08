@@ -429,6 +429,98 @@ func TestSelectRouteRedirectsWithoutLoginState(t *testing.T) {
 	}
 }
 
+func TestWOLRouteIsUnavailableWhenPortalShortcutIsDisabled(t *testing.T) {
+	var upstreamHits atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		upstreamHits.Add(1)
+		_, _ = io.WriteString(w, "must not be reached")
+	}))
+	defer upstream.Close()
+	handler := &Handler{Rules: []models.Rule{{Path: "/", Target: upstream.URL}}}
+	handler.publishRequestSnapshotLocked()
+
+	req := httptest.NewRequest(http.MethodGet, "http://gateway.example.com/__wol__", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404; body = %s", rec.Code, rec.Body.String())
+	}
+	if upstreamHits.Load() != 0 {
+		t.Fatalf("disabled /__wol__ reached a broad upstream rule")
+	}
+	if cacheControl := rec.Header().Get("Cache-Control"); !strings.Contains(cacheControl, "no-store") {
+		t.Fatalf("Cache-Control = %q, want no-store", cacheControl)
+	}
+}
+
+func TestWOLRouteRequiresLoginAndBuiltinPermission(t *testing.T) {
+	tests := []struct {
+		name         string
+		cookie       bool
+		allowedHosts []string
+		wantStatus   int
+		wantPage     bool
+	}{
+		{name: "anonymous redirects", wantStatus: http.StatusFound},
+		{name: "custom scope denied", cookie: true, allowedHosts: []string{"app.example.com"}, wantStatus: http.StatusForbidden},
+		{name: "custom scope allowed", cookie: true, allowedHosts: []string{"__builtin_wol__"}, wantStatus: http.StatusOK, wantPage: true},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			bridge := testAuthBridge{
+				verify: func(_ context.Context, in *pb.VerifyAuthRequest) (*pb.VerifyAuthResponse, error) {
+					if got := in.GetContext().GetForwardedPath(); got != "/__wol__" {
+						t.Fatalf("X-Forwarded-Path = %q, want /__wol__", got)
+					}
+					if !test.cookie {
+						return &pb.VerifyAuthResponse{Success: false, Status: http.StatusUnauthorized}, nil
+					}
+					return &pb.VerifyAuthResponse{
+						Success: true,
+						Status:  http.StatusOK,
+						ResponseHeaders: headersToProto(http.Header{
+							reauthSubdomainAccessHeader:       []string{reauthSubdomainAccessCustom},
+							reauthAllowedSubdomainHostsHeader: test.allowedHosts,
+						}),
+					}, nil
+				},
+			}
+			handler := &Handler{
+				GatewayPortal: models.NewGatewayPortalConfig(true, models.GatewayPortalDisplayStyleDomain, false, models.GatewayPortalIconDragModeCorners, models.GatewayPortalVersionV1, true),
+				AuthConfig: models.AuthConfig{
+					AuthURL:      "/api/auth/verify",
+					LoginURL:     "/login",
+					PreflightURL: "/api/auth/preflight",
+				},
+				authBridge:     bridge,
+				authCache:      newAuthStateCache(),
+				preflightCache: newPreflightStateCache(),
+			}
+			handler.publishRequestSnapshotLocked()
+
+			req := httptest.NewRequest(http.MethodGet, "http://gateway.example.com/__wol__", nil)
+			if test.cookie {
+				req.AddCookie(&http.Cookie{Name: authSessionCookieName, Value: "ok"})
+			}
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+
+			if rec.Code != test.wantStatus {
+				t.Fatalf("status = %d, want %d; body = %s", rec.Code, test.wantStatus, rec.Body.String())
+			}
+			body := rec.Body.String()
+			if test.wantPage != strings.Contains(body, "/__auth__/api/auth/wol/targets") {
+				t.Fatalf("WOL page presence = %v, want %v", strings.Contains(body, "/__auth__/api/auth/wol/targets"), test.wantPage)
+			}
+			if test.wantPage && !strings.Contains(rec.Header().Get("Cache-Control"), "no-store") {
+				t.Fatalf("Cache-Control = %q, want no-store", rec.Header().Get("Cache-Control"))
+			}
+		})
+	}
+}
+
 func TestSelectRouteFiltersHostRulesByCredentialScope(t *testing.T) {
 	var verifyHits int32
 

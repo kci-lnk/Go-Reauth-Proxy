@@ -370,6 +370,7 @@ func gatewayLabels(locale string) map[string]string {
 		"selectDescription": i18n.T(locale, "gateway.selectDescription"),
 		"routesEmpty":       i18n.T(locale, "gateway.routesEmpty"),
 		"logout":            i18n.T(locale, "gateway.logout"),
+		"wolShortcut":       i18n.T(locale, "gateway.wolShortcut"),
 		"logoutTitle":       i18n.T(locale, "gateway.logoutConfirmTitle"),
 		"logoutMessage":     i18n.T(locale, "gateway.logoutConfirmMessage"),
 		"cancel":            i18n.T(locale, "gateway.cancel"),

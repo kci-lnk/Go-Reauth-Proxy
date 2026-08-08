@@ -505,6 +505,18 @@ func TestGatewayVisibilityRouteContextCoversGatewayEntrypoints(t *testing.T) {
 			wantKey:  "/apps",
 		},
 		{
+			name:     "select page",
+			request:  httptest.NewRequest(http.MethodGet, "https://gateway.example.test/__select__", nil),
+			wantType: "select",
+			wantKey:  "/__select__",
+		},
+		{
+			name:     "wol page",
+			request:  httptest.NewRequest(http.MethodGet, "https://gateway.example.test/__wol__", nil),
+			wantType: "wol",
+			wantKey:  "/__wol__",
+		},
+		{
 			name:     "path rule slash redirect",
 			request:  httptest.NewRequest(http.MethodGet, "https://gateway.example.test/apps", nil),
 			snapshot: requestSnapshot{rules: []models.Rule{{Path: "/apps", Target: "http://127.0.0.1:8080"}}},

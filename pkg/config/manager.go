@@ -30,6 +30,7 @@ type AppConfig struct {
 	HostRules            []models.HostRule                  `json:"host_rules,omitempty"`
 	VisibilityPolicies   map[string]models.CompiledIPSet    `json:"visibility_policies,omitempty"`
 	StreamRules          []models.StreamRule                `json:"stream_rules,omitempty"`
+	StreamAvailability   *models.StreamAvailability         `json:"stream_availability,omitempty"`
 	DefaultRoute         string                             `json:"default_route"`
 	AuthConfig           models.AuthConfig                  `json:"auth_config"`
 	AdminPort            int                                `json:"admin_port,omitempty"`
@@ -184,6 +185,15 @@ func applyDefaults(cfg *AppConfig) bool {
 		cfg.StreamRules = []models.StreamRule{}
 		changed = true
 	}
+	previousStreamAvailability := cfg.StreamAvailability
+	streamAvailability, err := models.NormalizeDailyAvailability(previousStreamAvailability)
+	if err != nil {
+		streamAvailability = nil
+	}
+	if !dailyAvailabilityEqual(previousStreamAvailability, streamAvailability) {
+		changed = true
+	}
+	cfg.StreamAvailability = streamAvailability
 	if cfg.SSL.Certificates == nil {
 		cfg.SSL.Certificates = []models.SSLDeployedCertificate{}
 		changed = true
@@ -350,6 +360,15 @@ func applyDefaults(cfg *AppConfig) bool {
 	}
 
 	return changed
+}
+
+func dailyAvailabilityEqual(left, right *models.DailyAvailability) bool {
+	if left == nil || right == nil {
+		return left == nil && right == nil
+	}
+	return left.Enabled == right.Enabled &&
+		left.StartTime == right.StartTime &&
+		left.EndTime == right.EndTime
 }
 
 func detectAuthConfigFieldPresence(data []byte) (hasAuthCacheTTL bool, hasAuthCacheFailTTL bool, hasEdgeClientIPEnabled bool) {

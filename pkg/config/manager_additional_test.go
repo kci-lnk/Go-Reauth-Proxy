@@ -58,6 +58,31 @@ func TestManagerLoadNormalizesGatewayListenerScope(t *testing.T) {
 	}
 }
 
+func TestManagerLoadRestoresAndValidatesStreamAvailability(t *testing.T) {
+	cfg := loadConfigFromJSON(t, `{"stream_availability":{"enabled":true,"start_time":" 22:00 ","end_time":"06:00"}}`)
+	if cfg.StreamAvailability == nil || cfg.StreamAvailability.StartTime != "22:00" || cfg.StreamAvailability.EndTime != "06:00" {
+		t.Fatalf("stream availability = %#v", cfg.StreamAvailability)
+	}
+
+	cfg = loadConfigFromJSON(t, `{"stream_availability":{"enabled":true,"start_time":"09:00","end_time":"09:00"}}`)
+	if cfg.StreamAvailability != nil {
+		t.Fatalf("invalid stream availability was retained: %#v", cfg.StreamAvailability)
+	}
+}
+
+func TestApplyDefaultsMarksNormalizedStreamAvailabilityAsChanged(t *testing.T) {
+	cfg := defaultConfig()
+	cfg.StreamAvailability = &models.StreamAvailability{
+		Enabled: true, StartTime: " 22:00 ", EndTime: "06:00",
+	}
+	if !applyDefaults(cfg) {
+		t.Fatal("applyDefaults did not report the normalized availability")
+	}
+	if cfg.StreamAvailability == nil || cfg.StreamAvailability.StartTime != "22:00" {
+		t.Fatalf("stream availability = %#v", cfg.StreamAvailability)
+	}
+}
+
 func TestManagerLoadRejectsInvalidJSON(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.json")
 	if err := os.WriteFile(path, []byte(`{"rules": [`), 0o644); err != nil {

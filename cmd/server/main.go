@@ -727,6 +727,9 @@ func run(options runOptions) error {
 	}
 
 	streamManager = stream.NewManager(proxyHandler)
+	if setErr := streamManager.SetAvailability(proxyHandler.GetStreamAvailability()); setErr != nil {
+		return fmt.Errorf("configure initial stream availability: %w", setErr)
+	}
 	startedStreamRules, startupWarnings := streamManager.ReconcileBestEffort(normalizedStreamRules)
 	for _, warning := range startupWarnings {
 		if event := logger.DebugEvent("server", "stream_startup_warning"); event != nil {

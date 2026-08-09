@@ -18,6 +18,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gorilla/mux"
@@ -32,6 +33,7 @@ type Server struct {
 	FnosConnectIngress *proxy.FnosConnectIngress
 	ConfigManager      *config.Manager
 	Port               int
+	streamConfigMu     sync.Mutex
 }
 
 type ServerInfo struct {
@@ -437,16 +439,24 @@ func (s *Server) handleSetStreamRules(w http.ResponseWriter, r *http.Request) {
 		response.Error(w, errors.CodeInvalidRule, fmt.Sprintf("Failed to set stream rules: %v", err))
 		return
 	}
+	s.streamConfigMu.Lock()
+	defer s.streamConfigMu.Unlock()
+	previousRuntime := captureStreamRuntime(s.StreamManager)
+	previousAvailability := s.ProxyHandler.GetStreamAvailability()
 
 	if s.StreamManager != nil {
-		if err := s.StreamManager.Reconcile(normalizedRules); err != nil {
+		if err := s.StreamManager.ReconcileConfig(normalizedRules, previousAvailability); err != nil {
 			response.Error(w, errors.CodeInvalidRule, fmt.Sprintf("Failed to reconcile stream listeners: %v", err))
 			return
 		}
 	}
 
 	if err := s.ProxyHandler.SetStreamRules(normalizedRules); err != nil {
-		response.Error(w, errors.CodeInvalidRule, fmt.Sprintf("Failed to persist stream rules: %v", err))
+		if rollbackErr := restoreStreamRuntime(s.StreamManager, previousRuntime); rollbackErr != nil {
+			response.Error(w, errors.CodeInternal, fmt.Sprintf("Failed to persist stream rules: %v; runtime rollback failed: %v", err, rollbackErr))
+			return
+		}
+		response.Error(w, errors.CodeInternal, fmt.Sprintf("Failed to persist stream rules: %v", err))
 		return
 	}
 
@@ -454,15 +464,22 @@ func (s *Server) handleSetStreamRules(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleFlushStreamRules(w http.ResponseWriter, r *http.Request) {
-	if err := s.ProxyHandler.FlushStreamRules(); err != nil {
-		response.Error(w, errors.CodeInternal, "Failed to flush stream rules: "+err.Error())
-		return
-	}
+	s.streamConfigMu.Lock()
+	defer s.streamConfigMu.Unlock()
+	previousRuntime := captureStreamRuntime(s.StreamManager)
 	if s.StreamManager != nil {
-		if err := s.StreamManager.Reconcile(nil); err != nil {
+		if err := s.StreamManager.ReconcileConfig(nil, nil); err != nil {
 			response.Error(w, errors.CodeInvalidRule, fmt.Sprintf("Failed to flush stream listeners: %v", err))
 			return
 		}
+	}
+	if err := s.ProxyHandler.FlushStreamRules(); err != nil {
+		if rollbackErr := restoreStreamRuntime(s.StreamManager, previousRuntime); rollbackErr != nil {
+			response.Error(w, errors.CodeInternal, fmt.Sprintf("Failed to flush stream rules: %v; runtime rollback failed: %v", err, rollbackErr))
+			return
+		}
+		response.Error(w, errors.CodeInternal, "Failed to flush stream rules: "+err.Error())
+		return
 	}
 	response.Success(w, nil)
 }

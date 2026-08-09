@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http/httptest"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"sync"
 	"testing"
@@ -705,18 +706,29 @@ func TestPersistedHandlerSettingsRollbackOnSaveFailure(t *testing.T) {
 
 	t.Run("stream rules", func(t *testing.T) {
 		handler, manager := newAdditionalProxyTestHandler(t)
+		initialAvailability := &models.StreamAvailability{
+			Enabled: true, StartTime: "09:00", EndTime: "18:00",
+		}
+		if err := handler.SetStreamRulesConfig(nil, initialAvailability); err != nil {
+			t.Fatalf("set initial availability: %v", err)
+		}
 		breakConfigPersistence(t, manager)
 
-		err := handler.SetStreamRules([]models.StreamRule{{
+		err := handler.SetStreamRulesConfig([]models.StreamRule{{
 			Protocol:   models.StreamProtocolTCP,
 			ListenPort: 10001,
 			Target:     "127.0.0.1:10002",
-		}})
+		}}, &models.StreamAvailability{
+			Enabled: true, StartTime: "22:00", EndTime: "06:00",
+		})
 		if err == nil {
 			t.Fatal("SetStreamRules() returned nil error")
 		}
 		if got := handler.GetStreamRules(); len(got) != 0 {
 			t.Fatalf("configured stream rules after failure = %#v", got)
+		}
+		if got := handler.GetStreamAvailability(); !reflect.DeepEqual(got, initialAvailability) {
+			t.Fatalf("configured stream availability after failure = %#v, want %#v", got, initialAvailability)
 		}
 	})
 
@@ -1143,6 +1155,31 @@ func TestSetStreamRulesPersistsNormalizedRules(t *testing.T) {
 	}
 	if len(cfg.StreamRules) != 1 || cfg.StreamRules[0].Protocol != models.StreamProtocolTCP {
 		t.Fatalf("persisted stream rules = %#v", cfg.StreamRules)
+	}
+}
+
+func TestSetStreamRulesPreservesAvailability(t *testing.T) {
+	handler, manager := newAdditionalProxyTestHandler(t)
+	availability := &models.StreamAvailability{
+		Enabled: true, StartTime: "22:00", EndTime: "06:00",
+	}
+	if err := handler.SetStreamRulesConfig(nil, availability); err != nil {
+		t.Fatalf("SetStreamRulesConfig() returned error: %v", err)
+	}
+	if err := handler.SetStreamRules([]models.StreamRule{{
+		Protocol: models.StreamProtocolTCP, ListenPort: 3306, Target: "127.0.0.1:3307",
+	}}); err != nil {
+		t.Fatalf("SetStreamRules() returned error: %v", err)
+	}
+	if got := handler.GetStreamAvailability(); !reflect.DeepEqual(got, availability) {
+		t.Fatalf("handler availability = %#v, want %#v", got, availability)
+	}
+	cfg, err := manager.Load()
+	if err != nil {
+		t.Fatalf("Load() returned error: %v", err)
+	}
+	if !reflect.DeepEqual(cfg.StreamAvailability, availability) {
+		t.Fatalf("persisted availability = %#v, want %#v", cfg.StreamAvailability, availability)
 	}
 }
 

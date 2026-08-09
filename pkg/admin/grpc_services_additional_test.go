@@ -2,11 +2,16 @@ package admin
 
 import (
 	"context"
+	"fmt"
+	"net"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"go-reauth-proxy/pkg/grpc/pb"
 	"go-reauth-proxy/pkg/models"
 	"go-reauth-proxy/pkg/rpcbridge"
+	"go-reauth-proxy/pkg/stream"
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
@@ -205,7 +210,14 @@ func TestGatewayControlFlushHostRulesClearsRules(t *testing.T) {
 func TestGatewayControlStreamRulesRoundTrip(t *testing.T) {
 	server := newGatewayControlTestServer(t, "secret")
 	ctx := authTestContext()
-	_, err := server.SetStreamRules(ctx, &pb.StreamRules{Items: []*pb.StreamRule{{Protocol: "udp", ListenPort: 5353, Target: "127.0.0.1:5354", UseAuth: true}}})
+	_, err := server.SetStreamRules(ctx, &pb.StreamRules{
+		Items: []*pb.StreamRule{{Protocol: "udp", ListenPort: 5353, Target: "127.0.0.1:5354", UseAuth: true}},
+		Availability: &pb.StreamAvailability{
+			Enabled:   true,
+			StartTime: "22:00",
+			EndTime:   "06:00",
+		},
+	})
 	if err != nil {
 		t.Fatalf("SetStreamRules() returned error: %v", err)
 	}
@@ -216,6 +228,79 @@ func TestGatewayControlStreamRulesRoundTrip(t *testing.T) {
 	if len(got.GetItems()) != 1 || got.GetItems()[0].GetProtocol() != "udp" {
 		t.Fatalf("stream rules = %#v", got.GetItems())
 	}
+	if got.GetAvailability().GetStartTime() != "22:00" || got.GetAvailability().GetEndTime() != "06:00" {
+		t.Fatalf("stream availability = %#v", got.GetAvailability())
+	}
+}
+
+func TestGatewayControlSetStreamRulesRejectsInvalidAvailability(t *testing.T) {
+	server := newGatewayControlTestServer(t, "secret")
+	_, err := server.SetStreamRules(authTestContext(), &pb.StreamRules{
+		Availability: &pb.StreamAvailability{
+			Enabled:   true,
+			StartTime: "09:00",
+			EndTime:   "09:00",
+		},
+	})
+	if status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("status = %v, want invalid argument", status.Code(err))
+	}
+}
+
+func TestGatewayControlSetStreamRulesRejectsDisabledAvailabilityObject(t *testing.T) {
+	server := newGatewayControlTestServer(t, "secret")
+	_, err := server.SetStreamRules(authTestContext(), &pb.StreamRules{
+		Availability: &pb.StreamAvailability{Enabled: false},
+	})
+	if status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("status = %v, want invalid argument", status.Code(err))
+	}
+}
+
+func TestGatewayControlSetStreamRulesRollsBackRuntimeOnPersistenceFailure(t *testing.T) {
+	server := newGatewayControlTestServer(t, "secret")
+	manager := stream.NewManager(server.admin.ProxyHandler)
+	server.admin.StreamManager = manager
+	t.Cleanup(manager.Stop)
+
+	probe, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("reserve port: %v", err)
+	}
+	listenPort := probe.Addr().(*net.TCPAddr).Port
+	probe.Close()
+
+	configPath := filepath.Join(server.admin.ConfigManager.RuntimeDir(), "config.json")
+	if err := os.Remove(configPath); err != nil {
+		t.Fatalf("remove config file: %v", err)
+	}
+	if err := os.Mkdir(configPath, 0o755); err != nil {
+		t.Fatalf("replace config file with directory: %v", err)
+	}
+
+	_, err = server.SetStreamRules(authTestContext(), &pb.StreamRules{
+		Items: []*pb.StreamRule{{
+			Protocol: "tcp", ListenPort: int32(listenPort), Target: "127.0.0.1:1",
+		}},
+		Availability: &pb.StreamAvailability{
+			Enabled: true, StartTime: "09:00", EndTime: "18:00",
+		},
+	})
+	if status.Code(err) != codes.Internal {
+		t.Fatalf("status = %v, want internal; error=%v", status.Code(err), err)
+	}
+	if got := server.admin.ProxyHandler.GetStreamRules(); len(got) != 0 {
+		t.Fatalf("handler stream rules after rollback = %#v", got)
+	}
+	if got := server.admin.ProxyHandler.GetStreamAvailability(); got != nil {
+		t.Fatalf("handler stream availability after rollback = %#v", got)
+	}
+
+	rebound, err := net.Listen("tcp4", net.JoinHostPort("127.0.0.1", fmt.Sprintf("%d", listenPort)))
+	if err != nil {
+		t.Fatalf("runtime listener was not rolled back: %v", err)
+	}
+	rebound.Close()
 }
 
 func TestGatewayControlSetStreamRulesRejectsNilRequest(t *testing.T) {
@@ -238,6 +323,9 @@ func TestGatewayControlFlushStreamRulesClearsRules(t *testing.T) {
 	got, _ := server.GetStreamRules(ctx, &emptypb.Empty{})
 	if len(got.GetItems()) != 0 {
 		t.Fatalf("stream rules after flush = %#v", got.GetItems())
+	}
+	if got.GetAvailability() != nil {
+		t.Fatalf("stream availability after flush = %#v", got.GetAvailability())
 	}
 }
 

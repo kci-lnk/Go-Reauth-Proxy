@@ -60,12 +60,15 @@ type Manager struct {
 	handler      *proxy.Handler
 	listeners    map[streamRuleKey]managedListener
 	rules        map[streamRuleKey]models.StreamRule
+	availability *models.StreamAvailability
 	ruleSnapshot atomic.Pointer[streamRuleSnapshot]
+	now          func() time.Time
 	closed       bool
 }
 
 type streamRuleSnapshot struct {
-	rules map[streamRuleKey]models.StreamRule
+	rules        map[streamRuleKey]models.StreamRule
+	availability *models.StreamAvailability
 }
 
 type streamRuleKey struct {
@@ -222,12 +225,32 @@ func NewManager(handler *proxy.Handler) *Manager {
 		handler:   handler,
 		listeners: make(map[streamRuleKey]managedListener),
 		rules:     make(map[streamRuleKey]models.StreamRule),
+		now:       time.Now,
 	}
 	m.ruleSnapshot.Store(&streamRuleSnapshot{rules: m.rules})
 	return m
 }
 
 func (m *Manager) Reconcile(rules []models.StreamRule) error {
+	return m.reconcile(rules, nil, false)
+}
+
+func (m *Manager) ReconcileConfig(
+	rules []models.StreamRule,
+	availability *models.StreamAvailability,
+) error {
+	normalizedAvailability, err := models.NormalizeDailyAvailability(availability)
+	if err != nil {
+		return err
+	}
+	return m.reconcile(rules, normalizedAvailability, true)
+}
+
+func (m *Manager) reconcile(
+	rules []models.StreamRule,
+	availability *models.StreamAvailability,
+	replaceAvailability bool,
+) error {
 	start := time.Now()
 	if event := logger.DebugEvent("stream", "reconcile_start"); event != nil {
 		event.Int("requested_rule_count", len(rules)).
@@ -331,7 +354,13 @@ func (m *Manager) Reconcile(rules []models.StreamRule) error {
 		m.listeners[key] = state
 	}
 	m.rules = nextRules
-	m.ruleSnapshot.Store(&streamRuleSnapshot{rules: nextRules})
+	if replaceAvailability {
+		m.availability = models.CopyDailyAvailability(availability)
+	}
+	m.ruleSnapshot.Store(&streamRuleSnapshot{
+		rules:        nextRules,
+		availability: models.CopyDailyAvailability(m.availability),
+	})
 
 	removed := make([]managedListener, 0, len(toRemove))
 	for _, key := range toRemove {
@@ -420,6 +449,7 @@ func (m *Manager) Stop() {
 		delete(m.listeners, key)
 	}
 	m.rules = map[streamRuleKey]models.StreamRule{}
+	m.availability = nil
 	m.ruleSnapshot.Store(&streamRuleSnapshot{rules: m.rules})
 	m.mu.Unlock()
 
@@ -432,12 +462,63 @@ func (m *Manager) Stop() {
 }
 
 func (m *Manager) currentRule(key streamRuleKey) (models.StreamRule, bool) {
+	rule, _, ok := m.currentRuleConfig(key)
+	return rule, ok
+}
+
+func (m *Manager) currentRuleConfig(
+	key streamRuleKey,
+) (models.StreamRule, *models.StreamAvailability, bool) {
 	snapshot := m.ruleSnapshot.Load()
 	if snapshot == nil {
-		return models.StreamRule{}, false
+		return models.StreamRule{}, nil, false
 	}
 	rule, ok := snapshot.rules[key]
-	return rule, ok
+	return rule, snapshot.availability, ok
+}
+
+func (m *Manager) ConfigSnapshot() ([]models.StreamRule, *models.StreamAvailability) {
+	snapshot := m.ruleSnapshot.Load()
+	if snapshot == nil {
+		return nil, nil
+	}
+	keys := make([]streamRuleKey, 0, len(snapshot.rules))
+	for key := range snapshot.rules {
+		keys = append(keys, key)
+	}
+	slices.SortFunc(keys, compareStreamRuleKeys)
+	rules := make([]models.StreamRule, 0, len(keys))
+	for _, key := range keys {
+		rules = append(rules, snapshot.rules[key])
+	}
+	return rules, models.CopyDailyAvailability(snapshot.availability)
+}
+
+func (m *Manager) SetAvailability(availability *models.StreamAvailability) error {
+	normalized, err := models.NormalizeDailyAvailability(availability)
+	if err != nil {
+		return err
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.closed {
+		return fmt.Errorf("stream manager is closed")
+	}
+	m.availability = models.CopyDailyAvailability(normalized)
+	m.ruleSnapshot.Store(&streamRuleSnapshot{
+		rules:        m.rules,
+		availability: models.CopyDailyAvailability(m.availability),
+	})
+	return nil
+}
+
+func (m *Manager) availabilityOpenNow(availability *models.StreamAvailability) bool {
+	now := time.Now()
+	if m.now != nil {
+		now = m.now()
+	}
+	return models.DailyAvailabilityOpenAt(availability, now)
 }
 
 func (m *Manager) newManagedListener(key streamRuleKey) (managedListener, error) {
@@ -1118,7 +1199,7 @@ func (m *Manager) handleConn(client net.Conn, key streamRuleKey) {
 		}
 	}()
 
-	rule, ok := m.currentRule(key)
+	rule, availability, ok := m.currentRuleConfig(key)
 	if !ok {
 		entry.Matched = false
 		entry.Status = http.StatusNotFound
@@ -1139,6 +1220,16 @@ func (m *Manager) handleConn(client net.Conn, key streamRuleKey) {
 			Str("target", logger.SanitizeLogString(rule.Target)).
 			Bool("auth_required", rule.UseAuth).
 			Send()
+	}
+	if !m.availabilityOpenNow(availability) {
+		entry.Status = http.StatusServiceUnavailable
+		entry.AuthDecision = "schedule_closed"
+		if event := logger.DebugEvent("stream", "tcp_schedule_closed"); event != nil {
+			event.Str("key", logger.SanitizeLogString(key.String())).
+				Interface("listen_port", logger.SanitizePort(key.ListenPort)).
+				Send()
+		}
+		return
 	}
 
 	if !m.handler.IsClientIPVisible(clientIP) {
@@ -1240,7 +1331,7 @@ func (m *Manager) handleUDPPacket(listener *udpListenerState, packetConn net.Pac
 		return
 	}
 
-	rule, ok := m.currentRule(key)
+	rule, availability, ok := m.currentRuleConfig(key)
 	if !ok {
 		releaseUDPPacket(packet)
 		entry := newStreamEntry(key, addrString(clientAddr), extractRemoteIP(clientAddr))
@@ -1254,6 +1345,16 @@ func (m *Manager) handleUDPPacket(listener *udpListenerState, packetConn net.Pac
 				Send()
 		}
 		m.logStreamEntry(entry, time.Now())
+		return
+	}
+	if !m.availabilityOpenNow(availability) {
+		releaseUDPPacket(packet)
+		if event := logger.DebugEvent("stream", "udp_schedule_closed"); event != nil {
+			event.Str("key", logger.SanitizeLogString(key.String())).
+				Interface("listen_port", logger.SanitizePort(key.ListenPort)).
+				Str("client_addr", logger.SanitizeLogString(addrString(clientAddr))).
+				Send()
+		}
 		return
 	}
 

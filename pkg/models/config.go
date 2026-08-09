@@ -125,11 +125,14 @@ type HostRuleVisibility struct {
 	PolicyID string   `json:"policy_id,omitempty"`
 }
 
-type HostRuleAvailability struct {
+type DailyAvailability struct {
 	Enabled   bool   `json:"enabled" example:"true"`
 	StartTime string `json:"start_time" example:"09:00"`
 	EndTime   string `json:"end_time" example:"18:00"`
 }
+
+type HostRuleAvailability = DailyAvailability
+type StreamAvailability = DailyAvailability
 
 const (
 	HostLocationMatchExact  = "exact"

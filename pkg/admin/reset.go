@@ -14,6 +14,8 @@ func (s *Server) ResetAllData() error {
 	if s == nil || s.ProxyHandler == nil {
 		return fmt.Errorf("proxy handler is not initialized")
 	}
+	s.streamConfigMu.Lock()
+	defer s.streamConfigMu.Unlock()
 
 	resetConfig := config.DefaultConfig()
 	resetConfig.AdminPort = s.Port
@@ -42,7 +44,7 @@ func (s *Server) ResetAllData() error {
 		return fmt.Errorf("clear gateway logs: %w", err)
 	}
 	if s.StreamManager != nil {
-		if err := s.StreamManager.Reconcile(nil); err != nil {
+		if err := s.StreamManager.ReconcileConfig(nil, nil); err != nil {
 			return fmt.Errorf("stop gateway stream listeners: %w", err)
 		}
 	}

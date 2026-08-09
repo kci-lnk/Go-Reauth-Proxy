@@ -10,6 +10,7 @@ import (
 	"go-reauth-proxy/pkg/i18n"
 	compiledipset "go-reauth-proxy/pkg/ipset"
 	"go-reauth-proxy/pkg/iptables"
+	"go-reauth-proxy/pkg/models"
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -97,7 +98,8 @@ func (s *GRPCServer) GetStreamRules(ctx context.Context, _ *emptypb.Empty) (*pb.
 	if err := s.checkToken(ctx); err != nil {
 		return nil, err
 	}
-	return streamRulesToProto(s.admin.ProxyHandler.GetStreamRules()), nil
+	rules, availability := s.admin.ProxyHandler.GetStreamRulesConfig()
+	return streamRulesToProto(rules, availability), nil
 }
 
 func (s *GRPCServer) SetStreamRules(ctx context.Context, req *pb.StreamRules) (*pb.StreamRules, error) {
@@ -111,28 +113,50 @@ func (s *GRPCServer) SetStreamRules(ctx context.Context, req *pb.StreamRules) (*
 	if err != nil {
 		return nil, grpcBadRequest("failed to set stream rules: %v", err)
 	}
+	if req.GetAvailability() != nil && !req.GetAvailability().GetEnabled() {
+		return nil, grpcBadRequest("failed to set stream availability: enabled must be true when availability is present")
+	}
+	normalizedAvailability, err := models.NormalizeDailyAvailability(
+		protoToStreamAvailability(req.GetAvailability()),
+	)
+	if err != nil {
+		return nil, grpcBadRequest("failed to set stream availability: %v", err)
+	}
+	s.admin.streamConfigMu.Lock()
+	defer s.admin.streamConfigMu.Unlock()
+	previousRuntime := captureStreamRuntime(s.admin.StreamManager)
 	if s.admin.StreamManager != nil {
-		if err := s.admin.StreamManager.Reconcile(normalizedRules); err != nil {
-			return nil, grpcBadRequest("failed to reconcile stream listeners: %v", err)
+		if err := s.admin.StreamManager.ReconcileConfig(normalizedRules, normalizedAvailability); err != nil {
+			return nil, grpcBadRequest("failed to reconcile stream configuration: %v", err)
 		}
 	}
-	if err := s.admin.ProxyHandler.SetStreamRules(normalizedRules); err != nil {
-		return nil, grpcBadRequest("failed to persist stream rules: %v", err)
+	if err := s.admin.ProxyHandler.SetStreamRulesConfig(normalizedRules, normalizedAvailability); err != nil {
+		if rollbackErr := restoreStreamRuntime(s.admin.StreamManager, previousRuntime); rollbackErr != nil {
+			return nil, grpcInternal("failed to persist stream rules: %v; runtime rollback failed: %v", err, rollbackErr)
+		}
+		return nil, grpcInternal("failed to persist stream rules: %v", err)
 	}
-	return streamRulesToProto(s.admin.ProxyHandler.GetStreamRules()), nil
+	storedRules, storedAvailability := s.admin.ProxyHandler.GetStreamRulesConfig()
+	return streamRulesToProto(storedRules, storedAvailability), nil
 }
 
 func (s *GRPCServer) FlushStreamRules(ctx context.Context, _ *emptypb.Empty) (*pb.RpcStatus, error) {
 	if err := s.checkToken(ctx); err != nil {
 		return nil, err
 	}
-	if err := s.admin.ProxyHandler.FlushStreamRules(); err != nil {
-		return nil, grpcInternal("failed to flush stream rules: %v", err)
-	}
+	s.admin.streamConfigMu.Lock()
+	defer s.admin.streamConfigMu.Unlock()
+	previousRuntime := captureStreamRuntime(s.admin.StreamManager)
 	if s.admin.StreamManager != nil {
-		if err := s.admin.StreamManager.Reconcile(nil); err != nil {
+		if err := s.admin.StreamManager.ReconcileConfig(nil, nil); err != nil {
 			return nil, grpcBadRequest("failed to flush stream listeners: %v", err)
 		}
+	}
+	if err := s.admin.ProxyHandler.FlushStreamRules(); err != nil {
+		if rollbackErr := restoreStreamRuntime(s.admin.StreamManager, previousRuntime); rollbackErr != nil {
+			return nil, grpcInternal("failed to flush stream rules: %v; runtime rollback failed: %v", err, rollbackErr)
+		}
+		return nil, grpcInternal("failed to flush stream rules: %v", err)
 	}
 	return rpcOK(), nil
 }

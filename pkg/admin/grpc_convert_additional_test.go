@@ -85,9 +85,14 @@ func TestHostRulesProtoDistinguishesExplicitDisabledAdvancedAuth(t *testing.T) {
 
 func TestStreamRulesProtoRoundTrip(t *testing.T) {
 	input := []models.StreamRule{{Protocol: "udp", ListenPort: 5353, Target: "127.0.0.1:5354", UseAuth: true}}
-	got := protoToStreamRules(streamRulesToProto(input))
+	availability := &models.StreamAvailability{Enabled: true, StartTime: "22:00", EndTime: "06:00"}
+	protoRules := streamRulesToProto(input, availability)
+	got := protoToStreamRules(protoRules)
 	if !reflect.DeepEqual(got, input) {
 		t.Fatalf("round trip = %#v, want %#v", got, input)
+	}
+	if gotAvailability := protoToStreamAvailability(protoRules.GetAvailability()); !reflect.DeepEqual(gotAvailability, availability) {
+		t.Fatalf("availability round trip = %#v, want %#v", gotAvailability, availability)
 	}
 }
 

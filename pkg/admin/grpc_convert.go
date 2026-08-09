@@ -381,7 +381,29 @@ func protoToHostRules(req *pb.HostRules) []models.HostRule {
 	return rules
 }
 
-func streamRulesToProto(rules []models.StreamRule) *pb.StreamRules {
+func streamAvailabilityToProto(value *models.StreamAvailability) *pb.StreamAvailability {
+	if value == nil {
+		return nil
+	}
+	return &pb.StreamAvailability{
+		Enabled:   value.Enabled,
+		StartTime: value.StartTime,
+		EndTime:   value.EndTime,
+	}
+}
+
+func protoToStreamAvailability(value *pb.StreamAvailability) *models.StreamAvailability {
+	if value == nil {
+		return nil
+	}
+	return &models.StreamAvailability{
+		Enabled:   value.GetEnabled(),
+		StartTime: value.GetStartTime(),
+		EndTime:   value.GetEndTime(),
+	}
+}
+
+func streamRulesToProto(rules []models.StreamRule, availability *models.StreamAvailability) *pb.StreamRules {
 	items := make([]*pb.StreamRule, 0, len(rules))
 	for _, rule := range rules {
 		items = append(items, &pb.StreamRule{
@@ -391,7 +413,10 @@ func streamRulesToProto(rules []models.StreamRule) *pb.StreamRules {
 			UseAuth:    rule.UseAuth,
 		})
 	}
-	return &pb.StreamRules{Items: items}
+	return &pb.StreamRules{
+		Items:        items,
+		Availability: streamAvailabilityToProto(availability),
+	}
 }
 
 func protoToStreamRules(req *pb.StreamRules) []models.StreamRule {

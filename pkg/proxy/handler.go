@@ -105,6 +105,7 @@ type Handler struct {
 	HostRules               []models.HostRule
 	VisibilityPolicies      map[string]models.CompiledIPSet
 	StreamRules             []models.StreamRule
+	StreamAvailability      *models.StreamAvailability
 	DefaultRoute            string
 	AuthConfig              models.AuthConfig
 	LoggingConfig           models.LoggingConfig
@@ -1742,6 +1743,7 @@ func NewHandler(adminPort int, proxyPort int, cfgManager *config.Manager, initia
 		HostRules:                  initialHostRules,
 		VisibilityPolicies:         initialPolicies,
 		StreamRules:                initialCfg.StreamRules,
+		StreamAvailability:         models.CopyDailyAvailability(initialCfg.StreamAvailability),
 		DefaultRoute:               initialCfg.DefaultRoute,
 		AuthConfig:                 initialCfg.AuthConfig,
 		LoggingConfig:              logConfig,
@@ -1919,12 +1921,14 @@ func (h *Handler) saveConfigLocked() error {
 	hostRulesCopy := copyHostRulesForPersistence(h.HostRules)
 	streamRulesCopy := make([]models.StreamRule, len(h.StreamRules))
 	copy(streamRulesCopy, h.StreamRules)
+	streamAvailabilityCopy := models.CopyDailyAvailability(h.StreamAvailability)
 
 	if err := h.configManager.Update(func(conf *config.AppConfig) error {
 		conf.Rules = rulesCopy
 		conf.HostRules = hostRulesCopy
 		conf.VisibilityPolicies = copyVisibilityPolicies(h.VisibilityPolicies)
 		conf.StreamRules = streamRulesCopy
+		conf.StreamAvailability = streamAvailabilityCopy
 		conf.DefaultRoute = h.DefaultRoute
 		conf.AuthConfig = h.AuthConfig
 		conf.Logging = h.LoggingConfig
@@ -2010,6 +2014,7 @@ func (h *Handler) ResetAllData(resetConfig *config.AppConfig) error {
 	resetConfig.HostRules = []models.HostRule{}
 	resetConfig.VisibilityPolicies = map[string]models.CompiledIPSet{}
 	resetConfig.StreamRules = []models.StreamRule{}
+	resetConfig.StreamAvailability = nil
 	resetConfig.Logging = loggingConfig
 	resetConfig.ForwardedHeaders = forwardedHeaders
 	resetConfig.PreserveHost = preserveHost
@@ -2045,6 +2050,7 @@ func (h *Handler) ResetAllData(resetConfig *config.AppConfig) error {
 	h.HostRules = []models.HostRule{}
 	h.VisibilityPolicies = map[string]models.CompiledIPSet{}
 	h.StreamRules = []models.StreamRule{}
+	h.StreamAvailability = nil
 	h.DefaultRoute = resetConfig.DefaultRoute
 	h.AuthConfig = resetConfig.AuthConfig
 	h.LoggingConfig = loggingConfig
@@ -3738,24 +3744,60 @@ func (h *Handler) ValidateStreamRules(rules []models.StreamRule) ([]models.Strea
 }
 
 func (h *Handler) SetStreamRules(rules []models.StreamRule) error {
+	return h.setStreamRulesConfig(rules, nil, false)
+}
+
+func (h *Handler) SetStreamRulesConfig(
+	rules []models.StreamRule,
+	availability *models.StreamAvailability,
+) error {
+	return h.setStreamRulesConfig(rules, availability, true)
+}
+
+func (h *Handler) setStreamRulesConfig(
+	rules []models.StreamRule,
+	availability *models.StreamAvailability,
+	replaceAvailability bool,
+) error {
 	normalized, err := h.ValidateStreamRules(rules)
 	if err != nil {
 		return err
+	}
+	var normalizedAvailability *models.StreamAvailability
+	if replaceAvailability {
+		normalizedAvailability, err = models.NormalizeDailyAvailability(availability)
+		if err != nil {
+			return err
+		}
 	}
 
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
-	previous := h.StreamRules
+	previousRules := h.StreamRules
+	previousAvailability := h.StreamAvailability
+	effectiveAvailability := previousAvailability
+	if replaceAvailability {
+		effectiveAvailability = normalizedAvailability
+	}
 	if err := h.commitConfigMutationLocked(
-		func() { h.StreamRules = normalized },
-		func() { h.StreamRules = previous },
+		func() {
+			h.StreamRules = normalized
+			if replaceAvailability {
+				h.StreamAvailability = models.CopyDailyAvailability(normalizedAvailability)
+			}
+		},
+		func() {
+			h.StreamRules = previousRules
+			h.StreamAvailability = previousAvailability
+		},
 		nil,
 	); err != nil {
 		return err
 	}
 	if event := debugProxyEvent("stream_rules_set", ""); event != nil {
 		event.Int("stream_rule_count", len(normalized)).
+			Bool("schedule_enabled", effectiveAvailability != nil).
 			Interface("stream_rules", debugStreamRuleSummaries(normalized)).
 			Send()
 	}
@@ -3766,11 +3808,18 @@ func (h *Handler) FlushStreamRules() error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
-	previous := h.StreamRules
+	previousRules := h.StreamRules
+	previousAvailability := h.StreamAvailability
 	next := make([]models.StreamRule, 0)
 	if err := h.commitConfigMutationLocked(
-		func() { h.StreamRules = next },
-		func() { h.StreamRules = previous },
+		func() {
+			h.StreamRules = next
+			h.StreamAvailability = nil
+		},
+		func() {
+			h.StreamRules = previousRules
+			h.StreamAvailability = previousAvailability
+		},
 		nil,
 	); err != nil {
 		return err
@@ -3782,12 +3831,23 @@ func (h *Handler) FlushStreamRules() error {
 }
 
 func (h *Handler) GetStreamRules() []models.StreamRule {
+	rules, _ := h.GetStreamRulesConfig()
+	return rules
+}
+
+func (h *Handler) GetStreamRulesConfig() ([]models.StreamRule, *models.StreamAvailability) {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 
 	rules := make([]models.StreamRule, len(h.StreamRules))
 	copy(rules, h.StreamRules)
-	return rules
+	return rules, models.CopyDailyAvailability(h.StreamAvailability)
+}
+
+func (h *Handler) GetStreamAvailability() *models.StreamAvailability {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	return models.CopyDailyAvailability(h.StreamAvailability)
 }
 
 func (h *Handler) GetDefaultRoute() string {

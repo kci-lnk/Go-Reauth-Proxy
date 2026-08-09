@@ -4,7 +4,9 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/hmac"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/tls"
 	"encoding/base64"
 	"encoding/hex"
@@ -30,6 +32,7 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"os"
 	"path"
 	"sort"
 	"strconv"
@@ -45,9 +48,12 @@ import (
 )
 
 const (
-	proxyCopyBufferSize      = 256 * 1024
-	trafficCounterFlushBytes = 1024 * 1024
+	proxyCopyBufferSize               = 256 * 1024
+	trafficCounterFlushBytes          = 1024 * 1024
+	maxSignedAuthRequestBodyBytes int = 4 * 1024 * 1024
 )
+
+var errAuthProxyRequestBodyTooLarge = stderrors.New("authentication request body is too large")
 
 type proxyBufferPool struct {
 	pool sync.Pool
@@ -160,6 +166,7 @@ type Handler struct {
 	visibilityEventQueue       chan gatewayVisibilityBlockedEvent
 	visibilityDropped          atomic.Uint64
 	visibilityDropWarnNano     atomic.Int64
+	authHMACSecret             string
 }
 
 func (h *Handler) SetAuthBridgeManager(manager *rpcbridge.AuthBridgeManager) {
@@ -1167,7 +1174,7 @@ func shouldDisableAuthResponseCaching(requestPath string) bool {
 	}
 }
 
-func applyInternalAuthProxyHeaders(req *http.Request, source *http.Request, targetURL *url.URL, clientIP string, authConfig models.AuthConfig) {
+func applyInternalAuthProxyHeaders(req *http.Request, source *http.Request, targetURL *url.URL, clientIP string, authConfig models.AuthConfig, hmacSecret string, bodyDigest string) {
 	if req == nil {
 		return
 	}
@@ -1198,7 +1205,94 @@ func applyInternalAuthProxyHeaders(req *http.Request, source *http.Request, targ
 	// Strip internal routing hints and any client-supplied real-IP header.
 	req.Header.Del("X-Forwarded-Path")
 	req.Header.Del("X-Match")
+	req.Header.Del("X-Timestamp")
+	req.Header.Del("X-Nonce")
+	req.Header.Del("X-Signature")
+	if strings.TrimSpace(hmacSecret) != "" {
+		timestamp := strconv.FormatInt(time.Now().UnixMilli(), 10)
+		nonceBytes := make([]byte, 16)
+		if _, err := rand.Read(nonceBytes); err == nil {
+			nonce := hex.EncodeToString(nonceBytes)
+			message := canonicalInternalAuthRequestMessage(
+				req.Method,
+				req.URL.RequestURI(),
+				bodyDigest,
+				timestamp,
+				nonce,
+			)
+			mac := hmac.New(sha256.New, []byte(hmacSecret))
+			_, _ = mac.Write([]byte(message))
+			req.Header.Set("X-Timestamp", timestamp)
+			req.Header.Set("X-Nonce", nonce)
+			req.Header.Set("X-Signature", hex.EncodeToString(mac.Sum(nil)))
+		}
+	}
 	copyUserAgentHeader(req, source)
+}
+
+func canonicalInternalAuthRequestMessage(method string, requestURI string, bodyDigest string, timestamp string, nonce string) string {
+	return strings.Join([]string{
+		"fn-knock-v1",
+		strings.ToUpper(method),
+		requestURI,
+		bodyDigest,
+		timestamp,
+		nonce,
+	}, "\n")
+}
+
+func authProxyRequestBodyDigest(r *http.Request) (string, error) {
+	hash := sha256.New()
+	if r == nil || r.Body == nil {
+		return hex.EncodeToString(hash.Sum(nil)), nil
+	}
+	body, err := io.ReadAll(io.LimitReader(r.Body, int64(maxSignedAuthRequestBodyBytes)+1))
+	if err != nil {
+		_ = r.Body.Close()
+		return "", err
+	}
+	_ = r.Body.Close()
+	if len(body) > maxSignedAuthRequestBodyBytes {
+		return "", errAuthProxyRequestBodyTooLarge
+	}
+	r.Body = io.NopCloser(bytes.NewReader(body))
+	r.ContentLength = int64(len(body))
+	_, _ = hash.Write(body)
+	return hex.EncodeToString(hash.Sum(nil)), nil
+}
+
+func authProxyOriginAllowed(r *http.Request) bool {
+	if r == nil || r.Method == http.MethodGet || r.Method == http.MethodHead || r.Method == http.MethodOptions {
+		return true
+	}
+	if strings.EqualFold(strings.TrimSpace(r.Header.Get("Sec-Fetch-Site")), "cross-site") {
+		return false
+	}
+	origin := strings.TrimSpace(r.Header.Get("Origin"))
+	if origin == "" {
+		return true
+	}
+	parsed, err := url.Parse(origin)
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" || parsed.User != nil || parsed.Path != "" || parsed.RawQuery != "" || parsed.Fragment != "" {
+		return false
+	}
+	requestOrigin, err := url.Parse(requestScheme(r) + "://" + r.Host)
+	if err != nil {
+		return false
+	}
+	return strings.EqualFold(parsed.Scheme, requestOrigin.Scheme) &&
+		strings.EqualFold(parsed.Hostname(), requestOrigin.Hostname()) &&
+		effectiveOriginPort(parsed) == effectiveOriginPort(requestOrigin)
+}
+
+func effectiveOriginPort(value *url.URL) string {
+	if port := value.Port(); port != "" {
+		return port
+	}
+	if strings.EqualFold(value.Scheme, "https") {
+		return "443"
+	}
+	return "80"
 }
 
 func applyForwardedHeaderPolicy(out *http.Request, in *http.Request, clientIP string, omitForwardedHeaders bool) {
@@ -1678,6 +1772,7 @@ func NewHandler(adminPort int, proxyPort int, cfgManager *config.Manager, initia
 		wafRuntime:                 wafRuntime,
 		systemEventClient:          systemEventClient,
 		compiledVisibilityPolicies: initialCompiledPolicies,
+		authHMACSecret:             strings.TrimSpace(os.Getenv("HMAC_SECRET")),
 	}
 	h.GeneralBlacklist = h.generalBlacklist.getConfig()
 	h.proxyTransport = newProxyTransport()
@@ -5969,6 +6064,21 @@ func (h *Handler) handleAuthProxyRoute(w http.ResponseWriter, r *http.Request, s
 		response.HTML(w, r, errors.CodeInternal, "Authentication service is not configured", nil)
 		return true
 	}
+	if !authProxyOriginAllowed(r) {
+		applyNoStoreCacheHeaders(w.Header())
+		http.Error(w, "Cross-origin authentication request denied", http.StatusForbidden)
+		return true
+	}
+	bodyDigest, err := authProxyRequestBodyDigest(r)
+	if err != nil {
+		applyNoStoreCacheHeaders(w.Header())
+		status := http.StatusBadRequest
+		if stderrors.Is(err, errAuthProxyRequestBodyTooLarge) {
+			status = http.StatusRequestEntityTooLarge
+		}
+		http.Error(w, "Failed to read authentication request body", status)
+		return true
+	}
 	targetURL := localServiceTargetURL(snapshot.authConfig.AuthPort)
 
 	proxyPath := r.URL.Path
@@ -6008,7 +6118,7 @@ func (h *Handler) handleAuthProxyRoute(w http.ResponseWriter, r *http.Request, s
 	originalDirector := proxy.Director
 	proxy.Director = func(req *http.Request) {
 		originalDirector(req)
-		applyInternalAuthProxyHeaders(req, r, targetURL, clientIP, snapshot.authConfig)
+		applyInternalAuthProxyHeaders(req, r, targetURL, clientIP, snapshot.authConfig, h.authHMACSecret, bodyDigest)
 	}
 	proxy.ModifyResponse = func(resp *http.Response) error {
 		setCookies := resp.Header.Values("Set-Cookie")

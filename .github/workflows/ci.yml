@@ -1,0 +1,106 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  schedule:
+    - cron: "43 18 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name != 'schedule' }}
+
+jobs:
+  test:
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Test
+        run: go test ./...
+
+  hot-benchmarks:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Set up Go
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+
+      - name: Compare hot-path benchmark medians against the PR base
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          benchmark_pattern='Benchmark(Handler|Auth|Preflight|StreamingToolbar|RewriteHTML|Relay|UDP|ManagerLog|DailyFileWriter)'
+          benchmark_args=(-p=1 -run '^$' -bench "${benchmark_pattern}" -benchmem -count=5 -benchtime=250ms -cpu=2)
+          benchmark_packages=(./pkg/proxy ./pkg/rpcbridge ./pkg/stream ./pkg/gatewaylog)
+          base_dir="${RUNNER_TEMP}/go-reauth-proxy-base"
+          base_output="${RUNNER_TEMP}/go-hot-base.txt"
+          current_output="${RUNNER_TEMP}/go-hot-current.txt"
+          git fetch --no-tags origin "${BASE_SHA}" --depth=1
+          git worktree add --detach "${base_dir}" "${BASE_SHA}"
+          cleanup() {
+            git worktree remove --force "${base_dir}" || true
+          }
+          trap cleanup EXIT
+          (
+            cd "${base_dir}"
+            GOMAXPROCS=2 go test "${benchmark_args[@]}" "${benchmark_packages[@]}"
+          ) | tee "${base_output}"
+          GOMAXPROCS=2 go test "${benchmark_args[@]}" "${benchmark_packages[@]}" | tee "${current_output}"
+          go run ./tools/benchcheck \
+            --base "${base_output}" \
+            --current "${current_output}" \
+            --max-latency-regression 0.20 \
+            --max-bytes-regression 0.05 \
+            --max-allocs-regression 0.05 \
+            --max-allocs-absolute-regression 1
+
+  race:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+
+      - name: Race detector
+        run: go test -race ./...

@@ -611,10 +611,10 @@ func newRouteGeneration() string {
 func resolveClientIP(r *http.Request, authConfig models.AuthConfig, proxyProtocolForce bool) string {
 	if isManagedCloudflareTunnelIngress(r) {
 		// The managed Tunnel has its own loopback destination, so only
-		// Cloudflare's edge-generated single-IP header is authoritative here.
+		// Cloudflare's edge-generated client headers are authoritative here.
 		// Never fall back to X-Forwarded-For: Cloudflare preserves client-sent
 		// XFF values and appends to them, making the first value attacker-owned.
-		return normalizeIPAddress(r.Header.Get("CF-Connecting-IP"))
+		return resolveManagedCloudflareClientIP(r)
 	}
 
 	if authConfig.TencentEdgeOneActive() {

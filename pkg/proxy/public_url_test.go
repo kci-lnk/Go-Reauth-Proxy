@@ -681,8 +681,166 @@ func TestResolveClientIPManagedCloudflareIngressIgnoresSpoofedForwardedHeaders(t
 	}
 }
 
+func TestResolveClientIPManagedCloudflareIngressRestoresOriginalIPv6FromPseudoIPv4(t *testing.T) {
+	const originalIPv6 = "2409:8a00:1234:5678::25"
+	for _, pseudoIPv4 := range []string{
+		"240.0.0.1",
+		"247.37.202.182",
+		"251.169.165.161",
+		"253.21.85.116",
+		"255.83.0.1",
+		"255.255.255.254",
+	} {
+		t.Run(pseudoIPv4, func(t *testing.T) {
+			req := requestWithLocalAddress(
+				httptest.NewRequest(http.MethodGet, "http://app.example/", nil),
+				"127.0.0.1",
+				ManagedCloudflareIngressPort,
+			)
+			req.RemoteAddr = "127.0.0.1:49952"
+			req.Header.Set("CF-Connecting-IP", pseudoIPv4)
+			req.Header.Set("CF-Connecting-IPv6", originalIPv6)
+			req.Header.Set("X-Forwarded-For", pseudoIPv4)
+
+			if got := resolveClientIP(req, models.AuthConfig{}, true); got != originalIPv6 {
+				t.Fatalf("resolveClientIP() = %q, want original IPv6 %q", got, originalIPv6)
+			}
+		})
+	}
+}
+
+func TestResolveClientIPManagedCloudflareIngressKeepsPseudoIPv4WithoutUsableIPv6(t *testing.T) {
+	const pseudoIPv4 = "251.169.165.161"
+	for _, originalIPv6 := range []string{
+		"",
+		"not-an-ip",
+		"203.0.113.7",
+		"[2409:8a00::1]",
+		"[2409:8a00::1]:443",
+		"2409:8a00::1%eth0",
+		"::ffff:203.0.113.7",
+		"::",
+		"::1",
+		"fc00::1",
+		"fe80::1",
+		"2409:8a00::1, 2409:8a00::2",
+	} {
+		t.Run(originalIPv6, func(t *testing.T) {
+			req := requestWithLocalAddress(
+				httptest.NewRequest(http.MethodGet, "http://app.example/", nil),
+				"127.0.0.1",
+				ManagedCloudflareIngressPort,
+			)
+			req.Header.Set("CF-Connecting-IP", pseudoIPv4)
+			req.Header.Set("CF-Connecting-IPv6", originalIPv6)
+
+			if got := resolveClientIP(req, models.AuthConfig{}, true); got != pseudoIPv4 {
+				t.Fatalf("resolveClientIP() = %q, want fail-closed pseudo IPv4 %q", got, pseudoIPv4)
+			}
+		})
+	}
+}
+
+func TestResolveClientIPManagedCloudflareIngressRejectsDuplicateClientHeaders(t *testing.T) {
+	t.Run("connecting IP", func(t *testing.T) {
+		req := requestWithLocalAddress(
+			httptest.NewRequest(http.MethodGet, "http://app.example/", nil),
+			"127.0.0.1",
+			ManagedCloudflareIngressPort,
+		)
+		req.Header.Add("CF-Connecting-IP", "251.169.165.161")
+		req.Header.Add("CF-Connecting-IP", "253.21.85.116")
+		req.Header.Set("CF-Connecting-IPv6", "2409:8a00:1234:5678::25")
+
+		if got := resolveClientIP(req, models.AuthConfig{}, true); got != "" {
+			t.Fatalf("resolveClientIP() = %q, want fail-closed empty IP", got)
+		}
+	})
+
+	t.Run("connecting IPv6", func(t *testing.T) {
+		req := requestWithLocalAddress(
+			httptest.NewRequest(http.MethodGet, "http://app.example/", nil),
+			"127.0.0.1",
+			ManagedCloudflareIngressPort,
+		)
+		req.Header.Set("CF-Connecting-IP", "251.169.165.161")
+		req.Header.Add("CF-Connecting-IPv6", "2409:8a00:1234:5678::25")
+		req.Header.Add("CF-Connecting-IPv6", "2409:8a00:1234:5678::26")
+
+		if got, want := resolveClientIP(req, models.AuthConfig{}, true), "251.169.165.161"; got != want {
+			t.Fatalf("resolveClientIP() = %q, want fail-closed pseudo IPv4 %q", got, want)
+		}
+	})
+}
+
+func TestResolveClientIPManagedCloudflareIngressIgnoresUnexpectedIPv6ForRegularClientIP(t *testing.T) {
+	req := requestWithLocalAddress(
+		httptest.NewRequest(http.MethodGet, "http://app.example/", nil),
+		"127.0.0.1",
+		ManagedCloudflareIngressPort,
+	)
+	req.Header.Set("CF-Connecting-IP", "198.51.100.25")
+	req.Header.Set("CF-Connecting-IPv6", "2409:8a00:1234:5678::25")
+
+	if got, want := resolveClientIP(req, models.AuthConfig{}, true), "198.51.100.25"; got != want {
+		t.Fatalf("resolveClientIP() = %q, want regular client IP %q", got, want)
+	}
+}
+
+func TestManagedCloudflarePseudoIPv4UsesOriginalIPv6ForVisibility(t *testing.T) {
+	upstreamHits := 0
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		upstreamHits++
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer upstream.Close()
+
+	handler, _ := newAdditionalProxyTestHandler(t)
+	if err := handler.SetGatewayVisibility(models.GatewayVisibilityConfig{
+		Enabled: true,
+		CIDRs:   []string{"2409:8a00::/32"},
+	}); err != nil {
+		t.Fatalf("SetGatewayVisibility() returned error: %v", err)
+	}
+	if err := handler.SetHostRules([]models.HostRule{{
+		Host:   "music.example.test",
+		Target: upstream.URL,
+	}}); err != nil {
+		t.Fatalf("SetHostRules() returned error: %v", err)
+	}
+
+	req := requestWithLocalAddress(
+		httptest.NewRequest(http.MethodGet, "http://music.example.test/api/player/play", nil),
+		"127.0.0.1",
+		ManagedCloudflareIngressPort,
+	)
+	req.RemoteAddr = "127.0.0.1:49952"
+	req.Header.Set("CF-Connecting-IP", "253.21.85.116")
+	req.Header.Set("CF-Connecting-IPv6", "2409:8a00:1234:5678::25")
+	req.Header.Set("X-Forwarded-For", "253.21.85.116")
+	recorder := httptest.NewRecorder()
+
+	handler.ServeHTTP(recorder, req)
+
+	if recorder.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want %d; body=%s", recorder.Code, http.StatusNoContent, recorder.Body.String())
+	}
+	if upstreamHits != 1 {
+		t.Fatalf("upstream hits = %d, want 1", upstreamHits)
+	}
+}
+
 func TestResolveClientIPManagedCloudflareIngressFailsClosed(t *testing.T) {
-	for _, connectingIP := range []string{"", "not-an-ip", "198.51.100.25, 192.168.1.100"} {
+	for _, connectingIP := range []string{
+		"",
+		"not-an-ip",
+		"198.51.100.25:443",
+		"[2001:db8::25]",
+		"[2001:db8::25]:443",
+		"2001:db8::25%eth0",
+		"::ffff:198.51.100.25",
+		"198.51.100.25, 192.168.1.100",
+	} {
 		t.Run(connectingIP, func(t *testing.T) {
 			req := requestWithLocalAddress(
 				httptest.NewRequest(http.MethodGet, "http://app.example/", nil),
@@ -712,6 +870,22 @@ func TestResolveClientIPOrdinaryIngressPreservesExistingProxyProtocolBehavior(t 
 	req.Header.Set("X-Forwarded-For", "192.168.1.100")
 
 	if got, want := resolveClientIP(req, models.AuthConfig{}, true), "192.168.1.100"; got != want {
+		t.Fatalf("resolveClientIP() = %q, want existing non-Cloudflare behavior %q", got, want)
+	}
+}
+
+func TestResolveClientIPOrdinaryIngressDoesNotTrustCloudflareConnectingIPv6(t *testing.T) {
+	req := requestWithLocalAddress(
+		httptest.NewRequest(http.MethodGet, "http://app.example/", nil),
+		"127.0.0.1",
+		7999,
+	)
+	req.RemoteAddr = "127.0.0.1:49952"
+	req.Header.Set("CF-Connecting-IP", "251.169.165.161")
+	req.Header.Set("CF-Connecting-IPv6", "2409:8a00:1234:5678::25")
+	req.Header.Set("X-Forwarded-For", "251.169.165.161")
+
+	if got, want := resolveClientIP(req, models.AuthConfig{}, true), "251.169.165.161"; got != want {
 		t.Fatalf("resolveClientIP() = %q, want existing non-Cloudflare behavior %q", got, want)
 	}
 }

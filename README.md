@@ -364,6 +364,8 @@ npm run fn-knock:grpc:check-go
 
 边缘来源 IP 识别由 `auth_config.edge_client_ip_enabled` 总开关控制。阿里云 ESA 与腾讯 EdgeOne 模式互斥；同时配置时会保留腾讯 EdgeOne。未启用受信边缘模式时，不应信任来自公网客户端自行提交的厂商来源头。
 
+fn-knock 托管的 Cloudflare Tunnel 使用专用 loopback 入口作为请求头信任边界。若 Cloudflare 的 Pseudo IPv4 设置为 `Overwrite Headers`，网关会在 `CF-Connecting-IP` 属于 Class E `240.0.0.0/4` 时校验并恢复 `CF-Connecting-IPv6` 中的真实公网 IPv6；头部缺失或异常时保留 Pseudo IPv4 并继续按现有安全策略处理。非托管入口不会信任 `CF-Connecting-IPv6`，手工配置 Cloudflare 回源时建议将 Pseudo IPv4 设置为 `Off` 或 `Add Header`。
+
 ## 日志与诊断
 
 | 环境变量 | 说明 |

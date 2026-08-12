@@ -198,9 +198,7 @@ func (i *FnosConnectIngress) recordServeFailure(server *http.Server, serveErr er
 	if i.server != server {
 		return
 	}
-	_ = server.Close()
-	i.server = nil
-	i.listener = nil
+	_ = i.closeLocked()
 	i.status.Enabled = false
 	i.status.ListenerActive = false
 	i.status.IPv4Active = false
@@ -277,13 +275,25 @@ func (i *FnosConnectIngress) Close() error {
 
 func (i *FnosConnectIngress) closeLocked() error {
 	if i.server == nil {
+		for _, listener := range i.listener {
+			_ = listener.Close()
+		}
 		i.listener = nil
 		return nil
 	}
-	err := i.server.Close()
+	server := i.server
+	listeners := i.listener
 	i.server = nil
 	i.listener = nil
-	return err
+
+	serverErr := server.Close()
+	var listenerErr error
+	for _, listener := range listeners {
+		if err := listener.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
+			listenerErr = errors.Join(listenerErr, err)
+		}
+	}
+	return errors.Join(serverErr, listenerErr)
 }
 
 func fnosConnectContext(r *http.Request) *fnosConnectRequestContext {

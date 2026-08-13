@@ -80,6 +80,16 @@ type preflightCacheLookup struct {
 	identityKey string
 }
 
+type authCacheDimensions struct {
+	identityKey       string
+	clientIPDimension string
+	accessMode        string
+	scheme            string
+	method            string
+	host              string
+	requestURL        *url.URL
+}
+
 type authCacheEntry struct {
 	result           authCheckResult
 	setCookies       []string
@@ -232,8 +242,8 @@ func augmentAuthCacheIdentity(identityKey string, r *http.Request) string {
 	if identityKey == "" || r == nil {
 		return identityKey
 	}
-	compactToken := strings.TrimSpace(r.Header.Get("AccessToken"))
-	hyphenatedToken := strings.TrimSpace(r.Header.Get("Access-Token"))
+	compactToken := strings.TrimSpace(r.Header.Get(headerAccessToken))
+	hyphenatedToken := strings.TrimSpace(r.Header.Get(headerAccessTokenDashed))
 	userAgent := strings.TrimSpace(r.UserAgent())
 	if compactToken == "" && hyphenatedToken == "" && userAgent == "" {
 		return identityKey
@@ -257,10 +267,14 @@ func augmentAuthCacheIdentity(identityKey string, r *http.Request) string {
 	return sha256HexBytes(buf)
 }
 
-func buildAuthCacheLookup(r *http.Request, clientIP string, accessMode string) (authCacheLookup, bool) {
+func buildAuthCacheDimensions(r *http.Request, clientIP string, accessMode string) (authCacheDimensions, bool) {
+	return buildAuthCacheDimensionsWithRouteIdentity(r, clientIP, accessMode, authRouteIdentityFromRequest(r))
+}
+
+func buildAuthCacheDimensionsWithRouteIdentity(r *http.Request, clientIP string, accessMode string, routeIdentity string) (authCacheDimensions, bool) {
 	identityKey, clientIPDimension, ok := requestIdentityForCache(r, clientIP)
 	if !ok {
-		return authCacheLookup{}, false
+		return authCacheDimensions{}, false
 	}
 
 	host := requestHostForRouting(r)
@@ -271,61 +285,76 @@ func buildAuthCacheLookup(r *http.Request, clientIP string, accessMode string) (
 	if version := advancedAuthPolicyVersionFromRequest(r); version != "" {
 		host += "\x00advanced-auth:" + version
 	}
-	if routeIdentity := authRouteIdentityFromRequest(r); routeIdentity != "" {
+	if routeIdentity = strings.TrimSpace(routeIdentity); routeIdentity != "" {
 		host += "\x00route:" + routeIdentity
 	}
 
+	return authCacheDimensions{
+		identityKey:       identityKey,
+		clientIPDimension: clientIPDimension,
+		accessMode:        strings.ToLower(strings.TrimSpace(accessMode)),
+		scheme:            strings.ToLower(strings.TrimSpace(requestScheme(r))),
+		method:            strings.ToUpper(strings.TrimSpace(r.Method)),
+		host:              host,
+		requestURL:        r.URL,
+	}, true
+}
+
+func (d authCacheDimensions) authLookup() authCacheLookup {
 	cacheKey := authCacheLookupKey(
-		identityKey,
-		clientIPDimension,
-		strings.TrimSpace(strings.ToLower(accessMode)),
-		strings.TrimSpace(strings.ToLower(requestScheme(r))),
-		strings.TrimSpace(strings.ToUpper(r.Method)),
-		host,
-		r.URL,
+		d.identityKey,
+		d.clientIPDimension,
+		d.accessMode,
+		d.scheme,
+		d.method,
+		d.host,
+		d.requestURL,
 	)
 
 	return authCacheLookup{
 		cacheKey: cacheKey,
 		hostCacheKey: authCacheHostLookupKey(
-			identityKey,
-			clientIPDimension,
-			strings.TrimSpace(strings.ToLower(accessMode)),
-			strings.TrimSpace(strings.ToLower(requestScheme(r))),
-			host,
+			d.identityKey,
+			d.clientIPDimension,
+			d.accessMode,
+			d.scheme,
+			d.host,
 		),
-		identityKey: identityKey,
-	}, true
+		identityKey: d.identityKey,
+	}
 }
 
-func buildPreflightCacheLookup(r *http.Request, clientIP string, accessMode string, isMatch bool) (preflightCacheLookup, bool) {
-	identityKey, clientIPDimension, ok := requestIdentityForCache(r, clientIP)
-	if !ok {
-		return preflightCacheLookup{}, false
-	}
-
-	host := requestHostForRouting(r)
-	if version := advancedAuthPolicyVersionFromRequest(r); version != "" {
-		host += "\x00advanced-auth:" + version
-	}
-	if routeIdentity := authRouteIdentityFromRequest(r); routeIdentity != "" {
-		host += "\x00route:" + routeIdentity
-	}
-
+func (d authCacheDimensions) preflightLookup(isMatch bool) preflightCacheLookup {
 	cacheKey := preflightCacheLookupKey(
-		identityKey,
-		clientIPDimension,
-		strings.TrimSpace(strings.ToLower(accessMode)),
-		strings.TrimSpace(strings.ToLower(requestScheme(r))),
-		host,
+		d.identityKey,
+		d.clientIPDimension,
+		d.accessMode,
+		d.scheme,
+		d.host,
 		boolCacheField(isMatch),
-		r.URL,
+		d.requestURL,
 	)
 
 	return preflightCacheLookup{
 		cacheKey:    cacheKey,
-		identityKey: identityKey,
-	}, true
+		identityKey: d.identityKey,
+	}
+}
+
+func buildAuthCacheLookup(r *http.Request, clientIP string, accessMode string) (authCacheLookup, bool) {
+	dimensions, ok := buildAuthCacheDimensions(r, clientIP, accessMode)
+	if !ok {
+		return authCacheLookup{}, false
+	}
+	return dimensions.authLookup(), true
+}
+
+func buildPreflightCacheLookup(r *http.Request, clientIP string, accessMode string, isMatch bool) (preflightCacheLookup, bool) {
+	dimensions, ok := buildAuthCacheDimensions(r, clientIP, accessMode)
+	if !ok {
+		return preflightCacheLookup{}, false
+	}
+	return dimensions.preflightLookup(isMatch), true
 }
 
 func authCacheLookupKey(identityKey, clientIPDimension, accessMode, scheme, method, host string, requestURL *url.URL) string {

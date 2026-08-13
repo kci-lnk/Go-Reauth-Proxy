@@ -227,7 +227,7 @@ func TestCombinedRequestAuthContextCarriesOnlyUpgradeSignal(t *testing.T) {
 	request.Header.Set("Connection", "Upgrade")
 	request.Header.Set("X-Unrelated", "must-not-be-forwarded")
 
-	context := newRequestAuthContext(request, "192.0.2.1", "login_first", nil).proto(false)
+	context := newRequestAuthContext(request, "192.0.2.1", "login_first", routedBackend{}).proto(false)
 	if got := len(context.GetExtraHeaders()); got != 1 {
 		t.Fatalf("combined ExtraHeaders length = %d, want 1", got)
 	}
@@ -241,7 +241,7 @@ func TestCombinedRequestAuthContextRejectsIncompleteUpgradeSignal(t *testing.T) 
 	request := httptest.NewRequest(http.MethodGet, "https://app.example/websocket", nil)
 	request.Header.Set("Upgrade", "websocket")
 
-	context := newRequestAuthContext(request, "192.0.2.1", "login_first", nil).proto(false)
+	context := newRequestAuthContext(request, "192.0.2.1", "login_first", routedBackend{}).proto(false)
 	if got := len(context.GetExtraHeaders()); got != 0 {
 		t.Fatalf("incomplete Upgrade ExtraHeaders length = %d, want 0", got)
 	}
@@ -346,6 +346,28 @@ func TestRequestAuthContextUsesTheEffectiveRoutingHost(t *testing.T) {
 	}
 }
 
+func TestRequestAuthContextPreservesOptionalRoutedBackendFields(t *testing.T) {
+	request := httptest.NewRequest(http.MethodGet, "https://app.example/private", nil)
+	rule := &models.Rule{Path: "/", Target: "http://[invalid"}
+	backend := (&Handler{}).routedBackendForRequest(request, requestSnapshot{
+		routeGeneration: "route-a",
+	}, nil, nil, rule)
+	if !backend.matched || backend.hostSet {
+		t.Fatalf("invalid-target backend = %#v, want matched route without resolved host", backend)
+	}
+
+	context := newRequestAuthContext(request, "192.0.2.1", "login_first", backend).proto(false)
+	if context.RoutedUpstream == nil || context.GetRoutedUpstream() != backend.target {
+		t.Fatalf("RoutedUpstream = %#v, want present target %q", context.RoutedUpstream, backend.target)
+	}
+	if context.RoutedUpstreamHost != nil {
+		t.Fatalf("RoutedUpstreamHost = %#v, want absent", context.RoutedUpstreamHost)
+	}
+	if context.RoutedUpstreamRouteId == nil || context.GetRoutedUpstreamRouteId() != backend.routeID {
+		t.Fatalf("RoutedUpstreamRouteId = %#v, want present route %q", context.RoutedUpstreamRouteId, backend.routeID)
+	}
+}
+
 func TestRoutedUpstreamFollowsTheSelectedGatewayRoute(t *testing.T) {
 	handler := &Handler{preserveHost: newPreserveHostConfig(models.PreserveHostConfig{})}
 	request := httptest.NewRequest(http.MethodGet, "https://app.example.com/s/share", nil)
@@ -386,14 +408,14 @@ func TestRoutedUpstreamFollowsTheSelectedGatewayRoute(t *testing.T) {
 		hostRule *models.HostRule
 		location *models.HostLocation
 		rule     *models.Rule
-		want     *routedBackend
+		want     routedBackend
 	}{
 		{name: "host", hostRule: hostRule, want: newRoutedBackendWithRouteID("http://10.0.0.8:5666/fnos", "app.example.com", "route-host")},
 		{name: "host without preserve host", hostRule: nonPreservingHostRule, want: newRoutedBackendWithRouteID("http://10.0.0.11:5666", "10.0.0.11:5666", "route-host-plain")},
 		{name: "host location", hostRule: hostRule, location: proxyLocation, want: newRoutedBackendWithRouteID("http://10.0.0.10:9000", "app.example.com", "route-location-proxy")},
 		{name: "static response", hostRule: hostRule, location: responseLocation, want: newRoutedBackendWithRouteID("", "", "route-location-response")},
 		{name: "path", rule: pathRule, want: newRoutedBackendWithRouteID("http://10.0.0.9:8000", "app.example.com", "route-path")},
-		{name: "unmatched", want: nil},
+		{name: "unmatched", want: routedBackend{}},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

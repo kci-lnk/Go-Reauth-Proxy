@@ -192,6 +192,7 @@ func dynamicDirectives(cfg models.WAFConfig) string {
 
 	return fmt.Sprintf(`
 SecRuleEngine %s
+SecAuditEngine Off
 SecRequestBodyAccess %s
 SecRequestBodyLimit %d
 SecRequestBodyInMemoryLimit %d

@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
@@ -22,6 +23,88 @@ import (
 	"google.golang.org/grpc/status"
 	"google.golang.org/grpc/test/bufconn"
 )
+
+func BenchmarkAuthBridgePendingCompletion(b *testing.B) {
+	for _, concurrency := range []int{1, 64, 256, 1024} {
+		b.Run("Concurrent"+strconv.Itoa(concurrency)+"/ForcedShardCollision", func(b *testing.B) {
+			manager := NewAuthBridgeManager("benchmark-token")
+			requestIDs := authBridgeCollisionRequestIDs(manager, concurrency)
+			response := &pb.AuthBridgeEnvelope{Payload: &pb.AuthBridgeEnvelope_VerifyAuthResponse{
+				VerifyAuthResponse: &pb.VerifyAuthResponse{Success: true, Status: http.StatusOK},
+			}}
+			b.ReportAllocs()
+			b.ResetTimer()
+			for b.Loop() {
+				calls := make([]*authBridgePendingCall, concurrency)
+				var ready sync.WaitGroup
+				var completed sync.WaitGroup
+				ready.Add(concurrency)
+				completed.Add(concurrency)
+				for index, requestID := range requestIDs {
+					call := &authBridgePendingCall{done: make(chan struct{})}
+					calls[index] = call
+					shard := manager.pendingShard(requestID)
+					shard.Lock()
+					shard.calls[requestID] = call
+					shard.Unlock()
+					go func() {
+						ready.Done()
+						<-call.done
+						completed.Done()
+					}()
+				}
+				ready.Wait()
+				for index, requestID := range requestIDs {
+					manager.completePending(requestID, calls[index], response, nil)
+				}
+				completed.Wait()
+			}
+		})
+	}
+}
+
+func authBridgeCollisionRequestIDs(manager *AuthBridgeManager, count int) []string {
+	requestIDs := make([]string, 0, count)
+	wanted := manager.pendingShard("benchmark-collision")
+	for candidate := 0; len(requestIDs) < count; candidate++ {
+		requestID := strconv.Itoa(candidate)
+		if manager.pendingShard(requestID) == wanted {
+			requestIDs = append(requestIDs, requestID)
+		}
+	}
+	return requestIDs
+}
+
+func TestAuthBridgePendingCompletionNotifiesOnlyMatchingCall(t *testing.T) {
+	manager := NewAuthBridgeManager("secret")
+	requestIDs := authBridgeCollisionRequestIDs(manager, 2)
+	first := &authBridgePendingCall{done: make(chan struct{})}
+	second := &authBridgePendingCall{done: make(chan struct{})}
+	shard := manager.pendingShard(requestIDs[0])
+	shard.Lock()
+	shard.calls[requestIDs[0]] = first
+	shard.calls[requestIDs[1]] = second
+	shard.Unlock()
+
+	manager.completePending(requestIDs[0], first, &pb.AuthBridgeEnvelope{RequestId: requestIDs[0]}, nil)
+	select {
+	case <-first.done:
+	default:
+		t.Fatal("matching pending call was not notified")
+	}
+	select {
+	case <-second.done:
+		t.Fatal("unrelated pending call in the same shard was notified")
+	default:
+	}
+
+	manager.completePending(requestIDs[1], second, nil, context.Canceled)
+	select {
+	case <-second.done:
+	default:
+		t.Fatal("second pending call was not notified")
+	}
+}
 
 func TestCheckInternalToken(t *testing.T) {
 	t.Run("rejects empty configured token", func(t *testing.T) {

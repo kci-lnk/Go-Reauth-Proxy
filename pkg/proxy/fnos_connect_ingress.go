@@ -312,7 +312,7 @@ func fnosConnectClientIP(r *http.Request) string {
 		if ip := firstForwardedClientIP(r.Header.Get("X-Forwarded-For")); ip != "" {
 			return ip
 		}
-		if ip := normalizeIPAddress(r.Header.Get("X-Real-IP")); ip != "" {
+		if ip := normalizeIPAddress(r.Header.Get(headerXRealIP)); ip != "" {
 			return ip
 		}
 	}
@@ -332,7 +332,7 @@ func applyFnosConnectForwardedHeaders(out, in *http.Request, clientIP string) {
 			}
 		}
 	}
-	out.Header.Set("X-Real-IP", clientIP)
+	out.Header.Set(headerXRealIP, clientIP)
 	out.Header.Set("X-Forwarded-For", clientIP)
 
 	forwardedHost := in.Host

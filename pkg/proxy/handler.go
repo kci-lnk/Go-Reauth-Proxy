@@ -247,6 +247,8 @@ type routeIncarnation struct {
 type reverseProxyTargetRuntime struct {
 	targetURL            *url.URL
 	transportURL         *url.URL
+	transportTarget      string
+	policyKey            string
 	supportsHTMLFeatures bool
 	err                  error
 }
@@ -618,7 +620,7 @@ func resolveClientIP(r *http.Request, authConfig models.AuthConfig, proxyProtoco
 	}
 
 	if authConfig.TencentEdgeOneActive() {
-		if ip := normalizeIPAddress(r.Header.Get("EO-Connecting-IP")); ip != "" {
+		if ip := normalizeIPAddress(r.Header.Get(headerEOConnectingIP)); ip != "" {
 			return ip
 		}
 		if ip := firstForwardedClientIP(r.Header.Get("X-Forwarded-For")); ip != "" {
@@ -627,7 +629,7 @@ func resolveClientIP(r *http.Request, authConfig models.AuthConfig, proxyProtoco
 	}
 
 	if authConfig.AliyunESAActive() {
-		if ip := normalizeIPAddress(r.Header.Get("Ali-Real-Client-IP")); ip != "" {
+		if ip := normalizeIPAddress(r.Header.Get(headerAliRealClientIP)); ip != "" {
 			return ip
 		}
 		if ip := firstForwardedClientIP(r.Header.Get("X-Forwarded-For")); ip != "" {
@@ -641,7 +643,7 @@ func resolveClientIP(r *http.Request, authConfig models.AuthConfig, proxyProtoco
 				return ip
 			}
 		}
-		if ip := normalizeIPAddress(r.Header.Get("X-Real-IP")); ip != "" {
+		if ip := normalizeIPAddress(r.Header.Get(headerXRealIP)); ip != "" {
 			return ip
 		}
 	}
@@ -1012,65 +1014,63 @@ func copyUserAgentHeader(dst, src *http.Request) {
 }
 
 type requestAuthContext struct {
-	context    *pb.AuthContext
-	headers    http.Header
-	legacyOnce sync.Once
+	context       *pb.AuthContext
+	headers       http.Header
+	routeIdentity string
+	legacyOnce    sync.Once
 }
 
 type routedBackend struct {
-	target  *string
-	host    *string
-	routeID *string
+	matched    bool
+	target     string
+	host       string
+	routeID    string
+	targetSet  bool
+	hostSet    bool
+	routeIDSet bool
 }
 
-func newRoutedBackend(target string, host string) *routedBackend {
+func newRoutedBackend(target string, host string) routedBackend {
 	return newRoutedBackendWithRouteID(target, host, "")
 }
 
-func newRoutedBackendWithRouteID(target string, host string, routeID string) *routedBackend {
-	targetCopy := strings.TrimSpace(target)
-	hostCopy := strings.TrimSpace(host)
-	routeIDCopy := strings.TrimSpace(routeID)
-	return &routedBackend{
-		target:  &targetCopy,
-		host:    &hostCopy,
-		routeID: &routeIDCopy,
+func newRoutedBackendWithRouteID(target string, host string, routeID string) routedBackend {
+	return routedBackend{
+		matched:    true,
+		target:     strings.TrimSpace(target),
+		host:       strings.TrimSpace(host),
+		routeID:    strings.TrimSpace(routeID),
+		targetSet:  true,
+		hostSet:    true,
+		routeIDSet: true,
 	}
 }
 
-func (b *routedBackend) cacheIdentity() string {
-	if b == nil || b.target == nil {
+func (b routedBackend) cacheIdentity() string {
+	if !b.matched {
 		return "unmatched"
 	}
-	host := ""
-	if b.host != nil {
-		host = strings.TrimSpace(*b.host)
-	}
-	routeID := ""
-	if b.routeID != nil {
-		routeID = strings.TrimSpace(*b.routeID)
-	}
-	return "target=" + strings.TrimSpace(*b.target) + "\x00host=" + host + "\x00route=" + routeID
+	return "target=" + b.target + "\x00host=" + b.host + "\x00route=" + b.routeID
 }
 
-func newRequestAuthContext(r *http.Request, clientIP string, accessMode string, backend *routedBackend) *requestAuthContext {
+func newRequestAuthContext(r *http.Request, clientIP string, accessMode string, backend routedBackend) *requestAuthContext {
 	var normalizedRoutedUpstream *string
 	var normalizedRoutedUpstreamHost *string
 	var normalizedRoutedUpstreamRouteID *string
-	if backend != nil && backend.target != nil {
-		normalized := strings.TrimSpace(*backend.target)
-		normalizedRoutedUpstream = &normalized
+	if backend.targetSet {
+		normalizedTarget := backend.target
+		normalizedRoutedUpstream = &normalizedTarget
 	}
-	if backend != nil && backend.host != nil {
-		normalized := strings.TrimSpace(*backend.host)
-		normalizedRoutedUpstreamHost = &normalized
+	if backend.hostSet {
+		normalizedHost := backend.host
+		normalizedRoutedUpstreamHost = &normalizedHost
 	}
-	if backend != nil && backend.routeID != nil {
-		normalized := strings.TrimSpace(*backend.routeID)
-		normalizedRoutedUpstreamRouteID = &normalized
+	if backend.routeIDSet {
+		normalizedRouteID := backend.routeID
+		normalizedRoutedUpstreamRouteID = &normalizedRouteID
 	}
 	if r == nil {
-		return &requestAuthContext{context: &pb.AuthContext{
+		return &requestAuthContext{routeIdentity: backend.cacheIdentity(), context: &pb.AuthContext{
 			ClientIp:              clientIP,
 			AccessMode:            accessMode,
 			RoutedUpstream:        normalizedRoutedUpstream,
@@ -1098,8 +1098,8 @@ func newRequestAuthContext(r *http.Request, clientIP string, accessMode string, 
 		Authorization:         r.Header.Get("Authorization"),
 		UserAgent:             r.Header.Get("User-Agent"),
 		AccessMode:            accessMode,
-		AccessToken:           r.Header.Get("AccessToken"),
-		AccessTokenHyphenated: r.Header.Get("Access-Token"),
+		AccessToken:           r.Header.Get(headerAccessToken),
+		AccessTokenHyphenated: r.Header.Get(headerAccessTokenDashed),
 		RoutedUpstream:        normalizedRoutedUpstream,
 		RoutedUpstreamHost:    normalizedRoutedUpstreamHost,
 		RoutedUpstreamRouteId: normalizedRoutedUpstreamRouteID,
@@ -1115,9 +1115,17 @@ func newRequestAuthContext(r *http.Request, clientIP string, accessMode string, 
 		}}
 	}
 	return &requestAuthContext{
-		context: context,
-		headers: r.Header,
+		context:       context,
+		headers:       r.Header,
+		routeIdentity: backend.cacheIdentity(),
 	}
+}
+
+func authRouteIdentityForContext(r *http.Request, requestAuth *requestAuthContext) string {
+	if requestAuth != nil && requestAuth.routeIdentity != "" {
+		return requestAuth.routeIdentity
+	}
+	return authRouteIdentityFromRequest(r)
 }
 
 func (c *requestAuthContext) proto(includeLegacyHeaders bool) *pb.AuthContext {
@@ -1205,7 +1213,7 @@ func applyInternalAuthProxyHeaders(req *http.Request, source *http.Request, targ
 		req.URL.Path = targetURL.Path
 	}
 
-	req.Header.Set("X-Real-IP", clientIP)
+	req.Header.Set(headerXRealIP, clientIP)
 	req.Header.Set("X-Forwarded-For", clientIP)
 	if source != nil {
 		req.Header.Set("X-Forwarded-Host", source.Host)
@@ -1213,14 +1221,14 @@ func applyInternalAuthProxyHeaders(req *http.Request, source *http.Request, targ
 	}
 	switch {
 	case authConfig.TencentEdgeOneActive() && clientIP != "":
-		req.Header.Set("EO-Connecting-IP", clientIP)
-		req.Header.Del("Ali-Real-Client-IP")
+		req.Header.Set(headerEOConnectingIP, clientIP)
+		req.Header.Del(headerAliRealClientIP)
 	case authConfig.AliyunESAActive() && clientIP != "":
-		req.Header.Set("Ali-Real-Client-IP", clientIP)
-		req.Header.Del("EO-Connecting-IP")
+		req.Header.Set(headerAliRealClientIP, clientIP)
+		req.Header.Del(headerEOConnectingIP)
 	default:
-		req.Header.Del("Ali-Real-Client-IP")
-		req.Header.Del("EO-Connecting-IP")
+		req.Header.Del(headerAliRealClientIP)
+		req.Header.Del(headerEOConnectingIP)
 	}
 
 	// Strip internal routing hints and any client-supplied real-IP header.
@@ -1321,7 +1329,7 @@ func applyForwardedHeaderPolicy(out *http.Request, in *http.Request, clientIP st
 		return
 	}
 
-	out.Header.Set("X-Real-IP", clientIP)
+	out.Header.Set(headerXRealIP, clientIP)
 	if omitForwardedHeaders {
 		out.Header.Del("X-Forwarded-For")
 		out.Header.Del("X-Forwarded-Host")
@@ -1360,11 +1368,25 @@ func (h *Handler) shouldOmitForwardedHeaders(target *url.URL) bool {
 	return h.forwardedHeaders.shouldOmit(target)
 }
 
+func (h *Handler) shouldOmitForwardedHeadersKey(key string) bool {
+	if h == nil || h.forwardedHeaders == nil {
+		return false
+	}
+	return h.forwardedHeaders.shouldOmitKey(key)
+}
+
 func (h *Handler) shouldOmitPreserveHost(target *url.URL) bool {
 	if h == nil || h.preserveHost == nil {
 		return false
 	}
 	return h.preserveHost.shouldOmit(target)
+}
+
+func (h *Handler) shouldOmitPreserveHostKey(key string) bool {
+	if h == nil || h.preserveHost == nil {
+		return false
+	}
+	return h.preserveHost.shouldOmitKey(key)
 }
 
 func (h *Handler) runPreflight(r *http.Request, authConfig models.AuthConfig, clientIP string, isMatch bool, accessMode string, requestID string, requestAuth *requestAuthContext) preflightDecision {
@@ -1382,7 +1404,11 @@ func (h *Handler) runPreflight(r *http.Request, authConfig models.AuthConfig, cl
 		return preflightDecision{}
 	}
 	now := time.Now()
-	lookup, canLookup := buildPreflightCacheLookup(r, clientIP, accessMode, isMatch)
+	dimensions, canLookup := buildAuthCacheDimensionsWithRouteIdentity(r, clientIP, accessMode, authRouteIdentityForContext(r, requestAuth))
+	var lookup preflightCacheLookup
+	if canLookup {
+		lookup = dimensions.preflightLookup(isMatch)
+	}
 	ttl := preflightCacheTTL(authConfig)
 
 	if canLookup && ttl > 0 {
@@ -1645,7 +1671,7 @@ func (h *Handler) abortConnection(w http.ResponseWriter) {
 func markConnectionResetStatus(w http.ResponseWriter) {
 	for depth := 0; w != nil && depth < 16; depth++ {
 		if trafficWriter, ok := w.(*trafficResponseWriter); ok {
-			if trafficWriter.metrics != nil && !trafficWriter.metrics.wroteHeader {
+			if !trafficWriter.metrics.wroteHeader {
 				trafficWriter.metrics.statusCode = 499
 			}
 			return
@@ -2902,9 +2928,12 @@ func compileReverseProxyTargetRuntime(target string) reverseProxyTargetRuntime {
 	if err != nil {
 		return reverseProxyTargetRuntime{err: err}
 	}
+	policyKey, _ := forwardedHeadersTargetKeyForURL(transportURL)
 	return reverseProxyTargetRuntime{
 		targetURL:            targetURL,
 		transportURL:         transportURL,
+		transportTarget:      transportURL.String(),
+		policyKey:            policyKey,
 		supportsHTMLFeatures: reverseProxyTargetSupportsHTMLFeatures(targetURL),
 	}
 }
@@ -4954,7 +4983,7 @@ func (trc *trafficReadCloser) Read(p []byte) (int, error) {
 type trafficResponseWriter struct {
 	http.ResponseWriter
 	handler       *Handler
-	metrics       *requestTrafficMetrics
+	metrics       requestTrafficMetrics
 	deepMonitor   *deepMonitorRequest
 	skipAccessLog bool
 }
@@ -5021,7 +5050,7 @@ func suppressAccessLog(w http.ResponseWriter) {
 }
 
 func wrapRequestBodyForTraffic(r *http.Request, h *Handler, metrics *requestTrafficMetrics) {
-	if r == nil || r.Body == nil {
+	if r == nil || r.Body == nil || r.Body == http.NoBody {
 		return
 	}
 	if _, ok := r.Body.(*trafficReadCloser); ok {
@@ -5040,7 +5069,9 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if logger.DebugEnabled() {
 		requestID = logger.NextDebugRequestID()
 	}
-	metrics := &requestTrafficMetrics{statusCode: http.StatusOK}
+	tw := &trafficResponseWriter{ResponseWriter: w, handler: h, deepMonitor: deepMonitorTrace}
+	tw.metrics.statusCode = http.StatusOK
+	metrics := &tw.metrics
 	accessEntry := gatewaylog.Entry{
 		Method:          r.Method,
 		Scheme:          requestScheme(r),
@@ -5055,15 +5086,14 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		Referer:         r.Referer(),
 		TLS:             r.TLS != nil,
 		WebSocket:       strings.EqualFold(r.Header.Get("Upgrade"), "websocket"),
-		AliRealClientIP: strings.TrimSpace(r.Header.Get("Ali-Real-Client-IP")),
-		EOConnectingIP:  strings.TrimSpace(r.Header.Get("EO-Connecting-IP")),
+		AliRealClientIP: strings.TrimSpace(r.Header.Get(headerAliRealClientIP)),
+		EOConnectingIP:  strings.TrimSpace(r.Header.Get(headerEOConnectingIP)),
 		XForwardedFor:   firstForwardedValue(r.Header.Get("X-Forwarded-For")),
-		XRealIP:         strings.TrimSpace(r.Header.Get("X-Real-IP")),
+		XRealIP:         strings.TrimSpace(r.Header.Get(headerXRealIP)),
 	}
 	var clientIP string
 	loggedStatusCode := 0
 
-	tw := &trafficResponseWriter{ResponseWriter: w, handler: h, metrics: metrics, deepMonitor: deepMonitorTrace}
 	w = tw
 	if event := debugProxyEvent("request_start", requestID); event != nil {
 		event.Str("method", r.Method).
@@ -5175,9 +5205,9 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			Bool("proxy_protocol_force", snapshot.proxyProtocolForce).
 			Bool("edge_client_ip_active", snapshot.authConfig.EdgeClientIPActive()).
 			Str("x_forwarded_for", logger.SanitizeLogString(firstForwardedValue(r.Header.Get("X-Forwarded-For")))).
-			Str("x_real_ip", logger.SanitizeLogString(r.Header.Get("X-Real-IP"))).
-			Str("ali_real_client_ip", logger.SanitizeLogString(r.Header.Get("Ali-Real-Client-IP"))).
-			Str("eo_connecting_ip", logger.SanitizeLogString(r.Header.Get("EO-Connecting-IP"))).
+			Str("x_real_ip", logger.SanitizeLogString(r.Header.Get(headerXRealIP))).
+			Str("ali_real_client_ip", logger.SanitizeLogString(r.Header.Get(headerAliRealClientIP))).
+			Str("eo_connecting_ip", logger.SanitizeLogString(r.Header.Get(headerEOConnectingIP))).
 			Send()
 	}
 
@@ -5438,14 +5468,16 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			}()).
 			Send()
 	}
-	routedBackend := h.routedBackendForRequest(
-		r,
-		snapshot,
-		matchedHostRule,
-		matchedHostLocation,
-		matchedRule,
-	)
-	r = withAuthRouteIdentity(r, routedBackend.cacheIdentity())
+	var routedBackend routedBackend
+	if strings.TrimSpace(snapshot.authConfig.AuthURL) != "" {
+		routedBackend = h.routedBackendForRequest(
+			r,
+			snapshot,
+			matchedHostRule,
+			matchedHostLocation,
+			matchedRule,
+		)
+	}
 	if deepMonitorTrace != nil {
 		deepMonitorTrace.addRouteDuration(time.Since(routeTimingStarted))
 	}
@@ -6096,7 +6128,7 @@ func (h *Handler) routedBackendForRequest(
 	hostRule *models.HostRule,
 	location *models.HostLocation,
 	rule *models.Rule,
-) *routedBackend {
+) routedBackend {
 	target := ""
 	preserveHost := false
 	routeID := snapshot.routeGeneration
@@ -6125,7 +6157,7 @@ func (h *Handler) routedBackendForRequest(
 			routeID = selected
 		}
 	} else {
-		return nil
+		return routedBackend{}
 	}
 
 	if target == "" {
@@ -6133,12 +6165,16 @@ func (h *Handler) routedBackendForRequest(
 	}
 	targetRuntime := reverseProxyTargetRuntimeFor(snapshot, target)
 	if targetRuntime.err != nil || targetRuntime.transportURL == nil {
-		targetCopy := target
-		routeIDCopy := strings.TrimSpace(routeID)
-		return &routedBackend{target: &targetCopy, routeID: &routeIDCopy}
+		return routedBackend{
+			matched:    true,
+			target:     target,
+			routeID:    strings.TrimSpace(routeID),
+			targetSet:  true,
+			routeIDSet: true,
+		}
 	}
 	transportTarget := targetRuntime.transportURL
-	if h.shouldOmitPreserveHost(transportTarget) {
+	if h.shouldOmitPreserveHostKey(targetRuntime.policyKey) {
 		preserveHost = false
 	}
 	if fnosConnectContext(r) != nil {
@@ -6150,7 +6186,7 @@ func (h *Handler) routedBackendForRequest(
 		upstreamHost = r.Host
 	}
 	return newRoutedBackendWithRouteID(
-		transportTarget.String(),
+		targetRuntime.transportTarget,
 		upstreamHost,
 		routeID,
 	)
@@ -6456,8 +6492,8 @@ func (h *Handler) proxyToHostLocationTarget(w http.ResponseWriter, r *http.Reque
 		transport = newProxyTransport()
 	}
 	targetSupportsHTMLFeatures := targetRuntime.supportsHTMLFeatures
-	omitForwardedHeaders := h.shouldOmitForwardedHeaders(transportTargetURL)
-	preserveHost := matchedRule.PreserveHost && !h.shouldOmitPreserveHost(transportTargetURL)
+	omitForwardedHeaders := h.shouldOmitForwardedHeadersKey(targetRuntime.policyKey)
+	preserveHost := matchedRule.PreserveHost && !h.shouldOmitPreserveHostKey(targetRuntime.policyKey)
 	gatewayPortalEnabled := snapshot.gatewayPortal.Enabled
 	suppressToolbarForUA := response.ShouldSuppressToolbarForUserAgent(r.UserAgent())
 	toolbarCandidate := targetSupportsHTMLFeatures && gatewayPortalEnabled && authResult.authenticated && !matchedRule.SuppressToolbar && !authResult.suppressToolbar && !suppressToolbarForUA
@@ -6638,8 +6674,8 @@ func (h *Handler) proxyToHostTarget(w http.ResponseWriter, r *http.Request, snap
 		transport = newProxyTransport()
 	}
 	targetSupportsHTMLFeatures := targetRuntime.supportsHTMLFeatures
-	omitForwardedHeaders := h.shouldOmitForwardedHeaders(transportTargetURL)
-	preserveHost := matchedRule.PreserveHost && !h.shouldOmitPreserveHost(transportTargetURL)
+	omitForwardedHeaders := h.shouldOmitForwardedHeadersKey(targetRuntime.policyKey)
+	preserveHost := matchedRule.PreserveHost && !h.shouldOmitPreserveHostKey(targetRuntime.policyKey)
 	if fnosConnectContext(r) != nil {
 		// Relay-provided client identity and the original Host are part of the
 		// FN Connect protocol boundary, not a user host-rule preference.
@@ -6809,7 +6845,7 @@ func (h *Handler) proxyToRuleTarget(w http.ResponseWriter, r *http.Request, snap
 		transport = newProxyTransport()
 	}
 	targetSupportsHTMLFeatures := targetRuntime.supportsHTMLFeatures
-	preserveHost := !h.shouldOmitPreserveHost(transportTargetURL)
+	preserveHost := !h.shouldOmitPreserveHostKey(targetRuntime.policyKey)
 	gatewayPortalEnabled := snapshot.gatewayPortal.Enabled
 	suppressToolbarForUA := response.ShouldSuppressToolbarForUserAgent(r.UserAgent())
 	toolbarCandidate := targetSupportsHTMLFeatures && gatewayPortalEnabled && authResult.authenticated && !authResult.suppressToolbar && !suppressToolbarForUA

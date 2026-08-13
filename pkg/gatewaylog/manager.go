@@ -144,6 +144,8 @@ type DailyFileWriter struct {
 	mu            sync.Mutex
 	retentionDays int
 	currentDate   string
+	currentDay    time.Time
+	nextDay       time.Time
 	currentFile   *os.File
 	currentBuffer *bufio.Writer
 	lastCleanup   string
@@ -181,6 +183,8 @@ func (w *DailyFileWriter) DeleteDate(date string) (bool, error) {
 		_ = w.currentFile.Close()
 		w.currentFile = nil
 		w.currentDate = ""
+		w.currentDay = time.Time{}
+		w.nextDay = time.Time{}
 	}
 
 	logPath := w.pathForDate(date)
@@ -242,6 +246,8 @@ func (w *DailyFileWriter) Close() error {
 	closeErr := w.currentFile.Close()
 	w.currentFile = nil
 	w.currentDate = ""
+	w.currentDay = time.Time{}
+	w.nextDay = time.Time{}
 	if flushErr != nil {
 		return flushErr
 	}
@@ -260,7 +266,10 @@ func (w *DailyFileWriter) ensureDirLocked() error {
 }
 
 func (w *DailyFileWriter) maybeCleanupLocked(now time.Time) error {
-	date := now.Format(dateLayout)
+	date := w.currentDate
+	if date == "" || now.Before(w.currentDay) || !now.Before(w.nextDay) {
+		date = now.Format(dateLayout)
+	}
 	if w.lastCleanup == date {
 		return nil
 	}
@@ -272,10 +281,11 @@ func (w *DailyFileWriter) maybeCleanupLocked(now time.Time) error {
 }
 
 func (w *DailyFileWriter) rotateLocked(now time.Time) error {
-	date := now.Format(dateLayout)
-	if w.currentDate == date && w.currentFile != nil {
+	if w.currentFile != nil && !w.currentDay.IsZero() &&
+		!now.Before(w.currentDay) && now.Before(w.nextDay) {
 		return nil
 	}
+	date := now.Format(dateLayout)
 
 	if w.currentFile != nil {
 		if w.currentBuffer != nil {
@@ -294,6 +304,8 @@ func (w *DailyFileWriter) rotateLocked(now time.Time) error {
 	}
 
 	w.currentDate = date
+	w.currentDay = dayStart(now)
+	w.nextDay = w.currentDay.AddDate(0, 0, 1)
 	w.currentFile = file
 	w.currentBuffer = bufio.NewWriterSize(file, asyncLogWriterBufferSize)
 	return nil

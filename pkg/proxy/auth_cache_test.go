@@ -963,6 +963,23 @@ func BenchmarkBuildPreflightCacheLookupCookie(b *testing.B) {
 	}
 }
 
+func BenchmarkAuthCombinedCacheLookupsCookie(b *testing.B) {
+	req := httptest.NewRequest(http.MethodGet, "https://app.example.com/app/api?q=1", nil)
+	req.AddCookie(&http.Cookie{Name: proxyPathCookieName, Value: "/app"})
+	req.AddCookie(&http.Cookie{Name: authSessionCookieName, Value: "session-a"})
+	req.AddCookie(&http.Cookie{Name: "theme", Value: "dark"})
+
+	b.ReportAllocs()
+	for b.Loop() {
+		dimensions, ok := buildAuthCacheDimensions(req, "198.51.100.10", "login_first")
+		if !ok {
+			b.Fatal("combined cache dimensions were not buildable")
+		}
+		benchmarkAuthCacheLookupSink = dimensions.authLookup()
+		benchmarkPreflightCacheLookupSink = dimensions.preflightLookup(true)
+	}
+}
+
 func BenchmarkRequestHasExplicitAuthIdentityCookie(b *testing.B) {
 	req := httptest.NewRequest(http.MethodGet, "https://app.example.com/path", nil)
 	req.AddCookie(&http.Cookie{Name: proxyPathCookieName, Value: "/app"})

@@ -271,6 +271,7 @@ func TestDynamicDirectivesInitializeCRSSetup(t *testing.T) {
 	})
 
 	expected := []string{
+		"SecAuditEngine Off",
 		"id:1000000",
 		"setvar:tx.crs_setup_version=4250",
 		"setvar:tx.blocking_paranoia_level=2",

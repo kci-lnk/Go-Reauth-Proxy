@@ -82,11 +82,11 @@ type authBridgePendingCall struct {
 	stream   *authBridgeStream
 	response *pb.AuthBridgeEnvelope
 	err      error
+	done     chan struct{}
 }
 
 type authBridgePendingShard struct {
 	sync.Mutex
-	cond  *sync.Cond
 	calls map[string]*authBridgePendingCall
 }
 
@@ -104,7 +104,6 @@ func NewAuthBridgeManager(token string) *AuthBridgeManager {
 	m.readyOnChange.Store(emptyReadyHook)
 	for i := range m.pending {
 		shard := &m.pending[i]
-		shard.cond = sync.NewCond(shard)
 		shard.calls = make(map[string]*authBridgePendingCall)
 	}
 	return m
@@ -286,7 +285,7 @@ func (m *AuthBridgeManager) roundTripOnStream(ctx context.Context, expected *aut
 
 	requestID := strconv.FormatUint(m.nextID.Add(1), 10)
 	msg.RequestId = requestID
-	call := &authBridgePendingCall{stream: active}
+	call := &authBridgePendingCall{stream: active, done: make(chan struct{})}
 	shard := m.pendingShard(requestID)
 	shard.Lock()
 	shard.calls[requestID] = call
@@ -318,12 +317,8 @@ func (m *AuthBridgeManager) roundTripOnStream(ctx context.Context, expected *aut
 		return nil, err
 	}
 
-	shard.Lock()
-	for call.response == nil && call.err == nil {
-		shard.cond.Wait()
-	}
+	<-call.done
 	resp, err := call.response, call.err
-	shard.Unlock()
 	if err != nil {
 		if errors.Is(err, context.DeadlineExceeded) {
 			operationallog.Diagnostic("WARN", "auth_bridge", "round_trip_timeout", "response_timeout", map[string]any{
@@ -495,7 +490,7 @@ func (m *AuthBridgeManager) dispatchResponse(stream *authBridgeStream, msg *pb.A
 	if call != nil && call.stream == stream {
 		delete(shard.calls, msg.RequestId)
 		call.response = msg
-		shard.cond.Broadcast()
+		close(call.done)
 	}
 	shard.Unlock()
 }
@@ -573,7 +568,7 @@ func (m *AuthBridgeManager) completePending(requestID string, want *authBridgePe
 		delete(shard.calls, requestID)
 		want.response = response
 		want.err = err
-		shard.cond.Broadcast()
+		close(want.done)
 	}
 	shard.Unlock()
 }
@@ -582,16 +577,12 @@ func (m *AuthBridgeManager) failPendingForStream(stream *authBridgeStream, err e
 	for i := range m.pending {
 		shard := &m.pending[i]
 		shard.Lock()
-		changed := false
 		for requestID, call := range shard.calls {
 			if call.stream == stream {
 				delete(shard.calls, requestID)
 				call.err = err
-				changed = true
+				close(call.done)
 			}
-		}
-		if changed {
-			shard.cond.Broadcast()
 		}
 		shard.Unlock()
 	}

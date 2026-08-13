@@ -72,6 +72,38 @@ func TestDailyFileWriterDeleteDateMissingReturnsFalse(t *testing.T) {
 	}
 }
 
+func TestDailyFileWriterRotationWindowHandlesBoundaryAndClockRollback(t *testing.T) {
+	writer := NewDailyFileWriter(t.TempDir(), 7)
+	t.Cleanup(func() { _ = writer.Close() })
+	day := time.Date(2026, time.August, 14, 23, 59, 0, 0, time.Local)
+
+	writer.mu.Lock()
+	if err := writer.ensureDirLocked(); err != nil {
+		writer.mu.Unlock()
+		t.Fatal(err)
+	}
+	if err := writer.rotateLocked(day); err != nil {
+		writer.mu.Unlock()
+		t.Fatal(err)
+	}
+	firstDate := writer.currentDate
+	if err := writer.rotateLocked(day.Add(2 * time.Minute)); err != nil {
+		writer.mu.Unlock()
+		t.Fatal(err)
+	}
+	secondDate := writer.currentDate
+	if err := writer.rotateLocked(day.Add(-24 * time.Hour)); err != nil {
+		writer.mu.Unlock()
+		t.Fatal(err)
+	}
+	rolledBackDate := writer.currentDate
+	writer.mu.Unlock()
+
+	if firstDate != "2026-08-14" || secondDate != "2026-08-15" || rolledBackDate != "2026-08-13" {
+		t.Fatalf("rotation dates = %q, %q, %q", firstDate, secondDate, rolledBackDate)
+	}
+}
+
 func TestDailyFileWriterCleanupRemovesOldLogFiles(t *testing.T) {
 	dir := t.TempDir()
 	oldDate := time.Now().AddDate(0, 0, -10).Format(dateLayout)

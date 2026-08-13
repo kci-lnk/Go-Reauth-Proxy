@@ -94,7 +94,7 @@ func TestFnosRouteIdentityTracksPortDeleteAndReAddLifecycle(t *testing.T) {
 		nil,
 		nil,
 	)
-	if initialBackend == nil || initialBackend.routeID == nil || *initialBackend.routeID == "" {
+	if !initialBackend.matched || initialBackend.routeID == "" {
 		t.Fatalf("initial routed backend = %#v, want non-empty route identity", initialBackend)
 	}
 
@@ -110,10 +110,10 @@ func TestFnosRouteIdentityTracksPortDeleteAndReAddLifecycle(t *testing.T) {
 		nil,
 		nil,
 	)
-	if unchangedBackend == nil || unchangedBackend.routeID == nil {
+	if !unchangedBackend.matched || unchangedBackend.routeID == "" {
 		t.Fatalf("unchanged routed backend = %#v", unchangedBackend)
 	}
-	if *unchangedBackend.routeID != *initialBackend.routeID {
+	if unchangedBackend.routeID != initialBackend.routeID {
 		t.Fatal("unchanged route synchronization rotated the route identity")
 	}
 
@@ -135,10 +135,10 @@ func TestFnosRouteIdentityTracksPortDeleteAndReAddLifecycle(t *testing.T) {
 		nil,
 		nil,
 	)
-	if unrelatedBackend == nil || unrelatedBackend.routeID == nil {
+	if !unrelatedBackend.matched || unrelatedBackend.routeID == "" {
 		t.Fatalf("routed backend after unrelated edit = %#v", unrelatedBackend)
 	}
-	if *unrelatedBackend.routeID != *initialBackend.routeID {
+	if unrelatedBackend.routeID != initialBackend.routeID {
 		t.Fatal("unrelated route edit rotated the FNOS route identity")
 	}
 
@@ -155,13 +155,13 @@ func TestFnosRouteIdentityTracksPortDeleteAndReAddLifecycle(t *testing.T) {
 		nil,
 		nil,
 	)
-	if changedBackend == nil || changedBackend.routeID == nil {
+	if !changedBackend.matched || changedBackend.routeID == "" {
 		t.Fatalf("changed routed backend = %#v", changedBackend)
 	}
-	if *changedBackend.routeID == *initialBackend.routeID {
+	if changedBackend.routeID == initialBackend.routeID {
 		t.Fatal("port change reused the previous route identity")
 	}
-	if got := *changedBackend.target; got != "http://127.0.0.1:5667" {
+	if got := changedBackend.target; got != "http://127.0.0.1:5667" {
 		t.Fatalf("port-changed target = %q", got)
 	}
 
@@ -178,8 +178,8 @@ func TestFnosRouteIdentityTracksPortDeleteAndReAddLifecycle(t *testing.T) {
 		nil,
 		nil,
 		nil,
-	); deletedBackend != nil {
-		t.Fatalf("deleted mapping routed backend = %#v, want nil", deletedBackend)
+	); deletedBackend.matched {
+		t.Fatalf("deleted mapping routed backend = %#v, want unmatched", deletedBackend)
 	}
 
 	if err := handler.SetHostRules([]models.HostRule{hostRule}); err != nil {
@@ -194,10 +194,10 @@ func TestFnosRouteIdentityTracksPortDeleteAndReAddLifecycle(t *testing.T) {
 		nil,
 		nil,
 	)
-	if readdedBackend == nil || readdedBackend.routeID == nil {
+	if !readdedBackend.matched || readdedBackend.routeID == "" {
 		t.Fatalf("re-added routed backend = %#v", readdedBackend)
 	}
-	if *readdedBackend.routeID == *changedBackend.routeID {
+	if readdedBackend.routeID == changedBackend.routeID {
 		t.Fatal("re-added mapping reused the deleted mapping identity")
 	}
 	if readdedBackend.cacheIdentity() == changedBackend.cacheIdentity() {

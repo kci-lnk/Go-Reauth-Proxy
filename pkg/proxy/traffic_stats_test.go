@@ -15,7 +15,12 @@ func TestTrafficStatsIncludesHostBreakdown(t *testing.T) {
 	handler := &Handler{
 		HostRules: []models.HostRule{{Host: "app.example.com"}},
 	}
-	metrics := &requestTrafficMetrics{statusCode: http.StatusOK}
+	writer := &trafficResponseWriter{
+		ResponseWriter: httptest.NewRecorder(),
+		handler:        handler,
+	}
+	writer.metrics.statusCode = http.StatusOK
+	metrics := &writer.metrics
 	metrics.bindHost(handler, "App.Example.COM:443")
 
 	body := &trafficReadCloser{
@@ -27,11 +32,6 @@ func TestTrafficStatsIncludesHostBreakdown(t *testing.T) {
 		t.Fatalf("read request body: %v", err)
 	}
 
-	writer := &trafficResponseWriter{
-		ResponseWriter: httptest.NewRecorder(),
-		handler:        handler,
-		metrics:        metrics,
-	}
 	if _, err := writer.Write([]byte("response")); err != nil {
 		t.Fatalf("write response body: %v", err)
 	}
@@ -95,14 +95,13 @@ func TestTrafficStatsBatchFlushesCounters(t *testing.T) {
 	handler := &Handler{
 		HostRules: []models.HostRule{{Host: "app.example.com"}},
 	}
-	metrics := &requestTrafficMetrics{statusCode: http.StatusOK}
-	metrics.bindHost(handler, "app.example.com")
-
 	writer := &trafficResponseWriter{
 		ResponseWriter: httptest.NewRecorder(),
 		handler:        handler,
-		metrics:        metrics,
 	}
+	writer.metrics.statusCode = http.StatusOK
+	metrics := &writer.metrics
+	metrics.bindHost(handler, "app.example.com")
 	chunk := strings.Repeat("x", trafficCounterFlushBytes/2)
 	if _, err := writer.Write([]byte(chunk)); err != nil {
 		t.Fatalf("write first chunk: %v", err)
@@ -136,6 +135,38 @@ func TestTrafficStatsBatchFlushesCounters(t *testing.T) {
 	}
 	if metrics.outBytes != trafficCounterFlushBytes+4 {
 		t.Fatalf("metrics.outBytes = %d, want %d", metrics.outBytes, trafficCounterFlushBytes+4)
+	}
+}
+
+func TestWrapRequestBodyForTrafficSkipsRequestsWithoutBodies(t *testing.T) {
+	handler := &Handler{}
+	metrics := &requestTrafficMetrics{}
+	request := httptest.NewRequest(http.MethodGet, "https://app.example.test/", nil)
+	original := request.Body
+	wrapRequestBodyForTraffic(request, handler, metrics)
+	if request.Body != original {
+		t.Fatalf("body %T was wrapped for a bodyless request", original)
+	}
+
+	request = httptest.NewRequest(http.MethodPost, "https://app.example.test/", strings.NewReader("body"))
+	wrapRequestBodyForTraffic(request, handler, metrics)
+	if _, ok := request.Body.(*trafficReadCloser); !ok {
+		t.Fatalf("body = %T, want trafficReadCloser", request.Body)
+	}
+
+	unknownLength := &http.Request{
+		Body:          io.NopCloser(strings.NewReader("body")),
+		ContentLength: 0,
+	}
+	wrapRequestBodyForTraffic(unknownLength, handler, metrics)
+	if _, ok := unknownLength.Body.(*trafficReadCloser); !ok {
+		t.Fatalf("zero-length body = %T, want trafficReadCloser because non-nil Body may be unknown length", unknownLength.Body)
+	}
+	if _, err := io.ReadAll(unknownLength.Body); err != nil {
+		t.Fatalf("read zero-length body: %v", err)
+	}
+	if metrics.inBytes != 4 {
+		t.Fatalf("recorded input bytes = %d, want 4", metrics.inBytes)
 	}
 }
 

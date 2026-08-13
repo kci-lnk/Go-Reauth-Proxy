@@ -120,17 +120,18 @@ func shouldCoalesceProxyResponse(resp *http.Response) bool {
 	return err == nil && strings.EqualFold(contentType, "application/octet-stream")
 }
 
-func (w *proxyResponseCoalescer) configure(resp *http.Response) {
+func (w *proxyResponseCoalescer) configure(resp *http.Response) bool {
 	if w == nil || !shouldCoalesceProxyResponse(resp) {
-		return
+		return false
 	}
 
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	if w.closed || w.enabled.Load() {
-		return
+		return false
 	}
 	w.enabled.Store(true)
+	return true
 }
 
 func (w *proxyResponseCoalescer) WriteHeader(statusCode int) {
@@ -318,7 +319,14 @@ func serveReverseProxyWithResponseCoalescing(proxy *httputil.ReverseProxy, w htt
 				return err
 			}
 		}
-		writer.configure(resp)
+		if writer.configure(resp) {
+			// ReverseProxy treats an unknown content length as a streaming
+			// response and installs its own immediate-flush timer. The writer
+			// above already provides bounded coalescing for this response, so
+			// suppress that redundant layer without publishing a Content-Length
+			// header or changing the body copied downstream.
+			resp.ContentLength = 0
+		}
 		return nil
 	}
 

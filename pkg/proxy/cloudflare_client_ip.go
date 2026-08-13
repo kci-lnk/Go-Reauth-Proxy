@@ -18,7 +18,7 @@ func resolveManagedCloudflareClientIP(r *http.Request) string {
 		return ""
 	}
 
-	addr, ok := parseCloudflareSingleIPHeader(r.Header, "CF-Connecting-IP")
+	addr, ok := parseCloudflareSingleIPHeader(r.Header, headerCFConnectingIP)
 	if !ok {
 		return ""
 	}
@@ -26,7 +26,7 @@ func resolveManagedCloudflareClientIP(r *http.Request) string {
 		return addr.String()
 	}
 
-	originalAddr, ok := parseCloudflareSingleIPHeader(r.Header, "CF-Connecting-IPv6")
+	originalAddr, ok := parseCloudflareSingleIPHeader(r.Header, headerCFConnectingIPv6)
 	if !ok {
 		return addr.String()
 	}

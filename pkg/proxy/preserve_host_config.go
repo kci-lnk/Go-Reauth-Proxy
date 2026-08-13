@@ -40,13 +40,18 @@ func (c *preserveHostConfig) shouldOmit(target *url.URL) bool {
 		return false
 	}
 
+	return c.shouldOmitKey(key)
+}
+
+func (c *preserveHostConfig) shouldOmitKey(key string) bool {
+	if c == nil || key == "" {
+		return false
+	}
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-
 	if !c.config.Enabled {
 		return false
 	}
-
 	_, exists := c.omitTargets[key]
 	return exists
 }

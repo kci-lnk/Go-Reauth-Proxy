@@ -57,6 +57,10 @@ func (w *coalescingTestResponseWriter) FlushError() error {
 	return nil
 }
 
+func (w *coalescingTestResponseWriter) Flush() {
+	_ = w.FlushError()
+}
+
 func (w *coalescingTestResponseWriter) snapshot() (writes [][]byte, flushes int) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -121,6 +125,16 @@ func TestShouldCoalesceProxyResponse(t *testing.T) {
 		resp *http.Response
 		want bool
 	}{name: "head request", resp: headResponse, want: false})
+
+	for _, status := range []int{http.StatusSwitchingProtocols, http.StatusNoContent, http.StatusNotModified} {
+		response := proxyResponseForCoalescing("application/octet-stream")
+		response.StatusCode = status
+		tests = append(tests, struct {
+			name string
+			resp *http.Response
+			want bool
+		}{name: http.StatusText(status), resp: response, want: false})
+	}
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -299,5 +313,78 @@ func TestServeReverseProxyWithResponseCoalescing(t *testing.T) {
 	}
 	if flushes != 1 {
 		t.Fatalf("underlying flushes = %d, want 1", flushes)
+	}
+	if got := dst.Header().Get("Content-Length"); got != "" {
+		t.Fatalf("Content-Length = %q, want no synthesized header", got)
+	}
+}
+
+func TestServeReverseProxyWithResponseCoalescingKeepsStreamingOptOut(t *testing.T) {
+	payload := []byte("data: ready\n\n")
+	proxy := &httputil.ReverseProxy{
+		Rewrite: func(*httputil.ProxyRequest) {},
+		Transport: coalescingTestRoundTripper(func(request *http.Request) (*http.Response, error) {
+			return &http.Response{
+				StatusCode:    http.StatusOK,
+				Header:        http.Header{"Content-Type": []string{"text/event-stream"}},
+				Body:          io.NopCloser(bytes.NewReader(payload)),
+				ContentLength: -1,
+				Request:       request,
+			}, nil
+		}),
+	}
+
+	dst := newCoalescingTestResponseWriter()
+	serveReverseProxyWithResponseCoalescing(proxy, dst, httptest.NewRequest(http.MethodGet, "http://proxy.test/events", nil))
+
+	writes, flushes := dst.snapshot()
+	if len(writes) != 1 || !bytes.Equal(writes[0], payload) {
+		t.Fatalf("streaming writes = %d, want one intact payload", len(writes))
+	}
+	if flushes == 0 {
+		t.Fatal("streaming response did not preserve immediate flushing")
+	}
+	if got := dst.Header().Get("Content-Length"); got != "" {
+		t.Fatalf("Content-Length = %q, want unknown-length streaming semantics", got)
+	}
+}
+
+func TestServeReverseProxyWithResponseCoalescingPreservesUnknownLengthOnWire(t *testing.T) {
+	payload := bytes.Repeat([]byte{0x7b}, 32*1024)
+	proxy := &httputil.ReverseProxy{
+		BufferPool: sharedProxyBufferPool,
+		Rewrite:    func(*httputil.ProxyRequest) {},
+		Transport: coalescingTestRoundTripper(func(request *http.Request) (*http.Response, error) {
+			return &http.Response{
+				StatusCode:    http.StatusOK,
+				Header:        http.Header{"Content-Type": []string{"application/octet-stream"}},
+				Body:          io.NopCloser(bytes.NewReader(payload)),
+				ContentLength: -1,
+				Request:       request,
+			}, nil
+		}),
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		serveReverseProxyWithResponseCoalescing(proxy, w, request)
+	}))
+	t.Cleanup(server.Close)
+
+	response, err := server.Client().Get(server.URL + "/download")
+	if err != nil {
+		t.Fatalf("GET coalesced response: %v", err)
+	}
+	defer response.Body.Close()
+	body, err := io.ReadAll(response.Body)
+	if err != nil {
+		t.Fatalf("read coalesced response: %v", err)
+	}
+	if !bytes.Equal(body, payload) {
+		t.Fatal("wire response differs from upstream payload")
+	}
+	if response.ContentLength == 0 || response.Header.Get("Content-Length") == "0" {
+		t.Fatalf("unknown-length body was advertised as empty: length=%d header=%q", response.ContentLength, response.Header.Get("Content-Length"))
+	}
+	if response.ContentLength > 0 && response.ContentLength != int64(len(payload)) {
+		t.Fatalf("ContentLength = %d, want unknown or %d", response.ContentLength, len(payload))
 	}
 }

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -51,6 +52,59 @@ type handlerEndToEndBenchmarkFixture struct {
 	connections  *atomic.Int64
 	requestURL   string
 	authCookie   bool
+}
+
+type handlerBenchmarkResponseWriter struct {
+	header http.Header
+	status int
+	bytes  int
+}
+
+func newHandlerBenchmarkResponseWriter() *handlerBenchmarkResponseWriter {
+	return &handlerBenchmarkResponseWriter{header: make(http.Header)}
+}
+
+func (w *handlerBenchmarkResponseWriter) Header() http.Header { return w.header }
+
+func (w *handlerBenchmarkResponseWriter) WriteHeader(status int) {
+	if w.status == 0 {
+		w.status = status
+	}
+}
+
+func (w *handlerBenchmarkResponseWriter) Write(p []byte) (int, error) {
+	if w.status == 0 {
+		w.status = http.StatusOK
+	}
+	w.bytes += len(p)
+	return len(p), nil
+}
+
+func (w *handlerBenchmarkResponseWriter) Flush() {}
+
+type handlerBenchmarkRoundTripper struct {
+	payload       []byte
+	contentType   string
+	unknownLength bool
+}
+
+func (rt handlerBenchmarkRoundTripper) RoundTrip(request *http.Request) (*http.Response, error) {
+	var reader io.Reader = bytes.NewReader(rt.payload)
+	contentLength := int64(len(rt.payload))
+	header := http.Header{"Content-Type": []string{rt.contentType}}
+	if rt.unknownLength {
+		reader = &coalescingTestChunkReader{reader: bytes.NewReader(rt.payload), size: 8 << 10}
+		contentLength = -1
+	} else {
+		header.Set("Content-Length", strconv.Itoa(len(rt.payload)))
+	}
+	return &http.Response{
+		StatusCode:    http.StatusOK,
+		Header:        header,
+		Body:          io.NopCloser(reader),
+		ContentLength: contentLength,
+		Request:       request,
+	}, nil
 }
 
 func BenchmarkHandlerEndToEnd(b *testing.B) {
@@ -159,15 +213,36 @@ func BenchmarkHandlerEndToEndParallelUnknownLength2MiB(b *testing.B) {
 	}, true)
 }
 
+func BenchmarkHandlerIsolated(b *testing.B) {
+	scenarios := []handlerEndToEndBenchmarkScenario{
+		{name: "Path/AuthOff/1KiB", routeKind: "path", authMode: handlerBenchmarkAuthOff, responseBytes: 1 << 10},
+		{name: "Host/CombinedCacheHit/1KiB", routeKind: "host", authMode: handlerBenchmarkAuthHit, responseBytes: 1 << 10},
+		{name: "Path/AuthOff/WAFEnabled/1KiB", routeKind: "path", authMode: handlerBenchmarkAuthOff, responseBytes: 1 << 10, wafEnabled: true},
+		{name: "Path/AuthOff/KnownLength/2MiB", routeKind: "path", authMode: handlerBenchmarkAuthOff, responseBytes: 2 << 20},
+		{name: "Path/AuthOff/UnknownLength/2MiB", routeKind: "path", authMode: handlerBenchmarkAuthOff, responseBytes: 2 << 20, unknownLength: true},
+	}
+	for _, scenario := range scenarios {
+		b.Run(scenario.name, func(b *testing.B) {
+			benchmarkHandlerScenario(b, scenario, false, true)
+		})
+	}
+}
+
 func benchmarkHandlerEndToEndScenario(b *testing.B, scenario handlerEndToEndBenchmarkScenario, parallel bool) {
+	benchmarkHandlerScenario(b, scenario, parallel, false)
+}
+
+func benchmarkHandlerScenario(b *testing.B, scenario handlerEndToEndBenchmarkScenario, parallel bool, isolated bool) {
 	b.StopTimer()
-	fixture := newHandlerEndToEndBenchmarkFixture(b, scenario)
+	fixture := newHandlerEndToEndBenchmarkFixture(b, scenario, isolated)
 	defer func() {
 		b.StopTimer()
 		fixture.logManager.Flush()
 		fixture.handler.proxyTransport.CloseIdleConnections()
 		fixture.handler.Close()
-		fixture.target.Close()
+		if fixture.target != nil {
+			fixture.target.Close()
+		}
 	}()
 
 	warmRecorder := httptest.NewRecorder()
@@ -183,7 +258,8 @@ func benchmarkHandlerEndToEndScenario(b *testing.B, scenario handlerEndToEndBenc
 	if reuseRecorder.Code != http.StatusOK {
 		b.Fatalf("connection-reuse probe status = %d; body=%s", reuseRecorder.Code, reuseRecorder.Body.String())
 	}
-	if connections := fixture.connections.Load(); connections != 1 {
+	if !isolated && fixture.connections.Load() != 1 {
+		connections := fixture.connections.Load()
 		b.Fatalf("warm-up opened %d upstream connections, want one reused connection", connections)
 	}
 	authorizeCallsBefore := fixture.authorizeRPC.Load()
@@ -195,23 +271,23 @@ func benchmarkHandlerEndToEndScenario(b *testing.B, scenario handlerEndToEndBenc
 	if parallel {
 		b.RunParallel(func(pb *testing.PB) {
 			for pb.Next() {
-				recorder := httptest.NewRecorder()
-				fixture.handler.ServeHTTP(recorder, fixture.newRequest())
-				if recorder.Code != http.StatusOK {
-					b.Errorf("status = %d, want 200", recorder.Code)
+				writer := newHandlerBenchmarkResponseWriter()
+				fixture.handler.ServeHTTP(writer, fixture.newRequest())
+				if writer.status != http.StatusOK {
+					b.Errorf("status = %d, want 200", writer.status)
 					continue
 				}
 			}
 		})
 	} else {
 		for b.Loop() {
-			recorder := httptest.NewRecorder()
-			fixture.handler.ServeHTTP(recorder, fixture.newRequest())
-			if recorder.Code != http.StatusOK {
-				b.Fatalf("status = %d, want 200; body=%s", recorder.Code, recorder.Body.String())
+			writer := newHandlerBenchmarkResponseWriter()
+			fixture.handler.ServeHTTP(writer, fixture.newRequest())
+			if writer.status != http.StatusOK {
+				b.Fatalf("status = %d, want 200", writer.status)
 			}
-			handlerBenchmarkStatusSink = recorder.Code
-			handlerBenchmarkBytesSink = recorder.Body.Len()
+			handlerBenchmarkStatusSink = writer.status
+			handlerBenchmarkBytesSink = writer.bytes
 		}
 	}
 	b.StopTimer()
@@ -237,38 +313,44 @@ func benchmarkHandlerEndToEndScenario(b *testing.B, scenario handlerEndToEndBenc
 	}
 }
 
-func newHandlerEndToEndBenchmarkFixture(b *testing.B, scenario handlerEndToEndBenchmarkScenario) *handlerEndToEndBenchmarkFixture {
+func newHandlerEndToEndBenchmarkFixture(b *testing.B, scenario handlerEndToEndBenchmarkScenario, isolated bool) *handlerEndToEndBenchmarkFixture {
 	b.Helper()
 	payload := handlerBenchmarkResponseBody(scenario.responseBytes, scenario.htmlResponse)
 	contentLength := strconv.Itoa(len(payload))
 	contentType := "text/plain; charset=utf-8"
-	if scenario.htmlResponse {
+	if scenario.unknownLength {
+		contentType = "application/octet-stream"
+	} else if scenario.htmlResponse {
 		contentType = "text/html; charset=utf-8"
 	}
 	connections := new(atomic.Int64)
-	target := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", contentType)
-		if !scenario.unknownLength {
-			w.Header().Set("Content-Length", contentLength)
-			_, _ = w.Write(payload)
-			return
-		}
-		w.Header().Set("Content-Type", "application/octet-stream")
-		for remaining := payload; len(remaining) > 0; {
-			chunkSize := min(len(remaining), 8<<10)
-			_, _ = w.Write(remaining[:chunkSize])
-			remaining = remaining[chunkSize:]
-			if flusher, ok := w.(http.Flusher); ok {
-				flusher.Flush()
+	var target *httptest.Server
+	targetURL := "http://benchmark-upstream.invalid"
+	if !isolated {
+		target = httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", contentType)
+			if !scenario.unknownLength {
+				w.Header().Set("Content-Length", contentLength)
+				_, _ = w.Write(payload)
+				return
+			}
+			for remaining := payload; len(remaining) > 0; {
+				chunkSize := min(len(remaining), 8<<10)
+				_, _ = w.Write(remaining[:chunkSize])
+				remaining = remaining[chunkSize:]
+				if flusher, ok := w.(http.Flusher); ok {
+					flusher.Flush()
+				}
+			}
+		}))
+		target.Config.ConnState = func(_ net.Conn, state http.ConnState) {
+			if state == http.StateNew {
+				connections.Add(1)
 			}
 		}
-	}))
-	target.Config.ConnState = func(_ net.Conn, state http.ConnState) {
-		if state == http.StateNew {
-			connections.Add(1)
-		}
+		target.Start()
+		targetURL = target.URL
 	}
-	target.Start()
 
 	loggingConfig := models.LoggingConfig{Enabled: scenario.logging}
 	fixture := &handlerEndToEndBenchmarkFixture{
@@ -284,7 +366,7 @@ func newHandlerEndToEndBenchmarkFixture(b *testing.B, scenario handlerEndToEndBe
 	if scenario.routeKind == "host" {
 		initialConfig.HostRules = []models.HostRule{{
 			Host:       "bench.example.test",
-			Target:     target.URL,
+			Target:     targetURL,
 			UseAuth:    scenario.authMode != handlerBenchmarkAuthOff,
 			AccessMode: "login_first",
 		}}
@@ -292,7 +374,7 @@ func newHandlerEndToEndBenchmarkFixture(b *testing.B, scenario handlerEndToEndBe
 	} else {
 		initialConfig.Rules = []models.Rule{{
 			Path:    "/benchmark",
-			Target:  target.URL,
+			Target:  targetURL,
 			UseAuth: scenario.authMode != handlerBenchmarkAuthOff,
 		}}
 		fixture.requestURL = "http://gateway.example.test/benchmark/resource"
@@ -316,6 +398,13 @@ func newHandlerEndToEndBenchmarkFixture(b *testing.B, scenario handlerEndToEndBe
 	handler := NewHandler(7996, 7999, manager, initialConfig, filepath.Join(runtimeDir, "logs"), nil)
 	fixture.handler = handler
 	fixture.logManager = handler.gatewayLogManager
+	if isolated {
+		handler.proxyRoundTripper = handlerBenchmarkRoundTripper{
+			payload:       payload,
+			contentType:   contentType,
+			unknownLength: scenario.unknownLength,
+		}
+	}
 
 	if scenario.authMode != handlerBenchmarkAuthOff {
 		preflightScope := pb.AuthCacheScope_AUTH_CACHE_SCOPE_NONE
@@ -336,7 +425,9 @@ func newHandlerEndToEndBenchmarkFixture(b *testing.B, scenario handlerEndToEndBe
 	if scenario.wafEnabled {
 		if status := handler.wafRuntime.Status(); !status.Loaded {
 			handler.Close()
-			target.Close()
+			if target != nil {
+				target.Close()
+			}
 			b.Fatal("benchmark WAF runtime was not loaded")
 		}
 		// Reload schedules a memory release after 500ms. Keep that maintenance

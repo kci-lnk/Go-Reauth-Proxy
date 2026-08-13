@@ -15,8 +15,8 @@ import (
 )
 
 const (
-	upstreamPrivateIPv4HeaderName      = "X-Reauth-Upstream-Private-IPv4"
-	upstreamPrivateIPv4CIDRsHeaderName = "X-Reauth-Upstream-Private-IPv4-CIDRs"
+	upstreamPrivateIPv4HeaderName      = "X-Reauth-Upstream-Private-Ipv4"
+	upstreamPrivateIPv4CIDRsHeaderName = "X-Reauth-Upstream-Private-Ipv4-Cidrs"
 	upstreamDiscoveryProxyTokenHeader  = "X-Reauth-Upstream-Discovery-Proxy-Token"
 	upstreamDiscoveryProxyTokenEnv     = "FN_KNOCK_DISCOVERY_PROXY_TOKEN"
 	upstreamPrivateIPv4CacheTTL        = 30 * time.Second

@@ -522,12 +522,12 @@ func TestUpstreamUnavailableResetRecords499BeforeClosing(t *testing.T) {
 	handler := &Handler{}
 	recorder := newHijackableResponseRecorder()
 	defer recorder.Close()
-	metrics := &requestTrafficMetrics{statusCode: http.StatusOK}
-	writer := newProxyResponseCoalescer(&trafficResponseWriter{
+	trafficWriter := &trafficResponseWriter{
 		ResponseWriter: recorder,
 		handler:        handler,
-		metrics:        metrics,
-	})
+	}
+	trafficWriter.metrics.statusCode = http.StatusOK
+	writer := newProxyResponseCoalescer(trafficWriter)
 	cfg := models.GatewayUnmatchedRouteConfig{
 		UpstreamErrorDetail: models.GatewayUpstreamErrorDetailResetConnection,
 	}
@@ -541,8 +541,8 @@ func TestUpstreamUnavailableResetRecords499BeforeClosing(t *testing.T) {
 		errors.New("dial tcp: connection refused"),
 	)
 
-	if metrics.statusCode != 499 {
-		t.Fatalf("status = %d, want 499", metrics.statusCode)
+	if trafficWriter.metrics.statusCode != 499 {
+		t.Fatalf("status = %d, want 499", trafficWriter.metrics.statusCode)
 	}
 }
 

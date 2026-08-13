@@ -134,8 +134,13 @@ func (h *Handler) executeCombinedHTTPAuth(r *http.Request, authConfig models.Aut
 		return combinedHTTPAuthExecution{}, false
 	}
 
-	preflightLookup, canPreflightLookup := buildPreflightCacheLookup(r, clientIP, accessMode, isMatch)
-	authLookup, canAuthLookup := buildAuthCacheLookup(r, clientIP, accessMode)
+	dimensions, canLookup := buildAuthCacheDimensionsWithRouteIdentity(r, clientIP, accessMode, authRouteIdentityForContext(r, requestAuth))
+	preflightLookup, canPreflightLookup := preflightCacheLookup{}, canLookup
+	authLookup, canAuthLookup := authCacheLookup{}, canLookup
+	if canLookup {
+		preflightLookup = dimensions.preflightLookup(isMatch)
+		authLookup = dimensions.authLookup()
+	}
 	resolveCached := func(callRequest *http.Request, preflight preflightDecision, preflightHit bool, authExecution authCheckExecution, authHit bool) (combinedHTTPAuthExecution, bool) {
 		switch {
 		case preflightHit && (preflightStopsHTTPAuthorization(preflight) || authHit):
@@ -696,7 +701,11 @@ func canceledAuthCheckExecution(err error) authCheckExecution {
 func (h *Handler) executeAuthCheck(r *http.Request, authConfig models.AuthConfig, clientIP string, accessMode string, requestID string, requestAuth *requestAuthContext) authCheckExecution {
 	now := time.Now()
 	useCache := authCacheEnabled(authConfig)
-	lookup, canLookup := buildAuthCacheLookup(r, clientIP, accessMode)
+	dimensions, canLookup := buildAuthCacheDimensionsWithRouteIdentity(r, clientIP, accessMode, authRouteIdentityForContext(r, requestAuth))
+	var lookup authCacheLookup
+	if canLookup {
+		lookup = dimensions.authLookup()
+	}
 	if event := debugProxyEvent("auth_cache_lookup", requestID); event != nil {
 		event.Bool("enabled", useCache).
 			Bool("can_lookup", canLookup).

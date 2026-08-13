@@ -74,3 +74,28 @@ func TestDisabledDiagnosticsSkipHotPathCounters(t *testing.T) {
 		t.Fatalf("disabled diagnostics request total = %d, want %d", got, before)
 	}
 }
+
+func TestClientConnectionTransitionsTrackActiveAndIdleGauges(t *testing.T) {
+	activeBefore := runtimeGlobal.activeClientConnections.Load()
+	idleBefore := runtimeGlobal.idleClientConnections.Load()
+	t.Cleanup(func() {
+		runtimeGlobal.activeClientConnections.Store(activeBefore)
+		runtimeGlobal.idleClientConnections.Store(idleBefore)
+	})
+
+	ObserveClientConnectionTransition(http.StateNew, http.StateActive)
+	got := RuntimeMetrics()
+	if got.ActiveClientConnections != activeBefore+1 || got.IdleClientConnections != idleBefore {
+		t.Fatalf("active transition = %#v", got)
+	}
+	ObserveClientConnectionTransition(http.StateActive, http.StateIdle)
+	got = RuntimeMetrics()
+	if got.ActiveClientConnections != activeBefore || got.IdleClientConnections != idleBefore+1 {
+		t.Fatalf("idle transition = %#v", got)
+	}
+	ObserveClientConnectionTransition(http.StateIdle, http.StateClosed)
+	got = RuntimeMetrics()
+	if got.ActiveClientConnections != activeBefore || got.IdleClientConnections != idleBefore {
+		t.Fatalf("closed transition = %#v", got)
+	}
+}

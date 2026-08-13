@@ -408,7 +408,7 @@ task bench:hot          # 热路径基准测试
 task bench:all          # 全量基准测试
 ```
 
-每个 PR 会在同一 CI runner 上将热路径 benchmark 与目标分支基线进行比较。比较器取每个 benchmark 的多次样本中位数：`ns/op` 最多回退 20%，`B/op` 与 `allocs/op` 最多回退 5%；考虑到 Go benchmark 将 `allocs/op` 报告为整数，该指标额外允许 1 个报告单位的绝对舍入余量。缺失的既有 benchmark 同样会使检查失败。这个门禁用于识别相对回退，实际绝对性能仍应以发布前的目标设备测量为准。
+每个 PR 会在同一 CI runner 上将热路径 benchmark 与目标分支基线进行比较。比较器取每个 benchmark 的 5 次样本中位数：`ns/op`（等价吞吐门禁）最多回退 5%，`B/op` 与 `allocs/op` 最多回退 5%；考虑到 Go benchmark 将 `allocs/op` 报告为整数，该指标额外允许 1 个报告单位的绝对舍入余量。缺失的既有 benchmark 同样会使检查失败。这个门禁用于识别相对回退，实际绝对性能仍应以发布前的目标设备测量为准。
 
 项目结构：
 

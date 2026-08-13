@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -36,6 +37,7 @@ type handlerEndToEndBenchmarkScenario struct {
 	logging       bool
 	responseBytes int
 	htmlResponse  bool
+	unknownLength bool
 	wafEnabled    bool
 }
 
@@ -44,6 +46,7 @@ type handlerEndToEndBenchmarkFixture struct {
 	target       *httptest.Server
 	logManager   *gatewaylog.Manager
 	authorizeRPC *atomic.Int64
+	connections  *atomic.Int64
 	requestURL   string
 	authCookie   bool
 }
@@ -135,6 +138,25 @@ func BenchmarkHandlerEndToEndParallelCombinedCacheHit1KiB(b *testing.B) {
 	}, true)
 }
 
+func BenchmarkHandlerEndToEndParallelAuthOff2MiB(b *testing.B) {
+	benchmarkHandlerEndToEndScenario(b, handlerEndToEndBenchmarkScenario{
+		name:          "Path/AuthOff/PortalOff/LoggingOff/2MiB",
+		routeKind:     "path",
+		authMode:      handlerBenchmarkAuthOff,
+		responseBytes: 2 << 20,
+	}, true)
+}
+
+func BenchmarkHandlerEndToEndParallelUnknownLength2MiB(b *testing.B) {
+	benchmarkHandlerEndToEndScenario(b, handlerEndToEndBenchmarkScenario{
+		name:          "Path/AuthOff/PortalOff/LoggingOff/UnknownLength/2MiB",
+		routeKind:     "path",
+		authMode:      handlerBenchmarkAuthOff,
+		responseBytes: 2 << 20,
+		unknownLength: true,
+	}, true)
+}
+
 func benchmarkHandlerEndToEndScenario(b *testing.B, scenario handlerEndToEndBenchmarkScenario, parallel bool) {
 	b.StopTimer()
 	fixture := newHandlerEndToEndBenchmarkFixture(b, scenario)
@@ -142,6 +164,7 @@ func benchmarkHandlerEndToEndScenario(b *testing.B, scenario handlerEndToEndBenc
 		b.StopTimer()
 		fixture.logManager.Flush()
 		fixture.logManager.Close()
+		fixture.handler.proxyTransport.CloseIdleConnections()
 		fixture.target.Close()
 	}()
 
@@ -152,6 +175,14 @@ func benchmarkHandlerEndToEndScenario(b *testing.B, scenario handlerEndToEndBenc
 	}
 	if scenario.portalEnabled && !bytes.Contains(warmRecorder.Body.Bytes(), []byte("reauth-proxy-toolbar-loader")) {
 		b.Fatal("portal-enabled warm-up response did not include the toolbar loader")
+	}
+	reuseRecorder := httptest.NewRecorder()
+	fixture.handler.ServeHTTP(reuseRecorder, fixture.newRequest())
+	if reuseRecorder.Code != http.StatusOK {
+		b.Fatalf("connection-reuse probe status = %d; body=%s", reuseRecorder.Code, reuseRecorder.Body.String())
+	}
+	if connections := fixture.connections.Load(); connections != 1 {
+		b.Fatalf("warm-up opened %d upstream connections, want one reused connection", connections)
 	}
 	authorizeCallsBefore := fixture.authorizeRPC.Load()
 
@@ -212,11 +243,30 @@ func newHandlerEndToEndBenchmarkFixture(b *testing.B, scenario handlerEndToEndBe
 	if scenario.htmlResponse {
 		contentType = "text/html; charset=utf-8"
 	}
-	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	connections := new(atomic.Int64)
+	target := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", contentType)
-		w.Header().Set("Content-Length", contentLength)
-		_, _ = w.Write(payload)
+		if !scenario.unknownLength {
+			w.Header().Set("Content-Length", contentLength)
+			_, _ = w.Write(payload)
+			return
+		}
+		w.Header().Set("Content-Type", "application/octet-stream")
+		for remaining := payload; len(remaining) > 0; {
+			chunkSize := min(len(remaining), 8<<10)
+			_, _ = w.Write(remaining[:chunkSize])
+			remaining = remaining[chunkSize:]
+			if flusher, ok := w.(http.Flusher); ok {
+				flusher.Flush()
+			}
+		}
 	}))
+	target.Config.ConnState = func(_ net.Conn, state http.ConnState) {
+		if state == http.StateNew {
+			connections.Add(1)
+		}
+	}
+	target.Start()
 
 	loggingConfig := models.LoggingConfig{Enabled: scenario.logging}
 	logManager := gatewaylog.NewManager(b.TempDir(), loggingConfig)
@@ -224,6 +274,7 @@ func newHandlerEndToEndBenchmarkFixture(b *testing.B, scenario handlerEndToEndBe
 		target:       target,
 		logManager:   logManager,
 		authorizeRPC: new(atomic.Int64),
+		connections:  connections,
 	}
 	handler := &Handler{
 		LoggingConfig:     loggingConfig,
@@ -232,6 +283,8 @@ func newHandlerEndToEndBenchmarkFixture(b *testing.B, scenario handlerEndToEndBe
 		authCache:         newAuthStateCache(),
 		preflightCache:    newPreflightStateCache(),
 	}
+	handler.proxyTransport = newProxyTransport()
+	handler.proxyRoundTripper = deepMonitorTransport{base: handler.proxyTransport}
 
 	if scenario.routeKind == "host" {
 		handler.HostRules = []models.HostRule{{

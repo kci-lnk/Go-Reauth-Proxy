@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strconv"
 	"testing"
 	"time"
@@ -363,33 +364,51 @@ func BenchmarkRelayBidirectional(b *testing.B) {
 	request := bytes.Repeat([]byte{'i'}, 64*1024)
 	response := bytes.Repeat([]byte{'o'}, 64*1024)
 	readBuffer := make([]byte, 64*1024)
+	listener, err := net.ListenUnix("unix", &net.UnixAddr{
+		Name: filepath.Join(b.TempDir(), "relay.sock"),
+		Net:  "unix",
+	})
+	if err != nil {
+		b.Fatal(err)
+	}
+	b.Cleanup(func() { _ = listener.Close() })
 	b.ReportAllocs()
 	b.SetBytes(int64(len(request) + len(response)))
 	for b.Loop() {
-		clientPeer, proxyClient := benchmarkTCPConnPair(b)
-		proxyUpstream, upstreamPeer := benchmarkTCPConnPair(b)
+		clientPeer, proxyClient := benchmarkUnixConnPair(b, listener)
+		proxyUpstream, upstreamPeer := benchmarkUnixConnPair(b, listener)
 		done := make(chan relayResult, 1)
 		go func() {
 			bytesIn, bytesOut, err := relayBidirectional(proxyClient, proxyUpstream)
 			done <- relayResult{bytes: bytesIn + bytesOut, err: err}
 		}()
 
-		if _, err := clientPeer.Write(request); err != nil {
-			b.Fatal(err)
-		}
-		if err := clientPeer.CloseWrite(); err != nil {
-			b.Fatal(err)
-		}
+		requestDone := make(chan error, 1)
+		go func() {
+			_, writeErr := clientPeer.Write(request)
+			if writeErr == nil {
+				writeErr = clientPeer.CloseWrite()
+			}
+			requestDone <- writeErr
+		}()
 		if _, err := io.ReadFull(upstreamPeer, readBuffer); err != nil {
 			b.Fatal(err)
 		}
-		if _, err := upstreamPeer.Write(response); err != nil {
+		if err := <-requestDone; err != nil {
 			b.Fatal(err)
 		}
-		if err := upstreamPeer.CloseWrite(); err != nil {
-			b.Fatal(err)
-		}
+		responseDone := make(chan error, 1)
+		go func() {
+			_, writeErr := upstreamPeer.Write(response)
+			if writeErr == nil {
+				writeErr = upstreamPeer.CloseWrite()
+			}
+			responseDone <- writeErr
+		}()
 		if _, err := io.ReadFull(clientPeer, readBuffer); err != nil {
+			b.Fatal(err)
+		}
+		if err := <-responseDone; err != nil {
 			b.Fatal(err)
 		}
 		result := <-done
@@ -481,19 +500,13 @@ func tcpConnPair(t *testing.T) (*net.TCPConn, *net.TCPConn) {
 	return dialed, accepted
 }
 
-func benchmarkTCPConnPair(b *testing.B) (*net.TCPConn, *net.TCPConn) {
+func benchmarkUnixConnPair(b *testing.B, listener *net.UnixListener) (*net.UnixConn, *net.UnixConn) {
 	b.Helper()
-	listener, err := net.ListenTCP("tcp4", &net.TCPAddr{IP: net.ParseIP("127.0.0.1")})
+	dialed, err := net.DialUnix("unix", nil, listener.Addr().(*net.UnixAddr))
 	if err != nil {
 		b.Fatal(err)
 	}
-	dialed, err := net.DialTCP("tcp4", nil, listener.Addr().(*net.TCPAddr))
-	if err != nil {
-		listener.Close()
-		b.Fatal(err)
-	}
-	accepted, err := listener.AcceptTCP()
-	listener.Close()
+	accepted, err := listener.AcceptUnix()
 	if err != nil {
 		dialed.Close()
 		b.Fatal(err)

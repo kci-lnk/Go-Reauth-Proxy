@@ -123,6 +123,9 @@ func TestGatewayRuntimeInfoRequiresTokenAndIsStable(t *testing.T) {
 	if first.GetGcPercent() != initialGCPercent() {
 		t.Fatalf("GC percent = %d, want %d", first.GetGcPercent(), initialGCPercent())
 	}
+	if first.GetMemoryLimitBytes() <= 0 || first.GetManagedMemoryBytes() == 0 {
+		t.Fatalf("memory limit/runtime-managed bytes were not reported: %#v", first)
+	}
 	if first.GetRssBytes() == 0 || second.GetRssBytes() == 0 {
 		t.Fatalf("RSS was not reported: %d -> %d", first.GetRssBytes(), second.GetRssBytes())
 	}
@@ -160,6 +163,11 @@ func TestGatewayMemoryControlRequiresTokenAndValidatesRange(t *testing.T) {
 			t.Fatalf("gc_percent=%d status = %v, want invalid argument", value, status.Code(err))
 		}
 	}
+	for _, value := range []int64{63 << 20, 4097 << 20} {
+		if _, err := server.SetGatewayMemoryConfig(ctx, &pb.GatewayMemoryConfig{GcPercent: 100, MemoryLimitBytes: value}); status.Code(err) != codes.InvalidArgument {
+			t.Fatalf("memory_limit_bytes=%d status = %v, want invalid argument", value, status.Code(err))
+		}
+	}
 }
 
 func TestGatewayMemoryControlAppliesAndReclaims(t *testing.T) {
@@ -167,16 +175,18 @@ func TestGatewayMemoryControlAppliesAndReclaims(t *testing.T) {
 	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs(rpcbridge.InternalTokenMetadataKey, "secret"))
 	previous := debug.SetGCPercent(100)
 	t.Cleanup(func() { debug.SetGCPercent(previous) })
+	previousLimit := debug.SetMemoryLimit(-1)
+	t.Cleanup(func() { debug.SetMemoryLimit(previousLimit) })
 
-	applied, err := server.SetGatewayMemoryConfig(ctx, &pb.GatewayMemoryConfig{GcPercent: 50})
-	if err != nil || applied.GetGcPercent() != 50 {
+	applied, err := server.SetGatewayMemoryConfig(ctx, &pb.GatewayMemoryConfig{GcPercent: 50, MemoryLimitBytes: 128 << 20})
+	if err != nil || applied.GetGcPercent() != 50 || applied.GetMemoryLimitBytes() != 128<<20 {
 		t.Fatalf("SetGatewayMemoryConfig = %#v, %v", applied, err)
 	}
 	info, err := server.ReclaimGatewayMemory(ctx, &emptypb.Empty{})
 	if err != nil {
 		t.Fatalf("ReclaimGatewayMemory: %v", err)
 	}
-	if info.GetGcPercent() != 50 || info.GetHeapSysBytes() == 0 || info.GetRssBytes() == 0 {
+	if info.GetGcPercent() != 50 || info.GetMemoryLimitBytes() != 128<<20 || info.GetHeapSysBytes() == 0 || info.GetRssBytes() == 0 {
 		t.Fatalf("unexpected runtime info after reclaim: %#v", info)
 	}
 }

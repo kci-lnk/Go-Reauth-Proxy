@@ -48,7 +48,7 @@ import (
 )
 
 const (
-	proxyCopyBufferSize               = 256 * 1024
+	proxyCopyBufferSize               = 64 * 1024
 	trafficCounterFlushBytes          = 1024 * 1024
 	maxSignedAuthRequestBodyBytes int = 4 * 1024 * 1024
 )
@@ -796,23 +796,43 @@ func normalizeRequestHost(host string) string {
 
 func newInternalTransport() *http.Transport {
 	transport := http.DefaultTransport.(*http.Transport).Clone()
-	transport.MaxIdleConns = 2048
-	transport.MaxIdleConnsPerHost = 2048
-	transport.IdleConnTimeout = 90 * time.Second
+	transport.MaxIdleConns = 256
+	transport.MaxIdleConnsPerHost = 64
+	transport.IdleConnTimeout = 60 * time.Second
 	transport.ForceAttemptHTTP2 = true
 	return transport
 }
 
+type trackedUpstreamConn struct {
+	net.Conn
+	closed atomic.Bool
+}
+
+func (c *trackedUpstreamConn) Close() error {
+	if c.closed.CompareAndSwap(false, true) {
+		diagnostics.CloseUpstreamConnection()
+	}
+	return c.Conn.Close()
+}
+
 func newProxyTransport() *http.Transport {
 	transport := newInternalTransport()
-	transport.DialContext = (&net.Dialer{
+	dialContext := (&net.Dialer{
 		Timeout:   6 * time.Second,
 		KeepAlive: 30 * time.Second,
 	}).DialContext
+	transport.DialContext = func(ctx context.Context, network, address string) (net.Conn, error) {
+		connection, err := dialContext(ctx, network, address)
+		if err != nil {
+			return nil, err
+		}
+		diagnostics.OpenUpstreamConnection()
+		return &trackedUpstreamConn{Conn: connection}, nil
+	}
 	// Hardcode skipping upstream TLS verification for reverse-proxy targets.
 	transport.TLSClientConfig = &tls.Config{
 		InsecureSkipVerify: true,
-		ClientSessionCache: tls.NewLRUClientSessionCache(256),
+		ClientSessionCache: tls.NewLRUClientSessionCache(128),
 	}
 	transport.TLSHandshakeTimeout = 10 * time.Second
 	// Let long-running admin/API requests such as local service discovery
@@ -5011,6 +5031,8 @@ func wrapRequestBodyForTraffic(r *http.Request, h *Handler, metrics *requestTraf
 }
 
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	diagnostics.BeginProxyRequest()
+	defer diagnostics.EndProxyRequest()
 	start := time.Now()
 	deepMonitorTrace := h.beginDeepMonitor(r, start)
 	r = withDeepMonitor(r, deepMonitorTrace)

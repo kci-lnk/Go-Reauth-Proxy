@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"go-reauth-proxy/pkg/admin"
 	"go-reauth-proxy/pkg/config"
+	"go-reauth-proxy/pkg/diagnostics"
 	"go-reauth-proxy/pkg/events"
 	"go-reauth-proxy/pkg/gatewaylog"
 	"go-reauth-proxy/pkg/grpc/pb"
@@ -68,6 +69,7 @@ type trackedProxyConnState struct {
 	serverName string
 	retiring   bool
 	closing    bool
+	metrics    bool
 }
 
 type proxyConnTracker struct {
@@ -83,10 +85,21 @@ func (t *proxyConnTracker) update(c net.Conn, state http.ConnState) {
 		return
 	}
 	if state == http.StateClosed || state == http.StateHijacked {
-		t.m.Delete(c)
+		if value, loaded := t.m.LoadAndDelete(c); loaded {
+			if tracked, ok := value.(*trackedProxyConnState); ok && tracked != nil {
+				tracked.mu.Lock()
+				previous := tracked.state
+				metrics := tracked.metrics
+				tracked.mu.Unlock()
+				if metrics {
+					diagnostics.ObserveClientConnectionTransition(previous, state)
+				}
+			}
+		}
 		return
 	}
-	value, _ := t.m.LoadOrStore(c, &trackedProxyConnState{})
+	candidate := &trackedProxyConnState{state: http.StateNew, metrics: true}
+	value, _ := t.m.LoadOrStore(c, candidate)
 	tracked, ok := value.(*trackedProxyConnState)
 	if !ok || tracked == nil {
 		return
@@ -98,6 +111,7 @@ func (t *proxyConnTracker) update(c net.Conn, state http.ConnState) {
 		}
 	}
 	tracked.mu.Lock()
+	previous := tracked.state
 	tracked.state = state
 	if serverName != "" {
 		tracked.serverName = serverName
@@ -106,7 +120,11 @@ func (t *proxyConnTracker) update(c net.Conn, state http.ConnState) {
 	if shouldClose {
 		tracked.closing = true
 	}
+	metrics := tracked.metrics
 	tracked.mu.Unlock()
+	if metrics {
+		diagnostics.ObserveClientConnectionTransition(previous, state)
+	}
 	if shouldClose {
 		// Closing a TLS connection can block while close_notify is written. Keep
 		// that I/O outside tracked.mu so retirement scans and other state updates

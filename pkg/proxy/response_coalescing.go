@@ -13,8 +13,8 @@ import (
 
 const (
 	proxyResponseCoalesceSmallBufferSize  = 16 * 1024
-	proxyResponseCoalesceMediumBufferSize = 256 * 1024
-	proxyResponseCoalesceBufferSize       = 1024 * 1024
+	proxyResponseCoalesceMediumBufferSize = 64 * 1024
+	proxyResponseCoalesceBufferSize       = 256 * 1024
 	proxyResponseCoalesceMaxLatency       = 10 * time.Millisecond
 	proxyResponseDirectWriteSize          = proxyCopyBufferSize
 )

@@ -40,6 +40,104 @@ type counters struct {
 var global counters
 var enabled atomic.Bool
 
+type runtimeCounters struct {
+	activeProxyRequests     atomic.Uint64
+	activeClientConnections atomic.Uint64
+	idleClientConnections   atomic.Uint64
+	openUpstreamConnections atomic.Uint64
+	udpSessions             atomic.Uint64
+	udpQueuedBytes          atomic.Uint64
+	udpQueuedBytesPeak      atomic.Uint64
+	udpQueueDrops           atomic.Uint64
+}
+
+var runtimeGlobal runtimeCounters
+
+// RuntimeSnapshot contains low-cost process gauges that are always available
+// to the authenticated control plane, even when the optional diagnostics HTTP
+// listener is disabled.
+type RuntimeSnapshot struct {
+	ActiveProxyRequests     uint64
+	ActiveClientConnections uint64
+	IdleClientConnections   uint64
+	OpenUpstreamConnections uint64
+	UDPSessions             uint64
+	UDPQueuedBytes          uint64
+	UDPQueuedBytesPeak      uint64
+	UDPQueueDrops           uint64
+}
+
+func BeginProxyRequest() {
+	runtimeGlobal.activeProxyRequests.Add(1)
+}
+
+func EndProxyRequest() {
+	runtimeGlobal.activeProxyRequests.Add(^uint64(0))
+}
+
+func ObserveClientConnectionTransition(previous, current http.ConnState) {
+	if previous == current {
+		return
+	}
+	if previous == http.StateActive {
+		runtimeGlobal.activeClientConnections.Add(^uint64(0))
+	} else if previous == http.StateIdle {
+		runtimeGlobal.idleClientConnections.Add(^uint64(0))
+	}
+	if current == http.StateActive {
+		runtimeGlobal.activeClientConnections.Add(1)
+	} else if current == http.StateIdle {
+		runtimeGlobal.idleClientConnections.Add(1)
+	}
+}
+
+func OpenUpstreamConnection() {
+	runtimeGlobal.openUpstreamConnections.Add(1)
+}
+
+func CloseUpstreamConnection() {
+	runtimeGlobal.openUpstreamConnections.Add(^uint64(0))
+}
+
+func OpenUDPSession() {
+	runtimeGlobal.udpSessions.Add(1)
+}
+
+func CloseUDPSession() {
+	runtimeGlobal.udpSessions.Add(^uint64(0))
+}
+
+func AddUDPQueuedBytes(delta int64) {
+	if delta == 0 {
+		return
+	}
+	var current uint64
+	if delta > 0 {
+		current = runtimeGlobal.udpQueuedBytes.Add(uint64(delta))
+	} else {
+		current = runtimeGlobal.udpQueuedBytes.Add(^uint64(-delta - 1))
+	}
+	for delta > 0 {
+		peak := runtimeGlobal.udpQueuedBytesPeak.Load()
+		if current <= peak || runtimeGlobal.udpQueuedBytesPeak.CompareAndSwap(peak, current) {
+			break
+		}
+	}
+}
+
+func RuntimeMetrics() RuntimeSnapshot {
+	return RuntimeSnapshot{
+		ActiveProxyRequests:     runtimeGlobal.activeProxyRequests.Load(),
+		ActiveClientConnections: runtimeGlobal.activeClientConnections.Load(),
+		IdleClientConnections:   runtimeGlobal.idleClientConnections.Load(),
+		OpenUpstreamConnections: runtimeGlobal.openUpstreamConnections.Load(),
+		UDPSessions:             runtimeGlobal.udpSessions.Load(),
+		UDPQueuedBytes:          runtimeGlobal.udpQueuedBytes.Load(),
+		UDPQueuedBytesPeak:      runtimeGlobal.udpQueuedBytesPeak.Load(),
+		UDPQueueDrops:           runtimeGlobal.udpQueueDrops.Load(),
+	}
+}
+
 // SetEnabled controls hot-path metric collection. The diagnostics listener is
 // disabled by default, so production requests pay only one atomic load unless
 // the explicitly configured loopback endpoint is running.
@@ -155,6 +253,7 @@ func RecordSubdomainGrantStorageError() {
 	}
 }
 func RecordUDPQueueDrop() {
+	runtimeGlobal.udpQueueDrops.Add(1)
 	if enabled.Load() {
 		global.udpQueueDrops.Add(1)
 	}

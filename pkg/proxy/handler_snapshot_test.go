@@ -21,13 +21,16 @@ var (
 	benchmarkURLSink           *url.URL
 )
 
-func TestNewInternalTransportUsesHighIdleConnectionLimits(t *testing.T) {
+func TestNewInternalTransportUsesBoundedIdleConnectionLimits(t *testing.T) {
 	transport := newInternalTransport()
-	if got, want := transport.MaxIdleConns, 2048; got != want {
+	if got, want := transport.MaxIdleConns, 256; got != want {
 		t.Fatalf("MaxIdleConns = %d, want %d", got, want)
 	}
-	if got, want := transport.MaxIdleConnsPerHost, 2048; got != want {
+	if got, want := transport.MaxIdleConnsPerHost, 64; got != want {
 		t.Fatalf("MaxIdleConnsPerHost = %d, want %d", got, want)
+	}
+	if got, want := transport.IdleConnTimeout, 60*time.Second; got != want {
+		t.Fatalf("IdleConnTimeout = %s, want %s", got, want)
 	}
 }
 

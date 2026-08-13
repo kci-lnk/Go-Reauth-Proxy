@@ -14,6 +14,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"go-reauth-proxy/pkg/diagnostics"
 	"go-reauth-proxy/pkg/grpc/pb"
 	operationallog "go-reauth-proxy/pkg/logger"
 	"go-reauth-proxy/pkg/models"
@@ -25,7 +26,11 @@ import (
 	"google.golang.org/protobuf/types/known/emptypb"
 )
 
-const defaultGCPercent int32 = 100
+const (
+	defaultGCPercent    int32 = 100
+	minMemoryLimitBytes       = 64 * 1024 * 1024
+	maxMemoryLimitBytes       = 4096 * 1024 * 1024
+)
 
 type GRPCServer struct {
 	pb.UnimplementedGatewayControlServiceServer
@@ -40,10 +45,12 @@ type GRPCServer struct {
 	admin *Server
 	token string
 
-	instanceID string
-	startedAt  time.Time
-	gcPercent  atomic.Int32
-	gcUpdateMu sync.Mutex
+	instanceID              string
+	startedAt               time.Time
+	gcPercent               atomic.Int32
+	memoryLimitBytes        atomic.Int64
+	initialMemoryLimitBytes int64
+	gcUpdateMu              sync.Mutex
 
 	shutdownMu   sync.RWMutex
 	shutdownOnce sync.Once
@@ -61,12 +68,14 @@ func (s *GRPCServer) SetShutdownRequest(shutdown func()) {
 
 func NewGRPCServer(adminServer *Server, token string) *GRPCServer {
 	server := &GRPCServer{
-		admin:      adminServer,
-		token:      token,
-		instanceID: newRuntimeInstanceID(),
-		startedAt:  time.Now(),
+		admin:                   adminServer,
+		token:                   token,
+		instanceID:              newRuntimeInstanceID(),
+		startedAt:               time.Now(),
+		initialMemoryLimitBytes: debug.SetMemoryLimit(-1),
 	}
 	server.gcPercent.Store(initialGCPercent())
+	server.memoryLimitBytes.Store(server.initialMemoryLimitBytes)
 	return server
 }
 
@@ -81,9 +90,11 @@ func initialGCPercent() int32 {
 	return defaultGCPercent
 }
 
-func (s *GRPCServer) applyGCPercent(gcPercent int32) {
+func (s *GRPCServer) applyMemoryConfig(gcPercent int32, memoryLimitBytes int64) {
 	debug.SetGCPercent(int(gcPercent))
+	debug.SetMemoryLimit(memoryLimitBytes)
 	s.gcPercent.Store(gcPercent)
+	s.memoryLimitBytes.Store(memoryLimitBytes)
 }
 
 func newRuntimeInstanceID() string {
@@ -126,17 +137,35 @@ func (s *GRPCServer) runtimeInfo() *pb.GatewayRuntimeInfo {
 	if uptime < 0 {
 		uptime = 0
 	}
+	managedMemoryBytes := memory.Sys
+	if memory.HeapReleased < managedMemoryBytes {
+		managedMemoryBytes -= memory.HeapReleased
+	} else {
+		managedMemoryBytes = 0
+	}
+	runtimeMetrics := diagnostics.RuntimeMetrics()
 	return &pb.GatewayRuntimeInfo{
-		InstanceId:      s.instanceID,
-		Pid:             int64(os.Getpid()),
-		StartedAtUnixMs: s.startedAt.UnixMilli(),
-		UptimeMs:        uint64(uptime / time.Millisecond),
-		GoVersion:       runtime.Version(),
-		Goroutines:      uint64(runtime.NumGoroutine()),
-		HeapAllocBytes:  memory.HeapAlloc,
-		HeapSysBytes:    memory.HeapSys,
-		RssBytes:        currentProcessRSSBytes(),
-		GcPercent:       s.gcPercent.Load(),
+		InstanceId:              s.instanceID,
+		Pid:                     int64(os.Getpid()),
+		StartedAtUnixMs:         s.startedAt.UnixMilli(),
+		UptimeMs:                uint64(uptime / time.Millisecond),
+		GoVersion:               runtime.Version(),
+		Goroutines:              uint64(runtime.NumGoroutine()),
+		HeapAllocBytes:          memory.HeapAlloc,
+		HeapSysBytes:            memory.HeapSys,
+		RssBytes:                currentProcessRSSBytes(),
+		GcPercent:               s.gcPercent.Load(),
+		MemoryLimitBytes:        s.memoryLimitBytes.Load(),
+		NumGc:                   memory.NumGC,
+		ManagedMemoryBytes:      managedMemoryBytes,
+		ActiveProxyRequests:     runtimeMetrics.ActiveProxyRequests,
+		ActiveClientConnections: runtimeMetrics.ActiveClientConnections,
+		IdleClientConnections:   runtimeMetrics.IdleClientConnections,
+		OpenUpstreamConnections: runtimeMetrics.OpenUpstreamConnections,
+		UdpSessions:             runtimeMetrics.UDPSessions,
+		UdpQueuedBytes:          runtimeMetrics.UDPQueuedBytes,
+		UdpQueuedBytesPeak:      runtimeMetrics.UDPQueuedBytesPeak,
+		UdpQueueDrops:           runtimeMetrics.UDPQueueDrops,
 	}
 }
 
@@ -151,14 +180,25 @@ func (s *GRPCServer) SetGatewayMemoryConfig(ctx context.Context, req *pb.Gateway
 	if gcPercent < 25 || gcPercent > 500 {
 		return nil, status.Error(codes.InvalidArgument, "gc_percent must be between 25 and 500")
 	}
+	memoryLimitBytes := req.GetMemoryLimitBytes()
+	memoryLimitProvided := memoryLimitBytes != 0
+	if !memoryLimitProvided {
+		// Keep additive protobuf compatibility with older control planes that
+		// only send gc_percent.
+		memoryLimitBytes = s.memoryLimitBytes.Load()
+	}
+	if memoryLimitProvided && (memoryLimitBytes < minMemoryLimitBytes || memoryLimitBytes > maxMemoryLimitBytes) {
+		return nil, status.Error(codes.InvalidArgument, "memory_limit_bytes must be between 64 MiB and 4096 MiB")
+	}
 	s.gcUpdateMu.Lock()
-	s.applyGCPercent(gcPercent)
+	s.applyMemoryConfig(gcPercent, memoryLimitBytes)
 	s.gcUpdateMu.Unlock()
 	operationallog.Diagnostic("INFO", "gateway_process", "memory_config_applied", "gc_percent_updated", map[string]any{
-		"gc_percent": gcPercent,
-		"result":     "success",
+		"gc_percent":         gcPercent,
+		"memory_limit_bytes": memoryLimitBytes,
+		"result":             "success",
 	})
-	return &pb.GatewayMemoryConfig{GcPercent: gcPercent}, nil
+	return &pb.GatewayMemoryConfig{GcPercent: gcPercent, MemoryLimitBytes: memoryLimitBytes}, nil
 }
 
 func (s *GRPCServer) ReclaimGatewayMemory(ctx context.Context, _ *emptypb.Empty) (*pb.GatewayRuntimeInfo, error) {
@@ -228,7 +268,7 @@ func (s *GRPCServer) ResetAllData(ctx context.Context, _ *emptypb.Empty) (*pb.Rp
 		return nil, status.Error(codes.Internal, err.Error())
 	}
 	s.gcUpdateMu.Lock()
-	s.applyGCPercent(defaultGCPercent)
+	s.applyMemoryConfig(defaultGCPercent, s.initialMemoryLimitBytes)
 	s.gcUpdateMu.Unlock()
 	return rpcOK(), nil
 }

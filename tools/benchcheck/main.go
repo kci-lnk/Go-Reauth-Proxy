@@ -37,7 +37,7 @@ type tolerances struct {
 func main() {
 	basePath := flag.String("base", "", "benchmark output for the PR base revision")
 	currentPath := flag.String("current", "", "benchmark output for the current revision")
-	latencyTolerance := flag.Float64("max-latency-regression", 0.20, "maximum allowed ns/op regression as a fraction")
+	latencyTolerance := flag.Float64("max-latency-regression", 0.05, "maximum allowed ns/op regression as a fraction")
 	bytesTolerance := flag.Float64("max-bytes-regression", 0.05, "maximum allowed B/op regression as a fraction")
 	allocsTolerance := flag.Float64("max-allocs-regression", 0.05, "maximum allowed allocs/op regression as a fraction")
 	allocsAbsoluteTolerance := flag.Float64("max-allocs-absolute-regression", 1, "maximum allowed allocs/op regression in reported allocation units")

@@ -7221,8 +7221,21 @@ type GatewayRuntimeInfo struct {
 	HeapSysBytes    uint64                 `protobuf:"varint,8,opt,name=heap_sys_bytes,json=heapSysBytes,proto3" json:"heap_sys_bytes,omitempty"`
 	RssBytes        uint64                 `protobuf:"varint,9,opt,name=rss_bytes,json=rssBytes,proto3" json:"rss_bytes,omitempty"`
 	GcPercent       int32                  `protobuf:"varint,10,opt,name=gc_percent,json=gcPercent,proto3" json:"gc_percent,omitempty"`
-	unknownFields   protoimpl.UnknownFields
-	sizeCache       protoimpl.SizeCache
+	// Effective Go runtime soft memory limit. This controls runtime-managed
+	// memory and is not a process RSS limit.
+	MemoryLimitBytes        int64  `protobuf:"varint,11,opt,name=memory_limit_bytes,json=memoryLimitBytes,proto3" json:"memory_limit_bytes,omitempty"`
+	NumGc                   uint32 `protobuf:"varint,12,opt,name=num_gc,json=numGc,proto3" json:"num_gc,omitempty"`
+	ManagedMemoryBytes      uint64 `protobuf:"varint,13,opt,name=managed_memory_bytes,json=managedMemoryBytes,proto3" json:"managed_memory_bytes,omitempty"`
+	ActiveProxyRequests     uint64 `protobuf:"varint,14,opt,name=active_proxy_requests,json=activeProxyRequests,proto3" json:"active_proxy_requests,omitempty"`
+	OpenUpstreamConnections uint64 `protobuf:"varint,15,opt,name=open_upstream_connections,json=openUpstreamConnections,proto3" json:"open_upstream_connections,omitempty"`
+	UdpSessions             uint64 `protobuf:"varint,16,opt,name=udp_sessions,json=udpSessions,proto3" json:"udp_sessions,omitempty"`
+	UdpQueuedBytes          uint64 `protobuf:"varint,17,opt,name=udp_queued_bytes,json=udpQueuedBytes,proto3" json:"udp_queued_bytes,omitempty"`
+	UdpQueuedBytesPeak      uint64 `protobuf:"varint,18,opt,name=udp_queued_bytes_peak,json=udpQueuedBytesPeak,proto3" json:"udp_queued_bytes_peak,omitempty"`
+	UdpQueueDrops           uint64 `protobuf:"varint,19,opt,name=udp_queue_drops,json=udpQueueDrops,proto3" json:"udp_queue_drops,omitempty"`
+	ActiveClientConnections uint64 `protobuf:"varint,20,opt,name=active_client_connections,json=activeClientConnections,proto3" json:"active_client_connections,omitempty"`
+	IdleClientConnections   uint64 `protobuf:"varint,21,opt,name=idle_client_connections,json=idleClientConnections,proto3" json:"idle_client_connections,omitempty"`
+	unknownFields           protoimpl.UnknownFields
+	sizeCache               protoimpl.SizeCache
 }
 
 func (x *GatewayRuntimeInfo) Reset() {
@@ -7325,13 +7338,91 @@ func (x *GatewayRuntimeInfo) GetGcPercent() int32 {
 	return 0
 }
 
+func (x *GatewayRuntimeInfo) GetMemoryLimitBytes() int64 {
+	if x != nil {
+		return x.MemoryLimitBytes
+	}
+	return 0
+}
+
+func (x *GatewayRuntimeInfo) GetNumGc() uint32 {
+	if x != nil {
+		return x.NumGc
+	}
+	return 0
+}
+
+func (x *GatewayRuntimeInfo) GetManagedMemoryBytes() uint64 {
+	if x != nil {
+		return x.ManagedMemoryBytes
+	}
+	return 0
+}
+
+func (x *GatewayRuntimeInfo) GetActiveProxyRequests() uint64 {
+	if x != nil {
+		return x.ActiveProxyRequests
+	}
+	return 0
+}
+
+func (x *GatewayRuntimeInfo) GetOpenUpstreamConnections() uint64 {
+	if x != nil {
+		return x.OpenUpstreamConnections
+	}
+	return 0
+}
+
+func (x *GatewayRuntimeInfo) GetUdpSessions() uint64 {
+	if x != nil {
+		return x.UdpSessions
+	}
+	return 0
+}
+
+func (x *GatewayRuntimeInfo) GetUdpQueuedBytes() uint64 {
+	if x != nil {
+		return x.UdpQueuedBytes
+	}
+	return 0
+}
+
+func (x *GatewayRuntimeInfo) GetUdpQueuedBytesPeak() uint64 {
+	if x != nil {
+		return x.UdpQueuedBytesPeak
+	}
+	return 0
+}
+
+func (x *GatewayRuntimeInfo) GetUdpQueueDrops() uint64 {
+	if x != nil {
+		return x.UdpQueueDrops
+	}
+	return 0
+}
+
+func (x *GatewayRuntimeInfo) GetActiveClientConnections() uint64 {
+	if x != nil {
+		return x.ActiveClientConnections
+	}
+	return 0
+}
+
+func (x *GatewayRuntimeInfo) GetIdleClientConnections() uint64 {
+	if x != nil {
+		return x.IdleClientConnections
+	}
+	return 0
+}
+
 // Go runtime garbage-collector target. Lower percentages collect more often
 // and trade CPU time for a smaller heap. The control plane accepts 25..500.
 type GatewayMemoryConfig struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	GcPercent     int32                  `protobuf:"varint,1,opt,name=gc_percent,json=gcPercent,proto3" json:"gc_percent,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state            protoimpl.MessageState `protogen:"open.v1"`
+	GcPercent        int32                  `protobuf:"varint,1,opt,name=gc_percent,json=gcPercent,proto3" json:"gc_percent,omitempty"`
+	MemoryLimitBytes int64                  `protobuf:"varint,2,opt,name=memory_limit_bytes,json=memoryLimitBytes,proto3" json:"memory_limit_bytes,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
 }
 
 func (x *GatewayMemoryConfig) Reset() {
@@ -7367,6 +7458,13 @@ func (*GatewayMemoryConfig) Descriptor() ([]byte, []int) {
 func (x *GatewayMemoryConfig) GetGcPercent() int32 {
 	if x != nil {
 		return x.GcPercent
+	}
+	return 0
+}
+
+func (x *GatewayMemoryConfig) GetMemoryLimitBytes() int64 {
+	if x != nil {
+		return x.MemoryLimitBytes
 	}
 	return 0
 }
@@ -10368,7 +10466,7 @@ const file_fnknock_v1_gateway_proto_rawDesc = "" +
 	"\x04arch\x18\x03 \x01(\tR\x04arch\x12.\n" +
 	"\x13control_api_version\x18\x04 \x01(\rR\x11controlApiVersion\x12\"\n" +
 	"\fcapabilities\x18\x05 \x03(\tR\fcapabilities\x12\x16\n" +
-	"\x06commit\x18\x06 \x01(\tR\x06commit\"\xdc\x02\n" +
+	"\x06commit\x18\x06 \x01(\tR\x06commit\"\xdf\x06\n" +
 	"\x12GatewayRuntimeInfo\x12\x1f\n" +
 	"\vinstance_id\x18\x01 \x01(\tR\n" +
 	"instanceId\x12\x10\n" +
@@ -10385,10 +10483,22 @@ const file_fnknock_v1_gateway_proto_rawDesc = "" +
 	"\trss_bytes\x18\t \x01(\x04R\brssBytes\x12\x1d\n" +
 	"\n" +
 	"gc_percent\x18\n" +
-	" \x01(\x05R\tgcPercent\"4\n" +
+	" \x01(\x05R\tgcPercent\x12,\n" +
+	"\x12memory_limit_bytes\x18\v \x01(\x03R\x10memoryLimitBytes\x12\x15\n" +
+	"\x06num_gc\x18\f \x01(\rR\x05numGc\x120\n" +
+	"\x14managed_memory_bytes\x18\r \x01(\x04R\x12managedMemoryBytes\x122\n" +
+	"\x15active_proxy_requests\x18\x0e \x01(\x04R\x13activeProxyRequests\x12:\n" +
+	"\x19open_upstream_connections\x18\x0f \x01(\x04R\x17openUpstreamConnections\x12!\n" +
+	"\fudp_sessions\x18\x10 \x01(\x04R\vudpSessions\x12(\n" +
+	"\x10udp_queued_bytes\x18\x11 \x01(\x04R\x0eudpQueuedBytes\x121\n" +
+	"\x15udp_queued_bytes_peak\x18\x12 \x01(\x04R\x12udpQueuedBytesPeak\x12&\n" +
+	"\x0fudp_queue_drops\x18\x13 \x01(\x04R\rudpQueueDrops\x12:\n" +
+	"\x19active_client_connections\x18\x14 \x01(\x04R\x17activeClientConnections\x126\n" +
+	"\x17idle_client_connections\x18\x15 \x01(\x04R\x15idleClientConnections\"b\n" +
 	"\x13GatewayMemoryConfig\x12\x1d\n" +
 	"\n" +
-	"gc_percent\x18\x01 \x01(\x05R\tgcPercent\"-\n" +
+	"gc_percent\x18\x01 \x01(\x05R\tgcPercent\x12,\n" +
+	"\x12memory_limit_bytes\x18\x02 \x01(\x03R\x10memoryLimitBytes\"-\n" +
 	"\x15GatewayListenerConfig\x12\x14\n" +
 	"\x05scope\x18\x01 \x01(\tR\x05scope\"/\n" +
 	"\x05Rules\x12&\n" +

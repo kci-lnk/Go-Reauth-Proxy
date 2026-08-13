@@ -34,9 +34,9 @@ const (
 	udpLargePacketBufferSize   = 64 * 1024
 	udpSessionQueuePacketLimit = 32
 	udpSessionQueueByteLimit   = 256 * 1024
-	udpListenerQueueByteLimit  = 64 * 1024 * 1024
+	udpListenerQueueByteLimit  = 16 * 1024 * 1024
 	udpSessionInitLimit        = 128
-	udpListenerSessionLimit    = 8192
+	udpListenerSessionLimit    = 2048
 )
 
 type udpSmallPacketBuffer [udpSmallPacketBufferSize]byte
@@ -892,6 +892,7 @@ func (s *udpListenerState) getOrCreateSession(packetConn net.PacketConn, clientA
 	session.status.Store(int64(entry.Status))
 	session.initReserved.Store(reserved)
 	s.sessions[session.id] = session
+	diagnostics.OpenUDPSession()
 	return session, false, true
 }
 
@@ -912,6 +913,7 @@ func (s *udpListenerState) removeSession(id string, session *udpSession) {
 	s.mu.Lock()
 	if current, ok := s.sessions[id]; ok && current == session {
 		delete(s.sessions, id)
+		diagnostics.CloseUDPSession()
 	}
 	s.mu.Unlock()
 }
@@ -926,6 +928,7 @@ func (s *udpListenerState) reserveQueuedBytes(bytes int) bool {
 			return false
 		}
 		if s.queuedBytes.CompareAndSwap(current, current+int64(bytes)) {
+			diagnostics.AddUDPQueuedBytes(int64(bytes))
 			return true
 		}
 	}
@@ -934,6 +937,7 @@ func (s *udpListenerState) reserveQueuedBytes(bytes int) bool {
 func (s *udpListenerState) releaseQueuedBytes(bytes int) {
 	if bytes > 0 {
 		s.queuedBytes.Add(-int64(bytes))
+		diagnostics.AddUDPQueuedBytes(-int64(bytes))
 	}
 }
 

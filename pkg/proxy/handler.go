@@ -1694,6 +1694,7 @@ func NewHandler(adminPort int, proxyPort int, cfgManager *config.Manager, initia
 	wafConfig := wafRuntime.Config()
 	initialHostRules := copyHostRules(initialCfg.HostRules)
 	for i := range initialHostRules {
+		initialHostRules[i].TargetPathMode = models.NormalizeHostTargetPathMode(initialHostRules[i].TargetPathMode)
 		initialHostRules[i].ProtocolMode = models.NormalizeHostProtocolMode(initialHostRules[i].ProtocolMode)
 	}
 	initialPolicies, initialCompiledPolicies, policyErr :=
@@ -3346,6 +3347,7 @@ func (h *Handler) normalizeHostRule(newRule models.HostRule) (models.HostRule, e
 	if err := h.checkSafeTarget(newRule.Target); err != nil {
 		return models.HostRule{}, fmt.Errorf("invalid target: %v", err)
 	}
+	newRule.TargetPathMode = models.NormalizeHostTargetPathMode(newRule.TargetPathMode)
 	newRule.ProtocolMode = models.NormalizeHostProtocolMode(newRule.ProtocolMode)
 	newRule.GroupID = strings.TrimSpace(newRule.GroupID)
 	newRule.GroupName = strings.TrimSpace(newRule.GroupName)
@@ -3417,6 +3419,7 @@ func applyBasicAuthInjection(out *http.Request, cfg models.BasicAuthConfig) {
 }
 
 func (h *Handler) AddHostRule(newRule models.HostRule) error {
+	targetPathModeMissing := strings.TrimSpace(newRule.TargetPathMode) == ""
 	protocolModeMissing := strings.TrimSpace(newRule.ProtocolMode) == ""
 	visibilityMissing := strings.TrimSpace(newRule.Visibility.Mode) == "" && len(newRule.Visibility.CIDRs) == 0
 	groupMetadataMissing := !newRule.GroupMetadataSet &&
@@ -3432,6 +3435,9 @@ func (h *Handler) AddHostRule(newRule models.HostRule) error {
 	nextRules := make([]models.HostRule, 0, len(h.HostRules)+1)
 	for _, rule := range h.HostRules {
 		if normalizeRequestHost(rule.Host) == newRule.Host && !updated {
+			if targetPathModeMissing {
+				newRule.TargetPathMode = models.NormalizeHostTargetPathMode(rule.TargetPathMode)
+			}
 			if protocolModeMissing {
 				newRule.ProtocolMode = models.NormalizeHostProtocolMode(rule.ProtocolMode)
 			}
@@ -3526,12 +3532,14 @@ func (h *Handler) SetHostRulesBundle(
 		return err
 	}
 	normalizedRules := make([]models.HostRule, 0, len(rules))
+	targetPathModeMissing := make([]bool, 0, len(rules))
 	protocolModeMissing := make([]bool, 0, len(rules))
 	visibilityMissing := make([]bool, 0, len(rules))
 	groupMetadataMissing := make([]bool, 0, len(rules))
 	indexByHost := make(map[string]int, len(rules))
 
 	for _, rule := range rules {
+		pathModeMissing := strings.TrimSpace(rule.TargetPathMode) == ""
 		modeMissing := strings.TrimSpace(rule.ProtocolMode) == ""
 		ruleVisibilityMissing := strings.TrimSpace(rule.Visibility.Mode) == "" && len(rule.Visibility.CIDRs) == 0
 		ruleGroupMetadataMissing := !rule.GroupMetadataSet &&
@@ -3544,6 +3552,7 @@ func (h *Handler) SetHostRulesBundle(
 
 		if idx, exists := indexByHost[normalizedRule.Host]; exists {
 			normalizedRules[idx] = normalizedRule
+			targetPathModeMissing[idx] = pathModeMissing
 			protocolModeMissing[idx] = modeMissing
 			visibilityMissing[idx] = ruleVisibilityMissing
 			groupMetadataMissing[idx] = ruleGroupMetadataMissing
@@ -3552,6 +3561,7 @@ func (h *Handler) SetHostRulesBundle(
 
 		indexByHost[normalizedRule.Host] = len(normalizedRules)
 		normalizedRules = append(normalizedRules, normalizedRule)
+		targetPathModeMissing = append(targetPathModeMissing, pathModeMissing)
 		protocolModeMissing = append(protocolModeMissing, modeMissing)
 		visibilityMissing = append(visibilityMissing, ruleVisibilityMissing)
 		groupMetadataMissing = append(groupMetadataMissing, ruleGroupMetadataMissing)
@@ -3568,6 +3578,7 @@ func (h *Handler) SetHostRulesBundle(
 		candidatePolicies[id] = policy
 		candidateSets[id] = decodedSets[id]
 	}
+	existingTargetPathModes := make(map[string]string, len(h.HostRules))
 	existingModes := make(map[string]string, len(h.HostRules))
 	existingVisibilities := make(map[string]models.HostRuleVisibility, len(h.HostRules))
 	existingAdvancedAuth := make(map[string]models.AdvancedAuthConfig, len(h.HostRules))
@@ -3580,6 +3591,7 @@ func (h *Handler) SetHostRulesBundle(
 		if _, exists := existingModes[host]; exists {
 			continue
 		}
+		existingTargetPathModes[host] = models.NormalizeHostTargetPathMode(existingRule.TargetPathMode)
 		existingModes[host] = models.NormalizeHostProtocolMode(existingRule.ProtocolMode)
 		visibility := existingRule.Visibility
 		visibility.CIDRs = append([]string(nil), existingRule.Visibility.CIDRs...)
@@ -3588,6 +3600,11 @@ func (h *Handler) SetHostRulesBundle(
 		existingGroups[host] = [2]string{existingRule.GroupID, existingRule.GroupName}
 	}
 	for i := range normalizedRules {
+		if targetPathModeMissing[i] {
+			if existingMode, exists := existingTargetPathModes[normalizedRules[i].Host]; exists {
+				normalizedRules[i].TargetPathMode = existingMode
+			}
+		}
 		if protocolModeMissing[i] {
 			if existingMode, exists := existingModes[normalizedRules[i].Host]; exists {
 				normalizedRules[i].ProtocolMode = existingMode
@@ -6633,7 +6650,7 @@ func (h *Handler) proxyToHostTarget(w http.ResponseWriter, r *http.Request, snap
 			copyUserAgentHeader(pr.Out, pr.In)
 			stripAdvancedAuthGrantCookie(pr.Out.Header)
 			pr.SetURL(transportTargetURL)
-			applyHostReverseProxyEntryPath(pr.Out.URL, transportTargetURL, pr.In.URL)
+			applyHostReverseProxyPath(pr.Out.URL, transportTargetURL, pr.In.URL, matchedRule.TargetPathMode)
 			applyBasicAuthInjection(pr.Out, matchedRule.BasicAuth)
 			applyUpstreamPrivateIPv4HintHeader(pr.Out, transportTargetURL)
 			applyPreserveHostPolicy(pr.Out, pr.In, transportTargetURL, preserveHost)
@@ -6650,7 +6667,7 @@ func (h *Handler) proxyToHostTarget(w http.ResponseWriter, r *http.Request, snap
 					if err == nil {
 						ref.Scheme = transportTargetURL.Scheme
 						ref.Host = transportTargetURL.Host
-						applyHostReverseProxyEntryPath(ref, transportTargetURL, ref)
+						applyHostReverseProxyPath(ref, transportTargetURL, ref, matchedRule.TargetPathMode)
 						pr.Out.Header.Set("Referer", ref.String())
 					}
 				}
@@ -6728,17 +6745,17 @@ func (h *Handler) proxyToHostTarget(w http.ResponseWriter, r *http.Request, snap
 	}
 
 	if fnosConnectContext(r) == nil && h.maybeProxyFnosPortIconHijackWebSocket(w, r, fnosPortIconHijackWebSocketOptions{
-		targetURL:             transportTargetURL,
-		hostRules:             snapshot.hostRules,
-		unmatchedRoute:        snapshot.unmatchedRoute,
-		clientIP:              clientIP,
-		omitForwardedHeaders:  omitForwardedHeaders,
-		preserveHost:          preserveHost,
-		basicAuth:             matchedRule.BasicAuth,
-		rewriteOriginReferer:  !preserveHost,
-		stripPath:             false,
-		pathPrefix:            "",
-		hostTargetPathIsEntry: true,
+		targetURL:            transportTargetURL,
+		hostRules:            snapshot.hostRules,
+		unmatchedRoute:       snapshot.unmatchedRoute,
+		clientIP:             clientIP,
+		omitForwardedHeaders: omitForwardedHeaders,
+		preserveHost:         preserveHost,
+		basicAuth:            matchedRule.BasicAuth,
+		rewriteOriginReferer: !preserveHost,
+		stripPath:            false,
+		pathPrefix:           "",
+		hostTargetPathMode:   matchedRule.TargetPathMode,
 	}) {
 		return
 	}

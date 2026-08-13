@@ -31,18 +31,18 @@ type fnosPortIconHijackPublicEndpoint struct {
 }
 
 type fnosPortIconHijackWebSocketOptions struct {
-	targetURL             *url.URL
-	hostRules             []models.HostRule
-	unmatchedRoute        models.GatewayUnmatchedRouteConfig
-	clientIP              string
-	omitForwardedHeaders  bool
-	preserveHost          bool
-	basicAuth             models.BasicAuthConfig
-	rewriteOriginReferer  bool
-	stripPath             bool
-	pathPrefix            string
-	hostTargetPathIsEntry bool
-	webSocketMaxLifetime  time.Duration
+	targetURL            *url.URL
+	hostRules            []models.HostRule
+	unmatchedRoute       models.GatewayUnmatchedRouteConfig
+	clientIP             string
+	omitForwardedHeaders bool
+	preserveHost         bool
+	basicAuth            models.BasicAuthConfig
+	rewriteOriginReferer bool
+	stripPath            bool
+	pathPrefix           string
+	hostTargetPathMode   string
+	webSocketMaxLifetime time.Duration
 }
 
 func (h *Handler) maybeProxyFnosPortIconHijackWebSocket(w http.ResponseWriter, r *http.Request, options fnosPortIconHijackWebSocketOptions) bool {
@@ -83,7 +83,7 @@ func (h *Handler) proxyFnosPortIconHijackWebSocket(w http.ResponseWriter, r *htt
 		r.URL,
 		options.stripPath,
 		options.pathPrefix,
-		options.hostTargetPathIsEntry,
+		options.hostTargetPathMode,
 	)
 	requestHeader := buildFnosPortIconHijackWebSocketHeader(r, options, upstreamURL)
 	dialer := websocket.Dialer{
@@ -255,7 +255,7 @@ func buildFnosPortIconHijackWebSocketURL(
 	incomingURL *url.URL,
 	stripPath bool,
 	pathPrefix string,
-	hostTargetPathIsEntry bool,
+	hostTargetPathMode string,
 ) *url.URL {
 	upstreamURL := *targetURL
 	switch strings.ToLower(upstreamURL.Scheme) {
@@ -272,12 +272,12 @@ func buildFnosPortIconHijackWebSocketURL(
 	} else {
 		upstreamURL.RawQuery = ""
 	}
-	if hostTargetPathIsEntry {
-		upstreamURL.Path = buildHostReverseProxyEntryPath(targetURL.Path, upstreamPath)
+	if hostTargetPathMode != "" {
+		applyHostReverseProxyPath(&upstreamURL, targetURL, incomingURL, hostTargetPathMode)
 	} else {
 		upstreamURL.Path = buildReverseProxyRoutePath(targetURL.Path, upstreamPath, stripPath, pathPrefix)
+		upstreamURL.RawPath = ""
 	}
-	upstreamURL.RawPath = ""
 	upstreamURL.Fragment = ""
 	return &upstreamURL
 }
@@ -316,8 +316,8 @@ func buildFnosPortIconHijackWebSocketHeader(r *http.Request, options fnosPortIco
 				ref.Scheme = options.targetURL.Scheme
 				ref.Host = options.targetURL.Host
 				ref.Path = path.Clean(ref.Path)
-				if options.hostTargetPathIsEntry {
-					applyHostReverseProxyEntryPath(ref, options.targetURL, ref)
+				if options.hostTargetPathMode != "" {
+					applyHostReverseProxyPath(ref, options.targetURL, ref, options.hostTargetPathMode)
 				} else {
 					applyReverseProxyRoutePath(ref, reverseProxyRoutePathOptions{
 						targetURL:  options.targetURL,

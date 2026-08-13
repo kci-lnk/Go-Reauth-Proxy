@@ -28,18 +28,18 @@ type ControlApiVersion int32
 
 const (
 	ControlApiVersion_CONTROL_API_VERSION_UNSPECIFIED ControlApiVersion = 0
-	ControlApiVersion_CONTROL_API_VERSION_CURRENT     ControlApiVersion = 11
+	ControlApiVersion_CONTROL_API_VERSION_CURRENT     ControlApiVersion = 12
 )
 
 // Enum value maps for ControlApiVersion.
 var (
 	ControlApiVersion_name = map[int32]string{
 		0:  "CONTROL_API_VERSION_UNSPECIFIED",
-		11: "CONTROL_API_VERSION_CURRENT",
+		12: "CONTROL_API_VERSION_CURRENT",
 	}
 	ControlApiVersion_value = map[string]int32{
 		"CONTROL_API_VERSION_UNSPECIFIED": 0,
-		"CONTROL_API_VERSION_CURRENT":     11,
+		"CONTROL_API_VERSION_CURRENT":     12,
 	}
 )
 
@@ -1131,6 +1131,7 @@ type HostRule struct {
 	AdvancedAuth    *AdvancedAuthConfig    `protobuf:"bytes,16,opt,name=advanced_auth,json=advancedAuth,proto3" json:"advanced_auth,omitempty"`
 	GroupId         *string                `protobuf:"bytes,17,opt,name=group_id,json=groupId,proto3,oneof" json:"group_id,omitempty"`
 	GroupName       *string                `protobuf:"bytes,18,opt,name=group_name,json=groupName,proto3,oneof" json:"group_name,omitempty"`
+	TargetPathMode  string                 `protobuf:"bytes,19,opt,name=target_path_mode,json=targetPathMode,proto3" json:"target_path_mode,omitempty"`
 	unknownFields   protoimpl.UnknownFields
 	sizeCache       protoimpl.SizeCache
 }
@@ -1287,6 +1288,13 @@ func (x *HostRule) GetGroupId() string {
 func (x *HostRule) GetGroupName() string {
 	if x != nil && x.GroupName != nil {
 		return *x.GroupName
+	}
+	return ""
+}
+
+func (x *HostRule) GetTargetPathMode() string {
+	if x != nil {
+		return x.TargetPathMode
 	}
 	return ""
 }
@@ -9720,7 +9728,7 @@ const file_fnknock_v1_gateway_proto_rawDesc = "" +
 	"\n" +
 	"strip_path\x18\x04 \x01(\bR\tstripPath\x12!\n" +
 	"\frewrite_html\x18\x05 \x01(\bR\vrewriteHtml\x12\"\n" +
-	"\ruse_root_mode\x18\x06 \x01(\bR\vuseRootMode\"\xf1\x05\n" +
+	"\ruse_root_mode\x18\x06 \x01(\bR\vuseRootMode\"\x9b\x06\n" +
 	"\bHostRule\x12\x12\n" +
 	"\x04host\x18\x01 \x01(\tR\x04host\x12\x16\n" +
 	"\x06target\x18\x02 \x01(\tR\x06target\x12\x19\n" +
@@ -9746,7 +9754,8 @@ const file_fnknock_v1_gateway_proto_rawDesc = "" +
 	"\radvanced_auth\x18\x10 \x01(\v2\x1e.fnknock.v1.AdvancedAuthConfigR\fadvancedAuth\x12\x1e\n" +
 	"\bgroup_id\x18\x11 \x01(\tH\x00R\agroupId\x88\x01\x01\x12\"\n" +
 	"\n" +
-	"group_name\x18\x12 \x01(\tH\x01R\tgroupName\x88\x01\x01B\v\n" +
+	"group_name\x18\x12 \x01(\tH\x01R\tgroupName\x88\x01\x01\x12(\n" +
+	"\x10target_path_mode\x18\x13 \x01(\tR\x0etargetPathModeB\v\n" +
 	"\t_group_idB\r\n" +
 	"\v_group_name\"|\n" +
 	"\n" +
@@ -10568,7 +10577,7 @@ const file_fnknock_v1_gateway_proto_rawDesc = "" +
 	"last_error\x18\t \x01(\tR\tlastError*Y\n" +
 	"\x11ControlApiVersion\x12#\n" +
 	"\x1fCONTROL_API_VERSION_UNSPECIFIED\x10\x00\x12\x1f\n" +
-	"\x1bCONTROL_API_VERSION_CURRENT\x10\v*\x9a\x01\n" +
+	"\x1bCONTROL_API_VERSION_CURRENT\x10\f*\x9a\x01\n" +
 	"\fHttpAuthMode\x12\x1e\n" +
 	"\x1aHTTP_AUTH_MODE_UNSPECIFIED\x10\x00\x12!\n" +
 	"\x1dHTTP_AUTH_MODE_PREFLIGHT_ONLY\x10\x01\x12\x1e\n" +

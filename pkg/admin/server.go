@@ -294,6 +294,7 @@ func (s *Server) handleAddHostRule(w http.ResponseWriter, r *http.Request) {
 	type hostRuleRequest struct {
 		Host            string                       `json:"host"`
 		Target          string                       `json:"target"`
+		TargetPathMode  string                       `json:"target_path_mode"`
 		ProtocolMode    string                       `json:"protocol_mode"`
 		GroupID         *string                      `json:"group_id"`
 		GroupName       *string                      `json:"group_name"`
@@ -341,9 +342,10 @@ func (s *Server) handleAddHostRule(w http.ResponseWriter, r *http.Request) {
 		}
 
 		rules = append(rules, models.HostRule{
-			Host:         req.Host,
-			Target:       req.Target,
-			ProtocolMode: req.ProtocolMode,
+			Host:           req.Host,
+			Target:         req.Target,
+			TargetPathMode: req.TargetPathMode,
+			ProtocolMode:   req.ProtocolMode,
 			GroupID: func() string {
 				if req.GroupID == nil {
 					return ""

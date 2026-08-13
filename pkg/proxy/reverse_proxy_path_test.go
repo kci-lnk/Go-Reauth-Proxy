@@ -4,6 +4,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"testing"
 
 	"go-reauth-proxy/pkg/models"
@@ -141,6 +142,114 @@ func TestBuildHostReverseProxyEntryPath(t *testing.T) {
 	}
 }
 
+func TestBuildHostReverseProxyPathModes(t *testing.T) {
+	tests := []struct {
+		name        string
+		targetPath  string
+		requestPath string
+		mode        string
+		want        string
+	}{
+		{
+			name:        "entry mode preserves a non-root request",
+			targetPath:  "/webdav",
+			requestPath: "/floccus/bookmarks.xbel",
+			mode:        models.HostTargetPathModeEntry,
+			want:        "/floccus/bookmarks.xbel",
+		},
+		{
+			name:        "missing mode remains backward compatible",
+			targetPath:  "/webdav",
+			requestPath: "/floccus/bookmarks.xbel",
+			want:        "/floccus/bookmarks.xbel",
+		},
+		{
+			name:        "prefix mode mounts a non-root request",
+			targetPath:  "/webdav",
+			requestPath: "/floccus/bookmarks.xbel",
+			mode:        models.HostTargetPathModePrefix,
+			want:        "/webdav/floccus/bookmarks.xbel",
+		},
+		{
+			name:        "prefix mode preserves the target trailing slash",
+			targetPath:  "/webdav/",
+			requestPath: "/",
+			mode:        models.HostTargetPathModePrefix,
+			want:        "/webdav/",
+		},
+		{
+			name:        "prefix mode without a target path is unchanged",
+			requestPath: "/floccus/bookmarks.xbel",
+			mode:        models.HostTargetPathModePrefix,
+			want:        "/floccus/bookmarks.xbel",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := buildHostReverseProxyPath(tt.targetPath, tt.requestPath, tt.mode)
+			if got != tt.want {
+				t.Fatalf("buildHostReverseProxyPath() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestApplyHostReverseProxyPathPreservesEscapedResourcePaths(t *testing.T) {
+	targetURL, err := url.Parse("http://127.0.0.1:8080/webdav%2Froot")
+	if err != nil {
+		t.Fatalf("parse target URL: %v", err)
+	}
+	incomingURL, err := url.Parse("/folder%2Fname/%E6%B5%8B%E8%AF%95%20file.txt")
+	if err != nil {
+		t.Fatalf("parse incoming URL: %v", err)
+	}
+	out := &url.URL{}
+
+	applyHostReverseProxyPath(
+		out,
+		targetURL,
+		incomingURL,
+		models.HostTargetPathModePrefix,
+	)
+
+	if want := "/webdav/root/folder/name/测试 file.txt"; out.Path != want {
+		t.Fatalf("Path = %q, want %q", out.Path, want)
+	}
+	if want := "/webdav%2Froot/folder%2Fname/%E6%B5%8B%E8%AF%95%20file.txt"; out.RawPath != want {
+		t.Fatalf("RawPath = %q, want %q", out.RawPath, want)
+	}
+	if want := "/webdav%2Froot/folder%2Fname/%E6%B5%8B%E8%AF%95%20file.txt"; out.RequestURI() != want {
+		t.Fatalf("RequestURI() = %q, want %q", out.RequestURI(), want)
+	}
+
+	entryOut := &url.URL{}
+	applyHostReverseProxyPath(
+		entryOut,
+		targetURL,
+		incomingURL,
+		models.HostTargetPathModeEntry,
+	)
+	if want := "/folder%2Fname/%E6%B5%8B%E8%AF%95%20file.txt"; entryOut.RequestURI() != want {
+		t.Fatalf("entry RequestURI() = %q, want %q", entryOut.RequestURI(), want)
+	}
+
+	targetWithEscapedTrailingSlash, err := url.Parse("http://127.0.0.1:8080/webdav%2F")
+	if err != nil {
+		t.Fatalf("parse target URL with escaped trailing slash: %v", err)
+	}
+	trailingSlashOut := &url.URL{}
+	applyHostReverseProxyPath(
+		trailingSlashOut,
+		targetWithEscapedTrailingSlash,
+		&url.URL{Path: "/file.txt"},
+		models.HostTargetPathModePrefix,
+	)
+	if want := "/webdav%2Ffile.txt"; trailingSlashOut.RequestURI() != want {
+		t.Fatalf("escaped trailing slash RequestURI() = %q, want %q", trailingSlashOut.RequestURI(), want)
+	}
+}
+
 func TestHostRuleTargetPathActsAsEntryPath(t *testing.T) {
 	type upstreamRequest struct {
 		path    string
@@ -211,6 +320,111 @@ func TestHostRuleTargetPathActsAsEntryPath(t *testing.T) {
 			}
 			if got.query != tt.wantQuery {
 				t.Fatalf("upstream query = %q, want %q", got.query, tt.wantQuery)
+			}
+			if got.referer != tt.wantReferer {
+				t.Fatalf("upstream referer = %q, want %q", got.referer, tt.wantReferer)
+			}
+		})
+	}
+}
+
+func TestHostRuleTargetPathPrefixMountsWebDAVRequests(t *testing.T) {
+	type upstreamRequest struct {
+		method     string
+		path       string
+		query      string
+		requestURI string
+		referer    string
+	}
+	seen := make(chan upstreamRequest, 4)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seen <- upstreamRequest{
+			method:     r.Method,
+			path:       r.URL.Path,
+			query:      r.URL.RawQuery,
+			requestURI: r.RequestURI,
+			referer:    r.Header.Get("Referer"),
+		}
+		_, _ = io.WriteString(w, "ok")
+	}))
+	defer upstream.Close()
+
+	handler := newHostLocationTestHandler(models.HostRule{
+		Host:           "dav.example.com",
+		Target:         upstream.URL + "/webdav",
+		TargetPathMode: models.HostTargetPathModePrefix,
+	})
+
+	tests := []struct {
+		name        string
+		method      string
+		requestURL  string
+		referer     string
+		wantPath    string
+		wantQuery   string
+		wantURI     string
+		wantReferer string
+	}{
+		{
+			name:       "WebDAV root is mounted below target path",
+			method:     "PROPFIND",
+			requestURL: "http://dav.example.com/",
+			wantPath:   "/webdav/",
+			wantURI:    "/webdav/",
+		},
+		{
+			name:       "WebDAV collection is mounted below target path",
+			method:     "MKCOL",
+			requestURL: "http://dav.example.com/floccus",
+			wantPath:   "/webdav/floccus",
+			wantURI:    "/webdav/floccus",
+		},
+		{
+			name:        "WebDAV resource preserves method query and rewritten referer",
+			method:      http.MethodPut,
+			requestURL:  "http://dav.example.com/floccus/bookmarks.xbel.lock?rev=2",
+			referer:     "http://dav.example.com/floccus/",
+			wantPath:    "/webdav/floccus/bookmarks.xbel.lock",
+			wantQuery:   "rev=2",
+			wantURI:     "/webdav/floccus/bookmarks.xbel.lock?rev=2",
+			wantReferer: upstream.URL + "/webdav/floccus/",
+		},
+		{
+			name:        "encoded WebDAV resource keeps its escaped slash",
+			method:      http.MethodGet,
+			requestURL:  "http://dav.example.com/floccus/folder%2Fname.txt",
+			referer:     "http://dav.example.com/floccus/folder%2Fname.txt",
+			wantPath:    "/webdav/floccus/folder/name.txt",
+			wantURI:     "/webdav/floccus/folder%2Fname.txt",
+			wantReferer: upstream.URL + "/webdav/floccus/folder%2Fname.txt",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest(tt.method, tt.requestURL, nil)
+			if tt.referer != "" {
+				req.Header.Set("Referer", tt.referer)
+			}
+			rec := httptest.NewRecorder()
+
+			handler.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d, want 200; body = %s", rec.Code, rec.Body.String())
+			}
+			got := <-seen
+			if got.method != tt.method {
+				t.Fatalf("upstream method = %q, want %q", got.method, tt.method)
+			}
+			if got.path != tt.wantPath {
+				t.Fatalf("upstream path = %q, want %q", got.path, tt.wantPath)
+			}
+			if got.query != tt.wantQuery {
+				t.Fatalf("upstream query = %q, want %q", got.query, tt.wantQuery)
+			}
+			if got.requestURI != tt.wantURI {
+				t.Fatalf("upstream RequestURI = %q, want %q", got.requestURI, tt.wantURI)
 			}
 			if got.referer != tt.wantReferer {
 				t.Fatalf("upstream referer = %q, want %q", got.referer, tt.wantReferer)

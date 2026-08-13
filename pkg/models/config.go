@@ -12,6 +12,11 @@ const (
 )
 
 const (
+	HostTargetPathModeEntry  = "entry"
+	HostTargetPathModePrefix = "prefix"
+)
+
+const (
 	HostVisibilityModeInherit  = "inherit"
 	HostVisibilityModeCustom   = "custom"
 	HostVisibilityModeDisabled = "disabled"
@@ -64,6 +69,18 @@ func NormalizeHostProtocolMode(value string) string {
 	}
 }
 
+// NormalizeHostTargetPathMode preserves the historical Host target behavior
+// for missing and unknown values. Prefix mode must always be selected
+// explicitly because it changes every non-root upstream request path.
+func NormalizeHostTargetPathMode(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case HostTargetPathModePrefix:
+		return HostTargetPathModePrefix
+	default:
+		return HostTargetPathModeEntry
+	}
+}
+
 type Rule struct {
 	Path        string `json:"path" example:"/api"`                  // Path prefix to match (e.g., "/api")
 	Target      string `json:"target" example:"ws://localhost:8080"` // Target URL (e.g., "http://localhost:7996" or "ws://localhost:7996")
@@ -75,7 +92,8 @@ type Rule struct {
 
 type HostRule struct {
 	Host             string                `json:"host" example:"redis.example.com"`
-	Target           string                `json:"target" example:"http://127.0.0.1:5173"` // An optional URL path is the upstream entry path for public /; non-root request paths pass through unchanged.
+	Target           string                `json:"target" example:"http://127.0.0.1:5173"`
+	TargetPathMode   string                `json:"target_path_mode" example:"entry"` // entry uses the target path only for public /; prefix mounts every request below it.
 	ProtocolMode     string                `json:"protocol_mode,omitempty" example:"auto"`
 	GroupID          string                `json:"group_id,omitempty"`
 	GroupName        string                `json:"group_name,omitempty"`

@@ -317,6 +317,7 @@ func hostRulesBundleToProto(
 		item := &pb.HostRule{
 			Host:            rule.Host,
 			Target:          rule.Target,
+			TargetPathMode:  rule.TargetPathMode,
 			ProtocolMode:    rule.ProtocolMode,
 			UseAuth:         rule.UseAuth,
 			AccessMode:      rule.AccessMode,
@@ -358,6 +359,7 @@ func protoToHostRules(req *pb.HostRules) []models.HostRule {
 		rules = append(rules, models.HostRule{
 			Host:             rule.GetHost(),
 			Target:           rule.GetTarget(),
+			TargetPathMode:   rule.GetTargetPathMode(),
 			ProtocolMode:     rule.GetProtocolMode(),
 			GroupID:          rule.GetGroupId(),
 			GroupName:        rule.GetGroupName(),

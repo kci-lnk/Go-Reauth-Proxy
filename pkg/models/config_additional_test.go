@@ -241,6 +241,22 @@ func TestNormalizeHostProtocolMode(t *testing.T) {
 	}
 }
 
+func TestNormalizeHostTargetPathMode(t *testing.T) {
+	tests := map[string]string{
+		"":         HostTargetPathModeEntry,
+		"entry":    HostTargetPathModeEntry,
+		" ENTRY ":  HostTargetPathModeEntry,
+		"prefix":   HostTargetPathModePrefix,
+		" PREFIX ": HostTargetPathModePrefix,
+		"unknown":  HostTargetPathModeEntry,
+	}
+	for input, want := range tests {
+		if got := NormalizeHostTargetPathMode(input); got != want {
+			t.Fatalf("NormalizeHostTargetPathMode(%q) = %q, want %q", input, got, want)
+		}
+	}
+}
+
 func TestHostRuleJSONIncludesBasicAuthWhenConfigured(t *testing.T) {
 	payload, err := json.Marshal(HostRule{
 		Host:      "app.example.com",

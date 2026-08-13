@@ -230,7 +230,13 @@ func TestBuildFnosPortIconHijackWebSocketURLUsesHostEntryPath(t *testing.T) {
 		t.Fatalf("parse incoming URL: %v", err)
 	}
 
-	got := buildFnosPortIconHijackWebSocketURL(targetURL, incomingURL, false, "", true)
+	got := buildFnosPortIconHijackWebSocketURL(
+		targetURL,
+		incomingURL,
+		false,
+		"",
+		models.HostTargetPathModeEntry,
+	)
 
 	if got.Scheme != "ws" {
 		t.Fatalf("upstream scheme = %q, want ws", got.Scheme)
@@ -240,6 +246,55 @@ func TestBuildFnosPortIconHijackWebSocketURLUsesHostEntryPath(t *testing.T) {
 	}
 	if got.RawQuery != "type=timer" {
 		t.Fatalf("upstream query = %q, want type=timer", got.RawQuery)
+	}
+}
+
+func TestBuildFnosPortIconHijackWebSocketURLUsesHostPrefixPath(t *testing.T) {
+	targetURL, err := url.Parse("http://127.0.0.1:19122/webdav")
+	if err != nil {
+		t.Fatalf("parse target URL: %v", err)
+	}
+	incomingURL, err := url.Parse("https://dav.example.com/websocket?type=timer")
+	if err != nil {
+		t.Fatalf("parse incoming URL: %v", err)
+	}
+
+	got := buildFnosPortIconHijackWebSocketURL(
+		targetURL,
+		incomingURL,
+		false,
+		"",
+		models.HostTargetPathModePrefix,
+	)
+
+	if got.Path != "/webdav/websocket" {
+		t.Fatalf("upstream path = %q, want /webdav/websocket", got.Path)
+	}
+}
+
+func TestBuildFnosPortIconHijackWebSocketURLPreservesHostPrefixRawPath(t *testing.T) {
+	targetURL, err := url.Parse("http://127.0.0.1:19122/webdav")
+	if err != nil {
+		t.Fatalf("parse target URL: %v", err)
+	}
+	incomingURL, err := url.Parse("https://dav.example.com/folder%2Fname?type=timer")
+	if err != nil {
+		t.Fatalf("parse incoming URL: %v", err)
+	}
+
+	got := buildFnosPortIconHijackWebSocketURL(
+		targetURL,
+		incomingURL,
+		false,
+		"",
+		models.HostTargetPathModePrefix,
+	)
+
+	if got.Path != "/webdav/folder/name" {
+		t.Fatalf("upstream path = %q, want /webdav/folder/name", got.Path)
+	}
+	if got.RawPath != "/webdav/folder%2Fname" {
+		t.Fatalf("upstream raw path = %q, want /webdav/folder%%2Fname", got.RawPath)
 	}
 }
 

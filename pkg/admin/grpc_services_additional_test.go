@@ -50,11 +50,12 @@ func TestGatewayControlHostRulesRoundTrip(t *testing.T) {
 	server := newGatewayControlTestServer(t, "secret")
 	ctx := authTestContext()
 	_, err := server.SetHostRules(ctx, &pb.HostRules{Items: []*pb.HostRule{{
-		Host:         "App.Example.Test",
-		Target:       "http://127.0.0.1:8080",
-		ProtocolMode: "http1",
-		UseAuth:      true,
-		Disabled:     true,
+		Host:           "App.Example.Test",
+		Target:         "http://127.0.0.1:8080/base",
+		TargetPathMode: models.HostTargetPathModePrefix,
+		ProtocolMode:   "http1",
+		UseAuth:        true,
+		Disabled:       true,
 		Availability: &pb.HostRuleAvailability{
 			Enabled:   true,
 			StartTime: "22:00",
@@ -72,6 +73,7 @@ func TestGatewayControlHostRulesRoundTrip(t *testing.T) {
 		t.Fatalf("host rules = %#v", got.GetItems())
 	}
 	if !got.GetItems()[0].GetDisabled() ||
+		got.GetItems()[0].GetTargetPathMode() != models.HostTargetPathModePrefix ||
 		got.GetItems()[0].GetProtocolMode() != "http1" ||
 		got.GetItems()[0].GetAvailability().GetStartTime() != "22:00" ||
 		got.GetItems()[0].GetAvailability().GetEndTime() != "06:00" {
@@ -80,7 +82,7 @@ func TestGatewayControlHostRulesRoundTrip(t *testing.T) {
 
 	if _, err := server.SetHostRules(ctx, &pb.HostRules{Items: []*pb.HostRule{{
 		Host:    "app.example.test",
-		Target:  "http://127.0.0.1:8080",
+		Target:  "http://127.0.0.1:8080/base",
 		UseAuth: true,
 	}}}); err != nil {
 		t.Fatalf("legacy SetHostRules() returned error: %v", err)
@@ -91,6 +93,9 @@ func TestGatewayControlHostRulesRoundTrip(t *testing.T) {
 	}
 	if mode := got.GetItems()[0].GetProtocolMode(); mode != "http1" {
 		t.Fatalf("legacy update reset protocol mode to %q, want http1", mode)
+	}
+	if mode := got.GetItems()[0].GetTargetPathMode(); mode != models.HostTargetPathModePrefix {
+		t.Fatalf("legacy update reset target path mode to %q, want prefix", mode)
 	}
 }
 

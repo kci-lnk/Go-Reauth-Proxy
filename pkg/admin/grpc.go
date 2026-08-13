@@ -7,7 +7,11 @@ import (
 	"fmt"
 	"os"
 	"runtime"
+	"runtime/debug"
+	"strconv"
+	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"go-reauth-proxy/pkg/grpc/pb"
@@ -20,6 +24,8 @@ import (
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/emptypb"
 )
+
+const defaultGCPercent int32 = 100
 
 type GRPCServer struct {
 	pb.UnimplementedGatewayControlServiceServer
@@ -36,6 +42,8 @@ type GRPCServer struct {
 
 	instanceID string
 	startedAt  time.Time
+	gcPercent  atomic.Int32
+	gcUpdateMu sync.Mutex
 
 	shutdownMu   sync.RWMutex
 	shutdownOnce sync.Once
@@ -52,12 +60,30 @@ func (s *GRPCServer) SetShutdownRequest(shutdown func()) {
 }
 
 func NewGRPCServer(adminServer *Server, token string) *GRPCServer {
-	return &GRPCServer{
+	server := &GRPCServer{
 		admin:      adminServer,
 		token:      token,
 		instanceID: newRuntimeInstanceID(),
 		startedAt:  time.Now(),
 	}
+	server.gcPercent.Store(initialGCPercent())
+	return server
+}
+
+func initialGCPercent() int32 {
+	raw := strings.TrimSpace(os.Getenv("GOGC"))
+	if strings.EqualFold(raw, "off") {
+		return -1
+	}
+	if value, err := strconv.ParseInt(raw, 10, 32); err == nil {
+		return int32(value)
+	}
+	return defaultGCPercent
+}
+
+func (s *GRPCServer) applyGCPercent(gcPercent int32) {
+	debug.SetGCPercent(int(gcPercent))
+	s.gcPercent.Store(gcPercent)
 }
 
 func newRuntimeInstanceID() string {
@@ -90,6 +116,10 @@ func (s *GRPCServer) GetRuntimeInfo(ctx context.Context, _ *emptypb.Empty) (*pb.
 	if err := s.checkToken(ctx); err != nil {
 		return nil, err
 	}
+	return s.runtimeInfo(), nil
+}
+
+func (s *GRPCServer) runtimeInfo() *pb.GatewayRuntimeInfo {
 	var memory runtime.MemStats
 	runtime.ReadMemStats(&memory)
 	uptime := time.Since(s.startedAt)
@@ -106,7 +136,46 @@ func (s *GRPCServer) GetRuntimeInfo(ctx context.Context, _ *emptypb.Empty) (*pb.
 		HeapAllocBytes:  memory.HeapAlloc,
 		HeapSysBytes:    memory.HeapSys,
 		RssBytes:        currentProcessRSSBytes(),
-	}, nil
+		GcPercent:       s.gcPercent.Load(),
+	}
+}
+
+func (s *GRPCServer) SetGatewayMemoryConfig(ctx context.Context, req *pb.GatewayMemoryConfig) (*pb.GatewayMemoryConfig, error) {
+	if err := s.checkToken(ctx); err != nil {
+		return nil, err
+	}
+	if req == nil {
+		return nil, status.Error(codes.InvalidArgument, "request is required")
+	}
+	gcPercent := req.GetGcPercent()
+	if gcPercent < 25 || gcPercent > 500 {
+		return nil, status.Error(codes.InvalidArgument, "gc_percent must be between 25 and 500")
+	}
+	s.gcUpdateMu.Lock()
+	s.applyGCPercent(gcPercent)
+	s.gcUpdateMu.Unlock()
+	operationallog.Diagnostic("INFO", "gateway_process", "memory_config_applied", "gc_percent_updated", map[string]any{
+		"gc_percent": gcPercent,
+		"result":     "success",
+	})
+	return &pb.GatewayMemoryConfig{GcPercent: gcPercent}, nil
+}
+
+func (s *GRPCServer) ReclaimGatewayMemory(ctx context.Context, _ *emptypb.Empty) (*pb.GatewayRuntimeInfo, error) {
+	if err := s.checkToken(ctx); err != nil {
+		return nil, err
+	}
+	s.gcUpdateMu.Lock()
+	debug.FreeOSMemory()
+	info := s.runtimeInfo()
+	s.gcUpdateMu.Unlock()
+	operationallog.Diagnostic("INFO", "gateway_process", "memory_reclaimed", "manual_gc_completed", map[string]any{
+		"heap_alloc_bytes": info.GetHeapAllocBytes(),
+		"heap_sys_bytes":   info.GetHeapSysBytes(),
+		"rss_bytes":        info.GetRssBytes(),
+		"result":           "success",
+	})
+	return info, nil
 }
 
 func (s *GRPCServer) GetGatewayListenerConfig(ctx context.Context, _ *emptypb.Empty) (*pb.GatewayListenerConfig, error) {
@@ -158,6 +227,9 @@ func (s *GRPCServer) ResetAllData(ctx context.Context, _ *emptypb.Empty) (*pb.Rp
 	if err := s.admin.ResetAllData(); err != nil {
 		return nil, status.Error(codes.Internal, err.Error())
 	}
+	s.gcUpdateMu.Lock()
+	s.applyGCPercent(defaultGCPercent)
+	s.gcUpdateMu.Unlock()
 	return rpcOK(), nil
 }
 

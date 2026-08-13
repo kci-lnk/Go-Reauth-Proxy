@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"runtime/debug"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -74,14 +75,20 @@ func TestGatewayControlServerInfoIncludesCompatibilityMetadata(t *testing.T) {
 		t.Fatalf("incomplete compatibility metadata: %#v", info)
 	}
 	hasTrustedClientIPBypass := false
+	hasMemoryControl := false
 	for _, capability := range info.GetCapabilities() {
 		if capability == "trusted_client_ip_bypass_v1" {
 			hasTrustedClientIPBypass = true
-			break
+		}
+		if capability == "memory_control_v1" {
+			hasMemoryControl = true
 		}
 	}
 	if !hasTrustedClientIPBypass {
 		t.Fatalf("server info is missing trusted_client_ip_bypass_v1: %#v", info.GetCapabilities())
+	}
+	if !hasMemoryControl {
+		t.Fatalf("server info is missing memory_control_v1: %#v", info.GetCapabilities())
 	}
 }
 
@@ -113,8 +120,64 @@ func TestGatewayRuntimeInfoRequiresTokenAndIsStable(t *testing.T) {
 	if first.GetStartedAtUnixMs() == 0 || first.GetGoVersion() == "" || first.GetGoroutines() == 0 {
 		t.Fatalf("incomplete runtime info: %#v", first)
 	}
+	if first.GetGcPercent() != initialGCPercent() {
+		t.Fatalf("GC percent = %d, want %d", first.GetGcPercent(), initialGCPercent())
+	}
 	if first.GetRssBytes() == 0 || second.GetRssBytes() == 0 {
 		t.Fatalf("RSS was not reported: %d -> %d", first.GetRssBytes(), second.GetRssBytes())
+	}
+}
+
+func TestInitialGCPercentHandlesGoEnvironmentValues(t *testing.T) {
+	for _, test := range []struct {
+		name  string
+		value string
+		want  int32
+	}{
+		{name: "unset", value: "", want: defaultGCPercent},
+		{name: "numeric", value: "75", want: 75},
+		{name: "off", value: "off", want: -1},
+		{name: "off uppercase and padded", value: " OFF ", want: -1},
+		{name: "invalid", value: "invalid", want: defaultGCPercent},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Setenv("GOGC", test.value)
+			if got := initialGCPercent(); got != test.want {
+				t.Fatalf("initialGCPercent() = %d, want %d", got, test.want)
+			}
+		})
+	}
+}
+
+func TestGatewayMemoryControlRequiresTokenAndValidatesRange(t *testing.T) {
+	server := newGatewayControlTestServer(t, "secret")
+	if _, err := server.SetGatewayMemoryConfig(context.Background(), &pb.GatewayMemoryConfig{GcPercent: 50}); status.Code(err) != codes.Unauthenticated {
+		t.Fatalf("unauthenticated set status = %v, want unauthenticated", status.Code(err))
+	}
+	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs(rpcbridge.InternalTokenMetadataKey, "secret"))
+	for _, value := range []int32{24, 501} {
+		if _, err := server.SetGatewayMemoryConfig(ctx, &pb.GatewayMemoryConfig{GcPercent: value}); status.Code(err) != codes.InvalidArgument {
+			t.Fatalf("gc_percent=%d status = %v, want invalid argument", value, status.Code(err))
+		}
+	}
+}
+
+func TestGatewayMemoryControlAppliesAndReclaims(t *testing.T) {
+	server := newGatewayControlTestServer(t, "secret")
+	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs(rpcbridge.InternalTokenMetadataKey, "secret"))
+	previous := debug.SetGCPercent(100)
+	t.Cleanup(func() { debug.SetGCPercent(previous) })
+
+	applied, err := server.SetGatewayMemoryConfig(ctx, &pb.GatewayMemoryConfig{GcPercent: 50})
+	if err != nil || applied.GetGcPercent() != 50 {
+		t.Fatalf("SetGatewayMemoryConfig = %#v, %v", applied, err)
+	}
+	info, err := server.ReclaimGatewayMemory(ctx, &emptypb.Empty{})
+	if err != nil {
+		t.Fatalf("ReclaimGatewayMemory: %v", err)
+	}
+	if info.GetGcPercent() != 50 || info.GetHeapSysBytes() == 0 || info.GetRssBytes() == 0 {
+		t.Fatalf("unexpected runtime info after reclaim: %#v", info)
 	}
 }
 
@@ -157,6 +220,8 @@ func TestGatewayControlListenerConfigReturnsFailureWhenRuntimeApplyFails(t *test
 func TestGatewayControlResetAllDataClearsRuntimeAndPersistedConfig(t *testing.T) {
 	server := newGatewayControlTestServer(t, "secret")
 	ctx := authTestContext()
+	previousGCPercent := debug.SetGCPercent(int(defaultGCPercent))
+	t.Cleanup(func() { debug.SetGCPercent(previousGCPercent) })
 
 	if _, err := server.SetRules(ctx, &pb.Rules{Items: []*pb.Rule{{Path: "/app", Target: "http://127.0.0.1:8080"}}}); err != nil {
 		t.Fatalf("SetRules: %v", err)
@@ -172,6 +237,9 @@ func TestGatewayControlResetAllDataClearsRuntimeAndPersistedConfig(t *testing.T)
 	}
 	if _, err := server.SetGatewayTrustedClientIps(ctx, &pb.GatewayTrustedClientIpsRuntime{Ips: []string{"203.0.113.11"}}); err != nil {
 		t.Fatalf("SetGatewayTrustedClientIps: %v", err)
+	}
+	if _, err := server.SetGatewayMemoryConfig(ctx, &pb.GatewayMemoryConfig{GcPercent: 50}); err != nil {
+		t.Fatalf("SetGatewayMemoryConfig: %v", err)
 	}
 
 	result, err := server.ResetAllData(ctx, &emptypb.Empty{})
@@ -189,6 +257,9 @@ func TestGatewayControlResetAllDataClearsRuntimeAndPersistedConfig(t *testing.T)
 	}
 	if got := server.admin.ProxyHandler.GetGatewayVisibility(); got.Enabled || len(got.CIDRs) != 0 {
 		t.Fatalf("runtime visibility after reset = %#v", got)
+	}
+	if got := server.gcPercent.Load(); got != defaultGCPercent {
+		t.Fatalf("GC percent after reset = %d, want %d", got, defaultGCPercent)
 	}
 	if got := server.admin.ProxyHandler.GetGatewayTrustedClientIPs(); len(got.IPs) != 0 || len(got.CIDRs) != 0 {
 		t.Fatalf("runtime trusted client IPs after reset = %#v", got)

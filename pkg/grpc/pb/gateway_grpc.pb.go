@@ -22,6 +22,8 @@ const _ = grpc.SupportPackageIsVersion9
 const (
 	GatewayControlService_GetServerInfo_FullMethodName                    = "/fnknock.v1.GatewayControlService/GetServerInfo"
 	GatewayControlService_GetRuntimeInfo_FullMethodName                   = "/fnknock.v1.GatewayControlService/GetRuntimeInfo"
+	GatewayControlService_SetGatewayMemoryConfig_FullMethodName           = "/fnknock.v1.GatewayControlService/SetGatewayMemoryConfig"
+	GatewayControlService_ReclaimGatewayMemory_FullMethodName             = "/fnknock.v1.GatewayControlService/ReclaimGatewayMemory"
 	GatewayControlService_GetGatewayListenerConfig_FullMethodName         = "/fnknock.v1.GatewayControlService/GetGatewayListenerConfig"
 	GatewayControlService_SetGatewayListenerConfig_FullMethodName         = "/fnknock.v1.GatewayControlService/SetGatewayListenerConfig"
 	GatewayControlService_ResetAllData_FullMethodName                     = "/fnknock.v1.GatewayControlService/ResetAllData"
@@ -75,6 +77,8 @@ const (
 type GatewayControlServiceClient interface {
 	GetServerInfo(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*ServerInfo, error)
 	GetRuntimeInfo(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*GatewayRuntimeInfo, error)
+	SetGatewayMemoryConfig(ctx context.Context, in *GatewayMemoryConfig, opts ...grpc.CallOption) (*GatewayMemoryConfig, error)
+	ReclaimGatewayMemory(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*GatewayRuntimeInfo, error)
 	GetGatewayListenerConfig(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*GatewayListenerConfig, error)
 	SetGatewayListenerConfig(ctx context.Context, in *GatewayListenerConfig, opts ...grpc.CallOption) (*GatewayListenerConfig, error)
 	// Resets all user-managed gateway configuration and volatile runtime data
@@ -148,6 +152,26 @@ func (c *gatewayControlServiceClient) GetRuntimeInfo(ctx context.Context, in *em
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(GatewayRuntimeInfo)
 	err := c.cc.Invoke(ctx, GatewayControlService_GetRuntimeInfo_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *gatewayControlServiceClient) SetGatewayMemoryConfig(ctx context.Context, in *GatewayMemoryConfig, opts ...grpc.CallOption) (*GatewayMemoryConfig, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GatewayMemoryConfig)
+	err := c.cc.Invoke(ctx, GatewayControlService_SetGatewayMemoryConfig_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *gatewayControlServiceClient) ReclaimGatewayMemory(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*GatewayRuntimeInfo, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GatewayRuntimeInfo)
+	err := c.cc.Invoke(ctx, GatewayControlService_ReclaimGatewayMemory_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -610,6 +634,8 @@ func (c *gatewayControlServiceClient) SetCommonLocationExemptions(ctx context.Co
 type GatewayControlServiceServer interface {
 	GetServerInfo(context.Context, *emptypb.Empty) (*ServerInfo, error)
 	GetRuntimeInfo(context.Context, *emptypb.Empty) (*GatewayRuntimeInfo, error)
+	SetGatewayMemoryConfig(context.Context, *GatewayMemoryConfig) (*GatewayMemoryConfig, error)
+	ReclaimGatewayMemory(context.Context, *emptypb.Empty) (*GatewayRuntimeInfo, error)
 	GetGatewayListenerConfig(context.Context, *emptypb.Empty) (*GatewayListenerConfig, error)
 	SetGatewayListenerConfig(context.Context, *GatewayListenerConfig) (*GatewayListenerConfig, error)
 	// Resets all user-managed gateway configuration and volatile runtime data
@@ -674,6 +700,12 @@ func (UnimplementedGatewayControlServiceServer) GetServerInfo(context.Context, *
 }
 func (UnimplementedGatewayControlServiceServer) GetRuntimeInfo(context.Context, *emptypb.Empty) (*GatewayRuntimeInfo, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method GetRuntimeInfo not implemented")
+}
+func (UnimplementedGatewayControlServiceServer) SetGatewayMemoryConfig(context.Context, *GatewayMemoryConfig) (*GatewayMemoryConfig, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method SetGatewayMemoryConfig not implemented")
+}
+func (UnimplementedGatewayControlServiceServer) ReclaimGatewayMemory(context.Context, *emptypb.Empty) (*GatewayRuntimeInfo, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ReclaimGatewayMemory not implemented")
 }
 func (UnimplementedGatewayControlServiceServer) GetGatewayListenerConfig(context.Context, *emptypb.Empty) (*GatewayListenerConfig, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method GetGatewayListenerConfig not implemented")
@@ -863,6 +895,42 @@ func _GatewayControlService_GetRuntimeInfo_Handler(srv interface{}, ctx context.
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(GatewayControlServiceServer).GetRuntimeInfo(ctx, req.(*emptypb.Empty))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _GatewayControlService_SetGatewayMemoryConfig_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GatewayMemoryConfig)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(GatewayControlServiceServer).SetGatewayMemoryConfig(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: GatewayControlService_SetGatewayMemoryConfig_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(GatewayControlServiceServer).SetGatewayMemoryConfig(ctx, req.(*GatewayMemoryConfig))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _GatewayControlService_ReclaimGatewayMemory_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(emptypb.Empty)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(GatewayControlServiceServer).ReclaimGatewayMemory(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: GatewayControlService_ReclaimGatewayMemory_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(GatewayControlServiceServer).ReclaimGatewayMemory(ctx, req.(*emptypb.Empty))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -1691,6 +1759,14 @@ var GatewayControlService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "GetRuntimeInfo",
 			Handler:    _GatewayControlService_GetRuntimeInfo_Handler,
+		},
+		{
+			MethodName: "SetGatewayMemoryConfig",
+			Handler:    _GatewayControlService_SetGatewayMemoryConfig_Handler,
+		},
+		{
+			MethodName: "ReclaimGatewayMemory",
+			Handler:    _GatewayControlService_ReclaimGatewayMemory_Handler,
 		},
 		{
 			MethodName: "GetGatewayListenerConfig",

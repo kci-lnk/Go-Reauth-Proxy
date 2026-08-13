@@ -30,9 +30,10 @@ const (
 
 var diagnosticFields = map[string]struct{}{
 	"commit": {}, "count": {}, "dropped": {}, "duration_ms": {},
-	"exit_code": {}, "generation": {}, "instance_id": {}, "listener": {},
-	"pid": {}, "previous_status": {}, "protocol_version": {}, "queue_depth": {},
-	"result": {}, "signal": {}, "status": {}, "version": {},
+	"exit_code": {}, "gc_percent": {}, "generation": {}, "heap_alloc_bytes": {},
+	"heap_sys_bytes": {}, "instance_id": {}, "listener": {}, "pid": {},
+	"previous_status": {}, "protocol_version": {}, "queue_depth": {}, "result": {},
+	"rss_bytes": {}, "signal": {}, "status": {}, "version": {},
 }
 
 type diagnosticRecord struct {

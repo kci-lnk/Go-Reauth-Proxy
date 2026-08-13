@@ -85,13 +85,22 @@ func TestRotatingDiagnosticWriterObservesExternalTruncate(t *testing.T) {
 
 func TestDiagnosticFieldsAreAllowListedAndRedacted(t *testing.T) {
 	fields := cleanDiagnosticFields(map[string]any{
-		"pid":           42,
-		"listener":      "https://user:pass@example.com/private?q=secret#fragment",
-		"authorization": "Bearer canary",
-		"config":        "/private/config.json",
+		"pid":              42,
+		"gc_percent":       int32(50),
+		"heap_alloc_bytes": uint64(1024),
+		"heap_sys_bytes":   uint64(2048),
+		"rss_bytes":        uint64(4096),
+		"listener":         "https://user:pass@example.com/private?q=secret#fragment",
+		"authorization":    "Bearer canary",
+		"config":           "/private/config.json",
 	})
 	if fields["pid"] != 42 {
 		t.Fatalf("pid was not preserved: %#v", fields)
+	}
+	for _, key := range []string{"gc_percent", "heap_alloc_bytes", "heap_sys_bytes", "rss_bytes"} {
+		if _, ok := fields[key]; !ok {
+			t.Fatalf("memory field %q was not preserved: %#v", key, fields)
+		}
 	}
 	listener := fields["listener"].(string)
 	if strings.Contains(listener, "example.com") || strings.Contains(listener, "user:pass") || strings.Contains(listener, "secret") {

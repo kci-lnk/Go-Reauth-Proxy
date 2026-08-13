@@ -3,15 +3,45 @@ package proxy
 import (
 	"bytes"
 	"fmt"
-	"go-reauth-proxy/pkg/models"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"go-reauth-proxy/pkg/config"
+	"go-reauth-proxy/pkg/models"
 )
+
+func TestNewHandlerInitializesSharedProductionTransport(t *testing.T) {
+	runtimeDir := t.TempDir()
+	handler := NewHandler(
+		7996,
+		7999,
+		config.NewManager(filepath.Join(runtimeDir, "config.json")),
+		config.DefaultConfig(),
+		filepath.Join(runtimeDir, "logs"),
+		nil,
+	)
+	t.Cleanup(func() {
+		handler.proxyTransport.CloseIdleConnections()
+		handler.Close()
+	})
+
+	if handler.proxyTransport == nil {
+		t.Fatal("production handler did not initialize the shared proxy transport")
+	}
+	wrapped, ok := handler.proxyRoundTripper.(deepMonitorTransport)
+	if !ok || wrapped.base != handler.proxyTransport {
+		t.Fatalf("proxy round tripper = %#v, want deep monitor wrapper over shared transport", handler.proxyRoundTripper)
+	}
+	if handler.reverseProxyThrottle == nil || handler.preserveHost == nil || handler.forwardedHeaders == nil {
+		t.Fatal("production handler hot-path runtime state was not fully initialized")
+	}
+}
 
 var (
 	benchmarkRuleSink          *models.Rule

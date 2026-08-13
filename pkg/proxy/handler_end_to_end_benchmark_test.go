@@ -7,11 +7,13 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strconv"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"go-reauth-proxy/pkg/config"
 	"go-reauth-proxy/pkg/gatewaylog"
 	"go-reauth-proxy/pkg/grpc/pb"
 	"go-reauth-proxy/pkg/models"
@@ -163,8 +165,8 @@ func benchmarkHandlerEndToEndScenario(b *testing.B, scenario handlerEndToEndBenc
 	defer func() {
 		b.StopTimer()
 		fixture.logManager.Flush()
-		fixture.logManager.Close()
 		fixture.handler.proxyTransport.CloseIdleConnections()
+		fixture.handler.Close()
 		fixture.target.Close()
 	}()
 
@@ -269,25 +271,18 @@ func newHandlerEndToEndBenchmarkFixture(b *testing.B, scenario handlerEndToEndBe
 	target.Start()
 
 	loggingConfig := models.LoggingConfig{Enabled: scenario.logging}
-	logManager := gatewaylog.NewManager(b.TempDir(), loggingConfig)
 	fixture := &handlerEndToEndBenchmarkFixture{
 		target:       target,
-		logManager:   logManager,
 		authorizeRPC: new(atomic.Int64),
 		connections:  connections,
 	}
-	handler := &Handler{
-		LoggingConfig:     loggingConfig,
-		GatewayPortal:     benchmarkGatewayPortalConfig(b, scenario.portalEnabled),
-		gatewayLogManager: logManager,
-		authCache:         newAuthStateCache(),
-		preflightCache:    newPreflightStateCache(),
-	}
-	handler.proxyTransport = newProxyTransport()
-	handler.proxyRoundTripper = deepMonitorTransport{base: handler.proxyTransport}
+	initialConfig := config.DefaultConfig()
+	initialConfig.Logging = loggingConfig
+	initialConfig.Portal = benchmarkGatewayPortalConfig(b, scenario.portalEnabled)
+	initialConfig.ReverseProxyThrottle.Enabled = false
 
 	if scenario.routeKind == "host" {
-		handler.HostRules = []models.HostRule{{
+		initialConfig.HostRules = []models.HostRule{{
 			Host:       "bench.example.test",
 			Target:     target.URL,
 			UseAuth:    scenario.authMode != handlerBenchmarkAuthOff,
@@ -295,7 +290,7 @@ func newHandlerEndToEndBenchmarkFixture(b *testing.B, scenario handlerEndToEndBe
 		}}
 		fixture.requestURL = "http://bench.example.test/benchmark"
 	} else {
-		handler.Rules = []models.Rule{{
+		initialConfig.Rules = []models.Rule{{
 			Path:    "/benchmark",
 			Target:  target.URL,
 			UseAuth: scenario.authMode != handlerBenchmarkAuthOff,
@@ -306,17 +301,28 @@ func newHandlerEndToEndBenchmarkFixture(b *testing.B, scenario handlerEndToEndBe
 	if scenario.authMode != handlerBenchmarkAuthOff {
 		fixture.authCookie = true
 		cacheTTL := 0
+		if scenario.authMode == handlerBenchmarkAuthHit {
+			cacheTTL = 3600
+		}
+		initialConfig.AuthConfig.AuthCacheTTL = cacheTTL
+	}
+
+	if scenario.wafEnabled {
+		initialConfig.WAF = models.WAFConfig{Enabled: true, Mode: proxywaf.ModeBlocking}
+	}
+
+	runtimeDir := b.TempDir()
+	manager := config.NewManager(filepath.Join(runtimeDir, "config.json"))
+	handler := NewHandler(7996, 7999, manager, initialConfig, filepath.Join(runtimeDir, "logs"), nil)
+	fixture.handler = handler
+	fixture.logManager = handler.gatewayLogManager
+
+	if scenario.authMode != handlerBenchmarkAuthOff {
 		preflightScope := pb.AuthCacheScope_AUTH_CACHE_SCOPE_NONE
 		verifyScope := pb.AuthCacheScope_AUTH_CACHE_SCOPE_NONE
 		if scenario.authMode == handlerBenchmarkAuthHit {
-			cacheTTL = 3600
 			preflightScope = pb.AuthCacheScope_AUTH_CACHE_SCOPE_EXACT_REQUEST
 			verifyScope = pb.AuthCacheScope_AUTH_CACHE_SCOPE_HOST
-		}
-		handler.AuthConfig = models.AuthConfig{
-			AuthURL:      "/api/auth/verify",
-			PreflightURL: "/api/auth/preflight",
-			AuthCacheTTL: cacheTTL,
 		}
 		handler.authBridge = testAuthBridge{
 			supports: true,
@@ -328,28 +334,16 @@ func newHandlerEndToEndBenchmarkFixture(b *testing.B, scenario handlerEndToEndBe
 	}
 
 	if scenario.wafEnabled {
-		wafConfig := models.WAFConfig{Enabled: true, Mode: proxywaf.ModeBlocking}
-		wafRuntime := proxywaf.NewRuntime(wafConfig, b.TempDir())
-		status, err := wafRuntime.Reload(wafConfig, "", "")
-		if err != nil {
-			logManager.Close()
-			target.Close()
-			b.Fatalf("load benchmark WAF runtime: %v", err)
-		}
-		if !status.Loaded {
-			logManager.Close()
+		if status := handler.wafRuntime.Status(); !status.Loaded {
+			handler.Close()
 			target.Close()
 			b.Fatal("benchmark WAF runtime was not loaded")
 		}
-		handler.WAFConfig = wafConfig
-		handler.wafRuntime = wafRuntime
 		// Reload schedules a memory release after 500ms. Keep that maintenance
 		// work outside the measured WAF request loop.
 		time.Sleep(600 * time.Millisecond)
 	}
 
-	handler.publishRequestSnapshotLocked()
-	fixture.handler = handler
 	return fixture
 }
 

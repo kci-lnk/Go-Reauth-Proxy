@@ -45,12 +45,11 @@ type GRPCServer struct {
 	admin *Server
 	token string
 
-	instanceID              string
-	startedAt               time.Time
-	gcPercent               atomic.Int32
-	memoryLimitBytes        atomic.Int64
-	initialMemoryLimitBytes int64
-	gcUpdateMu              sync.Mutex
+	instanceID       string
+	startedAt        time.Time
+	gcPercent        atomic.Int32
+	memoryLimitBytes atomic.Int64
+	gcUpdateMu       sync.Mutex
 
 	shutdownMu   sync.RWMutex
 	shutdownOnce sync.Once
@@ -67,15 +66,15 @@ func (s *GRPCServer) SetShutdownRequest(shutdown func()) {
 }
 
 func NewGRPCServer(adminServer *Server, token string) *GRPCServer {
+	initialMemoryLimitBytes := debug.SetMemoryLimit(-1)
 	server := &GRPCServer{
-		admin:                   adminServer,
-		token:                   token,
-		instanceID:              newRuntimeInstanceID(),
-		startedAt:               time.Now(),
-		initialMemoryLimitBytes: debug.SetMemoryLimit(-1),
+		admin:      adminServer,
+		token:      token,
+		instanceID: newRuntimeInstanceID(),
+		startedAt:  time.Now(),
 	}
 	server.gcPercent.Store(initialGCPercent())
-	server.memoryLimitBytes.Store(server.initialMemoryLimitBytes)
+	server.memoryLimitBytes.Store(initialMemoryLimitBytes)
 	return server
 }
 
@@ -268,7 +267,11 @@ func (s *GRPCServer) ResetAllData(ctx context.Context, _ *emptypb.Empty) (*pb.Rp
 		return nil, status.Error(codes.Internal, err.Error())
 	}
 	s.gcUpdateMu.Lock()
-	s.applyMemoryConfig(defaultGCPercent, s.initialMemoryLimitBytes)
+	// The Rust control plane clears the persisted setting and immediately
+	// applies the auto limit. Preserve the current safe limit during that
+	// hand-off instead of briefly restoring Go's usually-unlimited startup
+	// value.
+	s.applyMemoryConfig(defaultGCPercent, s.memoryLimitBytes.Load())
 	s.gcUpdateMu.Unlock()
 	return rpcOK(), nil
 }

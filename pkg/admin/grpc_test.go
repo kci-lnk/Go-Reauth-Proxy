@@ -232,6 +232,8 @@ func TestGatewayControlResetAllDataClearsRuntimeAndPersistedConfig(t *testing.T)
 	ctx := authTestContext()
 	previousGCPercent := debug.SetGCPercent(int(defaultGCPercent))
 	t.Cleanup(func() { debug.SetGCPercent(previousGCPercent) })
+	previousMemoryLimit := debug.SetMemoryLimit(-1)
+	t.Cleanup(func() { debug.SetMemoryLimit(previousMemoryLimit) })
 
 	if _, err := server.SetRules(ctx, &pb.Rules{Items: []*pb.Rule{{Path: "/app", Target: "http://127.0.0.1:8080"}}}); err != nil {
 		t.Fatalf("SetRules: %v", err)
@@ -248,7 +250,8 @@ func TestGatewayControlResetAllDataClearsRuntimeAndPersistedConfig(t *testing.T)
 	if _, err := server.SetGatewayTrustedClientIps(ctx, &pb.GatewayTrustedClientIpsRuntime{Ips: []string{"203.0.113.11"}}); err != nil {
 		t.Fatalf("SetGatewayTrustedClientIps: %v", err)
 	}
-	if _, err := server.SetGatewayMemoryConfig(ctx, &pb.GatewayMemoryConfig{GcPercent: 50}); err != nil {
+	const configuredMemoryLimit = 128 << 20
+	if _, err := server.SetGatewayMemoryConfig(ctx, &pb.GatewayMemoryConfig{GcPercent: 50, MemoryLimitBytes: configuredMemoryLimit}); err != nil {
 		t.Fatalf("SetGatewayMemoryConfig: %v", err)
 	}
 
@@ -270,6 +273,9 @@ func TestGatewayControlResetAllDataClearsRuntimeAndPersistedConfig(t *testing.T)
 	}
 	if got := server.gcPercent.Load(); got != defaultGCPercent {
 		t.Fatalf("GC percent after reset = %d, want %d", got, defaultGCPercent)
+	}
+	if got := server.memoryLimitBytes.Load(); got != configuredMemoryLimit {
+		t.Fatalf("memory limit after reset = %d, want preserved %d", got, configuredMemoryLimit)
 	}
 	if got := server.admin.ProxyHandler.GetGatewayTrustedClientIPs(); len(got.IPs) != 0 || len(got.CIDRs) != 0 {
 		t.Fatalf("runtime trusted client IPs after reset = %#v", got)

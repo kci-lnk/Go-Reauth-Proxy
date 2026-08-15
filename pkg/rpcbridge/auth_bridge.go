@@ -78,11 +78,30 @@ type authBridgeSending struct {
 	call      *authBridgePendingCall
 }
 
+// authBridgePendingCall must only be passed by pointer after construction:
+// newAuthBridgePendingCall initializes done before the call is published.
 type authBridgePendingCall struct {
 	stream   *authBridgeStream
 	response *pb.AuthBridgeEnvelope
 	err      error
-	done     chan struct{}
+	done     sync.WaitGroup
+}
+
+func newAuthBridgePendingCall(stream *authBridgeStream) *authBridgePendingCall {
+	call := &authBridgePendingCall{stream: stream}
+	// Add before the call is published in a pending shard. Every successful
+	// removal from that shard performs exactly one Done, so the waiter has a
+	// targeted completion signal without a separate heap object.
+	call.done.Add(1)
+	return call
+}
+
+func (c *authBridgePendingCall) wait() {
+	c.done.Wait()
+}
+
+func (c *authBridgePendingCall) signal() {
+	c.done.Done()
 }
 
 type authBridgePendingShard struct {
@@ -285,7 +304,7 @@ func (m *AuthBridgeManager) roundTripOnStream(ctx context.Context, expected *aut
 
 	requestID := strconv.FormatUint(m.nextID.Add(1), 10)
 	msg.RequestId = requestID
-	call := &authBridgePendingCall{stream: active, done: make(chan struct{})}
+	call := newAuthBridgePendingCall(active)
 	shard := m.pendingShard(requestID)
 	shard.Lock()
 	shard.calls[requestID] = call
@@ -317,7 +336,7 @@ func (m *AuthBridgeManager) roundTripOnStream(ctx context.Context, expected *aut
 		return nil, err
 	}
 
-	<-call.done
+	call.wait()
 	resp, err := call.response, call.err
 	if err != nil {
 		if errors.Is(err, context.DeadlineExceeded) {
@@ -490,7 +509,7 @@ func (m *AuthBridgeManager) dispatchResponse(stream *authBridgeStream, msg *pb.A
 	if call != nil && call.stream == stream {
 		delete(shard.calls, msg.RequestId)
 		call.response = msg
-		close(call.done)
+		call.signal()
 	}
 	shard.Unlock()
 }
@@ -568,7 +587,7 @@ func (m *AuthBridgeManager) completePending(requestID string, want *authBridgePe
 		delete(shard.calls, requestID)
 		want.response = response
 		want.err = err
-		close(want.done)
+		want.signal()
 	}
 	shard.Unlock()
 }
@@ -581,7 +600,7 @@ func (m *AuthBridgeManager) failPendingForStream(stream *authBridgeStream, err e
 			if call.stream == stream {
 				delete(shard.calls, requestID)
 				call.err = err
-				close(call.done)
+				call.signal()
 			}
 		}
 		shard.Unlock()

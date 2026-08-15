@@ -29,37 +29,55 @@ func BenchmarkAuthBridgePendingCompletion(b *testing.B) {
 		b.Run("Concurrent"+strconv.Itoa(concurrency)+"/ForcedShardCollision", func(b *testing.B) {
 			manager := NewAuthBridgeManager("benchmark-token")
 			requestIDs := authBridgeCollisionRequestIDs(manager, concurrency)
-			response := &pb.AuthBridgeEnvelope{Payload: &pb.AuthBridgeEnvelope_VerifyAuthResponse{
-				VerifyAuthResponse: &pb.VerifyAuthResponse{Success: true, Status: http.StatusOK},
-			}}
-			b.ReportAllocs()
-			b.ResetTimer()
-			for b.Loop() {
-				calls := make([]*authBridgePendingCall, concurrency)
-				var ready sync.WaitGroup
-				var completed sync.WaitGroup
-				ready.Add(concurrency)
-				completed.Add(concurrency)
-				for index, requestID := range requestIDs {
-					call := &authBridgePendingCall{done: make(chan struct{})}
-					calls[index] = call
-					shard := manager.pendingShard(requestID)
-					shard.Lock()
-					shard.calls[requestID] = call
-					shard.Unlock()
-					go func() {
-						ready.Done()
-						<-call.done
-						completed.Done()
-					}()
-				}
-				ready.Wait()
-				for index, requestID := range requestIDs {
-					manager.completePending(requestID, calls[index], response, nil)
-				}
-				completed.Wait()
-			}
+			benchmarkAuthBridgePendingCalls(b, manager, requestIDs)
 		})
+	}
+}
+
+func BenchmarkAuthBridgePendingCompletionDistributed(b *testing.B) {
+	for _, concurrency := range []int{1, 64, 256, 1024} {
+		b.Run("Concurrent"+strconv.Itoa(concurrency), func(b *testing.B) {
+			manager := NewAuthBridgeManager("benchmark-token")
+			requestIDs := make([]string, concurrency)
+			for index := range requestIDs {
+				requestIDs[index] = strconv.Itoa(index)
+			}
+			benchmarkAuthBridgePendingCalls(b, manager, requestIDs)
+		})
+	}
+}
+
+func benchmarkAuthBridgePendingCalls(b *testing.B, manager *AuthBridgeManager, requestIDs []string) {
+	b.Helper()
+	response := &pb.AuthBridgeEnvelope{Payload: &pb.AuthBridgeEnvelope_VerifyAuthResponse{
+		VerifyAuthResponse: &pb.VerifyAuthResponse{Success: true, Status: http.StatusOK},
+	}}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for b.Loop() {
+		calls := make([]*authBridgePendingCall, len(requestIDs))
+		var ready sync.WaitGroup
+		var completed sync.WaitGroup
+		ready.Add(len(requestIDs))
+		completed.Add(len(requestIDs))
+		for index, requestID := range requestIDs {
+			call := newAuthBridgePendingCall(nil)
+			calls[index] = call
+			shard := manager.pendingShard(requestID)
+			shard.Lock()
+			shard.calls[requestID] = call
+			shard.Unlock()
+			go func() {
+				ready.Done()
+				call.wait()
+				completed.Done()
+			}()
+		}
+		ready.Wait()
+		for index, requestID := range requestIDs {
+			manager.completePending(requestID, calls[index], response, nil)
+		}
+		completed.Wait()
 	}
 }
 
@@ -78,32 +96,111 @@ func authBridgeCollisionRequestIDs(manager *AuthBridgeManager, count int) []stri
 func TestAuthBridgePendingCompletionNotifiesOnlyMatchingCall(t *testing.T) {
 	manager := NewAuthBridgeManager("secret")
 	requestIDs := authBridgeCollisionRequestIDs(manager, 2)
-	first := &authBridgePendingCall{done: make(chan struct{})}
-	second := &authBridgePendingCall{done: make(chan struct{})}
+	first := newAuthBridgePendingCall(nil)
+	second := newAuthBridgePendingCall(nil)
 	shard := manager.pendingShard(requestIDs[0])
 	shard.Lock()
 	shard.calls[requestIDs[0]] = first
 	shard.calls[requestIDs[1]] = second
 	shard.Unlock()
+	firstDone := waitForAuthBridgePendingCall(first)
+	secondDone := waitForAuthBridgePendingCall(second)
 
 	manager.completePending(requestIDs[0], first, &pb.AuthBridgeEnvelope{RequestId: requestIDs[0]}, nil)
 	select {
-	case <-first.done:
-	default:
-		t.Fatal("matching pending call was not notified")
+	case <-firstDone:
+	case <-time.After(time.Second):
+		t.Fatal("matching pending call was not notified within one second")
 	}
 	select {
-	case <-second.done:
+	case <-secondDone:
 		t.Fatal("unrelated pending call in the same shard was notified")
-	default:
+	case <-time.After(10 * time.Millisecond):
 	}
 
 	manager.completePending(requestIDs[1], second, nil, context.Canceled)
 	select {
-	case <-second.done:
-	default:
-		t.Fatal("second pending call was not notified")
+	case <-secondDone:
+	case <-time.After(time.Second):
+		t.Fatal("second pending call was not notified within one second")
 	}
+}
+
+func TestAuthBridgePendingCompletionBeforeWaitAndDuplicateIgnored(t *testing.T) {
+	manager := NewAuthBridgeManager("secret")
+	requestID := "completed-before-wait"
+	call := newAuthBridgePendingCall(nil)
+	shard := manager.pendingShard(requestID)
+	shard.Lock()
+	shard.calls[requestID] = call
+	shard.Unlock()
+
+	response := &pb.AuthBridgeEnvelope{RequestId: requestID}
+	manager.completePending(requestID, call, response, nil)
+	// A late cancellation or disconnect may try to complete the same call.
+	// The shard identity check must make this a no-op rather than a second Done.
+	manager.completePending(requestID, call, nil, context.Canceled)
+
+	select {
+	case <-waitForAuthBridgePendingCall(call):
+	case <-time.After(time.Second):
+		t.Fatal("completion that happened before Wait was lost")
+	}
+	if call.response != response || call.err != nil {
+		t.Fatalf("completion result = (%p, %v), want (%p, nil)", call.response, call.err, response)
+	}
+}
+
+func TestAuthBridgePendingResponseCancelRaceCompletesOnce(t *testing.T) {
+	manager := NewAuthBridgeManager("secret")
+	response := &pb.AuthBridgeEnvelope{RequestId: "response"}
+	for index := range 1000 {
+		requestID := "response-cancel-race-" + strconv.Itoa(index)
+		call := newAuthBridgePendingCall(nil)
+		shard := manager.pendingShard(requestID)
+		shard.Lock()
+		shard.calls[requestID] = call
+		shard.Unlock()
+
+		start := make(chan struct{})
+		var competitors sync.WaitGroup
+		competitors.Add(2)
+		go func() {
+			defer competitors.Done()
+			<-start
+			manager.completePending(requestID, call, response, nil)
+		}()
+		go func() {
+			defer competitors.Done()
+			<-start
+			manager.completePending(requestID, call, nil, context.Canceled)
+		}()
+		close(start)
+		competitors.Wait()
+
+		select {
+		case <-waitForAuthBridgePendingCall(call):
+		case <-time.After(time.Second):
+			t.Fatalf("iteration %d did not complete", index)
+		}
+		responseWon := call.response == response && call.err == nil
+		cancelWon := call.response == nil && errors.Is(call.err, context.Canceled)
+		if responseWon == cancelWon {
+			t.Fatalf("iteration %d result = (%p, %v), want exactly one response or cancellation", index, call.response, call.err)
+		}
+		if manager.pendingMatches(requestID, call) {
+			t.Fatalf("iteration %d left the completed call pending", index)
+		}
+	}
+}
+
+func waitForAuthBridgePendingCall(call *authBridgePendingCall) <-chan struct{} {
+	done := make(chan struct{})
+	go func() {
+		call.wait()
+		close(done)
+	}()
+	return done
 }
 
 func TestCheckInternalToken(t *testing.T) {

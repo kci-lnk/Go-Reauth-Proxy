@@ -62,7 +62,7 @@ jobs:
         run: |
           set -euo pipefail
           benchmark_pattern='Benchmark(Handler|Auth|Preflight|StreamingToolbar|RewriteHTML|Relay|UDP|ManagerLog|DailyFileWriter)'
-          benchmark_args=(-p=1 -run '^$' -bench "${benchmark_pattern}" -benchmem -count=5 -benchtime=250ms -cpu=2)
+          benchmark_args=(-p=1 -run '^$' -bench "${benchmark_pattern}" -benchmem -count=1 -benchtime=250ms -cpu=2)
           benchmark_packages=(./pkg/proxy ./pkg/rpcbridge ./pkg/stream ./pkg/gatewaylog)
           base_dir="${RUNNER_TEMP}/go-reauth-proxy-base"
           base_output="${RUNNER_TEMP}/go-hot-base.txt"
@@ -73,11 +73,36 @@ jobs:
             git worktree remove --force "${base_dir}" || true
           }
           trap cleanup EXIT
-          (
-            cd "${base_dir}"
-            GOMAXPROCS=2 go test "${benchmark_args[@]}" "${benchmark_packages[@]}"
-          ) | tee "${base_output}"
-          GOMAXPROCS=2 go test "${benchmark_args[@]}" "${benchmark_packages[@]}" | tee "${current_output}"
+          : > "${base_output}"
+          : > "${current_output}"
+          run_base_benchmarks() {
+            (
+              cd "${base_dir}"
+              GOMAXPROCS=2 go test "${benchmark_args[@]}" "${benchmark_packages[@]}"
+            ) | tee -a "${base_output}"
+          }
+          run_current_benchmarks() {
+            GOMAXPROCS=2 go test "${benchmark_args[@]}" "${benchmark_packages[@]}" | tee -a "${current_output}"
+          }
+          # Discard one full run per revision so process startup, core migration,
+          # and initial CPU-frequency changes cannot split the measured medians.
+          run_current_benchmarks > /dev/null
+          run_base_benchmarks > /dev/null
+          : > "${base_output}"
+          : > "${current_output}"
+          # Alternate execution order so thermal drift and shared-runner load do
+          # not systematically penalize the current revision. Six independent
+          # samples also prevent one long-lived test process from coupling later
+          # benchmarks to the amount of work calibrated for earlier benchmarks.
+          for iteration in $(seq 1 6); do
+            if (( iteration % 2 == 1 )); then
+              run_current_benchmarks
+              run_base_benchmarks
+            else
+              run_base_benchmarks
+              run_current_benchmarks
+            fi
+          done
           go run ./tools/benchcheck \
             --base "${base_output}" \
             --current "${current_output}" \

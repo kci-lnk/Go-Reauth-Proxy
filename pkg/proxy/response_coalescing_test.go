@@ -12,12 +12,20 @@ import (
 )
 
 type coalescingTestResponseWriter struct {
-	mu      sync.Mutex
-	header  http.Header
-	status  int
-	writes  [][]byte
-	flushes int
-	flushCh chan struct{}
+	mu         sync.Mutex
+	header     http.Header
+	status     int
+	writes     [][]byte
+	flushes    int
+	flushCh    chan struct{}
+	delay      time.Duration
+	delayAfter int
+}
+
+type proxyCopyTestRoundTripper func(*http.Request) (*http.Response, error)
+
+func (fn proxyCopyTestRoundTripper) RoundTrip(request *http.Request) (*http.Response, error) {
+	return fn(request)
 }
 
 func newCoalescingTestResponseWriter() *coalescingTestResponseWriter {
@@ -42,6 +50,9 @@ func (w *coalescingTestResponseWriter) WriteHeader(statusCode int) {
 func (w *coalescingTestResponseWriter) Write(p []byte) (int, error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
+	if w.delay > 0 && len(w.writes) >= w.delayAfter {
+		time.Sleep(w.delay)
+	}
 	w.writes = append(w.writes, bytes.Clone(p))
 	return len(p), nil
 }
@@ -80,6 +91,56 @@ func proxyResponseForCoalescing(contentType string) *http.Response {
 	}
 }
 
+func TestProxyResponseCoalescingUsesHighThroughputCapacities(t *testing.T) {
+	if got, want := proxyResponseCoalesceMediumBufferSize, 256*1024; got != want {
+		t.Fatalf("medium coalescing buffer = %d, want %d", got, want)
+	}
+	if got, want := proxyResponseCoalesceBufferSize, 2*1024*1024; got != want {
+		t.Fatalf("maximum coalescing buffer = %d, want %d", got, want)
+	}
+	if got, want := proxyResponseDirectWriteSize, 256*1024; got != want {
+		t.Fatalf("direct write size = %d, want %d", got, want)
+	}
+	buf := acquireProxyResponseCoalesceBuffer()
+	buf = append(buf, 0x01)
+	buf = growProxyResponseCoalesceBuffer(buf)
+	if got, want := cap(buf), proxyResponseCoalesceMediumBufferSize; got != want {
+		t.Fatalf("promoted coalescing buffer capacity = %d, want %d", got, want)
+	}
+	buf = promoteProxyResponseCoalesceBuffer(buf)
+	if got, want := cap(buf), proxyResponseCoalesceBufferSize; got != want {
+		t.Fatalf("maximum coalescing buffer capacity = %d, want %d", got, want)
+	}
+	releaseProxyResponseCoalesceBuffer(buf)
+}
+
+func TestReverseProxyUsesHighThroughputWriteGranularity(t *testing.T) {
+	payload := bytes.Repeat([]byte{0x5a}, 2*1024*1024)
+	proxy := &httputil.ReverseProxy{
+		Director: func(*http.Request) {},
+		Transport: proxyCopyTestRoundTripper(func(request *http.Request) (*http.Response, error) {
+			return &http.Response{
+				StatusCode:    http.StatusOK,
+				Header:        http.Header{"Content-Type": []string{"application/javascript"}},
+				Body:          io.NopCloser(bytes.NewReader(payload)),
+				ContentLength: int64(len(payload)),
+				Request:       request,
+			}, nil
+		}),
+		BufferPool: sharedProxyBufferPool,
+	}
+	w := newCoalescingTestResponseWriter()
+	serveReverseProxyWithResponseCoalescing(proxy, w, httptest.NewRequest(http.MethodGet, "http://gateway.test/assets/app.js", nil))
+
+	writes, _ := w.snapshot()
+	if got, want := len(writes), len(payload)/proxyCopyBufferSize; got != want {
+		t.Fatalf("downstream writes = %d, want %d writes of at most %d bytes", got, want, proxyCopyBufferSize)
+	}
+	if body := bytes.Join(writes, nil); !bytes.Equal(body, payload) {
+		t.Fatal("downstream response differs from upstream payload")
+	}
+}
+
 func TestShouldCoalesceProxyResponse(t *testing.T) {
 	tests := []struct {
 		name string
@@ -101,6 +162,22 @@ func TestShouldCoalesceProxyResponse(t *testing.T) {
 		resp *http.Response
 		want bool
 	}{name: "known length", resp: knownLength, want: false})
+
+	largeKnownLength := proxyResponseForCoalescing("application/javascript")
+	largeKnownLength.ContentLength = 2 * 1024 * 1024
+	tests = append(tests, struct {
+		name string
+		resp *http.Response
+		want bool
+	}{name: "large known length", resp: largeKnownLength, want: true})
+
+	largeKnownSSE := proxyResponseForCoalescing("text/event-stream")
+	largeKnownSSE.ContentLength = 2 * 1024 * 1024
+	tests = append(tests, struct {
+		name string
+		resp *http.Response
+		want bool
+	}{name: "large known server sent events", resp: largeKnownSSE, want: false})
 
 	streamingOptOut := proxyResponseForCoalescing("application/octet-stream")
 	streamingOptOut.Header.Set("X-Accel-Buffering", "no")
@@ -145,7 +222,7 @@ func TestShouldCoalesceProxyResponse(t *testing.T) {
 	}
 }
 
-func TestProxyResponseCoalescerCombinesWritesUpToBufferSize(t *testing.T) {
+func TestProxyResponseCoalescerUsesMediumBufferForFastDownstream(t *testing.T) {
 	dst := newCoalescingTestResponseWriter()
 	writer := newProxyResponseCoalescer(dst)
 	writer.maxLatency = time.Hour
@@ -164,21 +241,148 @@ func TestProxyResponseCoalescerCombinesWritesUpToBufferSize(t *testing.T) {
 	}
 
 	writes, flushes := dst.snapshot()
-	if len(writes) != 1 {
-		t.Fatalf("underlying writes = %d, want 1", len(writes))
+	wantWrites := proxyResponseCoalesceBufferSize / proxyResponseCoalesceMediumBufferSize
+	if len(writes) != wantWrites-1 {
+		t.Fatalf("underlying writes before finish = %d, want %d", len(writes), wantWrites-1)
 	}
-	if len(writes[0]) != proxyResponseCoalesceBufferSize {
-		t.Fatalf("underlying write size = %d, want %d", len(writes[0]), proxyResponseCoalesceBufferSize)
+	for i := range writes {
+		if len(writes[i]) != proxyResponseCoalesceMediumBufferSize {
+			t.Fatalf("underlying write %d size = %d, want %d", i, len(writes[i]), proxyResponseCoalesceMediumBufferSize)
+		}
 	}
 	if flushes != 0 {
 		t.Fatalf("underlying flushes before finish = %d, want 0", flushes)
 	}
 
 	writer.finish(true)
-	_, flushes = dst.snapshot()
+	writes, flushes = dst.snapshot()
+	if len(writes) != wantWrites {
+		t.Fatalf("underlying writes after finish = %d, want %d", len(writes), wantWrites)
+	}
+	if len(writes[len(writes)-1]) != proxyResponseCoalesceMediumBufferSize {
+		t.Fatalf("final underlying write size = %d, want %d", len(writes[len(writes)-1]), proxyResponseCoalesceMediumBufferSize)
+	}
 	if flushes != 1 {
 		t.Fatalf("underlying flushes after finish = %d, want 1", flushes)
 	}
+}
+
+func TestProxyResponseCoalescerPromotesBufferForSlowDownstream(t *testing.T) {
+	dst := newCoalescingTestResponseWriter()
+	dst.delay = 2 * proxyResponseCoalesceSlowWrite
+	writer := newProxyResponseCoalescer(dst)
+	writer.maxLatency = time.Hour
+	writer.configure(proxyResponseForCoalescing("application/octet-stream"))
+
+	part := bytes.Repeat([]byte{0x6b}, 32*1024)
+	for range proxyResponseCoalesceBufferSize / len(part) {
+		if _, err := writer.Write(part); err != nil {
+			t.Fatalf("Write() error = %v", err)
+		}
+	}
+	writer.finish(true)
+
+	writes, _ := dst.snapshot()
+	if got, want := len(writes), 2; got != want {
+		t.Fatalf("underlying writes = %d, want %d after slow-downstream promotion", got, want)
+	}
+	if got, want := len(writes[0]), proxyResponseCoalesceMediumBufferSize; got != want {
+		t.Fatalf("probe write size = %d, want %d", got, want)
+	}
+	if got, want := len(writes[1]), proxyResponseCoalesceBufferSize-proxyResponseCoalesceMediumBufferSize; got != want {
+		t.Fatalf("promoted write size = %d, want %d", got, want)
+	}
+}
+
+func TestProxyResponseCoalescerAdaptsKnownLengthForSlowDownstream(t *testing.T) {
+	dst := newCoalescingTestResponseWriter()
+	dst.delay = 2 * proxyResponseCoalesceSlowWrite
+	writer := newProxyResponseCoalescer(dst)
+	writer.maxLatency = time.Hour
+	response := proxyResponseForCoalescing("application/javascript")
+	response.ContentLength = 2 * 1024 * 1024
+	if suppressUnknownLengthFlush := writer.configure(response); suppressUnknownLengthFlush {
+		t.Fatal("known-length adaptive response requested unknown-length flush suppression")
+	}
+
+	part := bytes.Repeat([]byte{0x7c}, proxyResponseDirectWriteSize)
+	for range int(response.ContentLength) / len(part) {
+		if _, err := writer.Write(part); err != nil {
+			t.Fatalf("Write() error = %v", err)
+		}
+	}
+	writer.finish(true)
+
+	writes, _ := dst.snapshot()
+	if got, want := len(writes), 2; got != want {
+		t.Fatalf("underlying writes = %d, want %d after adaptive promotion", got, want)
+	}
+	if got, want := len(writes[0]), proxyResponseDirectWriteSize; got != want {
+		t.Fatalf("probe write size = %d, want %d", got, want)
+	}
+	if got, want := len(writes[1]), int(response.ContentLength)-proxyResponseDirectWriteSize; got != want {
+		t.Fatalf("promoted write size = %d, want %d", got, want)
+	}
+}
+
+func TestProxyResponseCoalescerDetectsLateKnownLengthBackpressure(t *testing.T) {
+	dst := newCoalescingTestResponseWriter()
+	dst.delay = 2 * proxyResponseCoalesceSlowWrite
+	dst.delayAfter = 1
+	writer := newProxyResponseCoalescer(dst)
+	writer.maxLatency = time.Hour
+	response := proxyResponseForCoalescing("application/javascript")
+	response.ContentLength = 2 * 1024 * 1024
+	writer.configure(response)
+
+	part := bytes.Repeat([]byte{0x4d}, proxyResponseDirectWriteSize)
+	for range int(response.ContentLength) / len(part) {
+		if _, err := writer.Write(part); err != nil {
+			t.Fatalf("Write() error = %v", err)
+		}
+	}
+	writer.finish(true)
+
+	writes, _ := dst.snapshot()
+	if got, want := len(writes), 3; got != want {
+		t.Fatalf("underlying writes = %d, want %d after late backpressure detection", got, want)
+	}
+	if got, want := len(writes[len(writes)-1]), int(response.ContentLength)-2*proxyResponseDirectWriteSize; got != want {
+		t.Fatalf("coalesced tail size = %d, want %d", got, want)
+	}
+}
+
+func TestProxyResponseCoalescerHonorsFlushAfterAdaptivePromotion(t *testing.T) {
+	dst := newCoalescingTestResponseWriter()
+	dst.delay = 2 * proxyResponseCoalesceSlowWrite
+	writer := newProxyResponseCoalescer(dst)
+	writer.maxLatency = time.Hour
+	response := proxyResponseForCoalescing("application/javascript")
+	response.ContentLength = 2 * 1024 * 1024
+	writer.configure(response)
+
+	part := bytes.Repeat([]byte{0x2a}, proxyResponseDirectWriteSize)
+	if _, err := writer.Write(part); err != nil {
+		t.Fatalf("probe Write() error = %v", err)
+	}
+	if _, err := writer.Write(part); err != nil {
+		t.Fatalf("buffered Write() error = %v", err)
+	}
+	if err := writer.FlushError(); err != nil {
+		t.Fatalf("FlushError() error = %v", err)
+	}
+
+	writes, flushes := dst.snapshot()
+	if got, want := len(writes), 2; got != want {
+		t.Fatalf("underlying writes = %d, want %d after explicit flush", got, want)
+	}
+	if !bytes.Equal(writes[1], part) {
+		t.Fatal("explicit flush did not preserve the buffered payload")
+	}
+	if got, want := flushes, 1; got != want {
+		t.Fatalf("underlying flushes = %d, want %d", got, want)
+	}
+	writer.finish(true)
 }
 
 func TestProxyResponseCoalescerPassesLargeWritesThrough(t *testing.T) {
@@ -305,10 +509,11 @@ func TestServeReverseProxyWithResponseCoalescing(t *testing.T) {
 	serveReverseProxyWithResponseCoalescing(proxy, dst, request)
 
 	writes, flushes := dst.snapshot()
-	if len(writes) != 1 {
-		t.Fatalf("underlying writes = %d, want 1", len(writes))
+	wantWrites := proxyResponseCoalesceBufferSize / proxyResponseCoalesceMediumBufferSize
+	if len(writes) != wantWrites {
+		t.Fatalf("underlying writes = %d, want %d for fast downstream", len(writes), wantWrites)
 	}
-	if !bytes.Equal(writes[0], payload) {
+	if !bytes.Equal(bytes.Join(writes, nil), payload) {
 		t.Fatal("coalesced proxy payload differs from upstream")
 	}
 	if flushes != 1 {

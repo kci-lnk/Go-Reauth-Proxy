@@ -51,16 +51,22 @@ var (
 	benchmarkURLSink           *url.URL
 )
 
-func TestNewInternalTransportUsesBoundedIdleConnectionLimits(t *testing.T) {
+func TestNewInternalTransportUsesHighThroughputConnectionLimits(t *testing.T) {
 	transport := newInternalTransport()
-	if got, want := transport.MaxIdleConns, 256; got != want {
+	if got, want := transport.MaxIdleConns, 2048; got != want {
 		t.Fatalf("MaxIdleConns = %d, want %d", got, want)
 	}
-	if got, want := transport.MaxIdleConnsPerHost, 64; got != want {
+	if got, want := transport.MaxIdleConnsPerHost, 2048; got != want {
 		t.Fatalf("MaxIdleConnsPerHost = %d, want %d", got, want)
 	}
-	if got, want := transport.IdleConnTimeout, 60*time.Second; got != want {
+	if got, want := transport.IdleConnTimeout, 90*time.Second; got != want {
 		t.Fatalf("IdleConnTimeout = %s, want %s", got, want)
+	}
+	if got, want := proxyCopyBufferSize, 256*1024; got != want {
+		t.Fatalf("proxyCopyBufferSize = %d, want %d", got, want)
+	}
+	if got, want := proxyTLSClientSessionCacheSize, 256; got != want {
+		t.Fatalf("proxyTLSClientSessionCacheSize = %d, want %d", got, want)
 	}
 }
 

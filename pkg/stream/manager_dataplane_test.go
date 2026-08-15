@@ -17,6 +17,15 @@ import (
 	"go-reauth-proxy/pkg/models"
 )
 
+func TestUDPListenerUsesHighCapacityLimits(t *testing.T) {
+	if got, want := udpListenerQueueByteLimit, 64*1024*1024; got != want {
+		t.Fatalf("listener queue byte limit = %d, want %d", got, want)
+	}
+	if got, want := udpListenerSessionLimit, 8192; got != want {
+		t.Fatalf("listener session limit = %d, want %d", got, want)
+	}
+}
+
 func TestUDPPacketBufferPoolsUseSizeClasses(t *testing.T) {
 	tests := []struct {
 		size      int

@@ -13,9 +13,10 @@ import (
 
 const (
 	proxyResponseCoalesceSmallBufferSize  = 16 * 1024
-	proxyResponseCoalesceMediumBufferSize = 64 * 1024
-	proxyResponseCoalesceBufferSize       = 256 * 1024
+	proxyResponseCoalesceMediumBufferSize = 256 * 1024
+	proxyResponseCoalesceBufferSize       = 2 * 1024 * 1024
 	proxyResponseCoalesceMaxLatency       = 10 * time.Millisecond
+	proxyResponseCoalesceSlowWrite        = 5 * time.Millisecond
 	proxyResponseDirectWriteSize          = proxyCopyBufferSize
 )
 
@@ -61,7 +62,7 @@ func releaseProxyResponseCoalesceBuffer(buf []byte) {
 		releaseExactSizeBuffer(&proxyResponseCoalesceSmallBufferPool, buf)
 	case proxyResponseCoalesceMediumBufferSize:
 		releaseExactSizeBuffer(&proxyResponseCoalesceMediumBufferPool, buf)
-	default:
+	case proxyResponseCoalesceBufferSize:
 		releaseExactSizeBuffer(&proxyResponseCoalesceBufferPool, buf)
 	}
 }
@@ -78,9 +79,20 @@ func growProxyResponseCoalesceBuffer(buf []byte) []byte {
 	return next
 }
 
-// proxyResponseCoalescer combines successive writes for bulk, unknown-length
-// responses. ReverseProxy otherwise flushes every write for these responses,
-// which turns a large upstream chunk into several smaller downstream writes.
+func promoteProxyResponseCoalesceBuffer(buf []byte) []byte {
+	if cap(buf) >= proxyResponseCoalesceBufferSize {
+		return buf
+	}
+	next := acquireExactSizeBuffer(&proxyResponseCoalesceBufferPool)
+	next = append(next, buf...)
+	releaseProxyResponseCoalesceBuffer(buf)
+	return next
+}
+
+// proxyResponseCoalescer combines successive writes for bulk responses when
+// ReverseProxy's normal copy cadence is measurably slow. Unknown-length binary
+// responses start buffered because ReverseProxy otherwise flushes every write;
+// known-length responses remain direct until downstream backpressure is seen.
 type proxyResponseCoalescer struct {
 	http.ResponseWriter
 
@@ -88,9 +100,11 @@ type proxyResponseCoalescer struct {
 	buffer     []byte
 	timer      *time.Timer
 	maxLatency time.Duration
-	enabled    atomic.Bool
+	mode       atomic.Uint32
 	closed     bool
 	flushError error
+	preferMax  bool
+	adaptive   bool
 }
 
 func newProxyResponseCoalescer(w http.ResponseWriter) *proxyResponseCoalescer {
@@ -100,42 +114,81 @@ func newProxyResponseCoalescer(w http.ResponseWriter) *proxyResponseCoalescer {
 	}
 }
 
-func shouldCoalesceProxyResponse(resp *http.Response) bool {
+type proxyResponseCoalescingMode uint8
+
+const (
+	proxyResponseCoalescingDisabled proxyResponseCoalescingMode = iota
+	proxyResponseCoalescingBuffered
+	proxyResponseCoalescingAdaptive
+)
+
+func responseCoalescingMode(resp *http.Response) proxyResponseCoalescingMode {
 	if resp == nil ||
-		resp.ContentLength != -1 ||
 		resp.StatusCode < http.StatusOK ||
 		resp.StatusCode == http.StatusNoContent ||
 		resp.StatusCode == http.StatusNotModified ||
 		len(resp.Trailer) > 0 {
-		return false
+		return proxyResponseCoalescingDisabled
 	}
 	if resp.Request != nil && resp.Request.Method == http.MethodHead {
-		return false
+		return proxyResponseCoalescingDisabled
 	}
 	if strings.EqualFold(strings.TrimSpace(resp.Header.Get("X-Accel-Buffering")), "no") {
-		return false
+		return proxyResponseCoalescingDisabled
 	}
 
+	if resp.ContentLength != -1 {
+		if resp.ContentLength < 2*proxyResponseDirectWriteSize {
+			return proxyResponseCoalescingDisabled
+		}
+		contentType := responseMediaType(resp.Header.Get("Content-Type"))
+		if strings.EqualFold(contentType, "text/event-stream") || hasPrefixFold(contentType, "application/grpc") {
+			return proxyResponseCoalescingDisabled
+		}
+		return proxyResponseCoalescingAdaptive
+	}
 	contentType, _, err := mime.ParseMediaType(resp.Header.Get("Content-Type"))
-	return err == nil && strings.EqualFold(contentType, "application/octet-stream")
+	if err == nil && strings.EqualFold(contentType, "application/octet-stream") {
+		return proxyResponseCoalescingBuffered
+	}
+	return proxyResponseCoalescingDisabled
+}
+
+func responseMediaType(value string) string {
+	value = strings.TrimSpace(value)
+	if separator := strings.IndexByte(value, ';'); separator >= 0 {
+		value = strings.TrimSpace(value[:separator])
+	}
+	return value
+}
+
+func hasPrefixFold(value string, prefix string) bool {
+	return len(value) >= len(prefix) && strings.EqualFold(value[:len(prefix)], prefix)
+}
+
+func shouldCoalesceProxyResponse(resp *http.Response) bool {
+	return responseCoalescingMode(resp) != proxyResponseCoalescingDisabled
 }
 
 func (w *proxyResponseCoalescer) configure(resp *http.Response) bool {
-	if w == nil || !shouldCoalesceProxyResponse(resp) {
+	mode := responseCoalescingMode(resp)
+	if w == nil || mode == proxyResponseCoalescingDisabled {
 		return false
 	}
 
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	if w.closed || w.enabled.Load() {
+	if w.closed || proxyResponseCoalescingMode(w.mode.Load()) != proxyResponseCoalescingDisabled {
 		return false
 	}
-	w.enabled.Store(true)
-	return true
+	w.adaptive = mode == proxyResponseCoalescingAdaptive
+	w.mode.Store(uint32(mode))
+	return mode == proxyResponseCoalescingBuffered
 }
 
 func (w *proxyResponseCoalescer) WriteHeader(statusCode int) {
-	if !w.enabled.Load() {
+	mode := proxyResponseCoalescingMode(w.mode.Load())
+	if mode == proxyResponseCoalescingDisabled || mode == proxyResponseCoalescingAdaptive {
 		w.ResponseWriter.WriteHeader(statusCode)
 		return
 	}
@@ -145,8 +198,23 @@ func (w *proxyResponseCoalescer) WriteHeader(statusCode int) {
 }
 
 func (w *proxyResponseCoalescer) Write(p []byte) (int, error) {
-	if !w.enabled.Load() {
+	mode := proxyResponseCoalescingMode(w.mode.Load())
+	if mode == proxyResponseCoalescingDisabled {
 		return w.ResponseWriter.Write(p)
+	}
+	if mode == proxyResponseCoalescingAdaptive {
+		started := time.Now()
+		n, err := w.ResponseWriter.Write(p)
+		if err == nil && n != len(p) {
+			err = io.ErrShortWrite
+		}
+		if err == nil && time.Since(started) >= proxyResponseCoalesceSlowWrite {
+			w.mu.Lock()
+			w.preferMax = true
+			w.mode.Store(uint32(proxyResponseCoalescingBuffered))
+			w.mu.Unlock()
+		}
+		return n, err
 	}
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -157,33 +225,53 @@ func (w *proxyResponseCoalescer) Write(p []byte) (int, error) {
 	if w.flushError != nil {
 		return 0, w.flushError
 	}
-	if len(p) >= proxyResponseDirectWriteSize {
+	if len(p) >= proxyResponseDirectWriteSize && !w.preferMax {
 		if err := w.flushBufferLocked(); err != nil {
 			return 0, err
 		}
+		started := time.Now()
 		n, err := w.ResponseWriter.Write(p)
+		if err == nil && time.Since(started) >= proxyResponseCoalesceSlowWrite {
+			w.preferMax = true
+		}
 		if err == nil && n != len(p) {
 			err = io.ErrShortWrite
 		}
 		if err != nil {
 			w.flushError = err
 		}
-		w.scheduleFlushLocked()
+		if !w.adaptive {
+			w.scheduleFlushLocked()
+		}
 		return n, err
 	}
 	if w.buffer == nil {
-		w.buffer = acquireProxyResponseCoalesceBuffer()
+		if w.preferMax {
+			w.buffer = acquireExactSizeBuffer(&proxyResponseCoalesceBufferPool)
+		} else {
+			w.buffer = acquireProxyResponseCoalesceBuffer()
+		}
+	} else if w.preferMax && cap(w.buffer) < proxyResponseCoalesceBufferSize {
+		w.buffer = promoteProxyResponseCoalesceBuffer(w.buffer)
 	}
 
 	accepted := 0
 	for len(p) > 0 {
 		available := cap(w.buffer) - len(w.buffer)
 		if available == 0 {
-			if cap(w.buffer) >= proxyResponseCoalesceBufferSize {
+			switch {
+			case cap(w.buffer) >= proxyResponseCoalesceBufferSize:
 				if err := w.flushBufferLocked(); err != nil {
 					return accepted, err
 				}
-			} else {
+			case cap(w.buffer) >= proxyResponseCoalesceMediumBufferSize:
+				if err := w.flushBufferLocked(); err != nil {
+					return accepted, err
+				}
+				if w.preferMax {
+					w.buffer = promoteProxyResponseCoalesceBuffer(w.buffer)
+				}
+			default:
 				w.buffer = growProxyResponseCoalesceBuffer(w.buffer)
 			}
 			available = cap(w.buffer) - len(w.buffer)
@@ -198,8 +286,8 @@ func (w *proxyResponseCoalescer) Write(p []byte) (int, error) {
 		accepted += next
 
 		// Smaller tiers grow into the next size class; only a full max-size
-		// buffer is flushed immediately (matching the previous single-tier
-		// behavior where the 1 MiB buffer was written as soon as it filled).
+		// buffer is flushed immediately. Fast downstreams stay on the medium
+		// tier; only observed backpressure promotes a response to this tier.
 		if len(w.buffer) == cap(w.buffer) && cap(w.buffer) >= proxyResponseCoalesceBufferSize {
 			if err := w.flushBufferLocked(); err != nil {
 				return accepted, err
@@ -215,7 +303,8 @@ func (w *proxyResponseCoalescer) Flush() {
 }
 
 func (w *proxyResponseCoalescer) FlushError() error {
-	if !w.enabled.Load() {
+	mode := proxyResponseCoalescingMode(w.mode.Load())
+	if mode == proxyResponseCoalescingDisabled || mode == proxyResponseCoalescingAdaptive {
 		return http.NewResponseController(w.ResponseWriter).Flush()
 	}
 	w.mu.Lock()
@@ -223,6 +312,12 @@ func (w *proxyResponseCoalescer) FlushError() error {
 
 	if w.closed || w.flushError != nil {
 		return w.flushError
+	}
+	if w.adaptive {
+		if err := w.flushBufferLocked(); err != nil {
+			return err
+		}
+		return http.NewResponseController(w.ResponseWriter).Flush()
 	}
 	w.scheduleFlushLocked()
 	return nil
@@ -259,7 +354,15 @@ func (w *proxyResponseCoalescer) flushBufferLocked() error {
 	if len(w.buffer) == 0 {
 		return nil
 	}
+	capacity := cap(w.buffer)
+	started := time.Time{}
+	if capacity < proxyResponseCoalesceBufferSize {
+		started = time.Now()
+	}
 	n, err := w.ResponseWriter.Write(w.buffer)
+	if err == nil && !started.IsZero() && time.Since(started) >= proxyResponseCoalesceSlowWrite {
+		w.preferMax = true
+	}
 	if err == nil && n != len(w.buffer) {
 		err = io.ErrShortWrite
 	}
@@ -271,7 +374,11 @@ func (w *proxyResponseCoalescer) flushBufferLocked() error {
 }
 
 func (w *proxyResponseCoalescer) finish(completed bool) {
-	if w == nil || !w.enabled.Load() {
+	if w == nil {
+		return
+	}
+	mode := proxyResponseCoalescingMode(w.mode.Load())
+	if mode == proxyResponseCoalescingDisabled || mode == proxyResponseCoalescingAdaptive {
 		return
 	}
 
@@ -284,6 +391,10 @@ func (w *proxyResponseCoalescer) finish(completed bool) {
 	if w.timer != nil {
 		w.timer.Stop()
 		w.timer = nil
+	}
+	if w.adaptive && w.buffer == nil {
+		w.mu.Unlock()
+		return
 	}
 
 	if completed && w.flushError == nil {

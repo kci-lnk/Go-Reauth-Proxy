@@ -48,9 +48,13 @@ import (
 )
 
 const (
-	proxyCopyBufferSize               = 64 * 1024
-	trafficCounterFlushBytes          = 1024 * 1024
-	maxSignedAuthRequestBodyBytes int = 4 * 1024 * 1024
+	proxyCopyBufferSize                = 256 * 1024
+	proxyMaxIdleConnections            = 2048
+	proxyMaxIdleConnectionsPerHost     = 2048
+	proxyIdleConnectionTimeout         = 90 * time.Second
+	proxyTLSClientSessionCacheSize     = 256
+	trafficCounterFlushBytes           = 1024 * 1024
+	maxSignedAuthRequestBodyBytes  int = 4 * 1024 * 1024
 )
 
 var errAuthProxyRequestBodyTooLarge = stderrors.New("authentication request body is too large")
@@ -798,9 +802,9 @@ func normalizeRequestHost(host string) string {
 
 func newInternalTransport() *http.Transport {
 	transport := http.DefaultTransport.(*http.Transport).Clone()
-	transport.MaxIdleConns = 256
-	transport.MaxIdleConnsPerHost = 64
-	transport.IdleConnTimeout = 60 * time.Second
+	transport.MaxIdleConns = proxyMaxIdleConnections
+	transport.MaxIdleConnsPerHost = proxyMaxIdleConnectionsPerHost
+	transport.IdleConnTimeout = proxyIdleConnectionTimeout
 	transport.ForceAttemptHTTP2 = true
 	return transport
 }
@@ -834,7 +838,7 @@ func newProxyTransport() *http.Transport {
 	// Hardcode skipping upstream TLS verification for reverse-proxy targets.
 	transport.TLSClientConfig = &tls.Config{
 		InsecureSkipVerify: true,
-		ClientSessionCache: tls.NewLRUClientSessionCache(128),
+		ClientSessionCache: tls.NewLRUClientSessionCache(proxyTLSClientSessionCacheSize),
 	}
 	transport.TLSHandshakeTimeout = 10 * time.Second
 	// Let long-running admin/API requests such as local service discovery

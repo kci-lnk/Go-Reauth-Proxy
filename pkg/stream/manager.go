@@ -34,9 +34,9 @@ const (
 	udpLargePacketBufferSize   = 64 * 1024
 	udpSessionQueuePacketLimit = 32
 	udpSessionQueueByteLimit   = 256 * 1024
-	udpListenerQueueByteLimit  = 16 * 1024 * 1024
+	udpListenerQueueByteLimit  = 64 * 1024 * 1024
 	udpSessionInitLimit        = 128
-	udpListenerSessionLimit    = 2048
+	udpListenerSessionLimit    = 8192
 )
 
 type udpSmallPacketBuffer [udpSmallPacketBufferSize]byte

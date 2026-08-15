@@ -422,6 +422,10 @@ func serveReverseProxyWithResponseCoalescing(proxy *httputil.ReverseProxy, w htt
 	}
 
 	writer := newProxyResponseCoalescer(w)
+	serveReverseProxyWithResponseCoalescer(proxy, writer, r)
+}
+
+func serveReverseProxyWithResponseCoalescer(proxy *httputil.ReverseProxy, writer *proxyResponseCoalescer, r *http.Request) {
 	proxyCopy := *proxy
 	originalModifyResponse := proxy.ModifyResponse
 	proxyCopy.ModifyResponse = func(resp *http.Response) error {

@@ -505,8 +505,10 @@ func TestServeReverseProxyWithResponseCoalescing(t *testing.T) {
 	}
 
 	dst := newCoalescingTestResponseWriter()
+	writer := newProxyResponseCoalescer(dst)
+	writer.maxLatency = time.Hour
 	request := httptest.NewRequest(http.MethodGet, "http://proxy.test/download", nil)
-	serveReverseProxyWithResponseCoalescing(proxy, dst, request)
+	serveReverseProxyWithResponseCoalescer(proxy, writer, request)
 
 	writes, flushes := dst.snapshot()
 	wantWrites := proxyResponseCoalesceBufferSize / proxyResponseCoalesceMediumBufferSize

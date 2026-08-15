@@ -12,29 +12,34 @@ import (
 var latencyUpperBoundsMS = [...]uint64{1, 5, 10, 25, 50, 100, 250, 500, 1000, 2500, 5000}
 
 type counters struct {
-	requestTotal         atomic.Uint64
-	request2xx           atomic.Uint64
-	request3xx           atomic.Uint64
-	request4xx           atomic.Uint64
-	request5xx           atomic.Uint64
-	requestLatency       [len(latencyUpperBoundsMS) + 1]atomic.Uint64
-	authBridgeRequests   atomic.Uint64
-	authBridgeQueueDrops atomic.Uint64
-	authBridgeQueueDepth atomic.Uint64
-	authBridgeQueuePeak  atomic.Uint64
-	authCacheHits        atomic.Uint64
-	authCacheMisses      atomic.Uint64
-	ruleEvaluations      atomic.Uint64
-	ruleMatches          atomic.Uint64
-	grantIssued          atomic.Uint64
-	grantRenewed         atomic.Uint64
-	grantReused          atomic.Uint64
-	grantTransient       atomic.Uint64
-	grantVersionRejected atomic.Uint64
-	grantRateLimited     atomic.Uint64
-	grantStorageErrors   atomic.Uint64
-	udpQueueDrops        atomic.Uint64
-	gatewayLogDrops      atomic.Uint64
+	requestTotal             atomic.Uint64
+	request2xx               atomic.Uint64
+	request3xx               atomic.Uint64
+	request4xx               atomic.Uint64
+	request5xx               atomic.Uint64
+	requestLatency           [len(latencyUpperBoundsMS) + 1]atomic.Uint64
+	authBridgeRequests       atomic.Uint64
+	authBridgeQueueDrops     atomic.Uint64
+	authBridgeQueueDepth     atomic.Uint64
+	authBridgeQueuePeak      atomic.Uint64
+	authCacheHits            atomic.Uint64
+	authCacheMisses          atomic.Uint64
+	ruleEvaluations          atomic.Uint64
+	ruleMatches              atomic.Uint64
+	grantIssued              atomic.Uint64
+	grantRenewed             atomic.Uint64
+	grantReused              atomic.Uint64
+	grantTransient           atomic.Uint64
+	grantVersionRejected     atomic.Uint64
+	grantRateLimited         atomic.Uint64
+	grantStorageErrors       atomic.Uint64
+	udpQueueDrops            atomic.Uint64
+	gatewayLogDrops          atomic.Uint64
+	streamProbeVerified      atomic.Uint64
+	streamProbeFailed        atomic.Uint64
+	streamValidationMismatch atomic.Uint64
+	streamValidationTimeout  atomic.Uint64
+	streamBypassHits         atomic.Uint64
 }
 
 var global counters
@@ -258,6 +263,34 @@ func RecordUDPQueueDrop() {
 		global.udpQueueDrops.Add(1)
 	}
 }
+
+func RecordStreamProbe(verified bool) {
+	if !enabled.Load() {
+		return
+	}
+	if verified {
+		global.streamProbeVerified.Add(1)
+	} else {
+		global.streamProbeFailed.Add(1)
+	}
+}
+
+func RecordStreamValidation(decision string) {
+	if !enabled.Load() {
+		return
+	}
+	if decision == "timeout" {
+		global.streamValidationTimeout.Add(1)
+	} else if decision != "matched" {
+		global.streamValidationMismatch.Add(1)
+	}
+}
+
+func RecordStreamBypassHit() {
+	if enabled.Load() {
+		global.streamBypassHits.Add(1)
+	}
+}
 func RecordGatewayLogDrop() {
 	if enabled.Load() {
 		global.gatewayLogDrops.Add(1)
@@ -298,6 +331,13 @@ type snapshot struct {
 	GatewayLog struct {
 		QueueDrops uint64 `json:"queue_drops"`
 	} `json:"gateway_log"`
+	Stream struct {
+		ProbeVerified      uint64 `json:"probe_verified"`
+		ProbeFailed        uint64 `json:"probe_failed"`
+		ValidationMismatch uint64 `json:"validation_mismatch"`
+		ValidationTimeout  uint64 `json:"validation_timeout"`
+		BypassHits         uint64 `json:"bypass_hits"`
+	} `json:"stream"`
 	Runtime struct {
 		Goroutines   int    `json:"goroutines"`
 		HeapAlloc    uint64 `json:"heap_alloc_bytes"`
@@ -344,6 +384,11 @@ func Snapshot() any {
 	result.Auth.SubdomainGrantStorageErrors = global.grantStorageErrors.Load()
 	result.UDP.QueueDrops = global.udpQueueDrops.Load()
 	result.GatewayLog.QueueDrops = global.gatewayLogDrops.Load()
+	result.Stream.ProbeVerified = global.streamProbeVerified.Load()
+	result.Stream.ProbeFailed = global.streamProbeFailed.Load()
+	result.Stream.ValidationMismatch = global.streamValidationMismatch.Load()
+	result.Stream.ValidationTimeout = global.streamValidationTimeout.Load()
+	result.Stream.BypassHits = global.streamBypassHits.Load()
 	var memory runtime.MemStats
 	runtime.ReadMemStats(&memory)
 	result.Runtime.Goroutines = runtime.NumGoroutine()

@@ -405,19 +405,142 @@ func protoToStreamAvailability(value *pb.StreamAvailability) *models.StreamAvail
 	}
 }
 
+func streamServiceProfileToProto(value models.StreamServiceProfile) *pb.StreamServiceProfile {
+	metadata := make(map[string]string, len(value.Metadata))
+	for key, item := range value.Metadata {
+		metadata[key] = item
+	}
+	return &pb.StreamServiceProfile{
+		ServiceId:         value.ServiceID,
+		ServiceFamily:     value.ServiceFamily,
+		DeviceRole:        value.DeviceRole,
+		ServiceConfidence: value.ServiceConfidence,
+		RoleConfidence:    value.RoleConfidence,
+		Source:            value.Source,
+		ObservedAt:        value.ObservedAt,
+		ClassifierVersion: value.ClassifierVersion,
+		TargetFingerprint: value.TargetFingerprint,
+		EvidenceCodes:     append([]string(nil), value.EvidenceCodes...),
+		StrictCapable:     value.StrictCapable,
+		Metadata:          metadata,
+	}
+}
+
+func protoToStreamServiceProfile(value *pb.StreamServiceProfile) models.StreamServiceProfile {
+	if value == nil {
+		return models.StreamServiceProfile{}
+	}
+	var metadata map[string]string
+	if len(value.GetMetadata()) > 0 {
+		metadata = make(map[string]string, len(value.GetMetadata()))
+		for key, item := range value.GetMetadata() {
+			metadata[key] = item
+		}
+	}
+	return models.StreamServiceProfile{
+		ServiceID:         value.GetServiceId(),
+		ServiceFamily:     value.GetServiceFamily(),
+		DeviceRole:        value.GetDeviceRole(),
+		ServiceConfidence: value.GetServiceConfidence(),
+		RoleConfidence:    value.GetRoleConfidence(),
+		Source:            value.GetSource(),
+		ObservedAt:        value.GetObservedAt(),
+		ClassifierVersion: value.GetClassifierVersion(),
+		TargetFingerprint: value.GetTargetFingerprint(),
+		EvidenceCodes:     append([]string(nil), value.GetEvidenceCodes()...),
+		StrictCapable:     value.GetStrictCapable(),
+		Metadata:          metadata,
+	}
+}
+
+func streamBypassPolicyToProto(value models.StreamBypassPolicy) *pb.StreamBypassPolicy {
+	groups := make([]*pb.StreamBypassGroup, 0, len(value.Groups))
+	for _, group := range value.Groups {
+		conditions := make([]*pb.StreamBypassCondition, 0, len(group.Conditions))
+		for _, condition := range group.Conditions {
+			conditions = append(conditions, &pb.StreamBypassCondition{
+				Id:       condition.ID,
+				Target:   condition.Target,
+				Operator: condition.Operator,
+				Cidrs:    append([]string(nil), condition.CIDRs...),
+				PolicyId: condition.PolicyID,
+			})
+		}
+		groups = append(groups, &pb.StreamBypassGroup{Id: group.ID, Conditions: conditions})
+	}
+	return &pb.StreamBypassPolicy{
+		Enabled:            value.Enabled,
+		PolicyVersion:      value.PolicyVersion,
+		Groups:             groups,
+		BroadRuleConfirmed: value.BroadRuleConfirmed,
+	}
+}
+
+func protoToStreamBypassPolicy(value *pb.StreamBypassPolicy) models.StreamBypassPolicy {
+	if value == nil {
+		return models.StreamBypassPolicy{}
+	}
+	var groups []models.StreamBypassGroup
+	if len(value.GetGroups()) > 0 {
+		groups = make([]models.StreamBypassGroup, 0, len(value.GetGroups()))
+	}
+	for _, group := range value.GetGroups() {
+		if group == nil {
+			continue
+		}
+		var conditions []models.StreamBypassCondition
+		if len(group.GetConditions()) > 0 {
+			conditions = make([]models.StreamBypassCondition, 0, len(group.GetConditions()))
+		}
+		for _, condition := range group.GetConditions() {
+			if condition == nil {
+				continue
+			}
+			conditions = append(conditions, models.StreamBypassCondition{
+				ID:       condition.GetId(),
+				Target:   condition.GetTarget(),
+				Operator: condition.GetOperator(),
+				CIDRs:    append([]string(nil), condition.GetCidrs()...),
+				PolicyID: condition.GetPolicyId(),
+			})
+		}
+		groups = append(groups, models.StreamBypassGroup{ID: group.GetId(), Conditions: conditions})
+	}
+	return models.StreamBypassPolicy{
+		Enabled:            value.GetEnabled(),
+		PolicyVersion:      value.GetPolicyVersion(),
+		Groups:             groups,
+		BroadRuleConfirmed: value.GetBroadRuleConfirmed(),
+	}
+}
+
 func streamRulesToProto(rules []models.StreamRule, availability *models.StreamAvailability) *pb.StreamRules {
+	return streamRulesBundleToProto(rules, availability, nil)
+}
+
+func streamRulesBundleToProto(
+	rules []models.StreamRule,
+	availability *models.StreamAvailability,
+	policies map[string]models.CompiledIPSet,
+) *pb.StreamRules {
 	items := make([]*pb.StreamRule, 0, len(rules))
 	for _, rule := range rules {
 		items = append(items, &pb.StreamRule{
-			Protocol:   rule.Protocol,
-			ListenPort: int32(rule.ListenPort),
-			Target:     rule.Target,
-			UseAuth:    rule.UseAuth,
+			Protocol:       rule.Protocol,
+			ListenPort:     int32(rule.ListenPort),
+			Target:         rule.Target,
+			UseAuth:        rule.UseAuth,
+			Disabled:       rule.Disabled,
+			ValidationMode: rule.ValidationMode,
+			ServiceProfile: streamServiceProfileToProto(rule.ServiceProfile),
+			BypassPolicy:   streamBypassPolicyToProto(rule.BypassPolicy),
+			ProbeStatus:    rule.ProbeStatus,
 		})
 	}
 	return &pb.StreamRules{
-		Items:        items,
-		Availability: streamAvailabilityToProto(availability),
+		Items:          items,
+		Availability:   streamAvailabilityToProto(availability),
+		AccessPolicies: visibilityPoliciesToProto(policies),
 	}
 }
 
@@ -431,10 +554,15 @@ func protoToStreamRules(req *pb.StreamRules) []models.StreamRule {
 			continue
 		}
 		rules = append(rules, models.StreamRule{
-			Protocol:   rule.GetProtocol(),
-			ListenPort: int(rule.GetListenPort()),
-			Target:     rule.GetTarget(),
-			UseAuth:    rule.GetUseAuth(),
+			Protocol:       rule.GetProtocol(),
+			ListenPort:     int(rule.GetListenPort()),
+			Target:         rule.GetTarget(),
+			UseAuth:        rule.GetUseAuth(),
+			Disabled:       rule.GetDisabled(),
+			ValidationMode: rule.GetValidationMode(),
+			ServiceProfile: protoToStreamServiceProfile(rule.GetServiceProfile()),
+			BypassPolicy:   protoToStreamBypassPolicy(rule.GetBypassPolicy()),
+			ProbeStatus:    rule.GetProbeStatus(),
 		})
 	}
 	return rules
@@ -998,6 +1126,10 @@ func logEntryToProto(entry gatewaylog.Entry) *pb.GatewayLogEntry {
 	for _, id := range entry.WAFRuleIDs {
 		ruleIDs = append(ruleIDs, int32(id))
 	}
+	var validationEvidence []string
+	if entry.ValidationEvidence != "" {
+		validationEvidence = []string{entry.ValidationEvidence}
+	}
 	return &pb.GatewayLogEntry{
 		Time:                    entry.Time,
 		Level:                   entry.Level,
@@ -1045,6 +1177,14 @@ func logEntryToProto(entry gatewaylog.Entry) *pb.GatewayLogEntry {
 		AuthRuleGroupId:         entry.AuthRuleGroupID,
 		AuthGrantState:          entry.AuthGrantState,
 		ClientIp:                gatewaylog.EffectiveClientIP(entry),
+		ExpectedService:         entry.ExpectedService,
+		DetectedService:         entry.DetectedService,
+		ServiceConfidence:       entry.ServiceConfidence,
+		DeviceRole:              entry.DeviceRole,
+		ValidationDecision:      entry.ValidationDecision,
+		ValidationEvidence:      validationEvidence,
+		BypassPolicyVersion:     entry.BypassPolicyVersion,
+		BypassGroupId:           entry.BypassGroupID,
 	}
 }
 

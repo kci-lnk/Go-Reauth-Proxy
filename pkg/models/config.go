@@ -184,15 +184,72 @@ type BasicAuthConfig struct {
 }
 
 const (
-	StreamProtocolTCP = "tcp"
-	StreamProtocolUDP = "udp"
+	StreamProtocolTCP      = "tcp"
+	StreamProtocolUDP      = "udp"
+	StreamValidationOff    = "off"
+	StreamValidationStrict = "strict"
 )
 
 type StreamRule struct {
-	Protocol   string `json:"protocol" example:"tcp"`
-	ListenPort int    `json:"listen_port" example:"3306"`
-	Target     string `json:"target" example:"127.0.0.1:3306"`
-	UseAuth    bool   `json:"use_auth" example:"true"`
+	Protocol       string               `json:"protocol" example:"tcp"`
+	ListenPort     int                  `json:"listen_port" example:"3306"`
+	Target         string               `json:"target" example:"127.0.0.1:3306"`
+	UseAuth        bool                 `json:"use_auth" example:"true"`
+	Disabled       bool                 `json:"disabled,omitempty"`
+	ValidationMode string               `json:"validation_mode,omitempty"`
+	ServiceProfile StreamServiceProfile `json:"service_profile,omitempty"`
+	BypassPolicy   StreamBypassPolicy   `json:"bypass_policy,omitempty"`
+	ProbeStatus    string               `json:"probe_status,omitempty"`
+}
+
+type StreamServiceProfile struct {
+	ServiceID         string            `json:"service_id,omitempty"`
+	ServiceFamily     string            `json:"service_family,omitempty"`
+	DeviceRole        string            `json:"device_role,omitempty"`
+	ServiceConfidence string            `json:"service_confidence,omitempty"`
+	RoleConfidence    string            `json:"role_confidence,omitempty"`
+	Source            string            `json:"source,omitempty"`
+	ObservedAt        string            `json:"observed_at,omitempty"`
+	ClassifierVersion string            `json:"classifier_version,omitempty"`
+	TargetFingerprint string            `json:"target_fingerprint,omitempty"`
+	EvidenceCodes     []string          `json:"evidence_codes,omitempty"`
+	StrictCapable     bool              `json:"strict_capable,omitempty"`
+	Metadata          map[string]string `json:"metadata,omitempty"`
+}
+
+type StreamBypassCondition struct {
+	ID       string   `json:"id"`
+	Target   string   `json:"target"`
+	Operator string   `json:"operator"`
+	CIDRs    []string `json:"cidrs,omitempty"` // Deprecated compatibility input.
+	PolicyID string   `json:"policy_id,omitempty"`
+}
+
+type StreamBypassGroup struct {
+	ID         string                  `json:"id"`
+	Conditions []StreamBypassCondition `json:"conditions"`
+}
+
+type StreamBypassPolicy struct {
+	Enabled            bool                `json:"enabled,omitempty"`
+	PolicyVersion      string              `json:"policy_version,omitempty"`
+	Groups             []StreamBypassGroup `json:"groups,omitempty"`
+	BroadRuleConfirmed bool                `json:"broad_rule_confirmed,omitempty"`
+}
+
+type StreamServiceDescriptor struct {
+	ServiceID            string   `json:"service_id"`
+	DisplayName          string   `json:"display_name"`
+	ServiceFamily        string   `json:"service_family"`
+	Transports           []string `json:"transports"`
+	ActiveProbeSupported bool     `json:"active_probe_supported"`
+	StrictCapable        bool     `json:"strict_capable"`
+}
+
+type StreamProbeResult struct {
+	Status  string               `json:"status"`
+	Profile StreamServiceProfile `json:"profile,omitempty"`
+	Message string               `json:"message,omitempty"`
 }
 
 type AuthConfig struct {

@@ -109,6 +109,7 @@ type Handler struct {
 	HostRules               []models.HostRule
 	VisibilityPolicies      map[string]models.CompiledIPSet
 	StreamRules             []models.StreamRule
+	StreamAccessPolicies    map[string]models.CompiledIPSet
 	StreamAvailability      *models.StreamAvailability
 	DefaultRoute            string
 	AuthConfig              models.AuthConfig
@@ -778,7 +779,26 @@ func copyStringMap(values map[string]string) map[string]string {
 
 func copyStreamRule(rule models.StreamRule) *models.StreamRule {
 	r := rule
+	r.ServiceProfile.EvidenceCodes = append([]string(nil), rule.ServiceProfile.EvidenceCodes...)
+	r.ServiceProfile.Metadata = copyStringMap(rule.ServiceProfile.Metadata)
+	r.BypassPolicy.Groups = make([]models.StreamBypassGroup, 0, len(rule.BypassPolicy.Groups))
+	for _, group := range rule.BypassPolicy.Groups {
+		nextGroup := models.StreamBypassGroup{ID: group.ID, Conditions: make([]models.StreamBypassCondition, 0, len(group.Conditions))}
+		for _, condition := range group.Conditions {
+			condition.CIDRs = append([]string(nil), condition.CIDRs...)
+			nextGroup.Conditions = append(nextGroup.Conditions, condition)
+		}
+		r.BypassPolicy.Groups = append(r.BypassPolicy.Groups, nextGroup)
+	}
 	return &r
+}
+
+func copyStreamRules(rules []models.StreamRule) []models.StreamRule {
+	copied := make([]models.StreamRule, 0, len(rules))
+	for _, rule := range rules {
+		copied = append(copied, *copyStreamRule(rule))
+	}
+	return copied
 }
 
 func normalizeRequestHost(host string) string {
@@ -1754,6 +1774,11 @@ func NewHandler(adminPort int, proxyPort int, cfgManager *config.Manager, initia
 		initialPolicies = make(map[string]models.CompiledIPSet)
 		initialCompiledPolicies = make(map[string]*compiledipset.Set)
 	}
+	initialStreamPolicies, _, streamPolicyErr := decodeVisibilityPolicies(initialCfg.StreamAccessPolicies)
+	if streamPolicyErr != nil {
+		log.Printf("Failed to decode initial stream access policies: %v", streamPolicyErr)
+		initialStreamPolicies = make(map[string]models.CompiledIPSet)
+	}
 	for i := range initialHostRules {
 		visibility, err := prepareHostVisibilityPolicy(
 			initialHostRules[i].Visibility,
@@ -1794,6 +1819,7 @@ func NewHandler(adminPort int, proxyPort int, cfgManager *config.Manager, initia
 		HostRules:                  initialHostRules,
 		VisibilityPolicies:         initialPolicies,
 		StreamRules:                initialCfg.StreamRules,
+		StreamAccessPolicies:       initialStreamPolicies,
 		StreamAvailability:         models.CopyDailyAvailability(initialCfg.StreamAvailability),
 		DefaultRoute:               initialCfg.DefaultRoute,
 		AuthConfig:                 initialCfg.AuthConfig,
@@ -1970,8 +1996,7 @@ func (h *Handler) saveConfigLocked() error {
 	rulesCopy := make([]models.Rule, len(h.Rules))
 	copy(rulesCopy, h.Rules)
 	hostRulesCopy := copyHostRulesForPersistence(h.HostRules)
-	streamRulesCopy := make([]models.StreamRule, len(h.StreamRules))
-	copy(streamRulesCopy, h.StreamRules)
+	streamRulesCopy := copyStreamRules(h.StreamRules)
 	streamAvailabilityCopy := models.CopyDailyAvailability(h.StreamAvailability)
 
 	if err := h.configManager.Update(func(conf *config.AppConfig) error {
@@ -1979,6 +2004,7 @@ func (h *Handler) saveConfigLocked() error {
 		conf.HostRules = hostRulesCopy
 		conf.VisibilityPolicies = copyVisibilityPolicies(h.VisibilityPolicies)
 		conf.StreamRules = streamRulesCopy
+		conf.StreamAccessPolicies = copyVisibilityPolicies(h.StreamAccessPolicies)
 		conf.StreamAvailability = streamAvailabilityCopy
 		conf.DefaultRoute = h.DefaultRoute
 		conf.AuthConfig = h.AuthConfig
@@ -2065,6 +2091,7 @@ func (h *Handler) ResetAllData(resetConfig *config.AppConfig) error {
 	resetConfig.HostRules = []models.HostRule{}
 	resetConfig.VisibilityPolicies = map[string]models.CompiledIPSet{}
 	resetConfig.StreamRules = []models.StreamRule{}
+	resetConfig.StreamAccessPolicies = map[string]models.CompiledIPSet{}
 	resetConfig.StreamAvailability = nil
 	resetConfig.Logging = loggingConfig
 	resetConfig.ForwardedHeaders = forwardedHeaders
@@ -2101,6 +2128,7 @@ func (h *Handler) ResetAllData(resetConfig *config.AppConfig) error {
 	h.HostRules = []models.HostRule{}
 	h.VisibilityPolicies = map[string]models.CompiledIPSet{}
 	h.StreamRules = []models.StreamRule{}
+	h.StreamAccessPolicies = map[string]models.CompiledIPSet{}
 	h.StreamAvailability = nil
 	h.DefaultRoute = resetConfig.DefaultRoute
 	h.AuthConfig = resetConfig.AuthConfig
@@ -3160,34 +3188,6 @@ func (h *Handler) checkSafeStreamTarget(protocol string, target string) (string,
 	return host, portNum, nil
 }
 
-func (h *Handler) normalizeStreamRule(newRule models.StreamRule) (models.StreamRule, error) {
-	newRule.Target = strings.TrimSpace(newRule.Target)
-	var err error
-	newRule.Protocol, err = normalizeStreamProtocol(newRule.Protocol)
-	if err != nil {
-		return models.StreamRule{}, err
-	}
-
-	if newRule.ListenPort <= 0 || newRule.ListenPort > 65535 {
-		return models.StreamRule{}, fmt.Errorf("listen_port must be between 1 and 65535")
-	}
-	if reservedName := h.reservedStreamPortName(newRule); reservedName != "" {
-		return models.StreamRule{}, fmt.Errorf("listen_port %d is reserved for the %s", newRule.ListenPort, reservedName)
-	}
-	if newRule.Target == "" {
-		return models.StreamRule{}, fmt.Errorf("cannot add stream rule with empty target")
-	}
-	targetHost, targetPort, err := h.checkSafeStreamTarget(newRule.Protocol, newRule.Target)
-	if err != nil {
-		return models.StreamRule{}, fmt.Errorf("invalid target: %v", err)
-	}
-	if newRule.ListenPort == targetPort && isLoopbackOrUnspecifiedHost(targetHost) {
-		return models.StreamRule{}, fmt.Errorf("cannot target the same local listen_port %d", newRule.ListenPort)
-	}
-
-	return newRule, nil
-}
-
 func (h *Handler) RemoveRule(path string) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -3793,43 +3793,38 @@ func (h *Handler) GetVisibilityPoliciesForHostRules() map[string]models.Compiled
 	return referenced
 }
 
-func (h *Handler) ValidateStreamRules(rules []models.StreamRule) ([]models.StreamRule, error) {
-	normalized := make([]models.StreamRule, 0, len(rules))
-	seenRules := make(map[string]struct{}, len(rules))
-
-	for _, rule := range rules {
-		nextRule, err := h.normalizeStreamRule(rule)
-		if err != nil {
-			return nil, err
-		}
-		key := streamRuleMapKey(nextRule)
-		if _, exists := seenRules[key]; exists {
-			return nil, fmt.Errorf("duplicate stream rule for %s", key)
-		}
-		seenRules[key] = struct{}{}
-		normalized = append(normalized, nextRule)
-	}
-
-	return normalized, nil
-}
-
 func (h *Handler) SetStreamRules(rules []models.StreamRule) error {
-	return h.setStreamRulesConfig(rules, nil, false)
+	return h.setStreamRulesConfig(rules, nil, nil, false, false)
 }
 
 func (h *Handler) SetStreamRulesConfig(
 	rules []models.StreamRule,
 	availability *models.StreamAvailability,
 ) error {
-	return h.setStreamRulesConfig(rules, availability, true)
+	return h.setStreamRulesConfig(rules, availability, nil, true, false)
+}
+
+func (h *Handler) SetStreamRulesBundle(
+	rules []models.StreamRule,
+	availability *models.StreamAvailability,
+	policies map[string]models.CompiledIPSet,
+) error {
+	return h.setStreamRulesConfig(rules, availability, policies, true, true)
 }
 
 func (h *Handler) setStreamRulesConfig(
 	rules []models.StreamRule,
 	availability *models.StreamAvailability,
+	policies map[string]models.CompiledIPSet,
 	replaceAvailability bool,
+	replacePolicies bool,
 ) error {
-	normalized, err := h.ValidateStreamRules(rules)
+	if !replacePolicies {
+		h.mu.RLock()
+		policies = copyVisibilityPolicies(h.StreamAccessPolicies)
+		h.mu.RUnlock()
+	}
+	normalized, normalizedPolicies, err := h.ValidateStreamRulesBundle(rules, policies)
 	if err != nil {
 		return err
 	}
@@ -3846,6 +3841,7 @@ func (h *Handler) setStreamRulesConfig(
 
 	previousRules := h.StreamRules
 	previousAvailability := h.StreamAvailability
+	previousPolicies := h.StreamAccessPolicies
 	effectiveAvailability := previousAvailability
 	if replaceAvailability {
 		effectiveAvailability = normalizedAvailability
@@ -3853,6 +3849,9 @@ func (h *Handler) setStreamRulesConfig(
 	if err := h.commitConfigMutationLocked(
 		func() {
 			h.StreamRules = normalized
+			if replacePolicies {
+				h.StreamAccessPolicies = normalizedPolicies
+			}
 			if replaceAvailability {
 				h.StreamAvailability = models.CopyDailyAvailability(normalizedAvailability)
 			}
@@ -3860,6 +3859,7 @@ func (h *Handler) setStreamRulesConfig(
 		func() {
 			h.StreamRules = previousRules
 			h.StreamAvailability = previousAvailability
+			h.StreamAccessPolicies = previousPolicies
 		},
 		nil,
 	); err != nil {
@@ -3880,15 +3880,18 @@ func (h *Handler) FlushStreamRules() error {
 
 	previousRules := h.StreamRules
 	previousAvailability := h.StreamAvailability
+	previousPolicies := h.StreamAccessPolicies
 	next := make([]models.StreamRule, 0)
 	if err := h.commitConfigMutationLocked(
 		func() {
 			h.StreamRules = next
 			h.StreamAvailability = nil
+			h.StreamAccessPolicies = map[string]models.CompiledIPSet{}
 		},
 		func() {
 			h.StreamRules = previousRules
 			h.StreamAvailability = previousAvailability
+			h.StreamAccessPolicies = previousPolicies
 		},
 		nil,
 	); err != nil {
@@ -3906,12 +3909,16 @@ func (h *Handler) GetStreamRules() []models.StreamRule {
 }
 
 func (h *Handler) GetStreamRulesConfig() ([]models.StreamRule, *models.StreamAvailability) {
+	rules, availability, _ := h.GetStreamRulesBundle()
+	return rules, availability
+}
+
+func (h *Handler) GetStreamRulesBundle() ([]models.StreamRule, *models.StreamAvailability, map[string]models.CompiledIPSet) {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 
-	rules := make([]models.StreamRule, len(h.StreamRules))
-	copy(rules, h.StreamRules)
-	return rules, models.CopyDailyAvailability(h.StreamAvailability)
+	rules := copyStreamRules(h.StreamRules)
+	return rules, models.CopyDailyAvailability(h.StreamAvailability), copyVisibilityPolicies(h.StreamAccessPolicies)
 }
 
 func (h *Handler) GetStreamAvailability() *models.StreamAvailability {

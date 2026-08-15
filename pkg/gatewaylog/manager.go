@@ -87,6 +87,14 @@ type Entry struct {
 	AuthRuleGroupID         string `json:"auth_rule_group_id,omitempty"`
 	AuthGrantState          string `json:"auth_grant_state,omitempty"`
 	ClientIP                string `json:"client_ip,omitempty"`
+	ExpectedService         string `json:"expected_service,omitempty"`
+	DetectedService         string `json:"detected_service,omitempty"`
+	ServiceConfidence       string `json:"service_confidence,omitempty"`
+	DeviceRole              string `json:"device_role,omitempty"`
+	ValidationDecision      string `json:"validation_decision,omitempty"`
+	ValidationEvidence      string `json:"validation_evidence,omitempty"`
+	BypassPolicyVersion     string `json:"bypass_policy_version,omitempty"`
+	BypassGroupID           string `json:"bypass_group_id,omitempty"`
 }
 
 type ConfigInfo struct {

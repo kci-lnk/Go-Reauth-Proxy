@@ -6,10 +6,12 @@ import (
 	"fmt"
 	"go-reauth-proxy/pkg/diagnostics"
 	"go-reauth-proxy/pkg/gatewaylog"
+	compiledipset "go-reauth-proxy/pkg/ipset"
 	"go-reauth-proxy/pkg/logger"
 	"go-reauth-proxy/pkg/models"
 	"go-reauth-proxy/pkg/proxy"
 	"go-reauth-proxy/pkg/rpcbridge"
+	"go-reauth-proxy/pkg/streamprobe"
 	"io"
 	"log"
 	"net"
@@ -56,19 +58,23 @@ var (
 )
 
 type Manager struct {
-	mu           sync.RWMutex
-	handler      *proxy.Handler
-	listeners    map[streamRuleKey]managedListener
-	rules        map[streamRuleKey]models.StreamRule
-	availability *models.StreamAvailability
-	ruleSnapshot atomic.Pointer[streamRuleSnapshot]
-	now          func() time.Time
-	closed       bool
+	mu                     sync.RWMutex
+	handler                *proxy.Handler
+	listeners              map[streamRuleKey]managedListener
+	rules                  map[streamRuleKey]models.StreamRule
+	availability           *models.StreamAvailability
+	accessPolicies         map[string]models.CompiledIPSet
+	compiledAccessPolicies map[string]*compiledipset.Set
+	ruleSnapshot           atomic.Pointer[streamRuleSnapshot]
+	now                    func() time.Time
+	closed                 bool
 }
 
 type streamRuleSnapshot struct {
-	rules        map[streamRuleKey]models.StreamRule
-	availability *models.StreamAvailability
+	rules                  map[streamRuleKey]models.StreamRule
+	availability           *models.StreamAvailability
+	accessPolicies         map[string]models.CompiledIPSet
+	compiledAccessPolicies map[string]*compiledipset.Set
 }
 
 type streamRuleKey struct {
@@ -222,17 +228,19 @@ func udpPacketQueueFootprint(packet udpPacket) int {
 
 func NewManager(handler *proxy.Handler) *Manager {
 	m := &Manager{
-		handler:   handler,
-		listeners: make(map[streamRuleKey]managedListener),
-		rules:     make(map[streamRuleKey]models.StreamRule),
-		now:       time.Now,
+		handler:                handler,
+		listeners:              make(map[streamRuleKey]managedListener),
+		rules:                  make(map[streamRuleKey]models.StreamRule),
+		accessPolicies:         make(map[string]models.CompiledIPSet),
+		compiledAccessPolicies: make(map[string]*compiledipset.Set),
+		now:                    time.Now,
 	}
-	m.ruleSnapshot.Store(&streamRuleSnapshot{rules: m.rules})
+	m.ruleSnapshot.Store(&streamRuleSnapshot{rules: m.rules, accessPolicies: m.accessPolicies, compiledAccessPolicies: m.compiledAccessPolicies})
 	return m
 }
 
 func (m *Manager) Reconcile(rules []models.StreamRule) error {
-	return m.reconcile(rules, nil, false)
+	return m.reconcile(rules, nil, false, nil, nil, false)
 }
 
 func (m *Manager) ReconcileConfig(
@@ -243,13 +251,32 @@ func (m *Manager) ReconcileConfig(
 	if err != nil {
 		return err
 	}
-	return m.reconcile(rules, normalizedAvailability, true)
+	return m.reconcile(rules, normalizedAvailability, true, nil, nil, false)
+}
+
+func (m *Manager) ReconcileConfigBundle(
+	rules []models.StreamRule,
+	availability *models.StreamAvailability,
+	policies map[string]models.CompiledIPSet,
+) error {
+	normalizedAvailability, err := models.NormalizeDailyAvailability(availability)
+	if err != nil {
+		return err
+	}
+	normalizedPolicies, compiledPolicies, err := decodeStreamAccessPolicies(policies)
+	if err != nil {
+		return err
+	}
+	return m.reconcile(rules, normalizedAvailability, true, normalizedPolicies, compiledPolicies, true)
 }
 
 func (m *Manager) reconcile(
 	rules []models.StreamRule,
 	availability *models.StreamAvailability,
 	replaceAvailability bool,
+	accessPolicies map[string]models.CompiledIPSet,
+	compiledAccessPolicies map[string]*compiledipset.Set,
+	replaceAccessPolicies bool,
 ) error {
 	start := time.Now()
 	if event := logger.DebugEvent("stream", "reconcile_start"); event != nil {
@@ -267,10 +294,35 @@ func (m *Manager) reconcile(
 		}
 		return err
 	}
+	effectiveCompiledPolicies := compiledAccessPolicies
+	if !replaceAccessPolicies {
+		snapshot := m.ruleSnapshot.Load()
+		if snapshot != nil {
+			effectiveCompiledPolicies = snapshot.compiledAccessPolicies
+		}
+	}
+	for _, rule := range normalizedRules {
+		if !rule.UseAuth || !rule.BypassPolicy.Enabled {
+			continue
+		}
+		for _, group := range rule.BypassPolicy.Groups {
+			if len(group.Conditions) == 0 {
+				return fmt.Errorf("stream bypass group %q has no conditions", group.ID)
+			}
+			for _, condition := range group.Conditions {
+				if effectiveCompiledPolicies[strings.TrimSpace(condition.PolicyID)] == nil {
+					return fmt.Errorf("stream bypass condition %q references a missing compiled IP set", condition.ID)
+				}
+			}
+		}
+	}
 
 	nextRules := make(map[streamRuleKey]models.StreamRule, len(normalizedRules))
 	nextKeys := make([]streamRuleKey, 0, len(normalizedRules))
 	for _, rule := range normalizedRules {
+		if rule.Disabled {
+			continue
+		}
 		key := streamRuleKeyFromRule(rule)
 		if _, exists := nextRules[key]; exists {
 			return fmt.Errorf("duplicate stream rule for %s", key.String())
@@ -357,9 +409,15 @@ func (m *Manager) reconcile(
 	if replaceAvailability {
 		m.availability = models.CopyDailyAvailability(availability)
 	}
+	if replaceAccessPolicies {
+		m.accessPolicies = accessPolicies
+		m.compiledAccessPolicies = compiledAccessPolicies
+	}
 	m.ruleSnapshot.Store(&streamRuleSnapshot{
-		rules:        nextRules,
-		availability: models.CopyDailyAvailability(m.availability),
+		rules:                  nextRules,
+		availability:           models.CopyDailyAvailability(m.availability),
+		accessPolicies:         m.accessPolicies,
+		compiledAccessPolicies: m.compiledAccessPolicies,
 	})
 
 	removed := make([]managedListener, 0, len(toRemove))
@@ -411,6 +469,9 @@ func (m *Manager) ReconcileBestEffort(rules []models.StreamRule) ([]models.Strea
 			}
 			continue
 		}
+		if nextRule.Disabled {
+			continue
+		}
 
 		if err := m.Reconcile(append(startedRules, nextRule)); err != nil {
 			warnings = append(warnings, fmt.Errorf("skipping stream rule %s -> %s: %w", streamRuleKeyFromRule(nextRule).String(), nextRule.Target, err))
@@ -450,7 +511,9 @@ func (m *Manager) Stop() {
 	}
 	m.rules = map[streamRuleKey]models.StreamRule{}
 	m.availability = nil
-	m.ruleSnapshot.Store(&streamRuleSnapshot{rules: m.rules})
+	m.accessPolicies = map[string]models.CompiledIPSet{}
+	m.compiledAccessPolicies = map[string]*compiledipset.Set{}
+	m.ruleSnapshot.Store(&streamRuleSnapshot{rules: m.rules, accessPolicies: m.accessPolicies, compiledAccessPolicies: m.compiledAccessPolicies})
 	m.mu.Unlock()
 
 	for _, state := range states {
@@ -478,9 +541,14 @@ func (m *Manager) currentRuleConfig(
 }
 
 func (m *Manager) ConfigSnapshot() ([]models.StreamRule, *models.StreamAvailability) {
+	rules, availability, _ := m.ConfigSnapshotBundle()
+	return rules, availability
+}
+
+func (m *Manager) ConfigSnapshotBundle() ([]models.StreamRule, *models.StreamAvailability, map[string]models.CompiledIPSet) {
 	snapshot := m.ruleSnapshot.Load()
 	if snapshot == nil {
-		return nil, nil
+		return nil, nil, nil
 	}
 	keys := make([]streamRuleKey, 0, len(snapshot.rules))
 	for key := range snapshot.rules {
@@ -491,7 +559,7 @@ func (m *Manager) ConfigSnapshot() ([]models.StreamRule, *models.StreamAvailabil
 	for _, key := range keys {
 		rules = append(rules, snapshot.rules[key])
 	}
-	return rules, models.CopyDailyAvailability(snapshot.availability)
+	return rules, models.CopyDailyAvailability(snapshot.availability), copyCompiledPolicies(snapshot.accessPolicies)
 }
 
 func (m *Manager) SetAvailability(availability *models.StreamAvailability) error {
@@ -507,8 +575,10 @@ func (m *Manager) SetAvailability(availability *models.StreamAvailability) error
 	}
 	m.availability = models.CopyDailyAvailability(normalized)
 	m.ruleSnapshot.Store(&streamRuleSnapshot{
-		rules:        m.rules,
-		availability: models.CopyDailyAvailability(m.availability),
+		rules:                  m.rules,
+		availability:           models.CopyDailyAvailability(m.availability),
+		accessPolicies:         m.accessPolicies,
+		compiledAccessPolicies: m.compiledAccessPolicies,
 	})
 	return nil
 }
@@ -874,6 +944,9 @@ func (s *udpListenerState) getOrCreateSession(packetConn net.PacketConn, clientA
 	entry := newStreamEntry(streamRuleKeyFromRule(rule), addrString(clientAddr), clientIP)
 	entry.AuthRequired = rule.UseAuth
 	entry.Upstream = rule.Target
+	entry.ExpectedService = rule.ServiceProfile.ServiceID
+	entry.ServiceConfidence = rule.ServiceProfile.ServiceConfidence
+	entry.DeviceRole = rule.ServiceProfile.DeviceRole
 	ctx, cancel := context.WithCancel(context.Background())
 	session := &udpSession{
 		id:         id,
@@ -1218,6 +1291,9 @@ func (m *Manager) handleConn(client net.Conn, key streamRuleKey) {
 
 	entry.AuthRequired = rule.UseAuth
 	entry.Upstream = rule.Target
+	entry.ExpectedService = rule.ServiceProfile.ServiceID
+	entry.ServiceConfidence = rule.ServiceProfile.ServiceConfidence
+	entry.DeviceRole = rule.ServiceProfile.DeviceRole
 	if event := logger.DebugEvent("stream", "tcp_rule_matched"); event != nil {
 		event.Str("key", logger.SanitizeLogString(key.String())).
 			Interface("listen_port", logger.SanitizePort(key.ListenPort)).
@@ -1247,7 +1323,12 @@ func (m *Manager) handleConn(client net.Conn, key streamRuleKey) {
 		return
 	}
 
-	if rule.UseAuth {
+	if bypassed, groupID := m.matchStreamBypass(rule, clientIP); bypassed {
+		diagnostics.RecordStreamBypassHit()
+		entry.AuthDecision = "advanced_bypass"
+		entry.BypassPolicyVersion = rule.BypassPolicy.PolicyVersion
+		entry.BypassGroupID = groupID
+	} else if rule.UseAuth {
 		allowed, status, decision, err := m.verify(rule, clientIP)
 		entry.AuthDecision = decision
 		entry.LoggedIn = allowed
@@ -1283,6 +1364,34 @@ func (m *Manager) handleConn(client net.Conn, key streamRuleKey) {
 		entry.AuthDecision = "public"
 	}
 
+	var clientInitial []byte
+	_, validationDirection, _, strictKnown := streamprobe.Definition(rule.ServiceProfile.ServiceID)
+	if rule.ValidationMode == models.StreamValidationStrict && !strictKnown {
+		entry.Status = http.StatusMisdirectedRequest
+		entry.ValidationDecision = "unknown_service"
+		return
+	}
+	if rule.ValidationMode == models.StreamValidationStrict && validationDirection == streamprobe.DirectionClient {
+		initial, detected, evidence, validationErr := validateTCPInitial(client, rule.ServiceProfile.ServiceID, streamprobe.DirectionClient)
+		entry.DetectedService = detected
+		entry.ValidationEvidence = evidence
+		if validationErr != nil {
+			entry.ValidationDecision = "mismatch"
+			entry.Status = http.StatusMisdirectedRequest
+			var failure *streamValidationFailure
+			if errors.As(validationErr, &failure) {
+				entry.ValidationDecision = failure.decision
+				if failure.decision == "timeout" {
+					entry.Status = http.StatusRequestTimeout
+				}
+			}
+			diagnostics.RecordStreamValidation(entry.ValidationDecision)
+			return
+		}
+		entry.ValidationDecision = "matched"
+		clientInitial = initial
+	}
+
 	dialer := &net.Dialer{
 		Timeout:   streamDialTimeout,
 		KeepAlive: 30 * time.Second,
@@ -1306,9 +1415,62 @@ func (m *Manager) handleConn(client net.Conn, key streamRuleKey) {
 	}
 	defer upstream.Close()
 
+	var serverInitial []byte
+	if rule.ValidationMode == models.StreamValidationStrict && validationDirection == streamprobe.DirectionServer {
+		initial, detected, evidence, validationErr := validateTCPInitial(upstream, rule.ServiceProfile.ServiceID, streamprobe.DirectionServer)
+		entry.DetectedService = detected
+		entry.ValidationEvidence = evidence
+		if validationErr != nil {
+			entry.ValidationDecision = "mismatch"
+			entry.Status = http.StatusMisdirectedRequest
+			var failure *streamValidationFailure
+			if errors.As(validationErr, &failure) {
+				entry.ValidationDecision = failure.decision
+				if failure.decision == "timeout" {
+					entry.Status = http.StatusRequestTimeout
+				}
+			}
+			diagnostics.RecordStreamValidation(entry.ValidationDecision)
+			return
+		}
+		entry.ValidationDecision = "matched"
+		serverInitial = initial
+		if err := writeInitial(client, serverInitial); err != nil {
+			entry.Status = http.StatusBadGateway
+			entry.ValidationDecision = "replay_failed"
+			return
+		}
+		entry.BytesOut += uint64(len(serverInitial))
+		if rule.ServiceProfile.ServiceID == "rfb" {
+			response, detected, evidence, validationErr := validateTCPInitial(client, "rfb", streamprobe.DirectionClient)
+			entry.DetectedService = detected
+			entry.ValidationEvidence = evidence
+			if validationErr != nil {
+				entry.Status = http.StatusMisdirectedRequest
+				entry.ValidationDecision = "client_response_mismatch"
+				diagnostics.RecordStreamValidation(entry.ValidationDecision)
+				return
+			}
+			if err := writeInitial(upstream, response); err != nil {
+				entry.Status = http.StatusBadGateway
+				entry.ValidationDecision = "replay_failed"
+				return
+			}
+			entry.BytesIn += uint64(len(response))
+		}
+	}
+	if len(clientInitial) > 0 {
+		if err := writeInitial(upstream, clientInitial); err != nil {
+			entry.Status = http.StatusBadGateway
+			entry.ValidationDecision = "replay_failed"
+			return
+		}
+		entry.BytesIn += uint64(len(clientInitial))
+	}
+
 	bytesIn, bytesOut, relayErr := relayBidirectional(client, upstream)
-	entry.BytesIn = bytesIn
-	entry.BytesOut = bytesOut
+	entry.BytesIn += bytesIn
+	entry.BytesOut += bytesOut
 	if relayErr != nil {
 		entry.Status = http.StatusBadGateway
 		if event := logger.DebugEvent("stream", "tcp_relay_failed"); event != nil {
@@ -1412,7 +1574,14 @@ func (m *Manager) initializeUDPSession(session *udpSession) bool {
 		return false
 	}
 
-	if rule.UseAuth {
+	if bypassed, groupID := m.matchStreamBypass(rule, clientIP); bypassed {
+		diagnostics.RecordStreamBypassHit()
+		session.entryMu.Lock()
+		session.entry.AuthDecision = "advanced_bypass"
+		session.entry.BypassPolicyVersion = rule.BypassPolicy.PolicyVersion
+		session.entry.BypassGroupID = groupID
+		session.entryMu.Unlock()
+	} else if rule.UseAuth {
 		allowed, status, decision, err := m.verifyContext(session.ctx, rule, clientIP)
 		if session.ctx.Err() != nil {
 			return false
@@ -1448,6 +1617,30 @@ func (m *Manager) initializeUDPSession(session *udpSession) bool {
 		m.handler.MarkLoggedInActiveByClientIP(clientIP, time.Now())
 	} else {
 		session.setAuthResult("public", false)
+	}
+
+	if rule.ValidationMode == models.StreamValidationStrict {
+		detected, evidence, validationErr := validateUDPInitial(rule, session.firstQueuedPayload())
+		session.entryMu.Lock()
+		session.entry.DetectedService = detected
+		session.entry.ValidationEvidence = evidence
+		session.entry.ValidationDecision = "matched"
+		if validationErr != nil {
+			session.entry.ValidationDecision = "mismatch"
+			var failure *streamValidationFailure
+			if errors.As(validationErr, &failure) {
+				session.entry.ValidationDecision = failure.decision
+			}
+		}
+		session.entryMu.Unlock()
+		if validationErr != nil {
+			session.setStatus(http.StatusMisdirectedRequest)
+			session.entryMu.Lock()
+			decision := session.entry.ValidationDecision
+			session.entryMu.Unlock()
+			diagnostics.RecordStreamValidation(decision)
+			return false
+		}
 	}
 
 	dialer := &net.Dialer{Timeout: streamDialTimeout}
@@ -1957,6 +2150,28 @@ func (m *Manager) normalizeRule(rule models.StreamRule) (models.StreamRule, erro
 	}
 	if isLoopbackOrUnspecifiedHost(targetHost) && rule.ListenPort == targetPort {
 		return models.StreamRule{}, fmt.Errorf("listen_port %d cannot target the same local address %s", rule.ListenPort, rule.Target)
+	}
+	rule.ValidationMode = strings.ToLower(strings.TrimSpace(rule.ValidationMode))
+	if rule.ValidationMode == "" {
+		rule.ValidationMode = models.StreamValidationOff
+	}
+	if rule.ValidationMode != models.StreamValidationOff && rule.ValidationMode != models.StreamValidationStrict {
+		return models.StreamRule{}, fmt.Errorf("validation_mode must be off or strict")
+	}
+	if rule.ValidationMode == models.StreamValidationStrict {
+		rule.ServiceProfile.ServiceID = strings.ToLower(strings.TrimSpace(rule.ServiceProfile.ServiceID))
+		descriptor, _, _, known := streamprobe.Definition(rule.ServiceProfile.ServiceID)
+		source := strings.ToLower(strings.TrimSpace(rule.ServiceProfile.Source))
+		confidence := strings.ToLower(strings.TrimSpace(rule.ServiceProfile.ServiceConfidence))
+		probeStatus := strings.ToLower(strings.TrimSpace(rule.ProbeStatus))
+		verifiedProbe := source == "probe" && confidence == "strong" && probeStatus == "verified"
+		verifiedManual := source == "manual" && probeStatus == "manual"
+		if !known || !descriptor.StrictCapable || !rule.ServiceProfile.StrictCapable ||
+			!streamprobe.SupportsTransport(descriptor, rule.Protocol) ||
+			(!verifiedProbe && !verifiedManual) ||
+			rule.ServiceProfile.TargetFingerprint != streamprobe.TargetFingerprint(rule.Protocol, rule.Target) {
+			rule.Disabled = true
+		}
 	}
 
 	return rule, nil

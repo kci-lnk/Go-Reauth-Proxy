@@ -227,6 +227,17 @@ func TestReconcileBestEffortSkipsInvalidRuleAndStartsValidRule(t *testing.T) {
 	}
 }
 
+func TestReconcileBestEffortDoesNotCountDisabledRuleAsStarted(t *testing.T) {
+	manager := NewManager(newStreamTestProxyHandler(t))
+	defer manager.Stop()
+	started, warnings := manager.ReconcileBestEffort([]models.StreamRule{{
+		Protocol: "tcp", ListenPort: freeTCPPort(t), Target: "127.0.0.1:1", Disabled: true,
+	}})
+	if len(started) != 0 || len(warnings) != 0 {
+		t.Fatalf("started=%#v warnings=%#v", started, warnings)
+	}
+}
+
 func TestNormalizeRelayErrorKeepsUnexpectedError(t *testing.T) {
 	err := errors.New("permission denied")
 	if got := normalizeRelayError(err); got != err {

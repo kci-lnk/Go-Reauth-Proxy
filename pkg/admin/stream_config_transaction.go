@@ -8,14 +8,15 @@ import (
 type streamRuntimeSnapshot struct {
 	rules        []models.StreamRule
 	availability *models.StreamAvailability
+	policies     map[string]models.CompiledIPSet
 }
 
 func captureStreamRuntime(manager *stream.Manager) streamRuntimeSnapshot {
 	if manager == nil {
 		return streamRuntimeSnapshot{}
 	}
-	rules, availability := manager.ConfigSnapshot()
-	return streamRuntimeSnapshot{rules: rules, availability: availability}
+	rules, availability, policies := manager.ConfigSnapshotBundle()
+	return streamRuntimeSnapshot{rules: rules, availability: availability, policies: policies}
 }
 
 func restoreStreamRuntime(
@@ -25,5 +26,5 @@ func restoreStreamRuntime(
 	if manager == nil {
 		return nil
 	}
-	return manager.ReconcileConfig(snapshot.rules, snapshot.availability)
+	return manager.ReconcileConfigBundle(snapshot.rules, snapshot.availability, snapshot.policies)
 }

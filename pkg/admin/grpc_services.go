@@ -6,11 +6,13 @@ import (
 	"time"
 
 	"go-reauth-proxy/pkg/config"
+	"go-reauth-proxy/pkg/diagnostics"
 	"go-reauth-proxy/pkg/grpc/pb"
 	"go-reauth-proxy/pkg/i18n"
 	compiledipset "go-reauth-proxy/pkg/ipset"
 	"go-reauth-proxy/pkg/iptables"
 	"go-reauth-proxy/pkg/models"
+	"go-reauth-proxy/pkg/streamprobe"
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -98,8 +100,8 @@ func (s *GRPCServer) GetStreamRules(ctx context.Context, _ *emptypb.Empty) (*pb.
 	if err := s.checkToken(ctx); err != nil {
 		return nil, err
 	}
-	rules, availability := s.admin.ProxyHandler.GetStreamRulesConfig()
-	return streamRulesToProto(rules, availability), nil
+	rules, availability, policies := s.admin.ProxyHandler.GetStreamRulesBundle()
+	return streamRulesBundleToProto(rules, availability, policies), nil
 }
 
 func (s *GRPCServer) SetStreamRules(ctx context.Context, req *pb.StreamRules) (*pb.StreamRules, error) {
@@ -109,7 +111,10 @@ func (s *GRPCServer) SetStreamRules(ctx context.Context, req *pb.StreamRules) (*
 	if req == nil {
 		return nil, grpcBadRequest("request is required")
 	}
-	normalizedRules, err := s.admin.ProxyHandler.ValidateStreamRules(protoToStreamRules(req))
+	normalizedRules, normalizedPolicies, err := s.admin.ProxyHandler.ValidateStreamRulesBundle(
+		protoToStreamRules(req),
+		protoToVisibilityPolicies(req.GetAccessPolicies()),
+	)
 	if err != nil {
 		return nil, grpcBadRequest("failed to set stream rules: %v", err)
 	}
@@ -126,18 +131,57 @@ func (s *GRPCServer) SetStreamRules(ctx context.Context, req *pb.StreamRules) (*
 	defer s.admin.streamConfigMu.Unlock()
 	previousRuntime := captureStreamRuntime(s.admin.StreamManager)
 	if s.admin.StreamManager != nil {
-		if err := s.admin.StreamManager.ReconcileConfig(normalizedRules, normalizedAvailability); err != nil {
+		if err := s.admin.StreamManager.ReconcileConfigBundle(normalizedRules, normalizedAvailability, normalizedPolicies); err != nil {
 			return nil, grpcBadRequest("failed to reconcile stream configuration: %v", err)
 		}
 	}
-	if err := s.admin.ProxyHandler.SetStreamRulesConfig(normalizedRules, normalizedAvailability); err != nil {
+	if err := s.admin.ProxyHandler.SetStreamRulesBundle(normalizedRules, normalizedAvailability, normalizedPolicies); err != nil {
 		if rollbackErr := restoreStreamRuntime(s.admin.StreamManager, previousRuntime); rollbackErr != nil {
 			return nil, grpcInternal("failed to persist stream rules: %v; runtime rollback failed: %v", err, rollbackErr)
 		}
 		return nil, grpcInternal("failed to persist stream rules: %v", err)
 	}
-	storedRules, storedAvailability := s.admin.ProxyHandler.GetStreamRulesConfig()
-	return streamRulesToProto(storedRules, storedAvailability), nil
+	storedRules, storedAvailability, storedPolicies := s.admin.ProxyHandler.GetStreamRulesBundle()
+	return streamRulesBundleToProto(storedRules, storedAvailability, storedPolicies), nil
+}
+
+func (s *GRPCServer) ProbeStreamTarget(ctx context.Context, req *pb.StreamProbeRequest) (*pb.StreamProbeResult, error) {
+	if err := s.checkToken(ctx); err != nil {
+		return nil, err
+	}
+	if req == nil {
+		return nil, grpcBadRequest("request is required")
+	}
+	result := streamprobe.Probe(ctx, req.GetProtocol(), req.GetTarget())
+	diagnostics.RecordStreamProbe(result.Status == "verified")
+	var profile *pb.StreamServiceProfile
+	if result.Profile.ServiceID != "" {
+		profile = streamServiceProfileToProto(result.Profile)
+	}
+	return &pb.StreamProbeResult{
+		Status:  result.Status,
+		Profile: profile,
+		Message: result.Message,
+	}, nil
+}
+
+func (s *GRPCServer) GetStreamServiceCatalog(ctx context.Context, _ *emptypb.Empty) (*pb.StreamServiceCatalog, error) {
+	if err := s.checkToken(ctx); err != nil {
+		return nil, err
+	}
+	items := streamprobe.Catalog()
+	protoItems := make([]*pb.StreamServiceDescriptor, 0, len(items))
+	for _, item := range items {
+		protoItems = append(protoItems, &pb.StreamServiceDescriptor{
+			ServiceId:            item.ServiceID,
+			DisplayName:          item.DisplayName,
+			ServiceFamily:        item.ServiceFamily,
+			Transports:           append([]string(nil), item.Transports...),
+			ActiveProbeSupported: item.ActiveProbeSupported,
+			StrictCapable:        item.StrictCapable,
+		})
+	}
+	return &pb.StreamServiceCatalog{ClassifierVersion: streamprobe.ClassifierVersion, Items: protoItems}, nil
 }
 
 func (s *GRPCServer) FlushStreamRules(ctx context.Context, _ *emptypb.Empty) (*pb.RpcStatus, error) {

@@ -37,6 +37,8 @@ const (
 	GatewayControlService_GetStreamRules_FullMethodName                   = "/fnknock.v1.GatewayControlService/GetStreamRules"
 	GatewayControlService_SetStreamRules_FullMethodName                   = "/fnknock.v1.GatewayControlService/SetStreamRules"
 	GatewayControlService_FlushStreamRules_FullMethodName                 = "/fnknock.v1.GatewayControlService/FlushStreamRules"
+	GatewayControlService_ProbeStreamTarget_FullMethodName                = "/fnknock.v1.GatewayControlService/ProbeStreamTarget"
+	GatewayControlService_GetStreamServiceCatalog_FullMethodName          = "/fnknock.v1.GatewayControlService/GetStreamServiceCatalog"
 	GatewayControlService_GetAuthConfig_FullMethodName                    = "/fnknock.v1.GatewayControlService/GetAuthConfig"
 	GatewayControlService_SetAuthConfig_FullMethodName                    = "/fnknock.v1.GatewayControlService/SetAuthConfig"
 	GatewayControlService_GetDefaultRoute_FullMethodName                  = "/fnknock.v1.GatewayControlService/GetDefaultRoute"
@@ -96,6 +98,8 @@ type GatewayControlServiceClient interface {
 	GetStreamRules(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*StreamRules, error)
 	SetStreamRules(ctx context.Context, in *StreamRules, opts ...grpc.CallOption) (*StreamRules, error)
 	FlushStreamRules(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*RpcStatus, error)
+	ProbeStreamTarget(ctx context.Context, in *StreamProbeRequest, opts ...grpc.CallOption) (*StreamProbeResult, error)
+	GetStreamServiceCatalog(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*StreamServiceCatalog, error)
 	GetAuthConfig(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*AuthConfig, error)
 	SetAuthConfig(ctx context.Context, in *AuthConfig, opts ...grpc.CallOption) (*RpcStatus, error)
 	GetDefaultRoute(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*StringValue, error)
@@ -302,6 +306,26 @@ func (c *gatewayControlServiceClient) FlushStreamRules(ctx context.Context, in *
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(RpcStatus)
 	err := c.cc.Invoke(ctx, GatewayControlService_FlushStreamRules_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *gatewayControlServiceClient) ProbeStreamTarget(ctx context.Context, in *StreamProbeRequest, opts ...grpc.CallOption) (*StreamProbeResult, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(StreamProbeResult)
+	err := c.cc.Invoke(ctx, GatewayControlService_ProbeStreamTarget_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *gatewayControlServiceClient) GetStreamServiceCatalog(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*StreamServiceCatalog, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(StreamServiceCatalog)
+	err := c.cc.Invoke(ctx, GatewayControlService_GetStreamServiceCatalog_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -653,6 +677,8 @@ type GatewayControlServiceServer interface {
 	GetStreamRules(context.Context, *emptypb.Empty) (*StreamRules, error)
 	SetStreamRules(context.Context, *StreamRules) (*StreamRules, error)
 	FlushStreamRules(context.Context, *emptypb.Empty) (*RpcStatus, error)
+	ProbeStreamTarget(context.Context, *StreamProbeRequest) (*StreamProbeResult, error)
+	GetStreamServiceCatalog(context.Context, *emptypb.Empty) (*StreamServiceCatalog, error)
 	GetAuthConfig(context.Context, *emptypb.Empty) (*AuthConfig, error)
 	SetAuthConfig(context.Context, *AuthConfig) (*RpcStatus, error)
 	GetDefaultRoute(context.Context, *emptypb.Empty) (*StringValue, error)
@@ -745,6 +771,12 @@ func (UnimplementedGatewayControlServiceServer) SetStreamRules(context.Context, 
 }
 func (UnimplementedGatewayControlServiceServer) FlushStreamRules(context.Context, *emptypb.Empty) (*RpcStatus, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method FlushStreamRules not implemented")
+}
+func (UnimplementedGatewayControlServiceServer) ProbeStreamTarget(context.Context, *StreamProbeRequest) (*StreamProbeResult, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ProbeStreamTarget not implemented")
+}
+func (UnimplementedGatewayControlServiceServer) GetStreamServiceCatalog(context.Context, *emptypb.Empty) (*StreamServiceCatalog, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method GetStreamServiceCatalog not implemented")
 }
 func (UnimplementedGatewayControlServiceServer) GetAuthConfig(context.Context, *emptypb.Empty) (*AuthConfig, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method GetAuthConfig not implemented")
@@ -1165,6 +1197,42 @@ func _GatewayControlService_FlushStreamRules_Handler(srv interface{}, ctx contex
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(GatewayControlServiceServer).FlushStreamRules(ctx, req.(*emptypb.Empty))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _GatewayControlService_ProbeStreamTarget_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(StreamProbeRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(GatewayControlServiceServer).ProbeStreamTarget(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: GatewayControlService_ProbeStreamTarget_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(GatewayControlServiceServer).ProbeStreamTarget(ctx, req.(*StreamProbeRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _GatewayControlService_GetStreamServiceCatalog_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(emptypb.Empty)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(GatewayControlServiceServer).GetStreamServiceCatalog(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: GatewayControlService_GetStreamServiceCatalog_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(GatewayControlServiceServer).GetStreamServiceCatalog(ctx, req.(*emptypb.Empty))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -1819,6 +1887,14 @@ var GatewayControlService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "FlushStreamRules",
 			Handler:    _GatewayControlService_FlushStreamRules_Handler,
+		},
+		{
+			MethodName: "ProbeStreamTarget",
+			Handler:    _GatewayControlService_ProbeStreamTarget_Handler,
+		},
+		{
+			MethodName: "GetStreamServiceCatalog",
+			Handler:    _GatewayControlService_GetStreamServiceCatalog_Handler,
 		},
 		{
 			MethodName: "GetAuthConfig",

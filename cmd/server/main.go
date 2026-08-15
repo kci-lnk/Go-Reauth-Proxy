@@ -719,7 +719,7 @@ func run(options runOptions) error {
 	proxyHandler = proxy.NewHandler(resolvedAdminPort, options.ProxyPort, cfgManager, initialCfg, logsDir, systemEventClient)
 	proxyHandler.SetAuthBridgeManager(authBridgeManager)
 	fnosConnectIngress = proxy.NewFnosConnectIngress(proxyHandler)
-	configuredStreamRules := proxyHandler.GetStreamRules()
+	configuredStreamRules, _, configuredStreamPolicies := proxyHandler.GetStreamRulesBundle()
 	normalizedStreamRules := configuredStreamRules
 	if validatedStreamRules, validationErr := proxyHandler.ValidateStreamRules(configuredStreamRules); validationErr != nil {
 		if event := logger.DebugEvent("server", "stream_initial_validation_failed"); event != nil {
@@ -745,6 +745,9 @@ func run(options runOptions) error {
 	}
 
 	streamManager = stream.NewManager(proxyHandler)
+	if setErr := streamManager.SetAccessPolicies(configuredStreamPolicies); setErr != nil {
+		return fmt.Errorf("configure initial stream access policies: %w", setErr)
+	}
 	if setErr := streamManager.SetAvailability(proxyHandler.GetStreamAvailability()); setErr != nil {
 		return fmt.Errorf("configure initial stream availability: %w", setErr)
 	}

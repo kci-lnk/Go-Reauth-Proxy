@@ -327,3 +327,65 @@ func TestEventStoreEvictsOldestWhenMaxEntriesExceeded(t *testing.T) {
 		t.Fatalf("unexpected eviction order: %#v", result)
 	}
 }
+
+func TestEventStoreLeaseRequiresAcknowledgementBeforeRemoval(t *testing.T) {
+	store := NewEventStore(10, time.Minute)
+	store.Add(Event{TraceID: "a"})
+	store.Add(Event{TraceID: "b"})
+
+	lease := store.Lease(1)
+	if lease.Drained != 1 || lease.Events[0].TraceID != "a" || lease.LeaseID == "" {
+		t.Fatalf("unexpected lease: %#v", lease)
+	}
+	if pending := store.Pending(); pending != 2 {
+		t.Fatalf("leased event was removed before acknowledgement: %d", pending)
+	}
+	if concurrent := store.Lease(10); concurrent.Drained != 1 || concurrent.Events[0].TraceID != "b" {
+		t.Fatalf("concurrent lease received reserved event: %#v", concurrent)
+	}
+
+	acknowledged := store.Acknowledge(lease.LeaseID)
+	if acknowledged.Acknowledged != 1 || store.Pending() != 1 {
+		t.Fatalf("unexpected acknowledgement: %#v, pending=%d", acknowledged, store.Pending())
+	}
+	if repeated := store.Acknowledge(lease.LeaseID); repeated.Acknowledged != 0 {
+		t.Fatalf("acknowledgement is not idempotent: %#v", repeated)
+	}
+}
+
+func TestEventStoreReleasedAndExpiredLeasesCanBeRetried(t *testing.T) {
+	store := NewEventStore(10, time.Minute)
+	store.Add(Event{TraceID: "retry"})
+
+	first := store.Lease(1)
+	store.Release(first.LeaseID)
+	second := store.Lease(1)
+	if second.Drained != 1 || second.Events[0].TraceID != "retry" || second.LeaseID == first.LeaseID {
+		t.Fatalf("released event was not retried: first=%#v second=%#v", first, second)
+	}
+
+	store.Release(second.LeaseID)
+	store.leaseTTL = time.Nanosecond
+	third := store.Lease(1)
+	time.Sleep(time.Millisecond)
+	fourth := store.Lease(1)
+	if third.Drained != 1 || fourth.Drained != 1 || fourth.Events[0].TraceID != "retry" {
+		t.Fatalf("expired lease was not retried: third=%#v fourth=%#v", third, fourth)
+	}
+}
+
+func TestLegacyDrainDoesNotStealLeasedEvents(t *testing.T) {
+	store := NewEventStore(10, time.Minute)
+	store.Add(Event{TraceID: "leased"})
+	store.Add(Event{TraceID: "available"})
+	lease := store.Lease(1)
+
+	drained := store.Drain(10)
+	if drained.Drained != 1 || drained.Events[0].TraceID != "available" {
+		t.Fatalf("legacy drain stole a lease: lease=%#v drain=%#v", lease, drained)
+	}
+	store.Release(lease.LeaseID)
+	if retry := store.Drain(10); retry.Drained != 1 || retry.Events[0].TraceID != "leased" {
+		t.Fatalf("released lease was not available to legacy drain: %#v", retry)
+	}
+}

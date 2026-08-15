@@ -749,14 +749,32 @@ func (s *GRPCServer) DrainWafEvents(ctx context.Context, req *pb.WafDrainRequest
 	if err := s.checkToken(ctx); err != nil {
 		return nil, err
 	}
+	if req == nil {
+		return nil, grpcBadRequest("request is required")
+	}
+	switch req.GetOperation() {
+	case pb.WafDrainOperation_WAF_DRAIN_OPERATION_ACKNOWLEDGE:
+		if strings.TrimSpace(req.GetLeaseId()) == "" {
+			return nil, grpcBadRequest("lease_id is required")
+		}
+		return wafDrainToProto(s.admin.ProxyHandler.AcknowledgeWAFEventLease(req.GetLeaseId())), nil
+	case pb.WafDrainOperation_WAF_DRAIN_OPERATION_RELEASE:
+		if strings.TrimSpace(req.GetLeaseId()) == "" {
+			return nil, grpcBadRequest("lease_id is required")
+		}
+		return wafDrainToProto(s.admin.ProxyHandler.ReleaseWAFEventLease(req.GetLeaseId())), nil
+	case pb.WafDrainOperation_WAF_DRAIN_OPERATION_LEASE:
+	default:
+		return nil, grpcBadRequest("WAF drain operation must use leased delivery")
+	}
 	limit := 500
-	if req != nil && req.GetLimit() > 0 {
+	if req.GetLimit() > 0 {
 		limit = int(req.GetLimit())
 	}
 	if limit > 5000 {
 		limit = 5000
 	}
-	return wafDrainToProto(s.admin.ProxyHandler.DrainWAFEvents(limit)), nil
+	return wafDrainToProto(s.admin.ProxyHandler.LeaseWAFEvents(limit)), nil
 }
 
 func (s *GRPCServer) GetSslInfo(ctx context.Context, _ *emptypb.Empty) (*pb.SslInfo, error) {

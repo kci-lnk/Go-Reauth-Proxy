@@ -342,6 +342,27 @@ func (rt *Runtime) Drain(limit int) DrainResult {
 	return rt.events.Drain(limit)
 }
 
+func (rt *Runtime) Lease(limit int) DrainResult {
+	if rt == nil || rt.events == nil {
+		return DrainResult{Events: []Event{}}
+	}
+	return rt.events.Lease(limit)
+}
+
+func (rt *Runtime) AcknowledgeLease(leaseID string) DrainResult {
+	if rt == nil || rt.events == nil {
+		return DrainResult{Events: []Event{}}
+	}
+	return rt.events.Acknowledge(leaseID)
+}
+
+func (rt *Runtime) ReleaseLease(leaseID string) DrainResult {
+	if rt == nil || rt.events == nil {
+		return DrainResult{Events: []Event{}}
+	}
+	return rt.events.Release(leaseID)
+}
+
 func (rt *Runtime) Evaluate(r *http.Request, ctx EvaluateContext) Decision {
 	decision := Decision{Allowed: true}
 	if rt == nil || r == nil {

@@ -9,6 +9,7 @@ const (
 
 	DefaultMaxEvents = 1000
 	DefaultEventTTL  = 10 * time.Minute
+	DefaultLeaseTTL  = 30 * time.Second
 )
 
 type EvaluateContext struct {
@@ -108,7 +109,9 @@ type ValidationResult struct {
 }
 
 type DrainResult struct {
-	Events    []Event `json:"events"`
-	Drained   int     `json:"drained"`
-	Remaining int     `json:"remaining"`
+	Events       []Event `json:"events"`
+	Drained      int     `json:"drained"`
+	Remaining    int     `json:"remaining"`
+	LeaseID      string  `json:"lease_id,omitempty"`
+	Acknowledged int     `json:"acknowledged,omitempty"`
 }

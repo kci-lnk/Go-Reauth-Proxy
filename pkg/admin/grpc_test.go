@@ -32,6 +32,28 @@ func TestGatewayControlTypedProxyProtocolRequiresToken(t *testing.T) {
 	}
 }
 
+func TestWAFDrainRequiresLeasedDeliveryOperations(t *testing.T) {
+	server := newGatewayControlTestServer(t, "secret")
+	ctx := authTestContext()
+
+	for _, request := range []*pb.WafDrainRequest{nil, {}} {
+		if _, err := server.DrainWafEvents(ctx, request); status.Code(err) != codes.InvalidArgument {
+			t.Fatalf("DrainWafEvents(%#v) status = %v, want invalid argument", request, status.Code(err))
+		}
+	}
+	if _, err := server.DrainWafEvents(ctx, &pb.WafDrainRequest{
+		Operation: pb.WafDrainOperation_WAF_DRAIN_OPERATION_ACKNOWLEDGE,
+	}); status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("empty acknowledgement status = %v, want invalid argument", status.Code(err))
+	}
+	if _, err := server.DrainWafEvents(ctx, &pb.WafDrainRequest{
+		Operation: pb.WafDrainOperation_WAF_DRAIN_OPERATION_LEASE,
+		Limit:     10,
+	}); err != nil {
+		t.Fatalf("leased drain returned error: %v", err)
+	}
+}
+
 func TestGatewayControlTypedProxyProtocolRoundTrip(t *testing.T) {
 	server := newGatewayControlTestServer(t, "secret")
 	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs(rpcbridge.InternalTokenMetadataKey, "secret"))

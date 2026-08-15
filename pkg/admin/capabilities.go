@@ -8,6 +8,7 @@ var commonGatewayCapabilities = []string{
 	"tcp",
 	"udp",
 	"waf",
+	"waf_event_lease_v1",
 	"blacklist",
 	"logs",
 	"deep_monitor_v1",

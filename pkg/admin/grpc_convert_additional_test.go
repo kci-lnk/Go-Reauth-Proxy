@@ -272,6 +272,16 @@ func TestWAFEventToProtoIncludesRulesAndInterruption(t *testing.T) {
 	}
 }
 
+func TestWAFDrainToProtoIncludesLeaseCompletionFields(t *testing.T) {
+	got := wafDrainToProto(proxywaf.DrainResult{
+		LeaseID:      "lease-1",
+		Acknowledged: 2,
+	})
+	if got.GetLeaseId() != "lease-1" || got.GetAcknowledged() != 2 {
+		t.Fatalf("waf drain proto = %#v", got)
+	}
+}
+
 func TestSSLConfigProtoRoundTrip(t *testing.T) {
 	input := models.SSLConfig{DeploymentMode: models.SSLDeploymentModeMultiSNI, Certificates: []models.SSLDeployedCertificate{{ID: "id", Label: "label", Cert: "cert", Key: "key", IsDefault: true}}}
 	if got := protoToSSLConfig(sslConfigToProto(input)); !reflect.DeepEqual(got, input) {

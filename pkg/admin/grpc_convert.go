@@ -868,7 +868,13 @@ func wafDrainToProto(result proxywaf.DrainResult) *pb.WafDrainResult {
 	for _, event := range result.Events {
 		events = append(events, wafEventToProto(event))
 	}
-	return &pb.WafDrainResult{Events: events, Drained: int32(result.Drained), Remaining: int32(result.Remaining)}
+	return &pb.WafDrainResult{
+		Events:       events,
+		Drained:      int32(result.Drained),
+		Remaining:    int32(result.Remaining),
+		LeaseId:      result.LeaseID,
+		Acknowledged: int32(result.Acknowledged),
+	}
 }
 
 func wafEventToProto(event proxywaf.Event) *pb.WafEvent {

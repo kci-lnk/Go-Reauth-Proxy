@@ -42,6 +42,12 @@ func TestWOLPageIsResponsiveSignedAndNonCacheable(t *testing.T) {
 		`item.shutdownAvailable`,
 		`item.status.state==='online'`,
 		`function shutdownIcon()`,
+		`M12 2v10`,
+		`M18.4 6.6a9 9 0 1 1-12.77.04`,
+		`grid-template-columns:40px minmax(0,1fr) 40px`,
+		`class="heading"`,
+		`class="top-balance"`,
+		`m15 18-6-6 6-6`,
 		`actionButtons.childNodes.length`,
 		`env(safe-area-inset-bottom)`,
 		`max-height:calc(100dvh - 28px)`,
@@ -59,9 +65,13 @@ func TestWOLPageIsResponsiveSignedAndNonCacheable(t *testing.T) {
 		"x-signature",
 		"hmacSecret",
 		"function hmacSha256",
+		`['circle','cx','12','cy','12','r','10']`,
+		`['rect','width','6','height','6','x','9','y','9','rx','1']`,
+		`class="title-icon"`,
+		`← {{.Data.Back}}`,
 	} {
 		if strings.Contains(body, forbidden) {
-			t.Fatalf("WOL page exposed obsolete browser signing material %q", forbidden)
+			t.Fatalf("WOL page contains forbidden fragment %q", forbidden)
 		}
 	}
 	if strings.Contains(body, `:"\"`) {

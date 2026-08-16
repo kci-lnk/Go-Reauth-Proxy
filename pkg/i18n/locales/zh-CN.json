@@ -28,7 +28,7 @@
   "gateway.go": "Go",
   "gateway.wolShortcut": "网络唤醒",
   "gateway.wol.title": "网络唤醒",
-  "gateway.wol.description": "查看设备在线状态，并安全地发送唤醒或关机请求。",
+  "gateway.wol.description": "查看设备在线状态，唤醒或关机。",
   "gateway.wol.loading": "正在加载设备…",
   "gateway.wol.empty": "暂无已启用的设备。",
   "gateway.wol.loadFailed": "加载设备失败。",

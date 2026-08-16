@@ -6,7 +6,60 @@ import (
 
 	compiledipset "go-reauth-proxy/pkg/ipset"
 	"go-reauth-proxy/pkg/models"
+	"go-reauth-proxy/pkg/streamprobe"
 )
+
+func TestValidateStreamRulesDoesNotSilentlyDisableInvalidStrictRule(t *testing.T) {
+	handler, _ := newAdditionalProxyTestHandler(t)
+	rule := models.StreamRule{
+		Protocol:       models.StreamProtocolTCP,
+		ListenPort:     43998,
+		Target:         "127.0.0.1:43999",
+		ValidationMode: models.StreamValidationStrict,
+		ServiceProfile: models.StreamServiceProfile{ServiceID: "ssh"},
+	}
+
+	if normalized, _, err := handler.ValidateStreamRulesBundle([]models.StreamRule{rule}, nil); err == nil {
+		t.Fatalf("invalid enabled strict rule was silently accepted: %#v", normalized)
+	} else if !strings.Contains(err.Error(), "invalid strict stream profile") {
+		t.Fatalf("strict validation error = %v", err)
+	}
+
+	rule.Disabled = true
+	normalized, _, err := handler.ValidateStreamRulesBundle([]models.StreamRule{rule}, nil)
+	if err != nil {
+		t.Fatalf("explicitly disabled strict draft was rejected: %v", err)
+	}
+	if len(normalized) != 1 || !normalized[0].Disabled {
+		t.Fatalf("disabled strict draft = %#v", normalized)
+	}
+}
+
+func TestValidateStreamRulesDerivesStrictCapabilityFromCatalog(t *testing.T) {
+	handler, _ := newAdditionalProxyTestHandler(t)
+	target := "127.0.0.1:44001"
+	rule := models.StreamRule{
+		Protocol:       models.StreamProtocolTCP,
+		ListenPort:     44000,
+		Target:         target,
+		ValidationMode: models.StreamValidationStrict,
+		ProbeStatus:    "manual",
+		ServiceProfile: models.StreamServiceProfile{
+			ServiceID:         "ssh",
+			Source:            "manual",
+			TargetFingerprint: streamprobe.TargetFingerprint(models.StreamProtocolTCP, target),
+			// StrictCapable is deliberately omitted to model an older control plane.
+		},
+	}
+
+	normalized, _, err := handler.ValidateStreamRulesBundle([]models.StreamRule{rule}, nil)
+	if err != nil {
+		t.Fatalf("catalog-backed strict profile was rejected: %v", err)
+	}
+	if len(normalized) != 1 || normalized[0].Disabled || !normalized[0].ServiceProfile.StrictCapable {
+		t.Fatalf("normalized strict rule = %#v", normalized)
+	}
+}
 
 func TestValidateStreamRulesAllowsDisabledNegativeOnlyDraft(t *testing.T) {
 	handler, _ := newAdditionalProxyTestHandler(t)

@@ -2160,17 +2160,19 @@ func (m *Manager) normalizeRule(rule models.StreamRule) (models.StreamRule, erro
 	}
 	if rule.ValidationMode == models.StreamValidationStrict {
 		rule.ServiceProfile.ServiceID = strings.ToLower(strings.TrimSpace(rule.ServiceProfile.ServiceID))
-		descriptor, _, _, known := streamprobe.Definition(rule.ServiceProfile.ServiceID)
-		source := strings.ToLower(strings.TrimSpace(rule.ServiceProfile.Source))
-		confidence := strings.ToLower(strings.TrimSpace(rule.ServiceProfile.ServiceConfidence))
-		probeStatus := strings.ToLower(strings.TrimSpace(rule.ProbeStatus))
-		verifiedProbe := source == "probe" && confidence == "strong" && probeStatus == "verified"
-		verifiedManual := source == "manual" && probeStatus == "manual"
-		if !known || !descriptor.StrictCapable || !rule.ServiceProfile.StrictCapable ||
-			!streamprobe.SupportsTransport(descriptor, rule.Protocol) ||
-			(!verifiedProbe && !verifiedManual) ||
-			rule.ServiceProfile.TargetFingerprint != streamprobe.TargetFingerprint(rule.Protocol, rule.Target) {
-			rule.Disabled = true
+		rule.ServiceProfile.Source = strings.ToLower(strings.TrimSpace(rule.ServiceProfile.Source))
+		rule.ServiceProfile.ServiceConfidence = strings.ToLower(strings.TrimSpace(rule.ServiceProfile.ServiceConfidence))
+		rule.ProbeStatus = strings.ToLower(strings.TrimSpace(rule.ProbeStatus))
+		if descriptor, _, _, known := streamprobe.Definition(rule.ServiceProfile.ServiceID); known {
+			rule.ServiceProfile.StrictCapable = descriptor.StrictCapable
+		}
+		if strictErr := streamprobe.ValidateStrictProfile(
+			rule.ServiceProfile,
+			rule.Protocol,
+			rule.Target,
+			rule.ProbeStatus,
+		); strictErr != nil && !rule.Disabled {
+			return models.StreamRule{}, fmt.Errorf("invalid strict stream profile: %w", strictErr)
 		}
 	}
 

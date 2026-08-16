@@ -70,14 +70,21 @@ func (h *Handler) normalizeStreamRule(newRule models.StreamRule) (models.StreamR
 	}
 
 	if newRule.ValidationMode == models.StreamValidationStrict {
-		descriptor, _, _, known := streamprobe.Definition(profile.ServiceID)
-		verifiedProbe := profile.Source == "probe" && profile.ServiceConfidence == "strong" && newRule.ProbeStatus == "verified"
-		verifiedManual := profile.Source == "manual" && newRule.ProbeStatus == "manual"
-		fingerprintMatches := profile.TargetFingerprint == streamprobe.TargetFingerprint(newRule.Protocol, newRule.Target)
-		if !known || !descriptor.StrictCapable || !profile.StrictCapable ||
-			!streamprobe.SupportsTransport(descriptor, newRule.Protocol) ||
-			(!verifiedProbe && !verifiedManual) || !fingerprintMatches {
-			newRule.Disabled = true
+		if descriptor, _, _, known := streamprobe.Definition(profile.ServiceID); known {
+			// This is catalog-owned capability metadata. Do not require every
+			// control-plane version to echo the duplicated boolean back.
+			newRule.ServiceProfile.StrictCapable = descriptor.StrictCapable
+		}
+		if strictErr := streamprobe.ValidateStrictProfile(
+			newRule.ServiceProfile,
+			newRule.Protocol,
+			newRule.Target,
+			newRule.ProbeStatus,
+		); strictErr != nil && !newRule.Disabled {
+			// Silently changing an enabled rule to disabled removes its listener
+			// and turns a recoverable configuration error into connection refused.
+			// Explicitly disabled rules remain valid as editable drafts.
+			return models.StreamRule{}, fmt.Errorf("invalid strict stream profile: %w", strictErr)
 		}
 	}
 	return newRule, nil

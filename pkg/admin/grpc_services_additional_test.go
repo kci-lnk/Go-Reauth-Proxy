@@ -238,6 +238,47 @@ func TestGatewayControlStreamRulesRoundTrip(t *testing.T) {
 	}
 }
 
+func TestGatewayControlInvalidStrictUpdateKeepsExistingTCPListener(t *testing.T) {
+	server := newGatewayControlTestServer(t, "secret")
+	manager := stream.NewManager(server.admin.ProxyHandler)
+	server.admin.StreamManager = manager
+	t.Cleanup(manager.Stop)
+
+	probe, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("reserve TCP port: %v", err)
+	}
+	listenPort := probe.Addr().(*net.TCPAddr).Port
+	if err := probe.Close(); err != nil {
+		t.Fatalf("release TCP port: %v", err)
+	}
+
+	ctx := authTestContext()
+	legacyRule := &pb.StreamRule{
+		Protocol: models.StreamProtocolTCP, ListenPort: int32(listenPort), Target: "127.0.0.1:1",
+	}
+	if _, err := server.SetStreamRules(ctx, &pb.StreamRules{Items: []*pb.StreamRule{legacyRule}}); err != nil {
+		t.Fatalf("start legacy TCP mapping: %v", err)
+	}
+
+	invalidStrictRule := proto.Clone(legacyRule).(*pb.StreamRule)
+	invalidStrictRule.ValidationMode = models.StreamValidationStrict
+	invalidStrictRule.ServiceProfile = &pb.StreamServiceProfile{ServiceId: "ssh"}
+	if _, err := server.SetStreamRules(ctx, &pb.StreamRules{Items: []*pb.StreamRule{invalidStrictRule}}); status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("invalid strict update status = %v, want invalid argument; error=%v", status.Code(err), err)
+	}
+
+	rules, _ := manager.ConfigSnapshot()
+	if len(rules) != 1 || rules[0].ListenPort != listenPort || rules[0].Disabled || rules[0].ValidationMode != models.StreamValidationOff {
+		t.Fatalf("existing TCP mapping changed after rejected update: %#v", rules)
+	}
+	conn, err := net.Dial("tcp", net.JoinHostPort("127.0.0.1", fmt.Sprintf("%d", listenPort)))
+	if err != nil {
+		t.Fatalf("existing TCP listener was removed: %v", err)
+	}
+	_ = conn.Close()
+}
+
 func TestGatewayControlSetStreamRulesRejectsInvalidAvailability(t *testing.T) {
 	server := newGatewayControlTestServer(t, "secret")
 	_, err := server.SetStreamRules(authTestContext(), &pb.StreamRules{

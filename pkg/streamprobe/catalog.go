@@ -3,6 +3,7 @@ package streamprobe
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
 	"strings"
 
 	"go-reauth-proxy/pkg/models"
@@ -90,6 +91,46 @@ func SupportsTransport(descriptor models.StreamServiceDescriptor, transport stri
 		}
 	}
 	return false
+}
+
+// ValidateStrictProfile verifies the server-owned parts of a strict stream
+// profile. StrictCapable is intentionally derived from the catalog instead of
+// trusted as a duplicated client-supplied flag: older or partially upgraded
+// control planes can legitimately omit that field while still supplying a
+// valid probed or manually confirmed profile.
+func ValidateStrictProfile(profile models.StreamServiceProfile, transport, target, probeStatus string) error {
+	serviceID := strings.ToLower(strings.TrimSpace(profile.ServiceID))
+	descriptor, _, _, known := Definition(serviceID)
+	if !known {
+		return fmt.Errorf("unknown service %q", serviceID)
+	}
+	if !descriptor.StrictCapable {
+		return fmt.Errorf("service %q does not support strict validation", serviceID)
+	}
+	if !SupportsTransport(descriptor, transport) {
+		return fmt.Errorf("service %q does not support %s", serviceID, strings.ToLower(strings.TrimSpace(transport)))
+	}
+
+	source := strings.ToLower(strings.TrimSpace(profile.Source))
+	confidence := strings.ToLower(strings.TrimSpace(profile.ServiceConfidence))
+	status := strings.ToLower(strings.TrimSpace(probeStatus))
+	switch source {
+	case "probe":
+		if confidence != "strong" || status != "verified" {
+			return fmt.Errorf("service %q requires a verified strong probe", serviceID)
+		}
+	case "manual":
+		if status != "manual" {
+			return fmt.Errorf("service %q requires manual confirmation", serviceID)
+		}
+	default:
+		return fmt.Errorf("service %q profile source must be probe or manual", serviceID)
+	}
+
+	if profile.TargetFingerprint != TargetFingerprint(transport, target) {
+		return fmt.Errorf("service %q profile does not match the configured target", serviceID)
+	}
+	return nil
 }
 
 func TargetFingerprint(transport, target string) string {

@@ -238,6 +238,21 @@ func TestReconcileBestEffortDoesNotCountDisabledRuleAsStarted(t *testing.T) {
 	}
 }
 
+func TestNormalizeRuleRejectsInvalidEnabledStrictProfile(t *testing.T) {
+	manager := NewManager(newStreamTestProxyHandler(t))
+	defer manager.Stop()
+	rule := models.StreamRule{
+		Protocol:       models.StreamProtocolTCP,
+		ListenPort:     freeTCPPort(t),
+		Target:         "127.0.0.1:1",
+		ValidationMode: models.StreamValidationStrict,
+		ServiceProfile: models.StreamServiceProfile{ServiceID: "ssh"},
+	}
+	if normalized, err := manager.normalizeRule(rule); err == nil {
+		t.Fatalf("invalid enabled strict rule was silently normalized: %#v", normalized)
+	}
+}
+
 func TestNormalizeRelayErrorKeepsUnexpectedError(t *testing.T) {
 	err := errors.New("permission denied")
 	if got := normalizeRelayError(err); got != err {

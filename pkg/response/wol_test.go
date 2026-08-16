@@ -34,6 +34,12 @@ func TestWOLPageIsResponsiveSignedAndNonCacheable(t *testing.T) {
 	for _, fragment := range []string{
 		`@media(min-width:680px)`,
 		`/__auth__/api/auth/wol/targets`,
+		`/shutdown`,
+		`id="shutdown-modal"`,
+		`shutdownDeadline=Date.now()+3000`,
+		`Date.now()<shutdownDeadline`,
+		`shutdownConfirmCountdown.replace('{seconds}'`,
+		`item.shutdownAvailable`,
 		`function apiFetch(url,options)`,
 		`var labels={loading:"`,
 		`wake:"`,
@@ -62,7 +68,7 @@ func TestWOLPageIsResponsiveSignedAndNonCacheable(t *testing.T) {
 	if language := rec.Header().Get("Content-Language"); language == "" {
 		t.Fatal("Content-Language must use the resolved locale")
 	}
-	for _, internalField := range []string{"ipAddress", "observedIp", "lastError"} {
+	for _, internalField := range []string{"ipAddress", "observedIp", "lastError", "username", "hostKeyFingerprint", "credentialConfigured", "privateKey", "password"} {
 		if strings.Contains(body, internalField) {
 			t.Fatalf("WOL page exposed internal field %q", internalField)
 		}

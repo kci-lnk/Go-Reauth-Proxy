@@ -13,20 +13,31 @@ var (
 )
 
 type wolPageData struct {
-	Title       string
-	Description string
-	Loading     string
-	Empty       string
-	LoadFailed  string
-	Wake        string
-	Waking      string
-	WakeSuccess string
-	WakeFailed  string
-	Online      string
-	Offline     string
-	Unknown     string
-	LastChecked string
-	Back        string
+	Title                    string
+	Description              string
+	Loading                  string
+	Empty                    string
+	LoadFailed               string
+	Wake                     string
+	Waking                   string
+	WakeSuccess              string
+	WakeFailed               string
+	Shutdown                 string
+	ShutdownTitle            string
+	ShutdownDescription      string
+	ShutdownWarning          string
+	ShutdownConfirm          string
+	ShutdownConfirmCountdown string
+	ShuttingDown             string
+	ShutdownAccepted         string
+	ShutdownUnknown          string
+	ShutdownFailed           string
+	Cancel                   string
+	Online                   string
+	Offline                  string
+	Unknown                  string
+	LastChecked              string
+	Back                     string
 }
 
 const wolPageHTML = `<!doctype html>
@@ -37,7 +48,7 @@ const wolPageHTML = `<!doctype html>
 <meta name="color-scheme" content="light dark">
 <title>{{.Data.Title}}</title>
 <style>
-:root{font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:#18181b;background:#f4f4f5}*{box-sizing:border-box}body{margin:0;min-height:100vh;background:radial-gradient(circle at top,#fff 0,#f4f4f5 52%,#e4e4e7 100%)}button,a{font:inherit}.shell{width:min(1120px,100%);margin:auto;padding:24px 16px 48px}.top{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;margin-bottom:22px}.title-row{display:flex;align-items:center;gap:11px}.title-icon{width:30px;height:30px;flex:none}.title{margin:0;font-size:clamp(1.6rem,4vw,2.25rem);letter-spacing:-.035em}.desc{margin:8px 0 0;color:#71717a;line-height:1.6}.back{display:inline-flex;align-items:center;gap:7px;min-height:40px;padding:0 14px;border:1px solid #d4d4d8;border-radius:10px;background:#fff;color:#27272a;text-decoration:none;white-space:nowrap}.state{padding:56px 20px;border:1px dashed #d4d4d8;border-radius:18px;text-align:center;color:#71717a;background:rgba(255,255,255,.7)}.grid{display:grid;grid-template-columns:1fr;gap:14px}.card{display:flex;flex-direction:column;min-width:0;padding:18px;border:1px solid #e4e4e7;border-radius:18px;background:rgba(255,255,255,.92);box-shadow:0 8px 28px rgba(24,24,27,.06)}.card-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px}.device-name{margin:0;font-size:1.1rem;overflow-wrap:anywhere}.status{display:inline-flex;align-items:center;gap:7px;flex:none;font-size:.82rem;color:#52525b}.dot{width:9px;height:9px;border-radius:999px;background:#f59e0b}.dot.online{background:#22c55e}.dot.offline{background:#a1a1aa}.meta{display:flex;flex-wrap:wrap;gap:7px 12px;margin-top:16px;padding-top:13px;border-top:1px solid #f0f0f1;color:#71717a;font-size:.78rem}.actions{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-top:auto;padding-top:18px}.result{min-height:20px;color:#71717a;font-size:.82rem}.result.ok{color:#15803d}.result.error{color:#b91c1c}.wake{display:inline-flex;align-items:center;justify-content:center;gap:8px;min-width:112px;min-height:42px;border:0;border-radius:11px;background:#18181b;color:#fff;font-weight:650;cursor:pointer}.wake svg{width:17px;height:17px}.wake:hover{background:#3f3f46}.wake:disabled{cursor:not-allowed;opacity:.58}.spinner{width:15px;height:15px;border:2px solid rgba(255,255,255,.4);border-top-color:#fff;border-radius:50%;animation:spin .75s linear infinite}@keyframes spin{to{transform:rotate(360deg)}}@media(min-width:680px){.shell{padding:38px 24px 64px}.grid{grid-template-columns:repeat(2,minmax(0,1fr))}}@media(min-width:1024px){.grid{grid-template-columns:repeat(3,minmax(0,1fr))}}@media(prefers-color-scheme:dark){:root{color:#f4f4f5;background:#09090b}body{background:radial-gradient(circle at top,#27272a 0,#09090b 60%)}.desc,.state,.meta,.result{color:#a1a1aa}.back,.card{border-color:#3f3f46;background:rgba(24,24,27,.92);color:#f4f4f5}.state{background:rgba(24,24,27,.65)}.status{color:#d4d4d8}.meta{border-top-color:#3f3f46}.wake{background:#fafafa;color:#18181b}.wake:hover{background:#e4e4e7}}
+:root{font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:#18181b;background:#f4f4f5}*{box-sizing:border-box}body{margin:0;min-height:100vh;background:radial-gradient(circle at top,#fff 0,#f4f4f5 52%,#e4e4e7 100%)}button,a{font:inherit}.shell{width:min(1120px,100%);margin:auto;padding:24px 16px 48px}.top{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;margin-bottom:22px}.title-row{display:flex;align-items:center;gap:11px}.title-icon{width:30px;height:30px;flex:none}.title{margin:0;font-size:clamp(1.6rem,4vw,2.25rem);letter-spacing:-.035em}.desc{margin:8px 0 0;color:#71717a;line-height:1.6}.back{display:inline-flex;align-items:center;gap:7px;min-height:40px;padding:0 14px;border:1px solid #d4d4d8;border-radius:10px;background:#fff;color:#27272a;text-decoration:none;white-space:nowrap}.state{padding:56px 20px;border:1px dashed #d4d4d8;border-radius:18px;text-align:center;color:#71717a;background:rgba(255,255,255,.7)}.grid{display:grid;grid-template-columns:1fr;gap:14px}.card{display:flex;flex-direction:column;min-width:0;padding:18px;border:1px solid #e4e4e7;border-radius:18px;background:rgba(255,255,255,.92);box-shadow:0 8px 28px rgba(24,24,27,.06)}.card-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px}.device-name{margin:0;font-size:1.1rem;overflow-wrap:anywhere}.status{display:inline-flex;align-items:center;gap:7px;flex:none;font-size:.82rem;color:#52525b}.dot{width:9px;height:9px;border-radius:999px;background:#f59e0b}.dot.online{background:#22c55e}.dot.offline{background:#a1a1aa}.meta{display:flex;flex-wrap:wrap;gap:7px 12px;margin-top:16px;padding-top:13px;border-top:1px solid #f0f0f1;color:#71717a;font-size:.78rem}.actions{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-top:auto;padding-top:18px}.action-buttons{display:flex;flex-wrap:wrap;justify-content:flex-end;gap:8px}.result{min-height:20px;color:#71717a;font-size:.82rem}.result.ok{color:#15803d}.result.warning{color:#b45309}.result.error,.modal-error{color:#b91c1c}.wake,.shutdown,.modal-button{display:inline-flex;align-items:center;justify-content:center;gap:8px;min-height:42px;border:0;border-radius:11px;font-weight:650;cursor:pointer}.wake{min-width:112px;background:#18181b;color:#fff}.wake svg,.shutdown svg{width:17px;height:17px}.wake:hover{background:#3f3f46}.shutdown{min-width:104px;background:#dc2626;color:#fff}.shutdown:hover{background:#b91c1c}.wake:disabled,.shutdown:disabled,.modal-button:disabled{cursor:not-allowed;opacity:.58}.spinner{width:15px;height:15px;border:2px solid rgba(255,255,255,.4);border-top-color:#fff;border-radius:50%;animation:spin .75s linear infinite}.modal[hidden]{display:none}.modal{position:fixed;z-index:1000;inset:0;display:grid;place-items:center;padding:20px;background:rgba(9,9,11,.58)}.modal-panel{width:min(440px,100%);padding:22px;border:1px solid #e4e4e7;border-radius:18px;background:#fff;box-shadow:0 24px 80px rgba(0,0,0,.28)}.modal-title{margin:0;color:#b91c1c;font-size:1.2rem}.modal-description{margin:10px 0 0;color:#52525b;line-height:1.55}.modal-warning{margin:16px 0 0;padding:12px;border:1px solid rgba(220,38,38,.25);border-radius:10px;background:rgba(220,38,38,.06);font-size:.9rem}.modal-error{min-height:20px;margin:10px 0 0;font-size:.84rem}.modal-actions{display:flex;justify-content:flex-end;gap:9px;margin-top:18px}.modal-button{padding:0 15px;background:#e4e4e7;color:#18181b}.modal-button.confirm{min-width:150px;background:#dc2626;color:#fff}@keyframes spin{to{transform:rotate(360deg)}}@media(min-width:680px){.shell{padding:38px 24px 64px}.grid{grid-template-columns:repeat(2,minmax(0,1fr))}}@media(min-width:1024px){.grid{grid-template-columns:repeat(3,minmax(0,1fr))}}@media(prefers-color-scheme:dark){:root{color:#f4f4f5;background:#09090b}body{background:radial-gradient(circle at top,#27272a 0,#09090b 60%)}.desc,.state,.meta,.result,.modal-description{color:#a1a1aa}.back,.card,.modal-panel{border-color:#3f3f46;background:rgba(24,24,27,.98);color:#f4f4f5}.state{background:rgba(24,24,27,.65)}.status{color:#d4d4d8}.meta{border-top-color:#3f3f46}.wake{background:#fafafa;color:#18181b}.wake:hover{background:#e4e4e7}.modal-button{background:#3f3f46;color:#f4f4f5}}
 </style>
 </head>
 <body>
@@ -46,17 +57,34 @@ const wolPageHTML = `<!doctype html>
   <section id="state" class="state" role="status">{{.Data.Loading}}</section>
   <section id="grid" class="grid" aria-live="polite" hidden></section>
 </main>
+<div id="shutdown-modal" class="modal" hidden>
+  <section class="modal-panel" role="dialog" aria-modal="true" aria-labelledby="shutdown-title" aria-describedby="shutdown-description">
+    <h2 id="shutdown-title" class="modal-title">{{.Data.ShutdownTitle}}</h2>
+    <p id="shutdown-description" class="modal-description"></p>
+    <p class="modal-warning">{{.Data.ShutdownWarning}}</p>
+    <p id="shutdown-error" class="modal-error" role="alert"></p>
+    <div class="modal-actions"><button id="shutdown-cancel" class="modal-button" type="button">{{.Data.Cancel}}</button><button id="shutdown-confirm" class="modal-button confirm" type="button" disabled></button></div>
+  </section>
+</div>
 <script>
 (function(){
   'use strict';
-  var labels={loading:{{.Data.Loading}},empty:{{.Data.Empty}},loadFailed:{{.Data.LoadFailed}},wake:{{.Data.Wake}},waking:{{.Data.Waking}},wakeSuccess:{{.Data.WakeSuccess}},wakeFailed:{{.Data.WakeFailed}},online:{{.Data.Online}},offline:{{.Data.Offline}},unknown:{{.Data.Unknown}},lastChecked:{{.Data.LastChecked}}};
-  var state=document.getElementById('state');var grid=document.getElementById('grid');
+  var labels={loading:{{.Data.Loading}},empty:{{.Data.Empty}},loadFailed:{{.Data.LoadFailed}},wake:{{.Data.Wake}},waking:{{.Data.Waking}},wakeSuccess:{{.Data.WakeSuccess}},wakeFailed:{{.Data.WakeFailed}},shutdown:{{.Data.Shutdown}},shutdownDescription:{{.Data.ShutdownDescription}},shutdownConfirm:{{.Data.ShutdownConfirm}},shutdownConfirmCountdown:{{.Data.ShutdownConfirmCountdown}},shuttingDown:{{.Data.ShuttingDown}},shutdownAccepted:{{.Data.ShutdownAccepted}},shutdownUnknown:{{.Data.ShutdownUnknown}},shutdownFailed:{{.Data.ShutdownFailed}},online:{{.Data.Online}},offline:{{.Data.Offline}},unknown:{{.Data.Unknown}},lastChecked:{{.Data.LastChecked}}};
+  var state=document.getElementById('state');var grid=document.getElementById('grid');var shutdownModal=document.getElementById('shutdown-modal');var shutdownDescription=document.getElementById('shutdown-description');var shutdownError=document.getElementById('shutdown-error');var shutdownCancel=document.getElementById('shutdown-cancel');var shutdownConfirm=document.getElementById('shutdown-confirm');var shutdownTarget=null;var shutdownDeadline=0;var shutdownTimer=null;var shutdownBusy=false;
   function text(tag,value,className){var node=document.createElement(tag);if(className)node.className=className;node.textContent=value||'';return node}
   function monitorIcon(){var icon=document.createElementNS('http://www.w3.org/2000/svg','svg');icon.setAttribute('viewBox','0 0 24 24');icon.setAttribute('fill','none');icon.setAttribute('stroke','currentColor');icon.setAttribute('stroke-width','2');icon.setAttribute('stroke-linecap','round');icon.setAttribute('stroke-linejoin','round');icon.setAttribute('aria-hidden','true');[['path','d','m9 10 3-3 3 3'],['path','d','M12 13V7'],['rect','width','20','height','14','x','2','y','3','rx','2'],['path','d','M12 17v4'],['path','d','M8 21h8']].forEach(function(spec){var node=document.createElementNS('http://www.w3.org/2000/svg',spec[0]);for(var index=1;index<spec.length;index+=2)node.setAttribute(spec[index],spec[index+1]);icon.appendChild(node)});return icon}
+  function powerIcon(){var icon=document.createElementNS('http://www.w3.org/2000/svg','svg');icon.setAttribute('viewBox','0 0 24 24');icon.setAttribute('fill','none');icon.setAttribute('stroke','currentColor');icon.setAttribute('stroke-width','2');icon.setAttribute('stroke-linecap','round');icon.setAttribute('stroke-linejoin','round');icon.setAttribute('aria-hidden','true');[['path','d','M12 2v10'],['path','d','M18.4 6.6a9 9 0 1 1-12.8 0']].forEach(function(spec){var node=document.createElementNS('http://www.w3.org/2000/svg',spec[0]);for(var index=1;index<spec.length;index+=2)node.setAttribute(spec[index],spec[index+1]);icon.appendChild(node)});return icon}
   function apiFetch(url,options){var headers=new Headers(options&&options.headers||{});headers.set('Cache-Control','no-cache');return fetch(url,Object.assign({cache:'no-store',credentials:'same-origin'},options||{},{headers:headers}))}
   function statusLabel(value){return value==='online'?labels.online:value==='offline'?labels.offline:labels.unknown}
-  function render(items){grid.replaceChildren();if(!items.length){state.textContent=labels.empty;state.hidden=false;grid.hidden=true;return}state.hidden=true;grid.hidden=false;items.forEach(function(item){var card=text('article','', 'card');var head=text('div','', 'card-head');var names=text('div');names.appendChild(text('h2',item.name,'device-name'));var status=text('div','', 'status');var dot=text('span','', 'dot '+(item.status&&item.status.state||'unknown'));dot.setAttribute('aria-hidden','true');status.appendChild(dot);status.appendChild(text('span',statusLabel(item.status&&item.status.state)));head.appendChild(names);head.appendChild(status);card.appendChild(head);if(item.status&&item.status.checkedAt){var meta=text('div','', 'meta');meta.appendChild(text('span',labels.lastChecked.replace('{time}',new Date(item.status.checkedAt).toLocaleString())));card.appendChild(meta)}var actions=text('div','', 'actions');var result=text('span','', 'result');var button=text('button','','wake');button.type='button';button.replaceChildren(monitorIcon(),document.createTextNode(labels.wake));button.addEventListener('click',async function(){button.disabled=true;button.replaceChildren(text('span','', 'spinner'),document.createTextNode(labels.waking));result.className='result';result.textContent='';try{var response=await apiFetch('/__auth__/api/auth/wol/targets/'+encodeURIComponent(item.id)+'/wake',{method:'POST'});var payload=await response.json().catch(function(){return null});if(!response.ok)throw new Error(payload&&payload.message||labels.wakeFailed);result.textContent=labels.wakeSuccess;result.className='result ok'}catch(error){result.textContent=error&&error.message||labels.wakeFailed;result.className='result error'}finally{button.disabled=false;button.replaceChildren(monitorIcon(),document.createTextNode(labels.wake))}});actions.appendChild(result);actions.appendChild(button);card.appendChild(actions);grid.appendChild(card)})}
+  function stopShutdownTimer(){if(shutdownTimer!==null)clearInterval(shutdownTimer);shutdownTimer=null}
+  function resetShutdownDialog(){stopShutdownTimer();shutdownTarget=null;shutdownDeadline=0;shutdownBusy=false;shutdownError.textContent='';shutdownModal.hidden=true;shutdownCancel.disabled=false;shutdownConfirm.disabled=true}
+  function updateShutdownCountdown(){var remaining=Math.max(0,Math.ceil((shutdownDeadline-Date.now())/1000));shutdownConfirm.textContent=remaining>0?labels.shutdownConfirmCountdown.replace('{seconds}',String(remaining)):labels.shutdownConfirm;shutdownConfirm.disabled=shutdownBusy||remaining>0;if(remaining===0)stopShutdownTimer()}
+  function openShutdownDialog(item,controls){resetShutdownDialog();shutdownTarget={item:item,controls:controls};shutdownDeadline=Date.now()+3000;shutdownDescription.textContent=labels.shutdownDescription.replace('{target}',item.name||'').replace('{host}',item.sshHost||'');shutdownModal.hidden=false;updateShutdownCountdown();shutdownTimer=setInterval(updateShutdownCountdown,100);shutdownCancel.focus()}
+  function scheduleRefreshes(){[5,20,35].forEach(function(seconds){setTimeout(load,seconds*1000)})}
+  async function confirmShutdown(){if(!shutdownTarget||shutdownBusy||Date.now()<shutdownDeadline)return;var current=shutdownTarget;shutdownBusy=true;stopShutdownTimer();shutdownCancel.disabled=true;shutdownConfirm.disabled=true;shutdownConfirm.replaceChildren(text('span','', 'spinner'),document.createTextNode(labels.shuttingDown));shutdownError.textContent='';current.controls.setPending(true);try{var response=await apiFetch('/__auth__/api/auth/wol/targets/'+encodeURIComponent(current.item.id)+'/shutdown',{method:'POST'});var payload=await response.json().catch(function(){return null});if(response.status===504){current.controls.result.textContent=labels.shutdownUnknown;current.controls.result.className='result warning';resetShutdownDialog();scheduleRefreshes();return}if(!response.ok)throw new Error(payload&&payload.message||labels.shutdownFailed);current.controls.result.textContent=labels.shutdownAccepted;current.controls.result.className='result ok';resetShutdownDialog();scheduleRefreshes()}catch(error){shutdownBusy=false;shutdownCancel.disabled=false;shutdownConfirm.disabled=false;shutdownConfirm.textContent=labels.shutdownConfirm;shutdownError.textContent=error&&error.message||labels.shutdownFailed;current.controls.result.textContent=labels.shutdownFailed;current.controls.result.className='result error'}finally{current.controls.setPending(false)}}
+  function render(items){grid.replaceChildren();if(!items.length){state.textContent=labels.empty;state.hidden=false;grid.hidden=true;return}state.hidden=true;grid.hidden=false;items.forEach(function(item){var card=text('article','', 'card');var head=text('div','', 'card-head');var names=text('div');names.appendChild(text('h2',item.name,'device-name'));var status=text('div','', 'status');var dot=text('span','', 'dot '+(item.status&&item.status.state||'unknown'));dot.setAttribute('aria-hidden','true');status.appendChild(dot);status.appendChild(text('span',statusLabel(item.status&&item.status.state)));head.appendChild(names);head.appendChild(status);card.appendChild(head);if(item.status&&item.status.checkedAt){var meta=text('div','', 'meta');meta.appendChild(text('span',labels.lastChecked.replace('{time}',new Date(item.status.checkedAt).toLocaleString())));card.appendChild(meta)}var actions=text('div','', 'actions');var result=text('span','', 'result');var actionButtons=text('div','', 'action-buttons');var wakeButton=text('button','','wake');wakeButton.type='button';wakeButton.replaceChildren(monitorIcon(),document.createTextNode(labels.wake));var shutdownButton=null;var pending=false;function setPending(value){pending=value;wakeButton.disabled=value;if(shutdownButton)shutdownButton.disabled=value}var controls={result:result,setPending:setPending};wakeButton.addEventListener('click',async function(){if(pending)return;setPending(true);wakeButton.replaceChildren(text('span','', 'spinner'),document.createTextNode(labels.waking));result.className='result';result.textContent='';try{var response=await apiFetch('/__auth__/api/auth/wol/targets/'+encodeURIComponent(item.id)+'/wake',{method:'POST'});var payload=await response.json().catch(function(){return null});if(!response.ok)throw new Error(payload&&payload.message||labels.wakeFailed);result.textContent=labels.wakeSuccess;result.className='result ok'}catch(error){result.textContent=error&&error.message||labels.wakeFailed;result.className='result error'}finally{setPending(false);wakeButton.replaceChildren(monitorIcon(),document.createTextNode(labels.wake))}});if(item.shutdownAvailable){shutdownButton=text('button','','shutdown');shutdownButton.type='button';shutdownButton.replaceChildren(powerIcon(),document.createTextNode(labels.shutdown));shutdownButton.addEventListener('click',function(){if(!pending)openShutdownDialog(item,controls)});actionButtons.appendChild(shutdownButton)}actionButtons.appendChild(wakeButton);actions.appendChild(result);actions.appendChild(actionButtons);card.appendChild(actions);grid.appendChild(card)})}
   async function load(){try{var response=await apiFetch('/__auth__/api/auth/wol/targets?_ts='+Date.now());var payload=await response.json().catch(function(){return null});if(!response.ok)throw new Error(payload&&payload.message||labels.loadFailed);render(payload&&payload.data&&payload.data.items||[])}catch(error){state.hidden=false;grid.hidden=true;state.textContent=error&&error.message||labels.loadFailed}}
+  shutdownCancel.addEventListener('click',function(){if(!shutdownBusy)resetShutdownDialog()});shutdownConfirm.addEventListener('click',confirmShutdown);shutdownModal.addEventListener('click',function(event){if(event.target===shutdownModal&&!shutdownBusy)resetShutdownDialog()});document.addEventListener('keydown',function(event){if(shutdownModal.hidden)return;if(event.key==='Escape'&&!shutdownBusy){event.preventDefault();resetShutdownDialog()}else if(event.key==='Enter'){event.preventDefault();confirmShutdown()}});
   load();
 })();
 </script>
@@ -70,20 +98,31 @@ type wolPageTemplateData struct {
 func WOLPage(w http.ResponseWriter, r *http.Request) {
 	locale := i18n.ResolveRequestLocale(r)
 	data := wolPageData{
-		Title:       i18n.T(locale, "gateway.wol.title"),
-		Description: i18n.T(locale, "gateway.wol.description"),
-		Loading:     i18n.T(locale, "gateway.wol.loading"),
-		Empty:       i18n.T(locale, "gateway.wol.empty"),
-		LoadFailed:  i18n.T(locale, "gateway.wol.loadFailed"),
-		Wake:        i18n.T(locale, "gateway.wol.wake"),
-		Waking:      i18n.T(locale, "gateway.wol.waking"),
-		WakeSuccess: i18n.T(locale, "gateway.wol.wakeSuccess"),
-		WakeFailed:  i18n.T(locale, "gateway.wol.wakeFailed"),
-		Online:      i18n.T(locale, "gateway.wol.online"),
-		Offline:     i18n.T(locale, "gateway.wol.offline"),
-		Unknown:     i18n.T(locale, "gateway.wol.unknown"),
-		LastChecked: i18n.T(locale, "gateway.wol.lastChecked"),
-		Back:        i18n.T(locale, "gateway.wol.back"),
+		Title:                    i18n.T(locale, "gateway.wol.title"),
+		Description:              i18n.T(locale, "gateway.wol.description"),
+		Loading:                  i18n.T(locale, "gateway.wol.loading"),
+		Empty:                    i18n.T(locale, "gateway.wol.empty"),
+		LoadFailed:               i18n.T(locale, "gateway.wol.loadFailed"),
+		Wake:                     i18n.T(locale, "gateway.wol.wake"),
+		Waking:                   i18n.T(locale, "gateway.wol.waking"),
+		WakeSuccess:              i18n.T(locale, "gateway.wol.wakeSuccess"),
+		WakeFailed:               i18n.T(locale, "gateway.wol.wakeFailed"),
+		Shutdown:                 i18n.T(locale, "gateway.wol.shutdown"),
+		ShutdownTitle:            i18n.T(locale, "gateway.wol.shutdownTitle"),
+		ShutdownDescription:      i18n.T(locale, "gateway.wol.shutdownDescription"),
+		ShutdownWarning:          i18n.T(locale, "gateway.wol.shutdownWarning"),
+		ShutdownConfirm:          i18n.T(locale, "gateway.wol.shutdownConfirm"),
+		ShutdownConfirmCountdown: i18n.T(locale, "gateway.wol.shutdownConfirmCountdown"),
+		ShuttingDown:             i18n.T(locale, "gateway.wol.shuttingDown"),
+		ShutdownAccepted:         i18n.T(locale, "gateway.wol.shutdownAccepted"),
+		ShutdownUnknown:          i18n.T(locale, "gateway.wol.shutdownUnknown"),
+		ShutdownFailed:           i18n.T(locale, "gateway.wol.shutdownFailed"),
+		Cancel:                   i18n.T(locale, "gateway.cancel"),
+		Online:                   i18n.T(locale, "gateway.wol.online"),
+		Offline:                  i18n.T(locale, "gateway.wol.offline"),
+		Unknown:                  i18n.T(locale, "gateway.wol.unknown"),
+		LastChecked:              i18n.T(locale, "gateway.wol.lastChecked"),
+		Back:                     i18n.T(locale, "gateway.wol.back"),
 	}
 	wolPageOnce.Do(func() { wolPageTmpl = template.Must(template.New("wol").Parse(wolPageHTML)) })
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")

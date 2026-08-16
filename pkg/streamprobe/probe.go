@@ -170,12 +170,13 @@ func tcpActiveProbes(target string) []activeProbe {
 		{name: "redis_ping", payload: []byte("*1\r\n$4\r\nPING\r\n"), expected: "redis", direction: DirectionServer},
 		{name: "postgres_ssl", payload: []byte{0, 0, 0, 8, 0x04, 0xd2, 0x16, 0x2f}, expected: "postgresql", direction: DirectionServer},
 		{name: "rdp_negotiation", payload: []byte{0x03, 0x00, 0x00, 0x13, 0x0e, 0xe0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x08, 0x00, 0x03, 0x00, 0x00, 0x00}, expected: "rdp", direction: DirectionServer},
+		{name: "easytier_handshake", payload: easyTierProbePayload(), expected: "easytier", direction: DirectionServer},
 	}
 	// Keep the WebDAV capability probes ahead of the generic HTTP probe even
 	// on conventional HTTP ports. HTTP is the carrier protocol and is only a
 	// soft match while a DAV header or multistatus body identifies the more
 	// specific service.
-	priority := map[int]string{443: "tls_client_hello", 554: "rtsp_options", 8554: "rtsp_options", 6379: "redis_ping", 5432: "postgres_ssl", 3389: "rdp_negotiation"}[port]
+	priority := map[int]string{443: "tls_client_hello", 554: "rtsp_options", 8554: "rtsp_options", 6379: "redis_ping", 5432: "postgres_ssl", 3389: "rdp_negotiation", 11010: "easytier_handshake"}[port]
 	if priority == "" {
 		return all
 	}
@@ -312,8 +313,8 @@ func authenticatedHTTPChallenge(result models.StreamProbeResult) (string, string
 func withAuthenticatedHTTPAmbiguity(result models.StreamProbeResult, status, scheme string) models.StreamProbeResult {
 	// A generic authentication gateway can emit the same challenge for ordinary
 	// HTTP, WebDAV, CalDAV, and other HTTP extensions. The carrier is known, but
-	// the configured application service is not. Keep the mapping fail-closed and
-	// let an administrator select the expected strict-capable service.
+	// the configured application service is not. Keep strict validation off and
+	// let an administrator select the expected strict-capable service explicitly.
 	if (result.Profile.ServiceID == "http1" || result.Profile.ServiceID == "tls") && status == "401" && scheme != "" {
 		if result.Profile.Metadata == nil {
 			result.Profile.Metadata = map[string]string{}
@@ -354,7 +355,11 @@ func profileResult(serviceID, confidence, evidence string, metadata map[string]s
 		StrictCapable:     descriptor.StrictCapable,
 		Metadata:          metadata,
 	}
-	return models.StreamProbeResult{Status: status, Profile: profile}
+	message := ""
+	if confidence == "strong" && !descriptor.StrictCapable {
+		message = "service identified; strict validation is not enabled"
+	}
+	return models.StreamProbeResult{Status: status, Message: message, Profile: profile}
 }
 
 func extractMetadata(serviceID string, data []byte) map[string]string {

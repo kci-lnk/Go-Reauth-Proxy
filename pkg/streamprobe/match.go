@@ -57,8 +57,8 @@ func Classify(transport, direction string, data []byte) Classification {
 		return Classification{State: ValidationMismatch}
 	}
 
-	serverOrder := []string{"rfb", "ssh", "rtsp", "webdav", "http1", "tls", "mysql", "ftp", "smtp", "pop3", "imap", "redis", "rdp", "smb", "mssql", "ldap"}
-	clientOrder := []string{"http2", "rtsp", "webdav", "http1", "tls", "rdp", "smb", "postgresql", "redis", "mongodb", "mssql", "mqtt", "dns", "stun", "sip", "ldap"}
+	serverOrder := []string{"easytier", "rfb", "ssh", "rtsp", "webdav", "http1", "tls", "mysql", "ftp", "smtp", "pop3", "imap", "redis", "rdp", "smb", "mssql", "ldap"}
+	clientOrder := []string{"easytier", "http2", "rtsp", "webdav", "http1", "tls", "rdp", "smb", "postgresql", "redis", "mongodb", "mssql", "mqtt", "dns", "stun", "sip", "ldap"}
 	order := clientOrder
 	if direction == DirectionServer {
 		order = serverOrder
@@ -86,6 +86,8 @@ func classifyExpected(serviceID, transport, direction string, data []byte) Class
 	}
 
 	switch serviceID {
+	case "easytier":
+		return classifyEasyTierHandshake(data)
 	case "rfb":
 		if result, ok := need(12); ok {
 			return result

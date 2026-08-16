@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strconv"
 	"testing"
 	"time"
@@ -183,9 +184,74 @@ func TestAuthenticatedHTTPAmbiguityKeepsTLSCarrierUnverified(t *testing.T) {
 	}
 }
 
-func TestClassifierVersionTracksWebDAVProbeSemantics(t *testing.T) {
-	if ClassifierVersion != "stream-signatures-v3" {
+func TestClassifierVersionTracksSignatureSemantics(t *testing.T) {
+	if ClassifierVersion != "stream-signatures-v4" {
 		t.Fatalf("ClassifierVersion = %q", ClassifierVersion)
+	}
+}
+
+func TestProbeIdentifiesEasyTierWithoutEnablingStrictValidation(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	go func() {
+		for {
+			conn, acceptErr := listener.Accept()
+			if acceptErr != nil {
+				return
+			}
+			go func() {
+				defer conn.Close()
+				_ = conn.SetReadDeadline(time.Now().Add(time.Second))
+				request := make([]byte, 2048)
+				n, _ := conn.Read(request)
+				if classification := Classify("tcp", DirectionClient, request[:n]); classification.ServiceID == "easytier" && classification.State == ValidationMatch {
+					_, _ = conn.Write(easyTierProbePayload())
+				}
+			}()
+		}
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	result := Probe(ctx, "tcp", listener.Addr().String())
+	if result.Status != "unknown" || result.Profile.ServiceID != "easytier" {
+		t.Fatalf("probe result = %#v", result)
+	}
+	if result.Profile.ServiceConfidence != "strong" || result.Profile.StrictCapable {
+		t.Fatalf("EasyTier profile = %#v", result.Profile)
+	}
+	if result.Message == "" {
+		t.Fatal("identification-only result did not explain that strict validation remains off")
+	}
+}
+
+func TestEasyTierCatalogAndDefaultPortProbeStayIdentificationOnly(t *testing.T) {
+	descriptor, direction, role, ok := Definition("easytier")
+	if !ok || descriptor.DisplayName != "EasyTier" || !descriptor.ActiveProbeSupported || descriptor.StrictCapable {
+		t.Fatalf("EasyTier descriptor = %#v, found=%v", descriptor, ok)
+	}
+	if direction != DirectionClient || role != "vpn" {
+		t.Fatalf("EasyTier direction=%q role=%q", direction, role)
+	}
+	probes := tcpActiveProbes("127.0.0.1:11010")
+	if len(probes) == 0 || probes[0].name != "easytier_handshake" {
+		t.Fatalf("port 11010 probe order = %#v", probes)
+	}
+}
+
+func TestProbeLiveEasyTier(t *testing.T) {
+	target := os.Getenv("FN_KNOCK_TEST_EASYTIER_TARGET")
+	if target == "" {
+		t.Skip("set FN_KNOCK_TEST_EASYTIER_TARGET to run against a live EasyTier TCP listener")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	result := Probe(ctx, "tcp", target)
+	if result.Profile.ServiceID != "easytier" || result.Profile.ServiceConfidence != "strong" || result.Profile.StrictCapable {
+		t.Fatalf("live EasyTier probe result = %#v", result)
 	}
 }
 

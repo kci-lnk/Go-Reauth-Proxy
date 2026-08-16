@@ -11,7 +11,7 @@ import (
 
 // Bump this whenever probe or inline-classification semantics change so stored
 // profiles retain an auditable link to the signature set that produced them.
-const ClassifierVersion = "stream-signatures-v3"
+const ClassifierVersion = "stream-signatures-v4"
 
 const (
 	DirectionClient = "client"
@@ -54,6 +54,11 @@ var serviceDefinitions = []serviceDefinition{
 	{models.StreamServiceDescriptor{ServiceID: "quic", DisplayName: "QUIC", ServiceFamily: "encrypted", Transports: []string{"udp"}, StrictCapable: true}, DirectionClient, "encrypted_service"},
 	{models.StreamServiceDescriptor{ServiceID: "dtls", DisplayName: "DTLS", ServiceFamily: "encrypted", Transports: []string{"udp"}, StrictCapable: true}, DirectionClient, "encrypted_service"},
 	{models.StreamServiceDescriptor{ServiceID: "wireguard", DisplayName: "WireGuard", ServiceFamily: "vpn", Transports: []string{"udp"}, StrictCapable: true}, DirectionClient, "vpn"},
+	// EasyTier is deliberately identification-only. Its v2.6.4 legacy handshake
+	// has a strong active-probe signature, but future or secure-mode handshakes
+	// may differ. Keeping strict validation off avoids rejecting a valid VPN
+	// connection merely because inline identification is unavailable.
+	{models.StreamServiceDescriptor{ServiceID: "easytier", DisplayName: "EasyTier", ServiceFamily: "vpn", Transports: []string{"tcp"}, ActiveProbeSupported: true}, DirectionClient, "vpn"},
 	{models.StreamServiceDescriptor{ServiceID: "ssdp", DisplayName: "SSDP / UPnP", ServiceFamily: "discovery", Transports: []string{"udp"}, ActiveProbeSupported: true, StrictCapable: true}, DirectionClient, "discovery_service"},
 	{models.StreamServiceDescriptor{ServiceID: "onvif", DisplayName: "ONVIF WS-Discovery", ServiceFamily: "video", Transports: []string{"udp"}, ActiveProbeSupported: true, StrictCapable: true}, DirectionClient, "video_device"},
 	{models.StreamServiceDescriptor{ServiceID: "snmp", DisplayName: "SNMP", ServiceFamily: "management", Transports: []string{"udp"}, StrictCapable: true}, DirectionClient, "managed_device"},

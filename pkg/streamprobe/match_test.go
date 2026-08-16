@@ -2,6 +2,7 @@ package streamprobe
 
 import (
 	"encoding/binary"
+	"encoding/hex"
 	"testing"
 )
 
@@ -53,6 +54,7 @@ func TestStrongSignatureFixtures(t *testing.T) {
 		direction string
 		data      []byte
 	}{
+		{"easytier", "tcp", DirectionClient, easyTierProbePayload()},
 		{"rfb", "tcp", DirectionServer, []byte("RFB 003.008\n")},
 		{"ssh", "tcp", DirectionServer, []byte("SSH-2.0-OpenSSH_9.9\r\n")},
 		{"rtsp", "tcp", DirectionClient, []byte("OPTIONS * RTSP/1.0\r\nCSeq: 1\r\n\r\n")},
@@ -94,6 +96,50 @@ func TestStrongSignatureFixtures(t *testing.T) {
 				t.Fatalf("Validate() = %v, want match", got)
 			}
 		})
+	}
+}
+
+func TestEasyTierHandshakeRequiresCompleteConsistentFrameAndMagic(t *testing.T) {
+	t.Parallel()
+	valid := easyTierProbePayload()
+	for split := 1; split < len(valid); split++ {
+		if got := Validate("easytier", "tcp", DirectionClient, valid[:split]); got != ValidationNeedMore {
+			t.Fatalf("split %d = %v, want need-more", split, got)
+		}
+	}
+
+	wrongBodyLength := append([]byte(nil), valid...)
+	binary.LittleEndian.PutUint32(wrongBodyLength[:4], easyTierTCPMaxBodySize+1)
+	if got := Validate("easytier", "tcp", DirectionClient, wrongBodyLength); got != ValidationMismatch {
+		t.Fatalf("oversized body = %v, want mismatch", got)
+	}
+
+	wrongPayloadLength := append([]byte(nil), valid...)
+	binary.LittleEndian.PutUint32(wrongPayloadLength[16:20], uint32(len(valid)))
+	if got := Validate("easytier", "tcp", DirectionClient, wrongPayloadLength); got != ValidationMismatch {
+		t.Fatalf("inconsistent payload = %v, want mismatch", got)
+	}
+
+	wrongMagic := append([]byte(nil), valid...)
+	wrongMagic[21] ^= 0x01
+	if got := Validate("easytier", "tcp", DirectionServer, wrongMagic); got != ValidationMismatch {
+		t.Fatalf("wrong magic = %v, want mismatch", got)
+	}
+}
+
+func TestEasyTierV264HandshakeResponseFixture(t *testing.T) {
+	t.Parallel()
+	// Captured from an official EasyTier v2.6.4 TCP listener in response to the
+	// protocol-shaped probe. Keeping the wire fixture literal prevents
+	// the probe builder and classifier from accidentally validating only each
+	// other's assumptions.
+	response, err := hex.DecodeString("5900000080a7a1d4000000000200016e4900000008e1cb868f0d1080cf86a50d18012a17666e2d6b6e6f636b2d7463702d72656772657373696f6e32200000000000000000000000000000000000000000000000000000000000000000")
+	if err != nil {
+		t.Fatal(err)
+	}
+	classification := Classify("tcp", DirectionServer, response)
+	if classification.ServiceID != "easytier" || classification.State != ValidationMatch || classification.Evidence != "easytier_handshake_magic" {
+		t.Fatalf("Classify(EasyTier v2.6.4 response) = %#v", classification)
 	}
 }
 

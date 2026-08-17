@@ -390,6 +390,92 @@ func TestGatewayControlSaveErrorPropagates(t *testing.T) {
 	}
 }
 
+func TestGatewayControlHostRulesDistinguishesPersistenceAndValidationErrors(t *testing.T) {
+	tempDir := t.TempDir()
+	goodConfig := config.NewManager(filepath.Join(tempDir, "good", "config.json"))
+	initialCfg, err := goodConfig.Load()
+	if err != nil {
+		t.Fatalf("load default config: %v", err)
+	}
+
+	blocker := filepath.Join(tempDir, "not-a-dir")
+	if err := os.WriteFile(blocker, []byte("block"), 0644); err != nil {
+		t.Fatalf("write blocker file: %v", err)
+	}
+	badConfig := config.NewManager(filepath.Join(blocker, "config.json"))
+	proxyHandler := proxy.NewHandler(7996, 7999, badConfig, initialCfg, filepath.Join(t.TempDir(), "logs"), nil)
+	server := NewGRPCServer(NewServer(proxyHandler, 7996, badConfig, initialCfg, nil), "secret")
+	ctx := authTestContext()
+
+	_, err = server.SetHostRules(ctx, &pb.HostRules{Items: []*pb.HostRule{{
+		Host:   "app.example.test",
+		Target: "http://127.0.0.1:8080",
+	}}})
+	if status.Code(err) != codes.Internal {
+		t.Fatalf("persistence status = %v, want internal; err=%v", status.Code(err), err)
+	}
+
+	_, err = server.SetHostRules(ctx, &pb.HostRules{Items: []*pb.HostRule{{
+		Host:   "app.example.test",
+		Target: "not-a-valid-target",
+	}}})
+	if status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("validation status = %v, want invalid argument; err=%v", status.Code(err), err)
+	}
+}
+
+func TestGatewayControlUnchangedHostRulesDoNotRequirePersistence(t *testing.T) {
+	tempDir := t.TempDir()
+	goodConfig := config.NewManager(filepath.Join(tempDir, "good", "config.json"))
+	initialCfg, err := goodConfig.Load()
+	if err != nil {
+		t.Fatalf("load default config: %v", err)
+	}
+	initialCfg.HostRules = []models.HostRule{{
+		Host:           "app.example.test",
+		Target:         "http://127.0.0.1:8080",
+		TargetPathMode: models.HostTargetPathModeEntry,
+		ProtocolMode:   models.HostProtocolModeAuto,
+		AccessMode:     "login_first",
+		Visibility: models.HostRuleVisibility{
+			Mode: models.HostVisibilityModeInherit,
+		},
+	}}
+
+	blocker := filepath.Join(tempDir, "not-a-dir")
+	if err := os.WriteFile(blocker, []byte("block"), 0644); err != nil {
+		t.Fatalf("write blocker file: %v", err)
+	}
+	badConfig := config.NewManager(filepath.Join(blocker, "config.json"))
+	proxyHandler := proxy.NewHandler(7996, 7999, badConfig, initialCfg, filepath.Join(t.TempDir(), "logs"), nil)
+	server := NewGRPCServer(NewServer(proxyHandler, 7996, badConfig, initialCfg, nil), "secret")
+	ctx := authTestContext()
+	emptyGroup := ""
+
+	if _, err := server.SetHostRules(ctx, &pb.HostRules{Items: []*pb.HostRule{{
+		Host:         "app.example.test",
+		Target:       "http://127.0.0.1:8080",
+		GroupId:      &emptyGroup,
+		GroupName:    &emptyGroup,
+		AdvancedAuth: &pb.AdvancedAuthConfig{},
+	}}}); err != nil {
+		t.Fatalf("unchanged host rules required persistence: %v", err)
+	}
+
+	if _, err := server.SetHostRules(ctx, &pb.HostRules{Items: []*pb.HostRule{{
+		Host:   "app.example.test",
+		Target: "http://127.0.0.1:8081",
+	}}}); status.Code(err) != codes.Internal {
+		t.Fatalf("changed host rules status = %v, want internal; err=%v", status.Code(err), err)
+	}
+
+	emptyHandler := proxy.NewHandler(7996, 7999, badConfig, &config.AppConfig{}, filepath.Join(t.TempDir(), "logs"), nil)
+	emptyServer := NewGRPCServer(NewServer(emptyHandler, 7996, badConfig, &config.AppConfig{}, nil), "secret")
+	if _, err := emptyServer.FlushHostRules(ctx, &emptypb.Empty{}); err != nil {
+		t.Fatalf("unchanged empty host rules required persistence: %v", err)
+	}
+}
+
 func TestGatewayControlFnosConnectIngressIsAuthenticatedAndValidatesPorts(t *testing.T) {
 	configPath := filepath.Join(t.TempDir(), "config.json")
 	cfgManager := config.NewManager(configPath)

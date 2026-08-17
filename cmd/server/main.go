@@ -56,6 +56,30 @@ type proxyStack struct {
 	stopOnce sync.Once
 }
 
+const (
+	defaultAuthBridgeStartupTimeout  = 150 * time.Second
+	synologySupervisorShutdownMargin = 30 * time.Second
+	minimumAuthBridgeStartupTimeout  = time.Second
+)
+
+// resolveAuthBridgeStartupTimeout keeps the gateway wait inside the same DSM
+// startup budget used by the Rust management process. Non-DSM launches retain
+// the established 150-second bound.
+func resolveAuthBridgeStartupTimeout() time.Duration {
+	raw := strings.TrimSpace(os.Getenv("FN_KNOCK_SYNOLOGY_START_TIMEOUT_SECONDS"))
+	seconds, err := strconv.ParseUint(raw, 10, 64)
+	const maxDurationSeconds = uint64(1<<63-1) / uint64(time.Second)
+	if err != nil || seconds == 0 || seconds > maxDurationSeconds {
+		return defaultAuthBridgeStartupTimeout
+	}
+
+	supervisorTimeout := time.Duration(seconds) * time.Second
+	if supervisorTimeout <= synologySupervisorShutdownMargin {
+		return minimumAuthBridgeStartupTimeout
+	}
+	return supervisorTimeout - synologySupervisorShutdownMargin
+}
+
 type proxyRebindRequest struct {
 	host   string
 	result chan error
@@ -816,7 +840,7 @@ func run(options runOptions) error {
 	proxyHandler.SetHostProtocolModeChangeHook(httpsConns.retireForServerNames)
 
 	proxyStack = newProxyStack(options.ProxyPort, proxyHandler, httpServer, httpsServer)
-	bridgeReadyCtx, bridgeReadyCancel := context.WithTimeout(ctx, 60*time.Second)
+	bridgeReadyCtx, bridgeReadyCancel := context.WithTimeout(ctx, resolveAuthBridgeStartupTimeout())
 	defer bridgeReadyCancel()
 	if err := authBridgeManager.WaitReady(bridgeReadyCtx); err != nil {
 		return fmt.Errorf("wait for Rust auth bridge before opening proxy listeners: %w", err)

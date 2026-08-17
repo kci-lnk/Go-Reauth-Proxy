@@ -12,6 +12,7 @@ import (
 	compiledipset "go-reauth-proxy/pkg/ipset"
 	"go-reauth-proxy/pkg/iptables"
 	"go-reauth-proxy/pkg/models"
+	"go-reauth-proxy/pkg/proxy"
 	"go-reauth-proxy/pkg/streamprobe"
 
 	"google.golang.org/grpc/codes"
@@ -78,6 +79,9 @@ func (s *GRPCServer) SetHostRules(ctx context.Context, req *pb.HostRules) (*pb.H
 		protoToHostRules(req),
 		protoToVisibilityPolicies(req.GetVisibilityPolicies()),
 	); err != nil {
+		if proxy.IsHostRulesPersistenceError(err) {
+			return nil, grpcInternal("failed to set host rules: %v", err)
+		}
 		return nil, grpcBadRequest("failed to set host rules: %v", err)
 	}
 	return hostRulesBundleToProto(

@@ -695,6 +695,11 @@ func copyHostRules(rules []models.HostRule) []models.HostRule {
 func copyHostRulesForPersistence(rules []models.HostRule) []models.HostRule {
 	copied := copyHostRules(rules)
 	for i := range copied {
+		// These flags record protobuf field presence for compatibility merges.
+		// They are deliberately excluded from JSON and therefore must not make
+		// an otherwise identical startup payload look like a persisted change.
+		copied[i].GroupMetadataSet = false
+		copied[i].AdvancedAuthSet = false
 		if strings.TrimSpace(copied[i].Visibility.PolicyID) != "" {
 			copied[i].Visibility.CIDRs = nil
 		}
@@ -2199,40 +2204,6 @@ func (h *Handler) persistGatewayListenerConfigLocked(listener models.GatewayList
 	})
 }
 
-// persistHostRulesLocked saves only a candidate host-rule set while the caller
-// holds h.mu. Keeping this update narrowly scoped avoids persisting unrelated
-// runtime fields whose own save may previously have failed. Callers publish the
-// candidate to requestState only after this returns nil.
-func (h *Handler) persistHostRulesLocked(hostRules []models.HostRule) error {
-	return h.persistHostRulesAndPoliciesLocked(hostRules, h.VisibilityPolicies)
-}
-
-func (h *Handler) persistHostRulesAndPoliciesLocked(
-	hostRules []models.HostRule,
-	policies map[string]models.CompiledIPSet,
-) error {
-	if h.configManager == nil {
-		return nil
-	}
-	hostRulesCopy := copyHostRulesForPersistence(hostRules)
-	policiesCopy := copyVisibilityPolicies(policies)
-	if err := h.configManager.Update(func(conf *config.AppConfig) error {
-		conf.HostRules = hostRulesCopy
-		conf.VisibilityPolicies = policiesCopy
-		return nil
-	}); err != nil {
-		if event := debugProxyEvent("host_rules_save_failed", ""); event != nil {
-			event.Str("error", logger.SanitizeLogString(err.Error())).Send()
-		}
-		log.Printf("Failed to save host rules: %v", err)
-		return err
-	}
-	if event := debugProxyEvent("host_rules_saved", ""); event != nil {
-		event.Int("host_rule_count", len(hostRulesCopy)).Send()
-	}
-	return nil
-}
-
 func (h *Handler) persistGatewayVisibilityAndPoliciesLocked(
 	visibility models.GatewayVisibilityConfig,
 	policies map[string]models.CompiledIPSet,
@@ -3706,6 +3677,10 @@ func (h *Handler) SetHostRulesBundle(
 		}
 	}
 	pruneVisibilityPolicies(normalizedRules, h.GatewayVisibility, candidatePolicies, candidateSets)
+	if hostRulesConfigurationEqual(h.HostRules, normalizedRules, h.VisibilityPolicies, candidatePolicies) {
+		h.mu.Unlock()
+		return nil
+	}
 	changedProtocolHosts := changedHostProtocolModes(h.HostRules, normalizedRules)
 	if err := h.persistHostRulesAndPoliciesLocked(normalizedRules, candidatePolicies); err != nil {
 		h.mu.Unlock()
@@ -3739,6 +3714,10 @@ func (h *Handler) FlushHostRules() error {
 		nextSets[id] = set
 	}
 	pruneVisibilityPolicies(nextRules, h.GatewayVisibility, nextPolicies, nextSets)
+	if hostRulesConfigurationEqual(h.HostRules, nextRules, h.VisibilityPolicies, nextPolicies) {
+		h.mu.Unlock()
+		return nil
+	}
 	if err := h.persistHostRulesAndPoliciesLocked(nextRules, nextPolicies); err != nil {
 		h.mu.Unlock()
 		return err

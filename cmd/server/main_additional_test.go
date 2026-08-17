@@ -58,6 +58,30 @@ func TestEnvPortDefaultRejectsOutOfRangeValue(t *testing.T) {
 	}
 }
 
+func TestResolveAuthBridgeStartupTimeout(t *testing.T) {
+	tests := []struct {
+		name string
+		raw  string
+		want time.Duration
+	}{
+		{name: "unset", raw: "", want: 150 * time.Second},
+		{name: "DSM default", raw: "180", want: 150 * time.Second},
+		{name: "custom DSM budget", raw: "90", want: 60 * time.Second},
+		{name: "preserves shutdown margin", raw: "20", want: time.Second},
+		{name: "invalid", raw: "invalid", want: 150 * time.Second},
+		{name: "zero", raw: "0", want: 150 * time.Second},
+		{name: "overflow", raw: "18446744073709551615", want: 150 * time.Second},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Setenv("FN_KNOCK_SYNOLOGY_START_TIMEOUT_SECONDS", test.raw)
+			if got := resolveAuthBridgeStartupTimeout(); got != test.want {
+				t.Fatalf("resolveAuthBridgeStartupTimeout() = %s, want %s", got, test.want)
+			}
+		})
+	}
+}
+
 func TestServerIsClosedConnErrRejectsNil(t *testing.T) {
 	if isClosedConnErr(nil) {
 		t.Fatal("isClosedConnErr(nil) = true")

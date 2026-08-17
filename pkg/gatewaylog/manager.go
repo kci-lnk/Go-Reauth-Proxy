@@ -3,6 +3,7 @@ package gatewaylog
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -21,7 +22,6 @@ import (
 	"go-reauth-proxy/pkg/models"
 
 	"github.com/rs/zerolog"
-	"golang.org/x/sync/singleflight"
 )
 
 const (
@@ -376,7 +376,7 @@ type Manager struct {
 	entryPool         sync.Pool
 	analyticsMu       sync.Mutex
 	analyticsCache    map[string]cachedDailyAnalytics
-	analyticsGroup    singleflight.Group
+	analyticsScan     chan struct{}
 }
 
 func NormalizeConfig(cfg models.LoggingConfig) models.LoggingConfig {
@@ -401,6 +401,7 @@ func NewManager(logsDir string, cfg models.LoggingConfig) *Manager {
 		flushQueue:     make(chan chan struct{}),
 		done:           make(chan struct{}),
 		analyticsCache: make(map[string]cachedDailyAnalytics),
+		analyticsScan:  make(chan struct{}, 1),
 	}
 	m.entryPool.New = func() any { return new(Entry) }
 	m.recordLocalhost.Store(normalized.RecordLocalhost)
@@ -529,14 +530,31 @@ func (m *Manager) warnDroppedLogEntry(dropped uint64) {
 }
 
 func (m *Manager) Flush() {
+	_ = m.FlushContext(context.Background())
+}
+
+func (m *Manager) FlushContext(ctx context.Context) error {
 	if m == nil || m.flushQueue == nil || m.logQueue.Load() == nil {
-		return
+		return nil
+	}
+	if ctx == nil {
+		ctx = context.Background()
 	}
 	ack := make(chan struct{})
 	select {
 	case m.flushQueue <- ack:
-		<-ack
+		select {
+		case <-ack:
+			return nil
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-m.done:
+			return nil
+		}
+	case <-ctx.Done():
+		return ctx.Err()
 	case <-m.done:
+		return nil
 	}
 }
 

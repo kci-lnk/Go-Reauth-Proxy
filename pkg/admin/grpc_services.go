@@ -2,6 +2,7 @@ package admin
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"time"
 
@@ -642,8 +643,11 @@ func (s *GRPCServer) AnalyzeLogEntries(ctx context.Context, req *pb.GatewayLogAn
 	if req == nil {
 		return nil, grpcBadRequest("request is required")
 	}
-	result, err := s.admin.ProxyHandler.AnalyzeLogEntries(req.GetFromDate(), req.GetToDate())
+	result, err := s.admin.ProxyHandler.AnalyzeLogEntriesContext(ctx, req.GetFromDate(), req.GetToDate())
 	if err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return nil, status.FromContextError(err).Err()
+		}
 		return nil, grpcBadRequest("%v", err)
 	}
 	return logAnalyticsResultToProto(result), nil

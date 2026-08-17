@@ -4006,10 +4006,14 @@ func (h *Handler) QueryLogEntries(date string, page int, limit int, search strin
 }
 
 func (h *Handler) AnalyzeLogEntries(fromDate string, toDate string) (gatewaylog.AnalyticsResult, error) {
+	return h.AnalyzeLogEntriesContext(context.Background(), fromDate, toDate)
+}
+
+func (h *Handler) AnalyzeLogEntriesContext(ctx context.Context, fromDate string, toDate string) (gatewaylog.AnalyticsResult, error) {
 	if h.gatewayLogManager == nil {
 		return gatewaylog.AnalyticsResult{}, nil
 	}
-	return h.gatewayLogManager.Analyze(fromDate, toDate)
+	return h.gatewayLogManager.AnalyzeContext(ctx, fromDate, toDate)
 }
 
 func (h *Handler) DeleteLogDate(date string) (gatewaylog.DeleteResult, error) {

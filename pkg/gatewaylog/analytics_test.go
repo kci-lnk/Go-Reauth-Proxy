@@ -1,7 +1,9 @@
 package gatewaylog
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -212,6 +214,151 @@ func TestAnalyzeLimitsDateRangeAndGeoCandidates(t *testing.T) {
 	}
 	if result.Summary.UniqueClients != 105 || len(result.Clients) != analyticsTopClients {
 		t.Fatalf("unexpected client limits: total=%d candidates=%d", result.Summary.UniqueClients, len(result.Clients))
+	}
+}
+
+func TestAnalyzeBoundsHighCardinalityDimensions(t *testing.T) {
+	directory := t.TempDir()
+	manager := NewManager(directory, models.LoggingConfig{MaxDays: 30})
+	defer manager.Close()
+	date := time.Now().Format(dateLayout)
+	entryCount := analyticsClientKeyLimit + 1024
+	entries := make([]Entry, 0, entryCount)
+	for index := 0; index < entryCount; index++ {
+		entries = append(entries, Entry{
+			Path:     fmt.Sprintf("/objects/%d", index),
+			Status:   200,
+			ClientIP: fmt.Sprintf("198.51.%d.%d", index/256, index%256),
+		})
+	}
+	writeAnalyticsEntries(t, directory, date, entries)
+
+	result, err := manager.Analyze(date, date)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Summary.Requests != int64(entryCount) {
+		t.Fatalf("requests = %d, want %d", result.Summary.Requests, entryCount)
+	}
+	if result.Summary.UniqueClients < int64(entryCount*9/10) || result.Summary.UniqueClients > int64(entryCount*11/10) {
+		t.Fatalf("estimated unique clients = %d, want within 10%% of %d", result.Summary.UniqueClients, entryCount)
+	}
+
+	manager.analyticsMu.Lock()
+	cached := manager.analyticsCache[date].data
+	manager.analyticsMu.Unlock()
+	if cached == nil {
+		t.Fatal("analytics result was not cached")
+	}
+	if len(cached.paths) > analyticsDimensionKeyLimit+1 {
+		t.Fatalf("path cardinality = %d, want <= %d", len(cached.paths), analyticsDimensionKeyLimit+1)
+	}
+	if cached.paths[analyticsOverflowKey] == 0 {
+		t.Fatal("overflow path bucket was not populated")
+	}
+	if len(cached.clientCounts) > analyticsClientKeyLimit {
+		t.Fatalf("client cardinality = %d, want <= %d", len(cached.clientCounts), analyticsClientKeyLimit)
+	}
+	if !cached.clientOverflow {
+		t.Fatal("client overflow was not recorded")
+	}
+}
+
+func TestAnalyzeContextCancellationStopsScanAndWaiters(t *testing.T) {
+	directory := t.TempDir()
+	manager := NewManager(directory, models.LoggingConfig{MaxDays: 7})
+	defer manager.Close()
+	date := time.Now().Format(dateLayout)
+	entries := make([]Entry, 1024)
+	for index := range entries {
+		entries[index] = Entry{Path: fmt.Sprintf("/cancel/%d", index), Status: 200}
+	}
+	writeAnalyticsEntries(t, directory, date, entries)
+
+	canceled, cancel := context.WithCancel(context.Background())
+	cancel()
+	result := &dailyAnalytics{analyticsCounter: newAnalyticsCounter()}
+	info, err := os.Stat(filepath.Join(directory, date+fileExtension))
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = scanDailyAnalyticsRange(canceled, filepath.Join(directory, date+fileExtension), date, 0, info.Size(), result)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("scan error = %v, want context canceled", err)
+	}
+
+	manager.analyticsScan <- struct{}{}
+	deadline, stop := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer stop()
+	_, err = manager.AnalyzeContext(deadline, date, date)
+	<-manager.analyticsScan
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("waiter error = %v, want deadline exceeded", err)
+	}
+
+	blockedFlush := &Manager{
+		flushQueue: make(chan chan struct{}),
+		done:       make(chan struct{}),
+	}
+	blockedFlush.logQueue.Store(&logQueueState{})
+	flushDeadline, stopFlush := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer stopFlush()
+	if err := blockedFlush.FlushContext(flushDeadline); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("flush error = %v, want deadline exceeded", err)
+	}
+}
+
+func TestAnalyzeCacheIsIncrementalAndDayBounded(t *testing.T) {
+	directory := t.TempDir()
+	manager := NewManager(directory, models.LoggingConfig{MaxDays: 60})
+	defer manager.Close()
+	today := dayStart(time.Now())
+	date := today.Format(dateLayout)
+	writeAnalyticsEntries(t, directory, date, []Entry{{Path: "/first", Status: 200}})
+	if _, err := manager.Analyze(date, date); err != nil {
+		t.Fatal(err)
+	}
+	manager.analyticsMu.Lock()
+	firstSize := manager.analyticsCache[date].size
+	manager.analyticsMu.Unlock()
+
+	file, err := os.OpenFile(filepath.Join(directory, date+fileExtension), os.O_APPEND|os.O_WRONLY, 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	line, _ := json.Marshal(Entry{Path: "/second", Status: 201})
+	if _, err := file.Write(append(line, '\n')); err != nil {
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	updated, err := manager.Analyze(date, date)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.Summary.Requests != 2 {
+		t.Fatalf("incremental requests = %d, want 2", updated.Summary.Requests)
+	}
+	manager.analyticsMu.Lock()
+	secondSize := manager.analyticsCache[date].size
+	manager.analyticsMu.Unlock()
+	if secondSize <= firstSize {
+		t.Fatalf("cached size did not advance: %d -> %d", firstSize, secondSize)
+	}
+
+	for daysAgo := 1; daysAgo <= analyticsCacheDayLimit; daysAgo++ {
+		otherDate := today.AddDate(0, 0, -daysAgo).Format(dateLayout)
+		writeAnalyticsEntries(t, directory, otherDate, []Entry{{Status: 200}})
+		if _, err := manager.Analyze(otherDate, otherDate); err != nil {
+			t.Fatal(err)
+		}
+	}
+	manager.analyticsMu.Lock()
+	cacheDays := len(manager.analyticsCache)
+	manager.analyticsMu.Unlock()
+	if cacheDays != analyticsCacheDayLimit {
+		t.Fatalf("cached days = %d, want %d", cacheDays, analyticsCacheDayLimit)
 	}
 }
 

@@ -2,10 +2,13 @@ package gatewaylog
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"math"
+	"math/bits"
 	"net"
 	"net/netip"
 	"net/url"
@@ -21,10 +24,16 @@ import (
 )
 
 const (
-	analyticsMaxDays     = 30
-	analyticsTopBuckets  = 8
-	analyticsTopClients  = 100
-	analyticsMaxKeyBytes = 512
+	analyticsMaxDays            = 30
+	analyticsTopBuckets         = 8
+	analyticsTopClients         = 100
+	analyticsMaxKeyBytes        = 512
+	analyticsDimensionKeyLimit  = 2048
+	analyticsClientKeyLimit     = 8192
+	analyticsCacheDayLimit      = analyticsMaxDays
+	analyticsOverflowKey        = "other"
+	analyticsCardinalityBits    = 12
+	analyticsCardinalityBuckets = 1 << analyticsCardinalityBits
 )
 
 var (
@@ -117,6 +126,8 @@ type analyticsCounter struct {
 	authDecisions  map[string]int64
 	wafActions     map[string]int64
 	clientCounts   map[string]int64
+	clientUnique   analyticsCardinality
+	clientOverflow bool
 }
 
 type analyticsSeriesCounter struct {
@@ -133,6 +144,77 @@ type cachedDailyAnalytics struct {
 	size       int64
 	modifiedAt int64
 	data       *dailyAnalytics
+}
+
+// analyticsCardinality is a compact HyperLogLog sketch used only after the
+// exact, bounded client counter reaches its safety limit. Keeping the sketch
+// populated from the first entry makes that transition deterministic and
+// allows daily sketches to be merged without retaining every client address.
+type analyticsCardinality struct {
+	registers [analyticsCardinalityBuckets]uint8
+}
+
+func (c *analyticsCardinality) add(value string) {
+	if c == nil || value == "" {
+		return
+	}
+	const (
+		fnvOffset = uint64(14695981039346656037)
+		fnvPrime  = uint64(1099511628211)
+	)
+	hash := fnvOffset
+	for i := 0; i < len(value); i++ {
+		hash ^= uint64(value[i])
+		hash *= fnvPrime
+	}
+	// FNV-1a's high bits are weak for similarly prefixed values such as IP
+	// addresses. Apply a final avalanche before splitting index and rank bits.
+	hash ^= hash >> 33
+	hash *= 0xff51afd7ed558ccd
+	hash ^= hash >> 33
+	hash *= 0xc4ceb9fe1a85ec53
+	hash ^= hash >> 33
+	index := hash >> (64 - analyticsCardinalityBits)
+	remainder := hash << analyticsCardinalityBits
+	rank := uint8(bits.LeadingZeros64(remainder) + 1)
+	maxRank := uint8(64 - analyticsCardinalityBits + 1)
+	if rank > maxRank {
+		rank = maxRank
+	}
+	if rank > c.registers[index] {
+		c.registers[index] = rank
+	}
+}
+
+func (c *analyticsCardinality) merge(source *analyticsCardinality) {
+	if c == nil || source == nil {
+		return
+	}
+	for i, rank := range source.registers {
+		if rank > c.registers[i] {
+			c.registers[i] = rank
+		}
+	}
+}
+
+func (c *analyticsCardinality) estimate() int64 {
+	if c == nil {
+		return 0
+	}
+	const m = float64(analyticsCardinalityBuckets)
+	sum := 0.0
+	zeros := 0
+	for _, rank := range c.registers {
+		sum += math.Ldexp(1, -int(rank))
+		if rank == 0 {
+			zeros++
+		}
+	}
+	estimate := 0.7213 / (1 + 1.079/m) * m * m / sum
+	if estimate <= 2.5*m && zeros > 0 {
+		estimate = m * math.Log(m/float64(zeros))
+	}
+	return int64(math.Round(estimate))
 }
 
 func newAnalyticsCounter() analyticsCounter {
@@ -159,10 +241,22 @@ func newAnalyticsCounter() analyticsCounter {
 }
 
 func (m *Manager) Analyze(fromDate string, toDate string) (AnalyticsResult, error) {
+	return m.AnalyzeContext(context.Background(), fromDate, toDate)
+}
+
+func (m *Manager) AnalyzeContext(ctx context.Context, fromDate string, toDate string) (AnalyticsResult, error) {
 	if m == nil {
 		return AnalyticsResult{}, nil
 	}
-	m.Flush()
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return AnalyticsResult{}, err
+	}
+	if err := m.FlushContext(ctx); err != nil {
+		return AnalyticsResult{}, err
+	}
 
 	from, to, err := normalizeAnalyticsRange(fromDate, toDate)
 	if err != nil {
@@ -176,7 +270,10 @@ func (m *Manager) Analyze(fromDate string, toDate string) (AnalyticsResult, erro
 
 	combined := newAnalyticsCounter()
 	for cursor := from; !cursor.After(to); cursor = cursor.AddDate(0, 0, 1) {
-		day, err := m.analyticsForDate(cursor.Format(dateLayout))
+		if err := ctx.Err(); err != nil {
+			return AnalyticsResult{}, err
+		}
+		day, err := m.analyticsForDate(ctx, cursor.Format(dateLayout))
 		if err != nil {
 			return AnalyticsResult{}, err
 		}
@@ -270,7 +367,7 @@ func analyticsCalendarDays(from time.Time, to time.Time) int {
 	return int(toUTC.Sub(fromUTC).Hours()/24) + 1
 }
 
-func (m *Manager) analyticsForDate(date string) (*dailyAnalytics, error) {
+func (m *Manager) analyticsForDate(ctx context.Context, date string) (*dailyAnalytics, error) {
 	path := filepath.Join(m.logsDir, date+fileExtension)
 	info, err := os.Stat(path)
 	if err != nil {
@@ -280,33 +377,68 @@ func (m *Manager) analyticsForDate(date string) (*dailyAnalytics, error) {
 		}
 		return nil, err
 	}
-	fingerprint := fmt.Sprintf("%s:%d:%d", date, info.Size(), info.ModTime().UnixNano())
-
-	m.analyticsMu.Lock()
-	if cached, ok := m.analyticsCache[date]; ok && cached.size == info.Size() && cached.modifiedAt == info.ModTime().UnixNano() {
-		m.analyticsMu.Unlock()
-		return cached.data, nil
+	if cached := m.cachedAnalytics(date, info); cached != nil {
+		return cached, nil
 	}
-	m.analyticsMu.Unlock()
 
-	value, err, _ := m.analyticsGroup.Do(fingerprint, func() (any, error) {
-		data, scanErr := scanDailyAnalytics(path, date)
-		if scanErr != nil {
-			return nil, scanErr
-		}
-		m.analyticsMu.Lock()
-		m.analyticsCache[date] = cachedDailyAnalytics{
-			size:       info.Size(),
-			modifiedAt: info.ModTime().UnixNano(),
-			data:       data,
-		}
-		m.analyticsMu.Unlock()
-		return data, nil
-	})
+	select {
+	case m.analyticsScan <- struct{}{}:
+		defer func() { <-m.analyticsScan }()
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+
+	// A previous waiter may have populated the cache while this request waited
+	// for the single scan slot. Restat so append-only growth is incorporated.
+	info, err = os.Stat(path)
 	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return &dailyAnalytics{analyticsCounter: newAnalyticsCounter()}, nil
+		}
 		return nil, err
 	}
-	return value.(*dailyAnalytics), nil
+	if cached := m.cachedAnalytics(date, info); cached != nil {
+		return cached, nil
+	}
+
+	start := int64(0)
+	var data *dailyAnalytics
+	m.analyticsMu.Lock()
+	cached, hasCached := m.analyticsCache[date]
+	if hasCached && cached.data != nil && cached.size > 0 && cached.size < info.Size() && cached.modifiedAt <= info.ModTime().UnixNano() {
+		start = cached.size
+		data = cloneDailyAnalytics(cached.data)
+	}
+	m.analyticsMu.Unlock()
+	if data == nil {
+		data = &dailyAnalytics{analyticsCounter: newAnalyticsCounter()}
+	}
+	if err := scanDailyAnalyticsRange(ctx, path, date, start, info.Size(), data); err != nil {
+		return nil, err
+	}
+
+	m.analyticsMu.Lock()
+	m.analyticsCache[date] = cachedDailyAnalytics{
+		size:       info.Size(),
+		modifiedAt: info.ModTime().UnixNano(),
+		data:       data,
+	}
+	m.enforceAnalyticsCacheLimitLocked(date)
+	m.analyticsMu.Unlock()
+	return data, nil
+}
+
+func (m *Manager) cachedAnalytics(date string, info os.FileInfo) *dailyAnalytics {
+	if m == nil || info == nil {
+		return nil
+	}
+	m.analyticsMu.Lock()
+	defer m.analyticsMu.Unlock()
+	cached, ok := m.analyticsCache[date]
+	if !ok || cached.size != info.Size() || cached.modifiedAt != info.ModTime().UnixNano() {
+		return nil
+	}
+	return cached.data
 }
 
 func (m *Manager) invalidateAnalyticsDate(date string) {
@@ -331,23 +463,70 @@ func (m *Manager) pruneAnalyticsCache(dates []string) {
 			delete(m.analyticsCache, date)
 		}
 	}
+	m.enforceAnalyticsCacheLimitLocked("")
+}
+
+func (m *Manager) enforceAnalyticsCacheLimitLocked(preserve string) {
+	for len(m.analyticsCache) > analyticsCacheDayLimit {
+		oldest := ""
+		for date := range m.analyticsCache {
+			if date == preserve {
+				continue
+			}
+			if oldest == "" || date < oldest {
+				oldest = date
+			}
+		}
+		if oldest == "" {
+			return
+		}
+		delete(m.analyticsCache, oldest)
+	}
 }
 
 func scanDailyAnalytics(path string, date string) (*dailyAnalytics, error) {
-	file, err := os.Open(path)
+	result := &dailyAnalytics{analyticsCounter: newAnalyticsCounter()}
+	info, err := os.Stat(path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return &dailyAnalytics{analyticsCounter: newAnalyticsCounter()}, nil
+			return result, nil
 		}
 		return nil, err
 	}
+	if err := scanDailyAnalyticsRange(context.Background(), path, date, 0, info.Size(), result); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+func scanDailyAnalyticsRange(ctx context.Context, path string, date string, start int64, end int64, result *dailyAnalytics) error {
+	file, err := os.Open(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return err
+	}
 	defer file.Close()
+	if start < 0 || end < start {
+		return fmt.Errorf("invalid analytics scan range")
+	}
+	if result == nil {
+		return fmt.Errorf("analytics result is required")
+	}
 
 	fallbackTime, _ := time.ParseInLocation(dateLayout, date, time.Local)
-	result := &dailyAnalytics{analyticsCounter: newAnalyticsCounter()}
-	scanner := bufio.NewScanner(file)
+	reader := io.NewSectionReader(file, start, end-start)
+	scanner := bufio.NewScanner(reader)
 	scanner.Buffer(make([]byte, 64*1024), maxScanToken)
+	lines := 0
 	for scanner.Scan() {
+		lines++
+		if lines&255 == 0 {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+		}
 		line := scanner.Bytes()
 		if len(strings.TrimSpace(string(line))) == 0 {
 			continue
@@ -360,9 +539,9 @@ func scanDailyAnalytics(path string, date string) (*dailyAnalytics, error) {
 		result.addEntry(entry, fallbackTime)
 	}
 	if err := scanner.Err(); err != nil {
-		return nil, err
+		return err
 	}
-	return result, nil
+	return ctx.Err()
 }
 
 func (counter *analyticsCounter) addEntry(entry Entry, fallbackTime time.Time) {
@@ -440,7 +619,14 @@ func (counter *analyticsCounter) addEntry(entry Entry, fallbackTime time.Time) {
 	incrementAnalytics(counter.wafActions, analyticsWAFAction(entry))
 
 	if clientIP := EffectiveClientIP(entry); clientIP != "" {
-		counter.clientCounts[clientIP]++
+		counter.clientUnique.add(clientIP)
+		if _, exists := counter.clientCounts[clientIP]; exists {
+			counter.clientCounts[clientIP]++
+		} else if len(counter.clientCounts) < analyticsClientKeyLimit {
+			counter.clientCounts[clientIP] = 1
+		} else {
+			counter.clientOverflow = true
+		}
 	}
 }
 
@@ -488,10 +674,23 @@ func mergeAnalyticsCounter(target *analyticsCounter, source *analyticsCounter) {
 		{target.browsers, source.browsers}, {target.operatingOS, source.operatingOS},
 		{target.statuses, source.statuses}, {target.methods, source.methods},
 		{target.latencyBands, source.latencyBands}, {target.authDecisions, source.authDecisions},
-		{target.wafActions, source.wafActions}, {target.clientCounts, source.clientCounts},
+		{target.wafActions, source.wafActions},
 	} {
 		for key, count := range pair.source {
-			pair.target[key] += count
+			incrementAnalyticsBy(pair.target, key, count)
+		}
+	}
+	target.clientUnique.merge(&source.clientUnique)
+	if source.clientOverflow {
+		target.clientOverflow = true
+	}
+	for key, count := range source.clientCounts {
+		if _, exists := target.clientCounts[key]; exists {
+			target.clientCounts[key] += count
+		} else if len(target.clientCounts) < analyticsClientKeyLimit {
+			target.clientCounts[key] = count
+		} else {
+			target.clientOverflow = true
 		}
 	}
 }
@@ -503,9 +702,15 @@ func (counter analyticsCounter) summary() AnalyticsSummary {
 		average = float64(counter.durationTotal) / float64(counter.requests)
 		serverErrorRate = float64(counter.serverErrors) / float64(counter.requests)
 	}
+	uniqueClients := int64(len(counter.clientCounts))
+	if counter.clientOverflow {
+		if estimate := counter.clientUnique.estimate(); estimate > uniqueClients {
+			uniqueClients = estimate
+		}
+	}
 	return AnalyticsSummary{
 		Requests:          counter.requests,
-		UniqueClients:     int64(len(counter.clientCounts)),
+		UniqueClients:     uniqueClients,
 		ClientErrors:      counter.clientErrors,
 		ServerErrors:      counter.serverErrors,
 		AverageDurationMs: average,
@@ -686,7 +891,64 @@ func defaultAnalyticsKey(value string) string {
 }
 
 func incrementAnalytics(values map[string]int64, key string) {
-	values[defaultAnalyticsKey(key)]++
+	incrementAnalyticsBy(values, key, 1)
+}
+
+func incrementAnalyticsBy(values map[string]int64, key string, count int64) {
+	if values == nil {
+		return
+	}
+	key = defaultAnalyticsKey(key)
+	if _, exists := values[key]; exists {
+		values[key] += count
+		return
+	}
+	if len(values) < analyticsDimensionKeyLimit {
+		values[key] = count
+		return
+	}
+	values[analyticsOverflowKey] += count
+}
+
+func cloneDailyAnalytics(source *dailyAnalytics) *dailyAnalytics {
+	if source == nil {
+		return nil
+	}
+	cloned := &dailyAnalytics{analyticsCounter: source.analyticsCounter}
+	cloned.hourly = make(map[int64]*analyticsSeriesCounter, len(source.hourly))
+	for timestamp, point := range source.hourly {
+		if point == nil {
+			continue
+		}
+		copyPoint := *point
+		cloned.hourly[timestamp] = &copyPoint
+	}
+	cloned.paths = cloneAnalyticsMap(source.paths)
+	cloned.routes = cloneAnalyticsMap(source.routes)
+	cloned.hosts = cloneAnalyticsMap(source.hosts)
+	cloned.upstreams = cloneAnalyticsMap(source.upstreams)
+	cloned.referrers = cloneAnalyticsMap(source.referrers)
+	cloned.utmSources = cloneAnalyticsMap(source.utmSources)
+	cloned.utmMediums = cloneAnalyticsMap(source.utmMediums)
+	cloned.utmCampaigns = cloneAnalyticsMap(source.utmCampaigns)
+	cloned.devices = cloneAnalyticsMap(source.devices)
+	cloned.browsers = cloneAnalyticsMap(source.browsers)
+	cloned.operatingOS = cloneAnalyticsMap(source.operatingOS)
+	cloned.statuses = cloneAnalyticsMap(source.statuses)
+	cloned.methods = cloneAnalyticsMap(source.methods)
+	cloned.latencyBands = cloneAnalyticsMap(source.latencyBands)
+	cloned.authDecisions = cloneAnalyticsMap(source.authDecisions)
+	cloned.wafActions = cloneAnalyticsMap(source.wafActions)
+	cloned.clientCounts = cloneAnalyticsMap(source.clientCounts)
+	return cloned
+}
+
+func cloneAnalyticsMap(source map[string]int64) map[string]int64 {
+	cloned := make(map[string]int64, len(source))
+	for key, count := range source {
+		cloned[key] = count
+	}
+	return cloned
 }
 
 func topAnalyticsBuckets(values map[string]int64, limit int) []AnalyticsBucket {

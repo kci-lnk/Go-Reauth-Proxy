@@ -33,6 +33,13 @@ func TestWOLPageIsResponsiveSignedAndNonCacheable(t *testing.T) {
 	body := rec.Body.String()
 	for _, fragment := range []string{
 		`@media(min-width:680px)`,
+		`@media(min-width:1180px)`,
+		`grid-template-columns:repeat(auto-fit,minmax(min(100%,280px),1fr))`,
+		`.grid[data-count="single"]`,
+		`grid.dataset.count=items.length===1?'single':'multiple'`,
+		`new Intl.RelativeTimeFormat`,
+		`function updateRelativeTimes()`,
+		`setInterval(updateRelativeTimes,30000)`,
 		`/__auth__/api/auth/wol/targets`,
 		`/shutdown`,
 		`id="shutdown-modal"`,
@@ -61,6 +68,8 @@ func TestWOLPageIsResponsiveSignedAndNonCacheable(t *testing.T) {
 		}
 	}
 	for _, forbidden := range []string{
+		`class="desc"`,
+		`查看设备在线状态，唤醒或关机。`,
 		"runtime-hmac-secret",
 		"x-signature",
 		"hmacSecret",

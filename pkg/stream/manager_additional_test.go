@@ -4,10 +4,12 @@ import (
 	"context"
 	"errors"
 	"net"
+	"net/http"
 	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"go-reauth-proxy/pkg/config"
 	"go-reauth-proxy/pkg/models"
@@ -291,4 +293,55 @@ func freeTCPPort(t *testing.T) int {
 	}
 	defer l.Close()
 	return l.Addr().(*net.TCPAddr).Port
+}
+
+func TestStreamTrafficMeterPublishesWritesAndPreservesByteConservation(t *testing.T) {
+	h := newStreamTestProxyHandler(t)
+	if err := h.SetStreamRules([]models.StreamRule{{Protocol: "tcp", ListenPort: 3306, Target: "127.0.0.1:5432"}}); err != nil {
+		t.Fatalf("SetStreamRules() returned error: %v", err)
+	}
+	key := streamRuleKey{Protocol: "tcp", ListenPort: 3306}
+	meter := newStreamTrafficMeter(h, key)
+
+	meter.recordIn(1000)
+	meter.recordOut(500)
+
+	stats := h.GetTrafficStats(time.Now())
+	if len(stats.ByStream) != 1 || stats.ByStream[0].TotalIn != 1000 || stats.ByStream[0].TotalOut != 500 {
+		t.Fatalf("traffic must be observable before final flush: %#v", stats.ByStream)
+	}
+
+	meter.finalize(0)
+	meter.recordIn(2000)
+	meter.recordOut(1500)
+	meter.finalize(http.StatusBadGateway)
+
+	stats = h.GetTrafficStats(time.Now())
+	if len(stats.ByStream) != 1 {
+		t.Fatalf("by_stream = %#v", stats.ByStream)
+	}
+	stream := stats.ByStream[0]
+	if stream.Key != "tcp/3306" || stream.TotalIn != 3000 || stream.TotalOut != 2000 {
+		t.Fatalf("stream traffic = %#v", stream)
+	}
+	if stream.Error5xx != 1 {
+		t.Fatalf("stream error5xx = %d, want 1", stream.Error5xx)
+	}
+	if stats.TotalIn != 3000 || stats.TotalOut != 2000 || stats.Error5xx != 1 {
+		t.Fatalf("global traffic = %#v", stats)
+	}
+}
+
+func TestStreamTrafficMeterFinalizeRecords5xxEvenWithoutBytes(t *testing.T) {
+	h := newStreamTestProxyHandler(t)
+	if err := h.SetStreamRules([]models.StreamRule{{Protocol: "tcp", ListenPort: 3306, Target: "127.0.0.1:5432"}}); err != nil {
+		t.Fatalf("SetStreamRules() returned error: %v", err)
+	}
+	meter := newStreamTrafficMeter(h, streamRuleKey{Protocol: "tcp", ListenPort: 3306})
+	meter.finalize(http.StatusBadGateway)
+
+	stats := h.GetTrafficStats(time.Now())
+	if len(stats.ByStream) != 1 || stats.ByStream[0].Error5xx != 1 {
+		t.Fatalf("by_stream = %#v", stats.ByStream)
+	}
 }

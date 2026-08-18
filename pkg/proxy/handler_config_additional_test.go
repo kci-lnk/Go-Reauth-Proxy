@@ -1243,10 +1243,21 @@ func TestGetLoggingDirectoryReturnsLogsDir(t *testing.T) {
 
 func TestAddStreamTrafficUpdatesTotalsAnd5xx(t *testing.T) {
 	handler, _ := newAdditionalProxyTestHandler(t)
-	handler.AddStreamTraffic(10, 20, 502)
+	if err := handler.SetStreamRules([]models.StreamRule{{Protocol: "tcp", ListenPort: 3306, Target: "127.0.0.1:5432"}}); err != nil {
+		t.Fatalf("SetStreamRules() returned error: %v", err)
+	}
+	handler.AddStreamTraffic("tcp", 3306, 10, 20, 502)
 	stats := handler.GetTrafficStats(time.Now())
 	if stats.TotalIn != 10 || stats.TotalOut != 20 || stats.Error5xx != 1 {
 		t.Fatalf("traffic stats = %#v", stats)
+	}
+	if len(stats.ByStream) != 1 {
+		t.Fatalf("by_stream = %#v", stats.ByStream)
+	}
+	stream := stats.ByStream[0]
+	if stream.Key != "tcp/3306" || stream.Protocol != "tcp" || stream.ListenPort != 3306 ||
+		stream.TotalIn != 10 || stream.TotalOut != 20 || stream.Error5xx != 1 {
+		t.Fatalf("stream traffic = %#v", stream)
 	}
 }
 

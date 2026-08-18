@@ -326,7 +326,7 @@ func TestRelayBidirectionalPreservesHalfClose(t *testing.T) {
 	}
 	done := make(chan result, 1)
 	go func() {
-		bytesIn, bytesOut, err := relayBidirectional(proxyClient, proxyUpstream)
+		bytesIn, bytesOut, err := relayBidirectional(proxyClient, proxyUpstream, nil)
 		done <- result{bytesIn: bytesIn, bytesOut: bytesOut, err: err}
 	}()
 
@@ -388,7 +388,7 @@ func BenchmarkRelayBidirectional(b *testing.B) {
 		proxyUpstream, upstreamPeer := benchmarkUnixConnPair(b, listener)
 		done := make(chan relayResult, 1)
 		go func() {
-			bytesIn, bytesOut, err := relayBidirectional(proxyClient, proxyUpstream)
+			bytesIn, bytesOut, err := relayBidirectional(proxyClient, proxyUpstream, nil)
 			done <- relayResult{bytes: bytesIn + bytesOut, err: err}
 		}()
 

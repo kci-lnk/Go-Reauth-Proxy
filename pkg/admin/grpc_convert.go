@@ -903,12 +903,25 @@ func trafficStatsToProto(stats proxy.TrafficStats) *pb.TrafficStats {
 			ActiveIpCount: int32(item.ActiveIPCount),
 		})
 	}
+	byStream := make([]*pb.StreamTrafficStats, 0, len(stats.ByStream))
+	for _, item := range stats.ByStream {
+		byStream = append(byStream, &pb.StreamTrafficStats{
+			Protocol:    item.Protocol,
+			ListenPort:  int32(item.ListenPort),
+			Key:         item.Key,
+			TotalIn:     item.TotalIn,
+			TotalOut:    item.TotalOut,
+			Error_5Xx:   item.Error5xx,
+			ActiveConns: item.ActiveConns,
+		})
+	}
 	return &pb.TrafficStats{
 		TotalIn:     stats.TotalIn,
 		TotalOut:    stats.TotalOut,
 		ActiveConns: stats.ActiveConns,
 		Error_5Xx:   stats.Error5xx,
 		ByHost:      byHost,
+		ByStream:    byStream,
 	}
 }
 

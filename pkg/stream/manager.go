@@ -176,6 +176,7 @@ type udpSession struct {
 	queueClosed bool
 	entryMu     sync.Mutex
 	entry       gatewaylog.Entry
+	meter       *streamTrafficMeter
 }
 
 type relayResult struct {
@@ -1059,6 +1060,9 @@ func (s *udpSession) addBytesIn(bytes int) {
 		return
 	}
 	s.bytesIn.Add(uint64(bytes))
+	if s.meter != nil {
+		s.meter.recordIn(bytes)
+	}
 }
 
 func (s *udpSession) addBytesOut(bytes int) {
@@ -1066,6 +1070,9 @@ func (s *udpSession) addBytesOut(bytes int) {
 		return
 	}
 	s.bytesOut.Add(uint64(bytes))
+	if s.meter != nil {
+		s.meter.recordOut(bytes)
+	}
 }
 
 func (s *udpSession) setStatus(status int) {
@@ -1255,8 +1262,14 @@ func (m *Manager) handleConn(client net.Conn, key streamRuleKey) {
 
 	entry := newStreamEntry(key, remoteAddr, clientIP)
 
+	var meter *streamTrafficMeter
+	var connCounted bool
+
 	defer func() {
-		m.logStreamEntry(entry, start)
+		if connCounted {
+			m.handler.AddStreamConn(key.Protocol, key.ListenPort, -1)
+		}
+		m.logStreamEntry(entry, key, start, meter)
 		if event := logger.DebugEvent("stream", "tcp_connection_end"); event != nil {
 			event.Str("key", logger.SanitizeLogString(key.String())).
 				Interface("listen_port", logger.SanitizePort(key.ListenPort)).
@@ -1415,6 +1428,8 @@ func (m *Manager) handleConn(client net.Conn, key streamRuleKey) {
 	}
 	defer upstream.Close()
 
+	meter = newStreamTrafficMeter(m.handler, key)
+
 	var serverInitial []byte
 	if rule.ValidationMode == models.StreamValidationStrict && validationDirection == streamprobe.DirectionServer {
 		initial, detected, evidence, validationErr := validateTCPInitial(upstream, rule.ServiceProfile.ServiceID, streamprobe.DirectionServer)
@@ -1441,6 +1456,7 @@ func (m *Manager) handleConn(client net.Conn, key streamRuleKey) {
 			return
 		}
 		entry.BytesOut += uint64(len(serverInitial))
+		meter.recordOut(len(serverInitial))
 		if rule.ServiceProfile.ServiceID == "rfb" {
 			response, detected, evidence, validationErr := validateTCPInitial(client, "rfb", streamprobe.DirectionClient)
 			entry.DetectedService = detected
@@ -1457,6 +1473,7 @@ func (m *Manager) handleConn(client net.Conn, key streamRuleKey) {
 				return
 			}
 			entry.BytesIn += uint64(len(response))
+			meter.recordIn(len(response))
 		}
 	}
 	if len(clientInitial) > 0 {
@@ -1466,9 +1483,13 @@ func (m *Manager) handleConn(client net.Conn, key streamRuleKey) {
 			return
 		}
 		entry.BytesIn += uint64(len(clientInitial))
+		meter.recordIn(len(clientInitial))
 	}
 
-	bytesIn, bytesOut, relayErr := relayBidirectional(client, upstream)
+	m.handler.AddStreamConn(key.Protocol, key.ListenPort, 1)
+	connCounted = true
+
+	bytesIn, bytesOut, relayErr := relayBidirectional(client, upstream, meter)
 	entry.BytesIn += bytesIn
 	entry.BytesOut += bytesOut
 	if relayErr != nil {
@@ -1510,7 +1531,7 @@ func (m *Manager) handleUDPPacket(listener *udpListenerState, packetConn net.Pac
 				Str("client_addr", logger.SanitizeLogString(addrString(clientAddr))).
 				Send()
 		}
-		m.logStreamEntry(entry, time.Now())
+		m.logStreamEntry(entry, key, time.Now(), nil)
 		return
 	}
 	if !m.availabilityOpenNow(availability) {
@@ -1682,8 +1703,11 @@ func (m *Manager) runUDPSession(listener *udpListenerState, session *udpSession)
 	defer session.close()
 	defer session.releaseInitReservation()
 	defer func() {
+		if session.meter != nil {
+			m.handler.AddStreamConn(session.meter.key.Protocol, session.meter.key.ListenPort, -1)
+		}
 		entry := session.snapshotEntry()
-		m.logStreamEntry(entry, session.start)
+		m.logStreamEntry(entry, streamRuleKeyFromRule(session.rule), session.start, session.meter)
 		if event := logger.DebugEvent("stream", "udp_session_end"); event != nil {
 			event.Str("route_key", logger.SanitizeLogString(entry.RouteKey)).
 				Str("upstream", logger.SanitizeLogString(entry.Upstream)).
@@ -1704,6 +1728,8 @@ func (m *Manager) runUDPSession(listener *udpListenerState, session *udpSession)
 		return
 	}
 
+	session.meter = newStreamTrafficMeter(m.handler, streamRuleKeyFromRule(session.rule))
+	m.handler.AddStreamConn(session.meter.key.Protocol, session.meter.key.ListenPort, 1)
 	m.relayUDPSession(session)
 }
 
@@ -1978,16 +2004,22 @@ func classifyStreamAuthBridgeFailure(err error) (string, int) {
 	}
 }
 
-func relayBidirectional(client net.Conn, upstream net.Conn) (uint64, uint64, error) {
+func relayBidirectional(client net.Conn, upstream net.Conn, meter *streamTrafficMeter) (uint64, uint64, error) {
 	clientToUpstream := make(chan relayResult, 1)
 
+	var recordIn, recordOut func(int)
+	if meter != nil {
+		recordIn = meter.recordIn
+		recordOut = meter.recordOut
+	}
+
 	go func() {
-		bytes, err := copyStream(upstream, client)
+		bytes, err := copyStream(upstream, client, recordIn)
 		closeWrite(upstream)
 		clientToUpstream <- relayResult{bytes: bytes, err: err}
 	}()
 
-	bytesOut, upstreamToClientErr := copyStream(client, upstream)
+	bytesOut, upstreamToClientErr := copyStream(client, upstream, recordOut)
 	closeWrite(client)
 	inResult := <-clientToUpstream
 
@@ -1998,12 +2030,39 @@ func relayBidirectional(client net.Conn, upstream net.Conn) (uint64, uint64, err
 	return inResult.bytes, bytesOut, firstErr
 }
 
-func copyStream(dst net.Conn, src net.Conn) (uint64, error) {
-	written, err := io.Copy(dst, src)
-	if written < 0 {
-		written = 0
+type countedConn struct {
+	net.Conn
+	onWrite func(n int)
+}
+
+func (c *countedConn) Write(p []byte) (int, error) {
+	n, err := c.Conn.Write(p)
+	if n > 0 && c.onWrite != nil {
+		c.onWrite(n)
 	}
-	return uint64(written), err
+	return n, err
+}
+
+func copyStream(dst net.Conn, src net.Conn, onWrite func(int)) (uint64, error) {
+	counted := &countedConn{Conn: dst, onWrite: onWrite}
+	buf := make([]byte, 32*1024)
+	var written uint64
+	for {
+		n, rerr := src.Read(buf)
+		if n > 0 {
+			wn, werr := counted.Write(buf[:n])
+			if wn > 0 {
+				written += uint64(wn)
+			}
+			if werr != nil {
+				return written, werr
+			}
+		}
+		if rerr != nil {
+			// 返回原始读错误，由 relayBidirectional 统一 normalize（与原 io.Copy 语义一致）
+			return written, rerr
+		}
+	}
 }
 
 func closeWrite(conn net.Conn) {
@@ -2276,9 +2335,46 @@ func newStreamEntry(key streamRuleKey, remoteAddr string, clientIP string) gatew
 	}
 }
 
-func (m *Manager) logStreamEntry(entry gatewaylog.Entry, start time.Time) {
+type streamTrafficMeter struct {
+	recorder *proxy.StreamTrafficRecorder
+	key      streamRuleKey
+}
+
+func newStreamTrafficMeter(h *proxy.Handler, key streamRuleKey) *streamTrafficMeter {
+	return &streamTrafficMeter{
+		recorder: h.NewStreamTrafficRecorder(key.Protocol, key.ListenPort),
+		key:      key,
+	}
+}
+
+func (s *streamTrafficMeter) recordIn(n int) {
+	if n <= 0 {
+		return
+	}
+	s.recorder.Add(uint64(n), 0, 0)
+}
+
+func (s *streamTrafficMeter) recordOut(n int) {
+	if n <= 0 {
+		return
+	}
+	s.recorder.Add(0, uint64(n), 0)
+}
+
+func (s *streamTrafficMeter) finalize(status int) {
+	if status < 500 {
+		return
+	}
+	s.recorder.Add(0, 0, status)
+}
+
+func (m *Manager) logStreamEntry(entry gatewaylog.Entry, key streamRuleKey, start time.Time, meter *streamTrafficMeter) {
 	entry.DurationMs = time.Since(start).Milliseconds()
-	m.handler.AddStreamTraffic(entry.BytesIn, entry.BytesOut, entry.Status)
+	if meter != nil {
+		meter.finalize(entry.Status)
+	} else {
+		m.handler.AddStreamTraffic(key.Protocol, key.ListenPort, entry.BytesIn, entry.BytesOut, entry.Status)
+	}
 	m.handler.LogGatewayEntry(entry)
 }
 

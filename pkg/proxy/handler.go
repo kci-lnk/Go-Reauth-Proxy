@@ -146,6 +146,7 @@ type Handler struct {
 	trafficTotalOut atomic.Uint64
 	trafficError5xx atomic.Uint64
 	trafficByHost   sync.Map
+	trafficByStream sync.Map
 
 	fnAppMockService           *fnAppMockService
 	loggedInActive             sync.Map
@@ -2178,6 +2179,10 @@ func (h *Handler) ResetAllData(resetConfig *config.AppConfig) error {
 	h.trafficError5xx.Store(0)
 	h.trafficByHost.Range(func(key, _ any) bool {
 		h.trafficByHost.Delete(key)
+		return true
+	})
+	h.trafficByStream.Range(func(key, _ any) bool {
+		h.trafficByStream.Delete(key)
 		return true
 	})
 	if hook := h.getSSLChangeHook(); hook != nil {

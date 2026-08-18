@@ -659,13 +659,19 @@ func TestSecurityGeneralBlacklistAddCheckRemove(t *testing.T) {
 
 func TestTrafficServiceGetTrafficStatsReturnsStreamTraffic(t *testing.T) {
 	server := newGatewayControlTestServer(t, "secret")
-	server.admin.ProxyHandler.AddStreamTraffic(3, 4, 503)
+	if err := server.admin.ProxyHandler.SetStreamRules([]models.StreamRule{{Protocol: "tcp", ListenPort: 3306, Target: "127.0.0.1:5432"}}); err != nil {
+		t.Fatalf("SetStreamRules() returned error: %v", err)
+	}
+	server.admin.ProxyHandler.AddStreamTraffic("tcp", 3306, 3, 4, 503)
 	got, err := server.GetTrafficStats(authTestContext(), &emptypb.Empty{})
 	if err != nil {
 		t.Fatalf("GetTrafficStats() returned error: %v", err)
 	}
 	if got.GetTotalIn() != 3 || got.GetTotalOut() != 4 || got.GetError_5Xx() != 1 {
 		t.Fatalf("traffic = %#v", got)
+	}
+	if len(got.GetByStream()) != 1 || got.GetByStream()[0].GetKey() != "tcp/3306" {
+		t.Fatalf("by_stream = %#v", got.GetByStream())
 	}
 }
 

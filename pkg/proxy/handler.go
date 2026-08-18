@@ -5210,6 +5210,14 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			Send()
 	}
 
+	matchedHostRule := matchHostRule(r, snapshot)
+	if fnosConnect != nil {
+		matchedHostRule = &fnosConnect.hostRule
+	}
+	if fnosConnect == nil && serveWebsiteIconRequest(w, r, matchedHostRule, &accessEntry, requestID) {
+		return
+	}
+
 	crawlerBlocker := snapshot.crawlerBlocker
 	if !trustedClientIP && fnosConnect == nil && crawlerBlocker.Enabled {
 		if isCrawlerBlockerRobotsPath(r.URL.Path) {
@@ -5263,10 +5271,6 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	routeTimingStarted := time.Now()
-	matchedHostRule := matchHostRule(r, snapshot)
-	if fnosConnect != nil {
-		matchedHostRule = &fnosConnect.hostRule
-	}
 	if !trustedClientIP && !h.IsClientIPVisibleForHost(clientIP, matchedHostRule, snapshot) {
 		accessEntry.RouteType = "visibility"
 		accessEntry.RouteKey = "cidr"

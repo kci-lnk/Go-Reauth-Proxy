@@ -28,18 +28,18 @@ type ControlApiVersion int32
 
 const (
 	ControlApiVersion_CONTROL_API_VERSION_UNSPECIFIED ControlApiVersion = 0
-	ControlApiVersion_CONTROL_API_VERSION_CURRENT     ControlApiVersion = 15
+	ControlApiVersion_CONTROL_API_VERSION_CURRENT     ControlApiVersion = 16
 )
 
 // Enum value maps for ControlApiVersion.
 var (
 	ControlApiVersion_name = map[int32]string{
 		0:  "CONTROL_API_VERSION_UNSPECIFIED",
-		15: "CONTROL_API_VERSION_CURRENT",
+		16: "CONTROL_API_VERSION_CURRENT",
 	}
 	ControlApiVersion_value = map[string]int32{
 		"CONTROL_API_VERSION_UNSPECIFIED": 0,
-		"CONTROL_API_VERSION_CURRENT":     15,
+		"CONTROL_API_VERSION_CURRENT":     16,
 	}
 )
 
@@ -1184,6 +1184,7 @@ type HostRule struct {
 	GroupId         *string                `protobuf:"bytes,17,opt,name=group_id,json=groupId,proto3,oneof" json:"group_id,omitempty"`
 	GroupName       *string                `protobuf:"bytes,18,opt,name=group_name,json=groupName,proto3,oneof" json:"group_name,omitempty"`
 	TargetPathMode  string                 `protobuf:"bytes,19,opt,name=target_path_mode,json=targetPathMode,proto3" json:"target_path_mode,omitempty"`
+	WebsiteIconPath string                 `protobuf:"bytes,20,opt,name=website_icon_path,json=websiteIconPath,proto3" json:"website_icon_path,omitempty"`
 	unknownFields   protoimpl.UnknownFields
 	sizeCache       protoimpl.SizeCache
 }
@@ -1347,6 +1348,13 @@ func (x *HostRule) GetGroupName() string {
 func (x *HostRule) GetTargetPathMode() string {
 	if x != nil {
 		return x.TargetPathMode
+	}
+	return ""
+}
+
+func (x *HostRule) GetWebsiteIconPath() string {
+	if x != nil {
+		return x.WebsiteIconPath
 	}
 	return ""
 }
@@ -10841,7 +10849,7 @@ const file_fnknock_v1_gateway_proto_rawDesc = "" +
 	"\n" +
 	"strip_path\x18\x04 \x01(\bR\tstripPath\x12!\n" +
 	"\frewrite_html\x18\x05 \x01(\bR\vrewriteHtml\x12\"\n" +
-	"\ruse_root_mode\x18\x06 \x01(\bR\vuseRootMode\"\x9b\x06\n" +
+	"\ruse_root_mode\x18\x06 \x01(\bR\vuseRootMode\"\xc7\x06\n" +
 	"\bHostRule\x12\x12\n" +
 	"\x04host\x18\x01 \x01(\tR\x04host\x12\x16\n" +
 	"\x06target\x18\x02 \x01(\tR\x06target\x12\x19\n" +
@@ -10868,7 +10876,8 @@ const file_fnknock_v1_gateway_proto_rawDesc = "" +
 	"\bgroup_id\x18\x11 \x01(\tH\x00R\agroupId\x88\x01\x01\x12\"\n" +
 	"\n" +
 	"group_name\x18\x12 \x01(\tH\x01R\tgroupName\x88\x01\x01\x12(\n" +
-	"\x10target_path_mode\x18\x13 \x01(\tR\x0etargetPathModeB\v\n" +
+	"\x10target_path_mode\x18\x13 \x01(\tR\x0etargetPathMode\x12*\n" +
+	"\x11website_icon_path\x18\x14 \x01(\tR\x0fwebsiteIconPathB\v\n" +
 	"\t_group_idB\r\n" +
 	"\v_group_name\"\xf4\x02\n" +
 	"\n" +
@@ -11799,7 +11808,7 @@ const file_fnknock_v1_gateway_proto_rawDesc = "" +
 	"last_error\x18\t \x01(\tR\tlastError*Y\n" +
 	"\x11ControlApiVersion\x12#\n" +
 	"\x1fCONTROL_API_VERSION_UNSPECIFIED\x10\x00\x12\x1f\n" +
-	"\x1bCONTROL_API_VERSION_CURRENT\x10\x0f*\x9d\x01\n" +
+	"\x1bCONTROL_API_VERSION_CURRENT\x10\x10*\x9d\x01\n" +
 	"\x11WafDrainOperation\x12#\n" +
 	"\x1fWAF_DRAIN_OPERATION_UNSPECIFIED\x10\x00\x12\x1d\n" +
 	"\x19WAF_DRAIN_OPERATION_LEASE\x10\x01\x12#\n" +

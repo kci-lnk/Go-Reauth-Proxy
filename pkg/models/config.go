@@ -110,6 +110,7 @@ type HostRule struct {
 	AdvancedAuthSet  bool                  `json:"-"`
 	Title            string                `json:"title,omitempty" example:"Redis"`
 	Favicon          string                `json:"favicon,omitempty" example:"data:image/png;base64,..."`
+	WebsiteIconPath  string                `json:"website_icon_path,omitempty" example:"/__assets__/website_icon.550e8400-e29b-41d4-a716-446655440000.png"`
 	BasicAuth        BasicAuthConfig       `json:"basic_auth,omitempty"`
 	Locations        []HostLocation        `json:"locations,omitempty"`
 }

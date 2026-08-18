@@ -1,12 +1,59 @@
 package response
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 )
+
+func TestServeWebsiteIconUsesRuleDataAndStableCaching(t *testing.T) {
+	icon := []byte("mapped-icon")
+	iconPath := WebsiteIconPathPrefix + "550e8400-e29b-41d4-a716-446655440000.png"
+	req := httptest.NewRequest(http.MethodGet, "http://app.example.com"+iconPath, nil)
+	rec := httptest.NewRecorder()
+	ServeWebsiteIcon(rec, req, "data:image/png;base64,"+base64.StdEncoding.EncodeToString(icon))
+
+	if rec.Code != http.StatusOK || rec.Body.String() != string(icon) {
+		t.Fatalf("unexpected website icon response: status=%d body=%q", rec.Code, rec.Body.String())
+	}
+	if got := rec.Header().Get("Content-Type"); got != "image/png" {
+		t.Fatalf("content type = %q, want image/png", got)
+	}
+	if got := rec.Header().Get("ETag"); got == "" {
+		t.Fatal("website icon response is missing ETag")
+	}
+
+	conditional := httptest.NewRequest(http.MethodGet, "http://app.example.com"+iconPath, nil)
+	conditional.Header.Set("If-None-Match", rec.Header().Get("ETag"))
+	conditionalRec := httptest.NewRecorder()
+	ServeWebsiteIcon(conditionalRec, conditional, "data:image/png;base64,"+base64.StdEncoding.EncodeToString(icon))
+	if conditionalRec.Code != http.StatusNotModified {
+		t.Fatalf("conditional status = %d, want 304", conditionalRec.Code)
+	}
+}
+
+func TestServeWebsiteIconFallsBackAndSandboxesSVG(t *testing.T) {
+	fallbackReq := httptest.NewRequest(http.MethodGet, "http://app.example.com"+WebsiteIconPathPrefix+"fallback.png", nil)
+	fallbackRec := httptest.NewRecorder()
+	ServeWebsiteIcon(fallbackRec, fallbackReq, "")
+	if fallbackRec.Code != http.StatusOK || fallbackRec.Body.Len() == 0 {
+		t.Fatalf("fallback status=%d bytes=%d", fallbackRec.Code, fallbackRec.Body.Len())
+	}
+	if got := fallbackRec.Header().Get("Content-Type"); got != "image/png" {
+		t.Fatalf("fallback content type = %q, want image/png", got)
+	}
+
+	svg := []byte(`<svg xmlns="http://www.w3.org/2000/svg"></svg>`)
+	svgReq := httptest.NewRequest(http.MethodGet, "http://app.example.com"+WebsiteIconPathPrefix+"icon.svg", nil)
+	svgRec := httptest.NewRecorder()
+	ServeWebsiteIcon(svgRec, svgReq, "data:image/svg+xml;base64,"+base64.StdEncoding.EncodeToString(svg))
+	if got := svgRec.Header().Get("Content-Security-Policy"); !strings.Contains(got, "sandbox") {
+		t.Fatalf("SVG response CSP = %q, want sandbox", got)
+	}
+}
 
 func TestFaviconPathsUseReservedNamespace(t *testing.T) {
 	for _, path := range []string{

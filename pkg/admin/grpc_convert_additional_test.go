@@ -255,6 +255,17 @@ func TestHostActiveIPsToProtoFormatsTime(t *testing.T) {
 	}
 }
 
+func TestStreamActiveIPsToProtoFormatsIdentityAndTime(t *testing.T) {
+	ts := time.Date(2024, 1, 2, 3, 4, 5, 6, time.UTC)
+	got := streamActiveIPsToProto(proxy.StreamActiveIPsStats{
+		Protocol: "udp", ListenPort: 53, Key: "udp/53", WindowSeconds: 120,
+		Items: []proxy.HostActiveIPStats{{IP: "2001:db8::1", LastSeenAt: ts, ActiveConns: 1}},
+	})
+	if got.GetKey() != "udp/53" || got.GetItems()[0].GetLastSeenAt() != ts.Format(time.RFC3339Nano) {
+		t.Fatalf("stream active IP proto = %#v", got)
+	}
+}
+
 func TestWAFConfigProtoRoundTrip(t *testing.T) {
 	input := models.WAFConfig{Enabled: true, Mode: "block", RulesDir: "/rules", ActiveBundleID: "bundle", ParanoiaLevel: 2, ExecutingParanoiaLevel: 1, InboundAnomalyThreshold: 5, OutboundAnomalyThreshold: 4, RequestBodyAccess: true, RequestBodyLimitBytes: 100, RequestBodyInMemoryLimitBytes: 50, ResponseBodyAccess: true, DisabledHosts: []string{"app"}, DisabledPathPrefixes: []string{"/health"}, UpdatedAt: "now"}
 	if got := protoToWAFConfig(wafConfigToProto(input)); !reflect.DeepEqual(got, input) {

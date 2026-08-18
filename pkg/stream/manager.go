@@ -1263,12 +1263,8 @@ func (m *Manager) handleConn(client net.Conn, key streamRuleKey) {
 	entry := newStreamEntry(key, remoteAddr, clientIP)
 
 	var meter *streamTrafficMeter
-	var connCounted bool
 
 	defer func() {
-		if connCounted {
-			m.handler.AddStreamConn(key.Protocol, key.ListenPort, -1)
-		}
 		m.logStreamEntry(entry, key, start, meter)
 		if event := logger.DebugEvent("stream", "tcp_connection_end"); event != nil {
 			event.Str("key", logger.SanitizeLogString(key.String())).
@@ -1486,8 +1482,7 @@ func (m *Manager) handleConn(client net.Conn, key streamRuleKey) {
 		meter.recordIn(len(clientInitial))
 	}
 
-	m.handler.AddStreamConn(key.Protocol, key.ListenPort, 1)
-	connCounted = true
+	meter.activate(clientIP, time.Now())
 
 	bytesIn, bytesOut, relayErr := relayBidirectional(client, upstream, meter)
 	entry.BytesIn += bytesIn
@@ -1703,9 +1698,6 @@ func (m *Manager) runUDPSession(listener *udpListenerState, session *udpSession)
 	defer session.close()
 	defer session.releaseInitReservation()
 	defer func() {
-		if session.meter != nil {
-			m.handler.AddStreamConn(session.meter.key.Protocol, session.meter.key.ListenPort, -1)
-		}
 		entry := session.snapshotEntry()
 		m.logStreamEntry(entry, streamRuleKeyFromRule(session.rule), session.start, session.meter)
 		if event := logger.DebugEvent("stream", "udp_session_end"); event != nil {
@@ -1729,7 +1721,7 @@ func (m *Manager) runUDPSession(listener *udpListenerState, session *udpSession)
 	}
 
 	session.meter = newStreamTrafficMeter(m.handler, streamRuleKeyFromRule(session.rule))
-	m.handler.AddStreamConn(session.meter.key.Protocol, session.meter.key.ListenPort, 1)
+	session.meter.activate(extractRemoteIP(session.clientAddr), time.Now())
 	m.relayUDPSession(session)
 }
 
@@ -2337,14 +2329,19 @@ func newStreamEntry(key streamRuleKey, remoteAddr string, clientIP string) gatew
 
 type streamTrafficMeter struct {
 	recorder *proxy.StreamTrafficRecorder
-	key      streamRuleKey
 }
 
 func newStreamTrafficMeter(h *proxy.Handler, key streamRuleKey) *streamTrafficMeter {
 	return &streamTrafficMeter{
 		recorder: h.NewStreamTrafficRecorder(key.Protocol, key.ListenPort),
-		key:      key,
 	}
+}
+
+func (s *streamTrafficMeter) activate(clientIP string, now time.Time) {
+	if s == nil || s.recorder == nil {
+		return
+	}
+	s.recorder.Activate(clientIP, now)
 }
 
 func (s *streamTrafficMeter) recordIn(n int) {
@@ -2362,10 +2359,10 @@ func (s *streamTrafficMeter) recordOut(n int) {
 }
 
 func (s *streamTrafficMeter) finalize(status int) {
-	if status < 500 {
+	if s == nil || s.recorder == nil {
 		return
 	}
-	s.recorder.Add(0, 0, status)
+	s.recorder.Finalize(status, time.Now())
 }
 
 func (m *Manager) logStreamEntry(entry gatewaylog.Entry, key streamRuleKey, start time.Time, meter *streamTrafficMeter) {

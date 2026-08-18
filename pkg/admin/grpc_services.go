@@ -736,6 +736,24 @@ func (s *GRPCServer) GetHostActiveIps(ctx context.Context, req *pb.HostRequest) 
 	return hostActiveIPsToProto(s.admin.ProxyHandler.GetHostActiveIPs(req.GetHost(), time.Now())), nil
 }
 
+func (s *GRPCServer) GetStreamActiveIps(ctx context.Context, req *pb.StreamRequest) (*pb.StreamActiveIpsStats, error) {
+	if err := s.checkToken(ctx); err != nil {
+		return nil, err
+	}
+	if req == nil {
+		return nil, grpcBadRequest("request is required")
+	}
+	protocol := strings.ToLower(strings.TrimSpace(req.GetProtocol()))
+	if protocol != models.StreamProtocolTCP && protocol != models.StreamProtocolUDP {
+		return nil, grpcBadRequest("protocol must be tcp or udp")
+	}
+	listenPort := int(req.GetListenPort())
+	if listenPort <= 0 || listenPort > 65535 {
+		return nil, grpcBadRequest("listen_port must be between 1 and 65535")
+	}
+	return streamActiveIPsToProto(s.admin.ProxyHandler.GetStreamActiveIPs(protocol, listenPort, time.Now())), nil
+}
+
 func (s *GRPCServer) GetWafStatus(ctx context.Context, _ *emptypb.Empty) (*pb.WafStatus, error) {
 	if err := s.checkToken(ctx); err != nil {
 		return nil, err

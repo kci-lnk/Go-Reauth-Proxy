@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"go-reauth-proxy/pkg/grpc/pb"
 	"go-reauth-proxy/pkg/models"
@@ -672,6 +673,32 @@ func TestTrafficServiceGetTrafficStatsReturnsStreamTraffic(t *testing.T) {
 	}
 	if len(got.GetByStream()) != 1 || got.GetByStream()[0].GetKey() != "tcp/3306" {
 		t.Fatalf("by_stream = %#v", got.GetByStream())
+	}
+}
+
+func TestTrafficServiceGetStreamActiveIpsReturnsClientAddresses(t *testing.T) {
+	server := newGatewayControlTestServer(t, "secret")
+	if err := server.admin.ProxyHandler.SetStreamRules([]models.StreamRule{{Protocol: "tcp", ListenPort: 3306, Target: "127.0.0.1:5432"}}); err != nil {
+		t.Fatalf("SetStreamRules() returned error: %v", err)
+	}
+	recorder := server.admin.ProxyHandler.NewStreamTrafficRecorder("tcp", 3306)
+	recorder.Activate("198.51.100.7:4321", time.Now())
+	defer recorder.Finalize(200, time.Now())
+
+	got, err := server.GetStreamActiveIps(authTestContext(), &pb.StreamRequest{Protocol: "tcp", ListenPort: 3306})
+	if err != nil {
+		t.Fatalf("GetStreamActiveIps() returned error: %v", err)
+	}
+	if got.GetKey() != "tcp/3306" || len(got.GetItems()) != 1 || got.GetItems()[0].GetIp() != "198.51.100.7" {
+		t.Fatalf("stream active IPs = %#v", got)
+	}
+}
+
+func TestTrafficServiceGetStreamActiveIpsRejectsInvalidIdentity(t *testing.T) {
+	server := newGatewayControlTestServer(t, "secret")
+	_, err := server.GetStreamActiveIps(authTestContext(), &pb.StreamRequest{Protocol: "http", ListenPort: 3306})
+	if status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("status = %v, want invalid argument", status.Code(err))
 	}
 }
 

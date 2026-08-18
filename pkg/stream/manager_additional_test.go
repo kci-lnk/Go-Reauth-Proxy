@@ -311,7 +311,6 @@ func TestStreamTrafficMeterPublishesWritesAndPreservesByteConservation(t *testin
 		t.Fatalf("traffic must be observable before final flush: %#v", stats.ByStream)
 	}
 
-	meter.finalize(0)
 	meter.recordIn(2000)
 	meter.recordOut(1500)
 	meter.finalize(http.StatusBadGateway)

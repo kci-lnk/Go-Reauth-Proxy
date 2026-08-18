@@ -226,3 +226,55 @@ func TestHostActiveIPsTracksRecentClients(t *testing.T) {
 		t.Fatalf("expired active IP count = %d, want 0: %#v", len(expired.Items), expired.Items)
 	}
 }
+
+func TestStreamActiveIPsTracksConnections(t *testing.T) {
+	now := time.Now().UTC()
+	handler := &Handler{
+		StreamRules: []models.StreamRule{
+			{Protocol: models.StreamProtocolTCP, ListenPort: 3306, Target: "127.0.0.1:5432"},
+			{Protocol: models.StreamProtocolUDP, ListenPort: 53, Target: "127.0.0.1:5353"},
+		},
+	}
+	recorder := handler.NewStreamTrafficRecorder("tcp", 3306)
+	recorder.Activate("192.0.2.10:4321", now)
+	recorder.Add(3, 4, 0)
+	udpRecorder := handler.NewStreamTrafficRecorder("udp", 53)
+	udpRecorder.Activate("[2001:db8::1]:5353", now)
+
+	active := handler.GetStreamActiveIPs("TCP", 3306, time.Now())
+	if active.Key != "tcp/3306" || active.Protocol != "tcp" || active.ListenPort != 3306 {
+		t.Fatalf("stream identity = %#v", active)
+	}
+	if active.WindowSeconds != int(hostActiveIPWindow.Seconds()) {
+		t.Fatalf("WindowSeconds = %d, want %d", active.WindowSeconds, int(hostActiveIPWindow.Seconds()))
+	}
+	if len(active.Items) != 1 || active.Items[0].IP != "192.0.2.10" || active.Items[0].ActiveConns != 1 {
+		t.Fatalf("active stream IPs = %#v", active.Items)
+	}
+	udpActive := handler.GetStreamActiveIPs("udp", 53, time.Now())
+	if len(udpActive.Items) != 1 || udpActive.Items[0].IP != "2001:db8::1" || udpActive.Items[0].ActiveConns != 1 {
+		t.Fatalf("active UDP stream IPs = %#v", udpActive.Items)
+	}
+
+	stats := handler.GetTrafficStats(time.Now())
+	if len(stats.ByStream) != 2 || stats.ByStream[0].ActiveConns != 1 || stats.ByStream[0].ActiveIPCount != 1 || stats.ByStream[1].ActiveIPCount != 1 {
+		t.Fatalf("stream traffic stats = %#v", stats.ByStream)
+	}
+
+	releasedAt := time.Now()
+	recorder.Finalize(http.StatusBadGateway, releasedAt)
+	udpRecorder.Finalize(http.StatusOK, releasedAt)
+	recent := handler.GetStreamActiveIPs("tcp", 3306, releasedAt.Add(hostActiveIPWindow-time.Second))
+	if len(recent.Items) != 1 || recent.Items[0].ActiveConns != 0 {
+		t.Fatalf("recent stream IPs = %#v", recent.Items)
+	}
+	stats = handler.GetTrafficStats(releasedAt)
+	if stats.ByStream[0].ActiveConns != 0 || stats.ByStream[0].Error5xx != 1 {
+		t.Fatalf("final stream traffic stats = %#v", stats.ByStream[0])
+	}
+
+	expired := handler.GetStreamActiveIPs("tcp", 3306, releasedAt.Add(hostActiveIPWindow+time.Second))
+	if len(expired.Items) != 0 {
+		t.Fatalf("expired stream IPs = %#v", expired.Items)
+	}
+}

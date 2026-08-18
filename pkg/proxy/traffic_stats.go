@@ -27,13 +27,14 @@ type HostTrafficStats struct {
 }
 
 type StreamTrafficStats struct {
-	Protocol    string `json:"protocol"`
-	ListenPort  int    `json:"listen_port"`
-	Key         string `json:"key"`
-	TotalIn     uint64 `json:"total_in"`
-	TotalOut    uint64 `json:"total_out"`
-	Error5xx    uint64 `json:"error_5xx"`
-	ActiveConns int64  `json:"active_conns"`
+	Protocol      string `json:"protocol"`
+	ListenPort    int    `json:"listen_port"`
+	Key           string `json:"key"`
+	TotalIn       uint64 `json:"total_in"`
+	TotalOut      uint64 `json:"total_out"`
+	Error5xx      uint64 `json:"error_5xx"`
+	ActiveConns   int64  `json:"active_conns"`
+	ActiveIPCount int    `json:"active_ip_count"`
 }
 
 type streamTrafficCounters struct {
@@ -43,13 +44,17 @@ type streamTrafficCounters struct {
 	totalOut    atomic.Uint64
 	error5xx    atomic.Uint64
 	activeConns atomic.Int64
+	activeIPTracker
 }
 
 // StreamTrafficRecorder keeps the hot-path counter lookup out of each relay
 // write while publishing every completed write to the realtime snapshot.
 type StreamTrafficRecorder struct {
-	handler  *Handler
-	counters *streamTrafficCounters
+	handler        *Handler
+	counters       *streamTrafficCounters
+	activeIPRecord *hostActiveIPRecord
+	activeConn     bool
+	finalized      atomic.Bool
 }
 
 type HostActiveIPStats struct {
@@ -64,13 +69,25 @@ type HostActiveIPsStats struct {
 	Items         []HostActiveIPStats `json:"items"`
 }
 
-type hostTrafficCounters struct {
-	totalIn                     atomic.Uint64
-	totalOut                    atomic.Uint64
-	error5xx                    atomic.Uint64
+type StreamActiveIPsStats struct {
+	Protocol      string              `json:"protocol"`
+	ListenPort    int                 `json:"listen_port"`
+	Key           string              `json:"key"`
+	WindowSeconds int                 `json:"window_seconds"`
+	Items         []HostActiveIPStats `json:"items"`
+}
+
+type activeIPTracker struct {
 	activeIPs                   sync.Map
 	activeIPEntries             atomic.Int64
 	activeIPLastCleanupUnixNano atomic.Int64
+}
+
+type hostTrafficCounters struct {
+	totalIn  atomic.Uint64
+	totalOut atomic.Uint64
+	error5xx atomic.Uint64
+	activeIPTracker
 }
 
 type hostActiveIPRecord struct {
@@ -90,7 +107,7 @@ const (
 	hostActiveIPHardLimit       = 4096
 )
 
-func (c *hostTrafficCounters) deleteActiveIP(key any) {
+func (c *activeIPTracker) deleteActiveIP(key any) {
 	if c == nil {
 		return
 	}
@@ -101,7 +118,7 @@ func (c *hostTrafficCounters) deleteActiveIP(key any) {
 	}
 }
 
-func (c *hostTrafficCounters) cleanupActiveIPs(now time.Time) {
+func (c *activeIPTracker) cleanupActiveIPs(now time.Time) {
 	if c == nil {
 		return
 	}
@@ -122,7 +139,7 @@ func (c *hostTrafficCounters) cleanupActiveIPs(now time.Time) {
 	c.enforceActiveIPLimit()
 }
 
-func (c *hostTrafficCounters) cleanupActiveIPsIfNeeded(now time.Time) {
+func (c *activeIPTracker) cleanupActiveIPsIfNeeded(now time.Time) {
 	if c == nil {
 		return
 	}
@@ -137,7 +154,7 @@ func (c *hostTrafficCounters) cleanupActiveIPsIfNeeded(now time.Time) {
 	c.cleanupActiveIPs(now)
 }
 
-func (c *hostTrafficCounters) enforceActiveIPLimit() {
+func (c *activeIPTracker) enforceActiveIPLimit() {
 	if c == nil || c.activeIPEntries.Load() <= hostActiveIPHardLimit {
 		return
 	}
@@ -174,7 +191,7 @@ func (c *hostTrafficCounters) enforceActiveIPLimit() {
 	}
 }
 
-func (c *hostTrafficCounters) markActiveIP(clientIP string, now time.Time) *hostActiveIPRecord {
+func (c *activeIPTracker) markActiveIP(clientIP string, now time.Time) *hostActiveIPRecord {
 	if c == nil {
 		return nil
 	}
@@ -218,7 +235,7 @@ func releaseHostActiveIP(record *hostActiveIPRecord, now time.Time) {
 	}
 }
 
-func (c *hostTrafficCounters) activeIPCount(now time.Time) int {
+func (c *activeIPTracker) activeIPCount(now time.Time) int {
 	if c == nil {
 		return 0
 	}
@@ -246,7 +263,7 @@ func (c *hostTrafficCounters) activeIPCount(now time.Time) int {
 	return count
 }
 
-func (c *hostTrafficCounters) activeIPStats(now time.Time) []HostActiveIPStats {
+func (c *activeIPTracker) activeIPStats(now time.Time) []HostActiveIPStats {
 	if c == nil {
 		return []HostActiveIPStats{}
 	}
@@ -385,13 +402,14 @@ func (h *Handler) GetTrafficStats(timestamp time.Time) TrafficStats {
 			return true
 		}
 		byStream = append(byStream, StreamTrafficStats{
-			Protocol:    counters.protocol,
-			ListenPort:  counters.listenPort,
-			Key:         streamKey,
-			TotalIn:     counters.totalIn.Load(),
-			TotalOut:    counters.totalOut.Load(),
-			Error5xx:    counters.error5xx.Load(),
-			ActiveConns: counters.activeConns.Load(),
+			Protocol:      counters.protocol,
+			ListenPort:    counters.listenPort,
+			Key:           streamKey,
+			TotalIn:       counters.totalIn.Load(),
+			TotalOut:      counters.totalOut.Load(),
+			Error5xx:      counters.error5xx.Load(),
+			ActiveConns:   counters.activeConns.Load(),
+			ActiveIPCount: counters.activeIPCount(timestamp),
 		})
 		return true
 	})
@@ -435,6 +453,39 @@ func (h *Handler) GetHostActiveIPs(host string, timestamp time.Time) HostActiveI
 	return result
 }
 
+func (h *Handler) GetStreamActiveIPs(protocol string, listenPort int, timestamp time.Time) StreamActiveIPsStats {
+	normalizedProtocol, err := normalizeStreamProtocol(protocol)
+	if err != nil || listenPort <= 0 || listenPort > 65535 {
+		normalizedProtocol = ""
+	}
+	key := ""
+	if normalizedProtocol != "" {
+		key = normalizedProtocol + "/" + strconv.Itoa(listenPort)
+	}
+	result := StreamActiveIPsStats{
+		Protocol:      normalizedProtocol,
+		ListenPort:    listenPort,
+		Key:           key,
+		WindowSeconds: int(hostActiveIPWindow.Seconds()),
+		Items:         []HostActiveIPStats{},
+	}
+	if key == "" {
+		return result
+	}
+
+	activeStreams := h.activeTrafficStreams()
+	if _, ok := activeStreams[key]; !ok {
+		h.trafficByStream.Delete(key)
+		return result
+	}
+
+	counters := h.lookupStreamTrafficCounters(key)
+	if counters != nil {
+		result.Items = counters.activeIPStats(timestamp)
+	}
+	return result
+}
+
 func (h *Handler) AddStreamTraffic(protocol string, listenPort int, bytesIn, bytesOut uint64, status int) {
 	var counters *streamTrafficCounters
 	if protocol != "" && listenPort > 0 {
@@ -460,7 +511,42 @@ func (r *StreamTrafficRecorder) Add(bytesIn, bytesOut uint64, status int) {
 	if r == nil || r.handler == nil {
 		return
 	}
+	if (bytesIn > 0 || bytesOut > 0) && r.activeIPRecord != nil {
+		r.activeIPRecord.lastSeenUnixNano.Store(time.Now().UnixNano())
+	}
 	r.handler.addStreamTraffic(r.counters, bytesIn, bytesOut, status)
+}
+
+// Activate associates the relay with its client IP and increments both the
+// stream and per-IP active connection counters. It is idempotent per recorder.
+func (r *StreamTrafficRecorder) Activate(clientIP string, now time.Time) {
+	if r == nil || r.counters == nil || r.activeConn || r.finalized.Load() {
+		return
+	}
+	r.activeConn = true
+	r.counters.activeConns.Add(1)
+	r.activeIPRecord = r.counters.markActiveIP(clientIP, now)
+}
+
+// Finalize releases the active connection while retaining the IP in the recent
+// activity window and records an optional terminal 5xx status exactly once.
+func (r *StreamTrafficRecorder) Finalize(status int, now time.Time) {
+	if r == nil || r.handler == nil || !r.finalized.CompareAndSwap(false, true) {
+		return
+	}
+	if r.activeIPRecord != nil {
+		releaseHostActiveIP(r.activeIPRecord, now)
+		r.activeIPRecord = nil
+	}
+	if r.activeConn {
+		r.activeConn = false
+		if r.counters.activeConns.Add(-1) < 0 {
+			r.counters.activeConns.Store(0)
+		}
+	}
+	if status >= 500 {
+		r.handler.addStreamTraffic(r.counters, 0, 0, status)
+	}
 }
 
 func (h *Handler) addStreamTraffic(counters *streamTrafficCounters, bytesIn, bytesOut uint64, status int) {
@@ -487,17 +573,6 @@ func (h *Handler) addStreamTraffic(counters *streamTrafficCounters, bytesIn, byt
 	}
 }
 
-func (h *Handler) AddStreamConn(protocol string, listenPort int, delta int64) {
-	if protocol == "" || listenPort <= 0 {
-		return
-	}
-	counters := h.getStreamTrafficCounters(protocol, listenPort)
-	counters.activeConns.Add(delta)
-	if counters.activeConns.Load() < 0 {
-		counters.activeConns.Store(0)
-	}
-}
-
 func (h *Handler) getStreamTrafficCounters(protocol string, listenPort int) *streamTrafficCounters {
 	key := protocol + "/" + strconv.Itoa(listenPort)
 	if value, ok := h.trafficByStream.Load(key); ok {
@@ -509,6 +584,18 @@ func (h *Handler) getStreamTrafficCounters(protocol string, listenPort int) *str
 	actual, _ := h.trafficByStream.LoadOrStore(key, counters)
 	if existing, ok := actual.(*streamTrafficCounters); ok {
 		return existing
+	}
+	return counters
+}
+
+func (h *Handler) lookupStreamTrafficCounters(key string) *streamTrafficCounters {
+	value, ok := h.trafficByStream.Load(key)
+	if !ok {
+		return nil
+	}
+	counters, ok := value.(*streamTrafficCounters)
+	if !ok {
+		return nil
 	}
 	return counters
 }

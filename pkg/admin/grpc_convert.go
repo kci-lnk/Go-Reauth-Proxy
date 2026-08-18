@@ -906,13 +906,14 @@ func trafficStatsToProto(stats proxy.TrafficStats) *pb.TrafficStats {
 	byStream := make([]*pb.StreamTrafficStats, 0, len(stats.ByStream))
 	for _, item := range stats.ByStream {
 		byStream = append(byStream, &pb.StreamTrafficStats{
-			Protocol:    item.Protocol,
-			ListenPort:  int32(item.ListenPort),
-			Key:         item.Key,
-			TotalIn:     item.TotalIn,
-			TotalOut:    item.TotalOut,
-			Error_5Xx:   item.Error5xx,
-			ActiveConns: item.ActiveConns,
+			Protocol:      item.Protocol,
+			ListenPort:    int32(item.ListenPort),
+			Key:           item.Key,
+			TotalIn:       item.TotalIn,
+			TotalOut:      item.TotalOut,
+			Error_5Xx:     item.Error5xx,
+			ActiveConns:   item.ActiveConns,
+			ActiveIpCount: int32(item.ActiveIPCount),
 		})
 	}
 	return &pb.TrafficStats{
@@ -926,15 +927,29 @@ func trafficStatsToProto(stats proxy.TrafficStats) *pb.TrafficStats {
 }
 
 func hostActiveIPsToProto(stats proxy.HostActiveIPsStats) *pb.HostActiveIpsStats {
-	items := make([]*pb.HostActiveIpStats, 0, len(stats.Items))
-	for _, item := range stats.Items {
+	return &pb.HostActiveIpsStats{Host: stats.Host, WindowSeconds: int32(stats.WindowSeconds), Items: activeIPItemsToProto(stats.Items)}
+}
+
+func activeIPItemsToProto(stats []proxy.HostActiveIPStats) []*pb.HostActiveIpStats {
+	items := make([]*pb.HostActiveIpStats, 0, len(stats))
+	for _, item := range stats {
 		items = append(items, &pb.HostActiveIpStats{
 			Ip:          item.IP,
 			LastSeenAt:  item.LastSeenAt.Format(time.RFC3339Nano),
 			ActiveConns: item.ActiveConns,
 		})
 	}
-	return &pb.HostActiveIpsStats{Host: stats.Host, WindowSeconds: int32(stats.WindowSeconds), Items: items}
+	return items
+}
+
+func streamActiveIPsToProto(stats proxy.StreamActiveIPsStats) *pb.StreamActiveIpsStats {
+	return &pb.StreamActiveIpsStats{
+		Protocol:      stats.Protocol,
+		ListenPort:    int32(stats.ListenPort),
+		Key:           stats.Key,
+		WindowSeconds: int32(stats.WindowSeconds),
+		Items:         activeIPItemsToProto(stats.Items),
+	}
 }
 
 func wafConfigToProto(cfg models.WAFConfig) *pb.WafConfig {

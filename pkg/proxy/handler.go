@@ -2393,55 +2393,6 @@ func (h *Handler) allowReverseProxyRequest(
 	return true
 }
 
-func classifyReverseProxyRouteType(requestPath string, isAuthRoute bool, matchedHostRule *models.HostRule, matchedHostLocation *models.HostLocation, matchedRule *models.Rule) string {
-	switch {
-	case isAuthRoute:
-		return "auth_proxy"
-	case requestPath == "/__select__":
-		return "select"
-	case requestPath == "/__wol__":
-		return "wol"
-	case matchedHostRule != nil && matchedHostLocation != nil:
-		return "host_location"
-	case matchedHostRule != nil:
-		return "host_rule"
-	case matchedRule != nil:
-		return "path_rule"
-	default:
-		return "not_found"
-	}
-}
-
-func wafRouteContext(r *http.Request, snapshot requestSnapshot, isAuthRoute bool, matchedHostRule *models.HostRule, matchedHostLocation *models.HostLocation, matchedRule *models.Rule) (string, string, string) {
-	requestPath := ""
-	if r != nil && r.URL != nil {
-		requestPath = r.URL.Path
-	}
-	routeType := classifyReverseProxyRouteType(requestPath, isAuthRoute, matchedHostRule, matchedHostLocation, matchedRule)
-	switch {
-	case isAuthRoute:
-		upstream := ""
-		if snapshot.authConfig.AuthPort > 0 {
-			upstream = localServiceBaseURL(snapshot.authConfig.AuthPort)
-		}
-		return routeType, requestPath, upstream
-	case requestPath == "/__select__" || requestPath == "/__wol__":
-		return routeType, requestPath, ""
-	case matchedHostRule != nil && matchedHostLocation != nil:
-		upstream := ""
-		if matchedHostLocation.Action == models.HostLocationActionProxy {
-			upstream = matchedHostLocation.Target
-		}
-		return routeType, hostLocationRouteKey(matchedHostRule, matchedHostLocation), upstream
-	case matchedHostRule != nil:
-		return routeType, matchedHostRule.Host, matchedHostRule.Target
-	case matchedRule != nil:
-		return routeType, matchedRule.Path, matchedRule.Target
-	default:
-		return routeType, requestPath, ""
-	}
-}
-
 func gatewayThrottleDedupeTTL(now time.Time, blockedUntil time.Time, fallback int) int {
 	if blockedUntil.After(now) {
 		ttlSeconds := int(time.Until(blockedUntil).Seconds()) + 60
@@ -5062,7 +5013,20 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	diagnostics.BeginProxyRequest()
 	defer diagnostics.EndProxyRequest()
 	start := time.Now()
-	deepMonitorTrace := h.beginDeepMonitor(r, start)
+	certificateDeploySensitivePath := r.URL != nil &&
+		(isCertificateDeployReservedPath(r.URL.Path) ||
+			isCertificateDeployReservedPath(path.Clean(r.URL.Path)))
+	certificateDeployHadQuery := certificateDeploySensitivePath && r.URL.RawQuery != ""
+	if certificateDeployHadQuery {
+		// Deployment credentials belong in Authorization. Remove every query
+		// value before even debug/access logging, while retaining the fact that
+		// a query was supplied so the reserved route can reject it below.
+		r.URL.RawQuery = ""
+	}
+	var deepMonitorTrace *deepMonitorRequest
+	if !certificateDeploySensitivePath {
+		deepMonitorTrace = h.beginDeepMonitor(r, start)
+	}
 	r = withDeepMonitor(r, deepMonitorTrace)
 	requestID := ""
 	if logger.DebugEnabled() {
@@ -5169,6 +5133,12 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	snapshot := h.snapshotForRequest()
 	fnosConnect := fnosConnectContext(r)
+	if fnosConnect == nil && certificateDeployRouteMatches(r, snapshot.authConfig.AuthHost) {
+		// The reserved route is owned by the actual Host header. Do not let a
+		// client-supplied forwarding host select another HostRule's visibility
+		// or availability policy before the header is rebuilt for Rust.
+		r.Header.Del("X-Forwarded-Host")
+	}
 	originalPath := r.URL.Path
 	cleanedPath := path.Clean(r.URL.Path)
 	if strings.HasSuffix(r.URL.Path, "/") && cleanedPath != "/" {
@@ -5350,7 +5320,8 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	isSelectRoute := fnosConnect == nil && r.URL.Path == "/__select__"
 	isWOLPath := fnosConnect == nil && r.URL.Path == "/__wol__"
 	isWOLRoute := isWOLPath && snapshot.gatewayPortal.ShowWOL
-	isBuiltinAuthRoute := isSelectRoute || isWOLRoute
+	isCertificateDeployRoute := fnosConnect == nil && certificateDeployRouteMatches(r, snapshot.authConfig.AuthHost)
+	isBuiltinAuthRoute := isSelectRoute || isWOLRoute || isCertificateDeployRoute
 	isAuthRoute := fnosConnect == nil && strings.HasPrefix(r.URL.Path, "/__auth__/")
 	matchedHostLocation := matchHostLocation(r, matchedHostRule)
 	if matchedHostRule != nil {
@@ -5484,7 +5455,36 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if deepMonitorTrace != nil {
 		deepMonitorTrace.addRouteDuration(time.Since(routeTimingStarted))
 	}
-	if !h.allowReverseProxyRequest(w, r, clientIP, isAuthRoute, matchedHostRule, matchedHostLocation, matchedRule, trustedClientIP, requestID) {
+	if !h.allowReverseProxyRequest(w, r, clientIP, isAuthRoute || isCertificateDeployRoute, matchedHostRule, matchedHostLocation, matchedRule, trustedClientIP, requestID) {
+		return
+	}
+	if isCertificateDeployRoute {
+		accessEntry.RouteType = "certificate_deploy"
+		accessEntry.RouteKey = certificateDeployPathPrefix
+		accessEntry.Matched = true
+		accessEntry.AuthDecision = "binding_token"
+		if snapshot.authConfig.AuthPort > 0 {
+			accessEntry.Upstream = localServiceBaseURL(snapshot.authConfig.AuthPort)
+		}
+		if originalPath != r.URL.Path || certificateDeployHadQuery {
+			loggedStatusCode = http.StatusNotFound
+			rejectMalformedCertificateDeployRoute(w, r)
+			return
+		}
+		if _, valid := certificateDeployBindingID(r.URL.Path); !valid {
+			loggedStatusCode = http.StatusNotFound
+			rejectMalformedCertificateDeployRoute(w, r)
+			return
+		}
+		if r.Method != http.MethodPut {
+			w.Header().Set("Allow", http.MethodPut)
+			applyNoStoreCacheHeaders(w.Header())
+			loggedStatusCode = http.StatusMethodNotAllowed
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		wrapRequestBodyForTraffic(r, h, metrics)
+		h.handleCertificateDeployRoute(w, r, snapshot, clientIP)
 		return
 	}
 	wafRouteType, wafRouteKey, wafUpstream := wafRouteContextForRequest(

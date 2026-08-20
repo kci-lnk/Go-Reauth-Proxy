@@ -841,14 +841,17 @@ func (s *GRPCServer) DrainWafEvents(ctx context.Context, req *pb.WafDrainRequest
 	if limit > 5000 {
 		limit = 5000
 	}
-	if req.GetOperation() == pb.WafDrainOperation_WAF_DRAIN_OPERATION_LEASE {
+	switch req.GetOperation() {
+	case pb.WafDrainOperation_WAF_DRAIN_OPERATION_LEASE:
 		return wafDrainToProto(s.admin.ProxyHandler.LeaseWAFEvents(limit)), nil
+	case pb.WafDrainOperation_WAF_DRAIN_OPERATION_UNSPECIFIED:
+		// Legacy control planes (before the lease protocol) send UNSPECIFIED and
+		// expect an immediate drain without a delivery lease. Keep that path
+		// working across version skew.
+		return wafDrainToProto(s.admin.ProxyHandler.DrainWAFEvents(limit)), nil
+	default:
+		return nil, grpcBadRequest("unsupported WAF drain operation")
 	}
-	// Legacy control planes (before the lease protocol) send UNSPECIFIED and
-	// expect an immediate drain without a delivery lease. Keep that path
-	// working so a version skew between the control plane and the gateway does
-	// not silently stop WAF event delivery.
-	return wafDrainToProto(s.admin.ProxyHandler.DrainWAFEvents(limit)), nil
 }
 
 func (s *GRPCServer) GetSslInfo(ctx context.Context, _ *emptypb.Empty) (*pb.SslInfo, error) {

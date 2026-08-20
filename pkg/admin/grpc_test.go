@@ -60,6 +60,11 @@ func TestWAFDrainOperations(t *testing.T) {
 	if _, err := server.DrainWafEvents(ctx, &pb.WafDrainRequest{}); err != nil {
 		t.Fatalf("legacy unspecified drain returned error: %v", err)
 	}
+	if _, err := server.DrainWafEvents(ctx, &pb.WafDrainRequest{
+		Operation: pb.WafDrainOperation(99),
+	}); status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("unknown drain operation status = %v, want invalid argument", status.Code(err))
+	}
 }
 
 func TestGatewayControlTypedProxyProtocolRoundTrip(t *testing.T) {

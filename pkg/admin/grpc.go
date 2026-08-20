@@ -18,6 +18,7 @@ import (
 	"go-reauth-proxy/pkg/grpc/pb"
 	operationallog "go-reauth-proxy/pkg/logger"
 	"go-reauth-proxy/pkg/models"
+	"go-reauth-proxy/pkg/proxy"
 	"go-reauth-proxy/pkg/rpcbridge"
 	"go-reauth-proxy/pkg/version"
 
@@ -308,4 +309,39 @@ func (s *GRPCServer) SetProxyProtocolForce(ctx context.Context, req *pb.BoolValu
 		return nil, status.Error(codes.Internal, err.Error())
 	}
 	return &pb.BoolValue{Value: s.admin.ProxyHandler.GetProxyProtocolForce()}, nil
+}
+
+func (s *GRPCServer) GetGatewayProxyProtocolConfig(ctx context.Context, _ *emptypb.Empty) (*pb.GatewayProxyProtocolConfig, error) {
+	if err := s.checkToken(ctx); err != nil {
+		return nil, err
+	}
+	cfg := s.admin.ProxyHandler.GetGatewayProxyProtocolConfig()
+	return &pb.GatewayProxyProtocolConfig{
+		Enabled:        cfg.Enabled,
+		TrustedSources: cfg.TrustedSources,
+	}, nil
+}
+
+func (s *GRPCServer) SetGatewayProxyProtocolConfig(ctx context.Context, req *pb.GatewayProxyProtocolConfig) (*pb.GatewayProxyProtocolConfig, error) {
+	if err := s.checkToken(ctx); err != nil {
+		return nil, err
+	}
+	if req == nil {
+		return nil, status.Error(codes.InvalidArgument, "request is required")
+	}
+	normalized, err := proxy.ValidateGatewayProxyProtocolConfig(models.GatewayProxyProtocolConfig{
+		Enabled:        req.GetEnabled(),
+		TrustedSources: req.GetTrustedSources(),
+	})
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+	if err := s.admin.ProxyHandler.SetGatewayProxyProtocolConfig(normalized); err != nil {
+		return nil, status.Error(codes.Internal, err.Error())
+	}
+	cfg := s.admin.ProxyHandler.GetGatewayProxyProtocolConfig()
+	return &pb.GatewayProxyProtocolConfig{
+		Enabled:        cfg.Enabled,
+		TrustedSources: cfg.TrustedSources,
+	}, nil
 }

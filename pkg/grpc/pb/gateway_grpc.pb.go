@@ -26,6 +26,8 @@ const (
 	GatewayControlService_ReclaimGatewayMemory_FullMethodName             = "/fnknock.v1.GatewayControlService/ReclaimGatewayMemory"
 	GatewayControlService_GetGatewayListenerConfig_FullMethodName         = "/fnknock.v1.GatewayControlService/GetGatewayListenerConfig"
 	GatewayControlService_SetGatewayListenerConfig_FullMethodName         = "/fnknock.v1.GatewayControlService/SetGatewayListenerConfig"
+	GatewayControlService_GetGatewayProxyProtocolConfig_FullMethodName    = "/fnknock.v1.GatewayControlService/GetGatewayProxyProtocolConfig"
+	GatewayControlService_SetGatewayProxyProtocolConfig_FullMethodName    = "/fnknock.v1.GatewayControlService/SetGatewayProxyProtocolConfig"
 	GatewayControlService_ResetAllData_FullMethodName                     = "/fnknock.v1.GatewayControlService/ResetAllData"
 	GatewayControlService_RequestShutdown_FullMethodName                  = "/fnknock.v1.GatewayControlService/RequestShutdown"
 	GatewayControlService_GetRules_FullMethodName                         = "/fnknock.v1.GatewayControlService/GetRules"
@@ -83,6 +85,8 @@ type GatewayControlServiceClient interface {
 	ReclaimGatewayMemory(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*GatewayRuntimeInfo, error)
 	GetGatewayListenerConfig(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*GatewayListenerConfig, error)
 	SetGatewayListenerConfig(ctx context.Context, in *GatewayListenerConfig, opts ...grpc.CallOption) (*GatewayListenerConfig, error)
+	GetGatewayProxyProtocolConfig(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*GatewayProxyProtocolConfig, error)
+	SetGatewayProxyProtocolConfig(ctx context.Context, in *GatewayProxyProtocolConfig, opts ...grpc.CallOption) (*GatewayProxyProtocolConfig, error)
 	// Resets all user-managed gateway configuration and volatile runtime data
 	// while preserving the process, control port, and installed runtime assets.
 	ResetAllData(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*RpcStatus, error)
@@ -104,7 +108,10 @@ type GatewayControlServiceClient interface {
 	SetAuthConfig(ctx context.Context, in *AuthConfig, opts ...grpc.CallOption) (*RpcStatus, error)
 	GetDefaultRoute(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*StringValue, error)
 	SetDefaultRoute(ctx context.Context, in *StringValue, opts ...grpc.CallOption) (*RpcStatus, error)
+	// Deprecated: Do not use.
+	// Deprecated compatibility control for the managed FRP runtime mode.
 	GetProxyProtocolForce(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*BoolValue, error)
+	// Deprecated: Do not use.
 	SetProxyProtocolForce(ctx context.Context, in *BoolValue, opts ...grpc.CallOption) (*BoolValue, error)
 	GetLocaleConfig(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*LocaleConfig, error)
 	SetLocaleConfig(ctx context.Context, in *LocaleConfig, opts ...grpc.CallOption) (*LocaleConfig, error)
@@ -196,6 +203,26 @@ func (c *gatewayControlServiceClient) SetGatewayListenerConfig(ctx context.Conte
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(GatewayListenerConfig)
 	err := c.cc.Invoke(ctx, GatewayControlService_SetGatewayListenerConfig_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *gatewayControlServiceClient) GetGatewayProxyProtocolConfig(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*GatewayProxyProtocolConfig, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GatewayProxyProtocolConfig)
+	err := c.cc.Invoke(ctx, GatewayControlService_GetGatewayProxyProtocolConfig_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *gatewayControlServiceClient) SetGatewayProxyProtocolConfig(ctx context.Context, in *GatewayProxyProtocolConfig, opts ...grpc.CallOption) (*GatewayProxyProtocolConfig, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GatewayProxyProtocolConfig)
+	err := c.cc.Invoke(ctx, GatewayControlService_SetGatewayProxyProtocolConfig_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -372,6 +399,7 @@ func (c *gatewayControlServiceClient) SetDefaultRoute(ctx context.Context, in *S
 	return out, nil
 }
 
+// Deprecated: Do not use.
 func (c *gatewayControlServiceClient) GetProxyProtocolForce(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*BoolValue, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(BoolValue)
@@ -382,6 +410,7 @@ func (c *gatewayControlServiceClient) GetProxyProtocolForce(ctx context.Context,
 	return out, nil
 }
 
+// Deprecated: Do not use.
 func (c *gatewayControlServiceClient) SetProxyProtocolForce(ctx context.Context, in *BoolValue, opts ...grpc.CallOption) (*BoolValue, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(BoolValue)
@@ -662,6 +691,8 @@ type GatewayControlServiceServer interface {
 	ReclaimGatewayMemory(context.Context, *emptypb.Empty) (*GatewayRuntimeInfo, error)
 	GetGatewayListenerConfig(context.Context, *emptypb.Empty) (*GatewayListenerConfig, error)
 	SetGatewayListenerConfig(context.Context, *GatewayListenerConfig) (*GatewayListenerConfig, error)
+	GetGatewayProxyProtocolConfig(context.Context, *emptypb.Empty) (*GatewayProxyProtocolConfig, error)
+	SetGatewayProxyProtocolConfig(context.Context, *GatewayProxyProtocolConfig) (*GatewayProxyProtocolConfig, error)
 	// Resets all user-managed gateway configuration and volatile runtime data
 	// while preserving the process, control port, and installed runtime assets.
 	ResetAllData(context.Context, *emptypb.Empty) (*RpcStatus, error)
@@ -683,7 +714,10 @@ type GatewayControlServiceServer interface {
 	SetAuthConfig(context.Context, *AuthConfig) (*RpcStatus, error)
 	GetDefaultRoute(context.Context, *emptypb.Empty) (*StringValue, error)
 	SetDefaultRoute(context.Context, *StringValue) (*RpcStatus, error)
+	// Deprecated: Do not use.
+	// Deprecated compatibility control for the managed FRP runtime mode.
 	GetProxyProtocolForce(context.Context, *emptypb.Empty) (*BoolValue, error)
+	// Deprecated: Do not use.
 	SetProxyProtocolForce(context.Context, *BoolValue) (*BoolValue, error)
 	GetLocaleConfig(context.Context, *emptypb.Empty) (*LocaleConfig, error)
 	SetLocaleConfig(context.Context, *LocaleConfig) (*LocaleConfig, error)
@@ -738,6 +772,12 @@ func (UnimplementedGatewayControlServiceServer) GetGatewayListenerConfig(context
 }
 func (UnimplementedGatewayControlServiceServer) SetGatewayListenerConfig(context.Context, *GatewayListenerConfig) (*GatewayListenerConfig, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method SetGatewayListenerConfig not implemented")
+}
+func (UnimplementedGatewayControlServiceServer) GetGatewayProxyProtocolConfig(context.Context, *emptypb.Empty) (*GatewayProxyProtocolConfig, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method GetGatewayProxyProtocolConfig not implemented")
+}
+func (UnimplementedGatewayControlServiceServer) SetGatewayProxyProtocolConfig(context.Context, *GatewayProxyProtocolConfig) (*GatewayProxyProtocolConfig, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method SetGatewayProxyProtocolConfig not implemented")
 }
 func (UnimplementedGatewayControlServiceServer) ResetAllData(context.Context, *emptypb.Empty) (*RpcStatus, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method ResetAllData not implemented")
@@ -999,6 +1039,42 @@ func _GatewayControlService_SetGatewayListenerConfig_Handler(srv interface{}, ct
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(GatewayControlServiceServer).SetGatewayListenerConfig(ctx, req.(*GatewayListenerConfig))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _GatewayControlService_GetGatewayProxyProtocolConfig_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(emptypb.Empty)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(GatewayControlServiceServer).GetGatewayProxyProtocolConfig(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: GatewayControlService_GetGatewayProxyProtocolConfig_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(GatewayControlServiceServer).GetGatewayProxyProtocolConfig(ctx, req.(*emptypb.Empty))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _GatewayControlService_SetGatewayProxyProtocolConfig_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GatewayProxyProtocolConfig)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(GatewayControlServiceServer).SetGatewayProxyProtocolConfig(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: GatewayControlService_SetGatewayProxyProtocolConfig_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(GatewayControlServiceServer).SetGatewayProxyProtocolConfig(ctx, req.(*GatewayProxyProtocolConfig))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -1843,6 +1919,14 @@ var GatewayControlService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "SetGatewayListenerConfig",
 			Handler:    _GatewayControlService_SetGatewayListenerConfig_Handler,
+		},
+		{
+			MethodName: "GetGatewayProxyProtocolConfig",
+			Handler:    _GatewayControlService_GetGatewayProxyProtocolConfig_Handler,
+		},
+		{
+			MethodName: "SetGatewayProxyProtocolConfig",
+			Handler:    _GatewayControlService_SetGatewayProxyProtocolConfig_Handler,
 		},
 		{
 			MethodName: "ResetAllData",

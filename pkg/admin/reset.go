@@ -54,6 +54,9 @@ func (s *Server) ResetAllData() error {
 	if err := s.ProxyHandler.SetProxyProtocolForce(resetConfig.ProxyProtocolForce); err != nil {
 		return fmt.Errorf("reset proxy protocol mode: %w", err)
 	}
+	if err := s.ProxyHandler.SetGatewayProxyProtocolConfig(resetConfig.ProxyProtocol); err != nil {
+		return fmt.Errorf("reset external proxy protocol config: %w", err)
+	}
 	if err := s.ProxyHandler.ResetAllData(resetConfig); err != nil {
 		return err
 	}

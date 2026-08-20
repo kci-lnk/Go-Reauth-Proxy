@@ -117,6 +117,7 @@ type Handler struct {
 	AdminPort               int
 	ProxyPort               int
 	ProxyProtocolForce      bool
+	ProxyProtocol           models.GatewayProxyProtocolConfig
 	GatewayListener         models.GatewayListenerConfig
 	ReverseProxyThrottle    models.ReverseProxyThrottleConfig
 	GatewayVisibility       models.GatewayVisibilityConfig
@@ -161,6 +162,7 @@ type Handler struct {
 	reverseProxyThrottle       *reverseProxyThrottle
 	reverseProxyThrottleExempt *reverseProxyThrottleExemptIPsRuntime
 	trustedClientIPs           *gatewayTrustedClientIPsRuntime
+	proxyProtocol              *gatewayProxyProtocolRuntime
 	commonLocationExemptions   *commonLocationExemptionsRuntime
 	gatewayVisibility          *gatewayVisibility
 	compiledVisibilityPolicies map[string]*compiledipset.Set
@@ -616,13 +618,17 @@ func newRouteGeneration() string {
 	return strconv.FormatInt(time.Now().UnixNano(), 36)
 }
 
-func resolveClientIP(r *http.Request, authConfig models.AuthConfig, proxyProtocolForce bool) string {
+func resolveClientIP(r *http.Request, authConfig models.AuthConfig, _ bool) string {
 	if isManagedCloudflareTunnelIngress(r) {
 		// The managed Tunnel has its own loopback destination, so only
 		// Cloudflare's edge-generated client headers are authoritative here.
 		// Never fall back to X-Forwarded-For: Cloudflare preserves client-sent
 		// XFF values and appends to them, making the first value attacker-owned.
 		return resolveManagedCloudflareClientIP(r)
+	}
+
+	if requestUsesProxyProtocolClientAddress(r.Context()) {
+		return normalizeClientIP(r.RemoteAddr)
 	}
 
 	if authConfig.TencentEdgeOneActive() {
@@ -643,16 +649,8 @@ func resolveClientIP(r *http.Request, authConfig models.AuthConfig, proxyProtoco
 		}
 	}
 
-	if proxyProtocolForce {
-		if !authConfig.EdgeClientIPActive() {
-			if ip := firstForwardedClientIP(r.Header.Get("X-Forwarded-For")); ip != "" {
-				return ip
-			}
-		}
-		if ip := normalizeIPAddress(r.Header.Get(headerXRealIP)); ip != "" {
-			return ip
-		}
-	}
+	// Ordinary direct connections use the socket peer. When PROXY protocol was
+	// used, the marked branch above returned its transport-authenticated address.
 	return normalizeClientIP(r.RemoteAddr)
 }
 
@@ -1820,6 +1818,13 @@ func NewHandler(adminPort int, proxyPort int, cfgManager *config.Manager, initia
 	if deepMonitorErr != nil {
 		log.Printf("Failed to initialize deep monitor storage: %v", deepMonitorErr)
 	}
+	proxyProtocolRuntime, proxyProtocolErr := newGatewayProxyProtocolRuntime(initialCfg.ProxyProtocol)
+	if proxyProtocolErr != nil {
+		log.Printf("Failed to load initial PROXY protocol config: %v", proxyProtocolErr)
+		proxyProtocolRuntime, _ = newGatewayProxyProtocolRuntime(models.GatewayProxyProtocolConfig{
+			TrustedSources: []string{},
+		})
+	}
 	h := &Handler{
 		Rules:                      initialCfg.Rules,
 		HostRules:                  initialHostRules,
@@ -1833,6 +1838,7 @@ func NewHandler(adminPort int, proxyPort int, cfgManager *config.Manager, initia
 		AdminPort:                  adminPort,
 		ProxyPort:                  proxyPort,
 		ProxyProtocolForce:         initialCfg.ProxyProtocolForce,
+		ProxyProtocol:              proxyProtocolRuntime.getConfig(),
 		GatewayListener:            initialCfg.GatewayListener,
 		ReverseProxyThrottle:       normalizeReverseProxyThrottleConfig(initialCfg.ReverseProxyThrottle),
 		GatewayVisibility:          initialVisibility,
@@ -1852,6 +1858,7 @@ func NewHandler(adminPort int, proxyPort int, cfgManager *config.Manager, initia
 		authCache:                  newAuthStateCache(),
 		preflightCache:             newPreflightStateCache(),
 		generalBlacklist:           newGeneralBlacklistRuntime(initialCfg.GeneralBlacklist),
+		proxyProtocol:              proxyProtocolRuntime,
 		forwardedHeaders:           newForwardedHeadersConfig(normalizedForwardedHeaders),
 		preserveHost:               newPreserveHostConfig(normalizedPreserveHost),
 		wafRuntime:                 wafRuntime,
@@ -1900,10 +1907,11 @@ func NewHandler(adminPort int, proxyPort int, cfgManager *config.Manager, initia
 	h.gatewayVisibility = newCompiledGatewayVisibility(initialVisibility, initialVisibilitySet)
 
 	var emptyHook func()
+	var emptyProxyProtocolHook func() error
 	var emptyProtocolModeHook func([]string)
 	h.sslOnChange.Store(emptyHook)
 	h.protocolModeOnChange.Store(emptyProtocolModeHook)
-	h.proxyProtocolOnChange.Store(emptyHook)
+	h.proxyProtocolOnChange.Store(emptyProxyProtocolHook)
 	h.publishRequestSnapshotLocked()
 
 	if len(h.sslConfig.Certificates) == 0 && initialCfg.SSLCert != "" && initialCfg.SSLKey != "" {
@@ -1964,16 +1972,16 @@ func (h *Handler) getHostProtocolModeChangeHook() func([]string) {
 	return hook
 }
 
-func (h *Handler) SetProxyProtocolForceChangeHook(hook func()) {
+func (h *Handler) SetProxyProtocolForceChangeHook(hook func() error) {
 	h.proxyProtocolOnChange.Store(hook)
 }
 
-func (h *Handler) getProxyProtocolForceChangeHook() func() {
+func (h *Handler) getProxyProtocolForceChangeHook() func() error {
 	val := h.proxyProtocolOnChange.Load()
 	if val == nil {
 		return nil
 	}
-	hook, _ := val.(func())
+	hook, _ := val.(func() error)
 	return hook
 }
 
@@ -2016,6 +2024,7 @@ func (h *Handler) saveConfigLocked() error {
 		conf.AuthConfig = h.AuthConfig
 		conf.Logging = h.LoggingConfig
 		conf.ProxyProtocolForce = h.ProxyProtocolForce
+		conf.ProxyProtocol = h.ProxyProtocol
 		conf.GatewayListener = h.GatewayListener
 		conf.ReverseProxyThrottle = h.ReverseProxyThrottle
 		persistedVisibility := h.GatewayVisibility
@@ -2099,6 +2108,7 @@ func (h *Handler) ResetAllData(resetConfig *config.AppConfig) error {
 	resetConfig.StreamRules = []models.StreamRule{}
 	resetConfig.StreamAccessPolicies = map[string]models.CompiledIPSet{}
 	resetConfig.StreamAvailability = nil
+	resetConfig.ProxyProtocol = models.GatewayProxyProtocolConfig{TrustedSources: []string{}}
 	resetConfig.Logging = loggingConfig
 	resetConfig.ForwardedHeaders = forwardedHeaders
 	resetConfig.PreserveHost = preserveHost
@@ -2122,6 +2132,7 @@ func (h *Handler) ResetAllData(resetConfig *config.AppConfig) error {
 	trustedClientIPs := newGatewayTrustedClientIPsRuntime(
 		models.GatewayTrustedClientIPsRuntime{},
 	)
+	proxyProtocol, _ := newGatewayProxyProtocolRuntime(resetConfig.ProxyProtocol)
 	commonLocationExemptions := newCommonLocationExemptionsRuntime(
 		models.CommonLocationExemptionsRuntime{},
 	)
@@ -2140,6 +2151,7 @@ func (h *Handler) ResetAllData(resetConfig *config.AppConfig) error {
 	h.AuthConfig = resetConfig.AuthConfig
 	h.LoggingConfig = loggingConfig
 	h.ProxyProtocolForce = resetConfig.ProxyProtocolForce
+	h.ProxyProtocol = resetConfig.ProxyProtocol
 	h.GatewayListener = resetConfig.GatewayListener
 	h.ReverseProxyThrottle = resetConfig.ReverseProxyThrottle
 	h.GatewayVisibility = resetConfig.Visibility
@@ -2156,6 +2168,7 @@ func (h *Handler) ResetAllData(resetConfig *config.AppConfig) error {
 	h.reverseProxyThrottle = reverseProxyThrottle
 	h.reverseProxyThrottleExempt = reverseProxyThrottleExempt
 	h.trustedClientIPs = trustedClientIPs
+	h.proxyProtocol = proxyProtocol
 	h.commonLocationExemptions = commonLocationExemptions
 	h.gatewayVisibility = visibility
 	h.compiledVisibilityPolicies = map[string]*compiledipset.Set{}
@@ -2225,38 +2238,6 @@ func (h *Handler) persistGatewayVisibilityAndPoliciesLocked(
 		conf.VisibilityPolicies = policiesCopy
 		return nil
 	})
-}
-
-func (h *Handler) GetProxyProtocolForce() bool {
-	h.mu.RLock()
-	defer h.mu.RUnlock()
-	return h.ProxyProtocolForce
-}
-
-func (h *Handler) SetProxyProtocolForce(force bool) error {
-	h.listenerChangeMu.Lock()
-	defer h.listenerChangeMu.Unlock()
-
-	h.mu.Lock()
-	previous := h.ProxyProtocolForce
-	changed := previous != force
-	h.ProxyProtocolForce = force
-	saveErr := h.saveConfigLocked()
-	if saveErr != nil {
-		h.ProxyProtocolForce = previous
-		h.mu.Unlock()
-		return saveErr
-	}
-	h.publishRequestSnapshotLocked()
-	hook := h.getProxyProtocolForceChangeHook()
-	h.mu.Unlock()
-	if event := debugProxyEvent("proxy_protocol_force_set", ""); event != nil {
-		event.Bool("enabled", force).Bool("changed", changed).Send()
-	}
-	if changed && hook != nil {
-		hook()
-	}
-	return nil
 }
 
 func (h *Handler) GetGatewayListenerConfig() models.GatewayListenerConfig {

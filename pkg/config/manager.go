@@ -36,6 +36,7 @@ type AppConfig struct {
 	AuthConfig           models.AuthConfig                  `json:"auth_config"`
 	AdminPort            int                                `json:"admin_port,omitempty"`
 	ProxyProtocolForce   bool                               `json:"proxy_protocol_force,omitempty"`
+	ProxyProtocol        models.GatewayProxyProtocolConfig  `json:"proxy_protocol,omitempty"`
 	GatewayListener      models.GatewayListenerConfig       `json:"gateway_listener,omitempty"`
 	ReverseProxyThrottle models.ReverseProxyThrottleConfig  `json:"reverse_proxy_throttle,omitempty"`
 	Visibility           models.GatewayVisibilityConfig     `json:"visibility,omitempty"`
@@ -99,6 +100,10 @@ func defaultConfig() *AppConfig {
 		},
 		AdminPort:          7996,
 		ProxyProtocolForce: false,
+		ProxyProtocol: models.GatewayProxyProtocolConfig{
+			Enabled:        false,
+			TrustedSources: []string{},
+		},
 		GatewayListener: models.GatewayListenerConfig{
 			Scope: defaultGatewayListenerScope(),
 		},
@@ -308,6 +313,10 @@ func applyDefaults(cfg *AppConfig) bool {
 	}
 	if cfg.GatewayListener.Scope != listenerScope {
 		cfg.GatewayListener.Scope = listenerScope
+		changed = true
+	}
+	if cfg.ProxyProtocol.TrustedSources == nil {
+		cfg.ProxyProtocol.TrustedSources = []string{}
 		changed = true
 	}
 	if cfg.ReverseProxyThrottle.Enabled {

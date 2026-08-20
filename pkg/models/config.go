@@ -42,6 +42,11 @@ type GatewayListenerConfig struct {
 	Scope string `json:"scope"`
 }
 
+type GatewayProxyProtocolConfig struct {
+	Enabled        bool     `json:"enabled"`
+	TrustedSources []string `json:"trusted_sources"`
+}
+
 // NormalizeGatewayListenerScope validates and canonicalizes the externally
 // visible listener policy. An empty result means the value is unsupported.
 func NormalizeGatewayListenerScope(value string) string {

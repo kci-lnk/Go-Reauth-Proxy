@@ -308,10 +308,6 @@ func (s *proxyStack) rebindWithStarter(desiredHost string, start proxyServerStar
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if s.host == desiredHost && s.stop != nil {
-		return nil
-	}
-
 	previousHost := s.host
 	previousStop := s.stop
 	if previousStop != nil {
@@ -363,27 +359,72 @@ func isClosedConnErr(err error) bool {
 		strings.Contains(err.Error(), "mux: server closed")
 }
 
-func startProxyServers(host string, proxyPort int, proxyHandler *proxy.Handler, httpServer *http.Server, httpsServer *http.Server) (func(), string, error) {
-	type listenTarget struct {
-		host string
-		port int
+func proxyProtocolConnPolicy(proxyHandler *proxy.Handler) proxyproto.ConnPolicyFunc {
+	return func(options proxyproto.ConnPolicyOptions) (proxyproto.Policy, error) {
+		if proxyHandler.IsProxyProtocolTrustedSource(options.Upstream) {
+			return proxyproto.USE, nil
+		}
+		// Plain direct clients remain valid. A PROXY header from an
+		// untrusted socket peer is rejected by the wrapper.
+		return proxyproto.REJECT, nil
 	}
-	targets := []listenTarget{{host: host, port: proxyPort}}
+}
+
+func proxyProtocolConnectionUsed(connection net.Conn) bool {
+	for connection != nil {
+		switch current := connection.(type) {
+		case *proxyproto.Conn:
+			header := current.ProxyHeader()
+			return header != nil && header.Command.IsProxy()
+		case interface{ NetConn() net.Conn }:
+			connection = current.NetConn()
+		case *cmux.MuxConn:
+			connection = current.Conn
+		default:
+			return false
+		}
+	}
+	return false
+}
+
+func proxyProtocolConnContext(ctx context.Context, connection net.Conn) context.Context {
+	if proxyProtocolConnectionUsed(connection) {
+		return proxy.WithProxyProtocolClientAddress(ctx)
+	}
+	return ctx
+}
+
+type proxyListenTarget struct {
+	host          string
+	port          int
+	proxyProtocol bool
+}
+
+func proxyListenTargets(host string, proxyPort int, useProxyProtocol bool) []proxyListenTarget {
+	targets := []proxyListenTarget{{host: host, port: proxyPort, proxyProtocol: useProxyProtocol}}
 	if host == "0.0.0.0" {
-		targets = append(targets, listenTarget{host: "::", port: proxyPort})
+		targets = append(targets, proxyListenTarget{host: "::", port: proxyPort, proxyProtocol: useProxyProtocol})
 	}
 	if host == "127.0.0.1" {
-		targets = append(targets, listenTarget{host: "::1", port: proxyPort})
+		targets = append(targets, proxyListenTarget{host: "::1", port: proxyPort, proxyProtocol: useProxyProtocol})
 	}
 	managedCloudflarePort := proxy.ManagedCloudflareIngressPort
 	if proxyPort == 0 {
 		managedCloudflarePort = 0
 	}
-	targets = append(targets, listenTarget{host: "127.0.0.1", port: managedCloudflarePort})
+	// This dedicated loopback ingress authenticates Cloudflare through its own
+	// edge headers and must remain a plain HTTP/TLS listener.
+	return append(targets, proxyListenTarget{host: "127.0.0.1", port: managedCloudflarePort})
+}
+
+func startProxyServers(host string, proxyPort int, proxyHandler *proxy.Handler, httpServer *http.Server, httpsServer *http.Server) (func(), string, error) {
+	useProxyProto := proxyHandler.ProxyProtocolEnabled()
+	targets := proxyListenTargets(host, proxyPort, useProxyProto)
 
 	var listeners []net.Listener
 	var listenAddrs []string
 	var listenerClosers []net.Listener
+	var proxyProtocolByListener = make(map[net.Listener]bool, len(targets))
 	for _, target := range targets {
 		network := "tcp4"
 		if strings.Contains(target.host, ":") {
@@ -402,6 +443,7 @@ func startProxyServers(host string, proxyPort int, proxyHandler *proxy.Handler, 
 			return nil, "", err
 		}
 		listeners = append(listeners, tcpListener)
+		proxyProtocolByListener[tcpListener] = target.proxyProtocol
 		listenAddrs = append(listenAddrs, tcpListener.Addr().String())
 	}
 	if len(listeners) == 0 {
@@ -409,14 +451,14 @@ func startProxyServers(host string, proxyPort int, proxyHandler *proxy.Handler, 
 	}
 
 	var wg sync.WaitGroup
-	useProxyProto := proxyHandler.GetProxyProtocolForce()
 	httpsTLSConfig := httpsServer.TLSConfig
 	for _, tcpListener := range listeners {
 		var listenerForMux net.Listener = tcpListener
-		if useProxyProto {
+		if proxyProtocolByListener[tcpListener] {
 			proxyListener := &proxyproto.Listener{
 				Listener:          tcpListener,
 				ReadHeaderTimeout: proxyProtoReadHeaderTimeout,
+				ConnPolicy:        proxyProtocolConnPolicy(proxyHandler),
 			}
 			listenerForMux = proxyListener
 		}
@@ -812,10 +854,12 @@ func run(options runOptions) error {
 		ReadHeaderTimeout: 10 * time.Second,
 		IdleTimeout:       120 * time.Second,
 		TLSConfig:         newProxyTLSConfig(proxyHandler),
+		ConnContext:       proxyProtocolConnContext,
 	}
 	httpServer = &http.Server{
 		ReadHeaderTimeout: 10 * time.Second,
 		IdleTimeout:       120 * time.Second,
+		ConnContext:       proxyProtocolConnContext,
 		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if proxyHandler.HasSSLCertificates() && proxy.ShouldRedirectHTTPToHTTPS(r, proxyHandler.GetAuthConfig()) {
 				target := proxy.BuildHTTPSRedirectURL(r, proxyHandler.GetAuthConfig())
@@ -872,15 +916,16 @@ func run(options runOptions) error {
 		grpcServer.SetServingStatus(healthGatewayDataplane, true)
 		return nil
 	})
-	proxyHandler.SetProxyProtocolForceChangeHook(func() {
+	proxyHandler.SetProxyProtocolForceChangeHook(func() error {
 		httpsConns.retireForServerNames(nil)
 		httpConns.retireForServerNames(nil)
 		if err := proxyStack.RequestRebind(); err != nil {
 			grpcServer.SetServingStatus(healthGatewayDataplane, proxyStack.IsServing())
 			log.Printf("Proxy listener rebind failed: %v", err)
-			return
+			return err
 		}
 		grpcServer.SetServingStatus(healthGatewayDataplane, true)
+		return nil
 	})
 
 	<-ctx.Done()

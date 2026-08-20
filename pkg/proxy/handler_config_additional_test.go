@@ -19,7 +19,7 @@ import (
 func TestSetProxyProtocolForceInvokesHookWhenChanged(t *testing.T) {
 	handler, _ := newAdditionalProxyTestHandler(t)
 	calls := 0
-	handler.SetProxyProtocolForceChangeHook(func() { calls++ })
+	handler.SetProxyProtocolForceChangeHook(func() error { calls++; return nil })
 	if err := handler.SetProxyProtocolForce(true); err != nil {
 		t.Fatalf("SetProxyProtocolForce() returned error: %v", err)
 	}
@@ -211,7 +211,7 @@ func TestSetProxyProtocolForceSkipsHookWhenUnchanged(t *testing.T) {
 		t.Fatalf("SetProxyProtocolForce() returned error: %v", err)
 	}
 	calls := 0
-	handler.SetProxyProtocolForceChangeHook(func() { calls++ })
+	handler.SetProxyProtocolForceChangeHook(func() error { calls++; return nil })
 	if err := handler.SetProxyProtocolForce(false); err != nil {
 		t.Fatalf("SetProxyProtocolForce() returned error: %v", err)
 	}
@@ -225,7 +225,7 @@ func TestSetProxyProtocolForceRollsBackOnSaveFailure(t *testing.T) {
 	before := handler.GetProxyProtocolForce()
 	beforeSnapshot := handler.snapshotForRequest().proxyProtocolForce
 	calls := 0
-	handler.SetProxyProtocolForceChangeHook(func() { calls++ })
+	handler.SetProxyProtocolForceChangeHook(func() error { calls++; return nil })
 	breakConfigPersistence(t, manager)
 
 	if err := handler.SetProxyProtocolForce(!before); err == nil {
@@ -237,8 +237,8 @@ func TestSetProxyProtocolForceRollsBackOnSaveFailure(t *testing.T) {
 	if got := handler.snapshotForRequest().proxyProtocolForce; got != beforeSnapshot {
 		t.Fatalf("snapshot proxy protocol force = %v, want %v", got, beforeSnapshot)
 	}
-	if calls != 0 {
-		t.Fatalf("hook calls = %d, want 0", calls)
+	if calls != 2 {
+		t.Fatalf("hook calls = %d, want apply plus rollback", calls)
 	}
 }
 

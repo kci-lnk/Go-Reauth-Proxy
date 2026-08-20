@@ -96,6 +96,30 @@ func TestGatewayControlTypedProxyProtocolRoundTrip(t *testing.T) {
 	}
 }
 
+func TestGatewayProxyProtocolConfigClassifiesValidationAndRuntimeFailures(t *testing.T) {
+	server := newGatewayControlTestServer(t, "secret")
+	ctx := authTestContext()
+
+	_, err := server.SetGatewayProxyProtocolConfig(ctx, &pb.GatewayProxyProtocolConfig{
+		Enabled:        true,
+		TrustedSources: []string{"proxy.example.com"},
+	})
+	if status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("invalid source status = %v, want invalid argument", status.Code(err))
+	}
+
+	server.admin.ProxyHandler.SetProxyProtocolForceChangeHook(func() error {
+		return errors.New("listener rebind failed")
+	})
+	_, err = server.SetGatewayProxyProtocolConfig(ctx, &pb.GatewayProxyProtocolConfig{
+		Enabled:        true,
+		TrustedSources: []string{"192.0.2.10"},
+	})
+	if status.Code(err) != codes.Internal {
+		t.Fatalf("runtime failure status = %v, want internal", status.Code(err))
+	}
+}
+
 func TestGatewayControlServerInfoIncludesCompatibilityMetadata(t *testing.T) {
 	server := newGatewayControlTestServer(t, "secret")
 	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs(rpcbridge.InternalTokenMetadataKey, "secret"))

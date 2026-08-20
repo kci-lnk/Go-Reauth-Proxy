@@ -859,7 +859,7 @@ func TestResolveClientIPManagedCloudflareIngressFailsClosed(t *testing.T) {
 	}
 }
 
-func TestResolveClientIPOrdinaryIngressPreservesExistingProxyProtocolBehavior(t *testing.T) {
+func TestResolveClientIPProxyProtocolAddressCannotBeOverriddenByForwardedHeaders(t *testing.T) {
 	req := requestWithLocalAddress(
 		httptest.NewRequest(http.MethodGet, "http://app.example/", nil),
 		"127.0.0.1",
@@ -869,8 +869,34 @@ func TestResolveClientIPOrdinaryIngressPreservesExistingProxyProtocolBehavior(t 
 	req.Header.Set("CF-Connecting-IP", "198.51.100.25")
 	req.Header.Set("X-Forwarded-For", "192.168.1.100")
 
-	if got, want := resolveClientIP(req, models.AuthConfig{}, true), "192.168.1.100"; got != want {
-		t.Fatalf("resolveClientIP() = %q, want existing non-Cloudflare behavior %q", got, want)
+	if got, want := resolveClientIP(req, models.AuthConfig{}, true), "127.0.0.1"; got != want {
+		t.Fatalf("resolveClientIP() = %q, want transport address %q", got, want)
+	}
+}
+
+func TestResolveClientIPProxyProtocolAddressPrecedesDedicatedEdgeHeaders(t *testing.T) {
+	for name, authConfig := range map[string]models.AuthConfig{
+		"edgeone": {
+			EdgeClientIPEnabled:   true,
+			TencentEdgeOneEnabled: true,
+		},
+		"aliyun-esa": {
+			EdgeClientIPEnabled: true,
+			AliyunESAEnabled:    true,
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, "http://app.example/", nil)
+			req.RemoteAddr = "198.51.100.25:4321"
+			req.Header.Set(headerEOConnectingIP, "192.0.2.10")
+			req.Header.Set(headerAliRealClientIP, "192.0.2.11")
+			req.Header.Set("X-Forwarded-For", "192.0.2.12")
+			req = req.WithContext(WithProxyProtocolClientAddress(req.Context()))
+
+			if got, want := resolveClientIP(req, authConfig, true), "198.51.100.25"; got != want {
+				t.Fatalf("resolveClientIP() = %q, want PROXY address %q", got, want)
+			}
+		})
 	}
 }
 
@@ -885,7 +911,7 @@ func TestResolveClientIPOrdinaryIngressDoesNotTrustCloudflareConnectingIPv6(t *t
 	req.Header.Set("CF-Connecting-IPv6", "2409:8a00:1234:5678::25")
 	req.Header.Set("X-Forwarded-For", "251.169.165.161")
 
-	if got, want := resolveClientIP(req, models.AuthConfig{}, true), "251.169.165.161"; got != want {
-		t.Fatalf("resolveClientIP() = %q, want existing non-Cloudflare behavior %q", got, want)
+	if got, want := resolveClientIP(req, models.AuthConfig{}, true), "127.0.0.1"; got != want {
+		t.Fatalf("resolveClientIP() = %q, want transport address %q", got, want)
 	}
 }

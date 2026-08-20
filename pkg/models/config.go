@@ -368,6 +368,7 @@ type WAFConfig struct {
 	DisabledHosts                 []string `json:"disabled_hosts,omitempty"`
 	DisabledPathPrefixes          []string `json:"disabled_path_prefixes,omitempty"`
 	UpdatedAt                     string   `json:"updated_at,omitempty"`
+	PrivateIPExemptEnabled        bool     `json:"private_ip_exempt_enabled,omitempty"`
 }
 
 type ReverseProxyThrottleConfig struct {

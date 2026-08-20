@@ -10,6 +10,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/netip"
 	"path/filepath"
 	goruntime "runtime"
 	"runtime/debug"
@@ -374,10 +375,13 @@ func (rt *Runtime) Evaluate(r *http.Request, ctx EvaluateContext) Decision {
 	decision.Enabled = IsActive(cfg)
 	decision.Mode = cfg.Mode
 	decision.DetectionOnly = cfg.Mode == ModeDetection
-	if !decision.Enabled || isExcludedByConfig(&snapshot.exclusions, r) {
+	clientIP, clientPort := splitAddress(ctx.ClientIP, r.RemoteAddr)
+	privateIPExempted := cfg.PrivateIPExemptEnabled && isPrivateOrLocalIP(clientIP)
+	if !decision.Enabled || isExcludedByConfig(&snapshot.exclusions, r) || privateIPExempted {
 		if event := logger.DebugEvent("waf", "evaluate_skipped"); event != nil {
 			event.Bool("enabled", decision.Enabled).
 				Bool("excluded", decision.Enabled).
+				Bool("private_ip_exempt", privateIPExempted).
 				Str("method", r.Method).
 				Str("host", logger.SanitizeLogString(r.Host)).
 				Str("path", logger.SanitizeLogString(r.URL.Path)).
@@ -407,7 +411,6 @@ func (rt *Runtime) Evaluate(r *http.Request, ctx EvaluateContext) Decision {
 		tx.ProcessLogging()
 		_ = tx.Close()
 	}()
-	clientIP, clientPort := splitAddress(ctx.ClientIP, r.RemoteAddr)
 	tx.ProcessConnection(clientIP, clientPort, "", 0)
 	tx.ProcessURI(r.URL.RequestURI(), r.Method, r.Proto)
 	if r.Host != "" {
@@ -852,6 +855,44 @@ func splitAddress(clientIP string, remoteAddr string) (string, int) {
 	}
 	portNum, _ := strconv.Atoi(port)
 	return host, portNum
+}
+
+// isPrivateOrLocalIP reports whether value is a private, loopback, link-local,
+// unspecified, or carrier-grade NAT address. It mirrors the Rust control
+// plane's is_private_or_local_ip classification so the LAN exemption behaves
+// identically across both processes.
+func isPrivateOrLocalIP(value string) bool {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return false
+	}
+	if host, _, err := net.SplitHostPort(value); err == nil {
+		value = strings.Trim(host, "[]")
+	} else {
+		value = strings.Trim(value, "[]")
+	}
+	addr, err := netip.ParseAddr(value)
+	if err != nil {
+		return false
+	}
+	addr = addr.Unmap()
+	if addr.Is4() {
+		octets := addr.As4()
+		switch {
+		case octets[0] == 0, octets[0] == 10, octets[0] == 127:
+			return true
+		case octets[0] == 169 && octets[1] == 254:
+			return true
+		case octets[0] == 172 && octets[1] >= 16 && octets[1] <= 31:
+			return true
+		case octets[0] == 192 && octets[1] == 168:
+			return true
+		case octets[0] == 100 && octets[1] >= 64 && octets[1] <= 127:
+			return true
+		}
+		return false
+	}
+	return addr.IsLoopback() || addr.IsUnspecified() || addr.IsPrivate() || addr.IsLinkLocalUnicast()
 }
 
 func normalizeHost(host string) string {

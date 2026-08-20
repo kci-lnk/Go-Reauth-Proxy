@@ -3361,6 +3361,7 @@ type WafConfig struct {
 	DisabledHosts                 []string               `protobuf:"bytes,13,rep,name=disabled_hosts,json=disabledHosts,proto3" json:"disabled_hosts,omitempty"`
 	DisabledPathPrefixes          []string               `protobuf:"bytes,14,rep,name=disabled_path_prefixes,json=disabledPathPrefixes,proto3" json:"disabled_path_prefixes,omitempty"`
 	UpdatedAt                     string                 `protobuf:"bytes,15,opt,name=updated_at,json=updatedAt,proto3" json:"updated_at,omitempty"`
+	PrivateIpExemptEnabled        bool                   `protobuf:"varint,16,opt,name=private_ip_exempt_enabled,json=privateIpExemptEnabled,proto3" json:"private_ip_exempt_enabled,omitempty"`
 	unknownFields                 protoimpl.UnknownFields
 	sizeCache                     protoimpl.SizeCache
 }
@@ -3498,6 +3499,13 @@ func (x *WafConfig) GetUpdatedAt() string {
 		return x.UpdatedAt
 	}
 	return ""
+}
+
+func (x *WafConfig) GetPrivateIpExemptEnabled() bool {
+	if x != nil {
+		return x.PrivateIpExemptEnabled
+	}
+	return false
 }
 
 type WafStatus struct {
@@ -11064,7 +11072,7 @@ const file_fnknock_v1_gateway_proto_rawDesc = "" +
 	"\arecords\x18\x01 \x03(\v2/.fnknock.v1.GeneralBlacklistStatus.RecordsEntryR\arecords\x1a^\n" +
 	"\fRecordsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x128\n" +
-	"\x05value\x18\x02 \x01(\v2\".fnknock.v1.GeneralBlacklistRecordR\x05value:\x028\x01\"\xbd\x05\n" +
+	"\x05value\x18\x02 \x01(\v2\".fnknock.v1.GeneralBlacklistRecordR\x05value:\x028\x01\"\xf8\x05\n" +
 	"\tWafConfig\x12\x18\n" +
 	"\aenabled\x18\x01 \x01(\bR\aenabled\x12\x12\n" +
 	"\x04mode\x18\x02 \x01(\tR\x04mode\x12\x1b\n" +
@@ -11082,7 +11090,8 @@ const file_fnknock_v1_gateway_proto_rawDesc = "" +
 	"\x0edisabled_hosts\x18\r \x03(\tR\rdisabledHosts\x124\n" +
 	"\x16disabled_path_prefixes\x18\x0e \x03(\tR\x14disabledPathPrefixes\x12\x1d\n" +
 	"\n" +
-	"updated_at\x18\x0f \x01(\tR\tupdatedAt\"\x8f\x02\n" +
+	"updated_at\x18\x0f \x01(\tR\tupdatedAt\x129\n" +
+	"\x19private_ip_exempt_enabled\x18\x10 \x01(\bR\x16privateIpExemptEnabled\"\x8f\x02\n" +
 	"\tWafStatus\x12\x18\n" +
 	"\aenabled\x18\x01 \x01(\bR\aenabled\x12\x12\n" +
 	"\x04mode\x18\x02 \x01(\tR\x04mode\x12\x16\n" +

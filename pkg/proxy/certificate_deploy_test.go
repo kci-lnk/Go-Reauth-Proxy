@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"go-reauth-proxy/pkg/deepmonitor"
+	"go-reauth-proxy/pkg/gatewaylog"
 	"go-reauth-proxy/pkg/models"
 )
 
@@ -150,6 +151,30 @@ func TestCertificateDeployBindingIDValidation(t *testing.T) {
 	}
 }
 
+func TestCertificateDeployLoggingOmitsFreeFormSensitiveValues(t *testing.T) {
+	req := httptest.NewRequest(http.MethodPut, "https://auth.example.com/__certificates__/binding-1", nil)
+	req.Header.Set("Authorization", "Bearer fnk_cert_secret")
+	req.Header.Set("Referer", "https://example.test/?value=private-key")
+	req.Header.Set("X-Forwarded-For", "fnk_cert_secret")
+	field, value := requestDebugHeaders(true, req.Header)
+	if field != "header_names" {
+		t.Fatalf("debug header field = %q, want header_names", field)
+	}
+	if names, ok := value.([]string); !ok || strings.Contains(strings.Join(names, ","), "fnk_cert_secret") {
+		t.Fatalf("debug header metadata retained a sensitive value: %#v", value)
+	}
+	if xff, real, ali, eo := requestDebugClientHeaders(true, req); xff != "" || real != "" || ali != "" || eo != "" {
+		t.Fatalf("debug client headers were retained: %q %q %q %q", xff, real, ali, eo)
+	}
+	entry := gatewaylog.Entry{
+		UserAgent: "private-key", Referer: "fnk_cert_secret", XForwardedFor: "fnk_cert_secret",
+	}
+	redactCertificateDeployAccessEntry(&entry)
+	if entry.UserAgent != "" || entry.Referer != "" || entry.XForwardedFor != "" {
+		t.Fatalf("access entry retained sensitive values: %#v", entry)
+	}
+}
+
 func TestCertificateDeployRouteUsesActualHostForGatewayPolicies(t *testing.T) {
 	var hits atomic.Int32
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -243,5 +268,71 @@ func TestCertificateDeployRouteIsExcludedFromDeepMonitor(t *testing.T) {
 	}
 	if len(items) != 0 {
 		t.Fatalf("certificate deployment produced deep-monitor events: %#v", items)
+	}
+}
+
+func TestLANCertificateDeployRequiresConfiguredHTTPSHostAndTransportPrivateClient(t *testing.T) {
+	var hits atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		if got := r.Header.Get("X-Forwarded-For"); got != "192.168.31.50" {
+			t.Fatalf("forwarded client = %q, want transport client", got)
+		}
+		if got := r.Header.Get("X-Forwarded-Proto"); got != "https" {
+			t.Fatalf("forwarded proto = %q, want authoritative TLS scheme", got)
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+	handler := newCertificateDeployTestHandler(t, upstream)
+	cert, key := makeTestCertificatePEM(t, []string{"gateway.example.test"}, nil)
+	bundle, err := newSSLRuntimeBundle(models.SSLConfig{
+		Certificates: []models.SSLDeployedCertificate{{Cert: cert, Key: key, IsDefault: true}},
+		LANDeployment: models.SSLLANDeployment{
+			Enabled: true, Addresses: []string{"192.168.31.98"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler.sslBundle.Store(bundle)
+
+	request := httptest.NewRequest(http.MethodPut, "https://192.168.31.98/__certificates__/binding-1", strings.NewReader(`{}`))
+	request.RemoteAddr = "192.168.31.50:41234"
+	request.Header.Set("X-Forwarded-For", "203.0.113.9")
+	request.Header.Set("X-Forwarded-Proto", "http")
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK || hits.Load() != 1 {
+		t.Fatalf("LAN request status=%d hits=%d body=%s", recorder.Code, hits.Load(), recorder.Body.String())
+	}
+	// A configured LAN IP must not become a public route if AuthHost is also
+	// (mis)configured to the same IP.
+	handler.AuthConfig.AuthHost = "192.168.31.98"
+	handler.publishRequestSnapshotLocked()
+
+	for _, candidate := range []struct {
+		name       string
+		url        string
+		remoteAddr string
+		forwarded  string
+	}{
+		{name: "http", url: "http://192.168.31.98/__certificates__/binding-1", remoteAddr: "192.168.31.50:41234"},
+		{name: "unconfigured host", url: "https://192.168.31.99/__certificates__/binding-1", remoteAddr: "192.168.31.50:41234"},
+		{name: "public transport", url: "https://192.168.31.98/__certificates__/binding-1", remoteAddr: "203.0.113.9:41234", forwarded: "192.168.31.50"},
+	} {
+		t.Run(candidate.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPut, candidate.url, strings.NewReader(`{}`))
+			req.RemoteAddr = candidate.remoteAddr
+			req.Header.Set("X-Forwarded-For", candidate.forwarded)
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+			if rec.Code != http.StatusNotFound {
+				t.Fatalf("status=%d, want 404", rec.Code)
+			}
+		})
+	}
+	if hits.Load() != 1 {
+		t.Fatalf("rejected LAN requests reached upstream: %d hits", hits.Load())
 	}
 }

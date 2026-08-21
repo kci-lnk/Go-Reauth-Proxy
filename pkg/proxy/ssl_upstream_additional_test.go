@@ -130,6 +130,34 @@ func TestNewSSLRuntimeBundleLoadsExactDomain(t *testing.T) {
 	}
 }
 
+func TestLANDeploymentUsesOrdinaryDefaultCertificate(t *testing.T) {
+	domainCert, domainKey := makeTestCertificatePEM(t, []string{"app.example.test"}, nil)
+	bundle, err := newSSLRuntimeBundle(models.SSLConfig{
+		Certificates:  []models.SSLDeployedCertificate{{Cert: domainCert, Key: domainKey, IsDefault: true}},
+		LANDeployment: models.SSLLANDeployment{Enabled: true, Addresses: []string{"192.168.31.98"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bundle.certificateForServerName("") != bundle.defaultCert {
+		t.Fatal("empty SNI did not select the ordinary default certificate")
+	}
+	if bundle.certificateForServerName("192.168.31.98") != bundle.defaultCert {
+		t.Fatal("configured IP SNI did not fall back to the ordinary default certificate")
+	}
+	if bundle.certificateForServerName("app.example.test") != bundle.defaultCert {
+		t.Fatal("domain SNI did not retain the ordinary certificate")
+	}
+}
+
+func TestNormalizeLANDeploymentRejectsPublicAddress(t *testing.T) {
+	if _, err := normalizeSSLConfig(models.SSLConfig{LANDeployment: models.SSLLANDeployment{
+		Enabled: true, Addresses: []string{"8.8.8.8"},
+	}}); err == nil {
+		t.Fatal("public LAN address was accepted")
+	}
+}
+
 func TestNewSSLRuntimeBundleRejectsDuplicateExactDomains(t *testing.T) {
 	certPEM, keyPEM := makeTestCertificatePEM(t, []string{"app.example.test"}, nil)
 	_, err := newSSLRuntimeBundle(models.SSLConfig{DeploymentMode: models.SSLDeploymentModeMultiSNI, Certificates: []models.SSLDeployedCertificate{

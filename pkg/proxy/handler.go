@@ -2641,29 +2641,6 @@ func (h *Handler) SetSSLDeployment(config models.SSLConfig) error {
 	return nil
 }
 
-func (h *Handler) SetSSLCertificate(cert *tls.Certificate, certPEM, keyPEM string) {
-	if cert == nil {
-		_ = h.SetSSLDeployment(models.SSLConfig{})
-		return
-	}
-	normalizedCertPEM, normalizedKeyPEM, err := validateLegacySSLPair(certPEM, keyPEM)
-	if err != nil {
-		log.Printf("Failed to set legacy SSL certificate: %v", err)
-		return
-	}
-	if err := h.SetSSLDeployment(buildLegacySSLConfig(normalizedCertPEM, normalizedKeyPEM)); err != nil {
-		log.Printf("Failed to set legacy SSL certificate: %v", err)
-	}
-}
-
-func (h *Handler) SetSSLCertificatePEM(certPEM, keyPEM string) error {
-	normalizedCertPEM, normalizedKeyPEM, err := validateLegacySSLPair(certPEM, keyPEM)
-	if err != nil {
-		return err
-	}
-	return h.SetSSLDeployment(buildLegacySSLConfig(normalizedCertPEM, normalizedKeyPEM))
-}
-
 func (h *Handler) getSSLBundle() *sslRuntimeBundle {
 	val := h.sslBundle.Load()
 	if val == nil {
@@ -2713,16 +2690,19 @@ func (h *Handler) GetSSLDeployment() models.SSLConfig {
 }
 
 func (h *Handler) GetSSLInfo() models.SSLInfo {
+	h.mu.RLock()
 	bundle := h.getSSLBundle()
+	lanDeployment := models.SSLLANDeploymentInfo{
+		Enabled:   h.sslConfig.LANDeployment.Enabled,
+		Addresses: append([]string(nil), h.sslConfig.LANDeployment.Addresses...),
+	}
+	h.mu.RUnlock()
 	return copySSLInfo(models.SSLInfo{
 		Enabled:        bundle.hasCertificates(),
 		DeploymentMode: bundle.mode,
 		Certificates:   bundle.certificates,
+		LANDeployment:  lanDeployment,
 	})
-}
-
-func (h *Handler) ClearSSLCertificate() error {
-	return h.SetSSLDeployment(models.SSLConfig{})
 }
 
 func isReservedFnosSharePath(value string) bool {
@@ -5035,10 +5015,14 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		XForwardedFor:   firstForwardedValue(r.Header.Get("X-Forwarded-For")),
 		XRealIP:         strings.TrimSpace(r.Header.Get(headerXRealIP)),
 	}
+	if certificateDeploySensitivePath {
+		redactCertificateDeployAccessEntry(&accessEntry)
+	}
 	var clientIP string
 	loggedStatusCode := 0
 
 	w = tw
+	debugHeaderField, debugHeaderValue := requestDebugHeaders(certificateDeploySensitivePath, r.Header)
 	if event := debugProxyEvent("request_start", requestID); event != nil {
 		event.Str("method", r.Method).
 			Str("scheme", requestScheme(r)).
@@ -5050,7 +5034,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			Str("remote_addr", logger.SanitizeLogString(r.RemoteAddr)).
 			Bool("tls", r.TLS != nil).
 			Bool("websocket", strings.EqualFold(r.Header.Get("Upgrade"), "websocket")).
-			Interface("headers", logger.SanitizeHeader(r.Header)).
+			Interface(debugHeaderField, debugHeaderValue).
 			Send()
 	}
 
@@ -5114,7 +5098,11 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	snapshot := h.snapshotForRequest()
 	fnosConnect := fnosConnectContext(r)
-	if fnosConnect == nil && certificateDeployRouteMatches(r, snapshot.authConfig.AuthHost) {
+	certificateDeployRouteKind := certificateDeployRouteNone
+	if fnosConnect == nil {
+		certificateDeployRouteKind = certificateDeployRoute(r, snapshot.authConfig.AuthHost, h.getSSLBundle())
+	}
+	if certificateDeployRouteKind != certificateDeployRouteNone {
 		// The reserved route is owned by the actual Host header. Do not let a
 		// client-supplied forwarding host select another HostRule's visibility
 		// or availability policy before the header is rebuilt for Rust.
@@ -5149,15 +5137,16 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if deepMonitorTrace != nil {
 		deepMonitorTrace.setClientIP(clientIP)
 	}
+	debugXFF, debugRealIP, debugAliIP, debugEOIP := requestDebugClientHeaders(certificateDeploySensitivePath, r)
 	if event := debugProxyEvent("client_ip_resolved", requestID); event != nil {
 		event.Str("client_ip", logger.SanitizeLogString(clientIP)).
 			Bool("trusted_client_ip", trustedClientIP).
 			Bool("proxy_protocol_force", snapshot.proxyProtocolForce).
 			Bool("edge_client_ip_active", snapshot.authConfig.EdgeClientIPActive()).
-			Str("x_forwarded_for", logger.SanitizeLogString(firstForwardedValue(r.Header.Get("X-Forwarded-For")))).
-			Str("x_real_ip", logger.SanitizeLogString(r.Header.Get(headerXRealIP))).
-			Str("ali_real_client_ip", logger.SanitizeLogString(r.Header.Get(headerAliRealClientIP))).
-			Str("eo_connecting_ip", logger.SanitizeLogString(r.Header.Get(headerEOConnectingIP))).
+			Str("x_forwarded_for", logger.SanitizeLogString(debugXFF)).
+			Str("x_real_ip", logger.SanitizeLogString(debugRealIP)).
+			Str("ali_real_client_ip", logger.SanitizeLogString(debugAliIP)).
+			Str("eo_connecting_ip", logger.SanitizeLogString(debugEOIP)).
 			Send()
 	}
 
@@ -5251,6 +5240,16 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if certificateDeploySensitivePath && certificateDeployRouteKind == certificateDeployRouteNone {
+		accessEntry.RouteType = "certificate_deploy"
+		accessEntry.RouteKey = certificateDeployPathPrefix
+		accessEntry.AuthDecision = "not_found"
+		accessEntry.Matched = false
+		loggedStatusCode = http.StatusNotFound
+		rejectMalformedCertificateDeployRoute(w, r)
+		return
+	}
+
 	http1Required := isHTTP1OnlyHostOverHTTP2(r, matchedHostRule)
 	http2Required := isHTTP2OnlyHostOverHTTP1(r, matchedHostRule)
 	if http1Required || http2Required {
@@ -5301,7 +5300,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	isSelectRoute := fnosConnect == nil && r.URL.Path == "/__select__"
 	isWOLPath := fnosConnect == nil && r.URL.Path == "/__wol__"
 	isWOLRoute := isWOLPath && snapshot.gatewayPortal.ShowWOL
-	isCertificateDeployRoute := fnosConnect == nil && certificateDeployRouteMatches(r, snapshot.authConfig.AuthHost)
+	isCertificateDeployRoute := certificateDeployRouteKind != certificateDeployRouteNone
 	isBuiltinAuthRoute := isSelectRoute || isWOLRoute || isCertificateDeployRoute
 	isAuthRoute := fnosConnect == nil && strings.HasPrefix(r.URL.Path, "/__auth__/")
 	matchedHostLocation := matchHostLocation(r, matchedHostRule)
@@ -5465,7 +5464,11 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		wrapRequestBodyForTraffic(r, h, metrics)
-		h.handleCertificateDeployRoute(w, r, snapshot, clientIP)
+		forwardedClientIP := clientIP
+		if certificateDeployRouteKind == certificateDeployRouteLAN {
+			forwardedClientIP = certificateDeployTransportClientIP(r)
+		}
+		h.handleCertificateDeployRoute(w, r, snapshot, forwardedClientIP)
 		return
 	}
 	wafRouteType, wafRouteKey, wafUpstream := wafRouteContextForRequest(

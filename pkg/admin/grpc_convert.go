@@ -1113,7 +1113,14 @@ func sslConfigToProto(cfg models.SSLConfig) *pb.SslConfig {
 			IsDefault: cert.IsDefault,
 		})
 	}
-	return &pb.SslConfig{DeploymentMode: string(cfg.DeploymentMode), Certificates: items}
+	return &pb.SslConfig{
+		DeploymentMode: string(cfg.DeploymentMode),
+		Certificates:   items,
+		LanDeployment: &pb.SslLanDeployment{
+			Enabled:   cfg.LANDeployment.Enabled,
+			Addresses: append([]string(nil), cfg.LANDeployment.Addresses...),
+		},
+	}
 }
 
 func protoToSSLConfig(cfg *pb.SslConfig) models.SSLConfig {
@@ -1133,7 +1140,19 @@ func protoToSSLConfig(cfg *pb.SslConfig) models.SSLConfig {
 			IsDefault: cert.GetIsDefault(),
 		})
 	}
-	return models.SSLConfig{DeploymentMode: models.SSLDeploymentMode(cfg.GetDeploymentMode()), Certificates: certs}
+	lan := cfg.GetLanDeployment()
+	lanDeployment := models.SSLLANDeployment{}
+	if lan != nil {
+		lanDeployment = models.SSLLANDeployment{
+			Enabled:   lan.GetEnabled(),
+			Addresses: append([]string(nil), lan.GetAddresses()...),
+		}
+	}
+	return models.SSLConfig{
+		DeploymentMode: models.SSLDeploymentMode(cfg.GetDeploymentMode()),
+		Certificates:   certs,
+		LANDeployment:  lanDeployment,
+	}
 }
 
 func sslInfoToProto(info models.SSLInfo) *pb.SslInfo {
@@ -1146,7 +1165,15 @@ func sslInfoToProto(info models.SSLInfo) *pb.SslInfo {
 			IsDefault: cert.IsDefault,
 		})
 	}
-	return &pb.SslInfo{Enabled: info.Enabled, DeploymentMode: string(info.DeploymentMode), Certificates: certs}
+	return &pb.SslInfo{
+		Enabled:        info.Enabled,
+		DeploymentMode: string(info.DeploymentMode),
+		Certificates:   certs,
+		LanDeployment: &pb.SslLanDeploymentInfo{
+			Enabled:   info.LANDeployment.Enabled,
+			Addresses: append([]string(nil), info.LANDeployment.Addresses...),
+		},
+	}
 }
 
 func logDatesToProto(result gatewaylog.DatesResult) *pb.GatewayLogDates {

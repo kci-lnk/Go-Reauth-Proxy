@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"net/http/httptest"
@@ -275,6 +276,33 @@ func TestSetSSLDeploymentDoesNotPublishOnSaveFailure(t *testing.T) {
 	}
 	if calls != 0 {
 		t.Fatalf("SSL hook calls = %d, want 0", calls)
+	}
+}
+
+func TestLegacySSLCertificateUpdatePreservesLANDeployment(t *testing.T) {
+	handler, _ := newAdditionalProxyTestHandler(t)
+	initialCert, initialKey := makeTestCertificatePEM(t, []string{"initial.example.test"}, nil)
+	if err := handler.SetSSLDeployment(models.SSLConfig{
+		Certificates: []models.SSLDeployedCertificate{{
+			ID: "initial", Cert: initialCert, Key: initialKey, IsDefault: true,
+		}},
+		LANDeployment: models.SSLLANDeployment{
+			Enabled: true, Addresses: []string{"192.168.31.98"},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	nextCertPEM, nextKeyPEM := makeTestCertificatePEM(t, []string{"next.example.test"}, nil)
+	nextCertificate, err := tls.X509KeyPair([]byte(nextCertPEM), []byte(nextKeyPEM))
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler.SetSSLCertificate(&nextCertificate, nextCertPEM, nextKeyPEM)
+
+	got := handler.GetSSLDeployment().LANDeployment
+	if !got.Enabled || len(got.Addresses) != 1 || got.Addresses[0] != "192.168.31.98" {
+		t.Fatalf("LAN deployment was lost after legacy SSL update: %#v", got)
 	}
 }
 

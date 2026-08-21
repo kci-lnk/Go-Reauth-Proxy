@@ -602,15 +602,27 @@ type SSLDeployedCertificateInfo struct {
 	IsDefault bool     `json:"is_default,omitempty"`
 }
 
+type SSLLANDeployment struct {
+	Enabled   bool     `json:"enabled,omitempty"`
+	Addresses []string `json:"addresses,omitempty"`
+}
+
+type SSLLANDeploymentInfo struct {
+	Enabled   bool     `json:"enabled"`
+	Addresses []string `json:"addresses,omitempty"`
+}
+
 type SSLConfig struct {
 	DeploymentMode SSLDeploymentMode        `json:"deployment_mode,omitempty" example:"single_active"`
 	Certificates   []SSLDeployedCertificate `json:"certificates,omitempty"`
+	LANDeployment  SSLLANDeployment         `json:"lan_deployment,omitempty"`
 }
 
 type SSLInfo struct {
 	Enabled        bool                         `json:"enabled"`
 	DeploymentMode SSLDeploymentMode            `json:"deployment_mode,omitempty"`
 	Certificates   []SSLDeployedCertificateInfo `json:"certificates,omitempty"`
+	LANDeployment  SSLLANDeploymentInfo         `json:"lan_deployment"`
 }
 
 type SSLRequest struct {

@@ -5,6 +5,8 @@ import (
 	"crypto/x509"
 	"fmt"
 	"go-reauth-proxy/pkg/models"
+	"log"
+	"net/netip"
 	"sort"
 	"strings"
 )
@@ -15,6 +17,7 @@ type sslRuntimeBundle struct {
 	exact        map[string]*tls.Certificate
 	wildcards    []sslRuntimeWildcard
 	certificates []models.SSLDeployedCertificateInfo
+	lanAddresses map[string]struct{}
 }
 
 type sslRuntimeWildcard struct {
@@ -31,7 +34,45 @@ func newEmptySSLRuntimeBundle(mode models.SSLDeploymentMode) *sslRuntimeBundle {
 		exact:        make(map[string]*tls.Certificate),
 		wildcards:    []sslRuntimeWildcard{},
 		certificates: []models.SSLDeployedCertificateInfo{},
+		lanAddresses: make(map[string]struct{}),
 	}
+}
+
+func normalizeLANDeployment(input models.SSLLANDeployment) (models.SSLLANDeployment, error) {
+	result := models.SSLLANDeployment{Enabled: input.Enabled}
+	seen := make(map[string]struct{})
+	for _, raw := range input.Addresses {
+		address, err := netip.ParseAddr(strings.TrimSpace(raw))
+		if err != nil || !address.Is4() || !isRFC1918IPv4(address) {
+			return models.SSLLANDeployment{}, fmt.Errorf("LAN deployment address %q must be an RFC1918 IPv4 address", raw)
+		}
+		canonical := address.String()
+		if _, ok := seen[canonical]; ok {
+			continue
+		}
+		seen[canonical] = struct{}{}
+		result.Addresses = append(result.Addresses, canonical)
+	}
+	sort.Strings(result.Addresses)
+	if len(result.Addresses) > 16 {
+		return models.SSLLANDeployment{}, fmt.Errorf("LAN deployment supports at most 16 addresses")
+	}
+	if !result.Enabled {
+		return result, nil
+	}
+	if len(result.Addresses) == 0 {
+		return models.SSLLANDeployment{}, fmt.Errorf("LAN deployment requires at least one address")
+	}
+	return result, nil
+}
+
+func isRFC1918IPv4(address netip.Addr) bool {
+	if !address.Is4() {
+		return false
+	}
+	return netip.MustParsePrefix("10.0.0.0/8").Contains(address) ||
+		netip.MustParsePrefix("172.16.0.0/12").Contains(address) ||
+		netip.MustParsePrefix("192.168.0.0/16").Contains(address)
 }
 
 func normalizeSSLConfig(input models.SSLConfig) (models.SSLConfig, error) {
@@ -76,9 +117,15 @@ func normalizeSSLConfig(input models.SSLConfig) (models.SSLConfig, error) {
 		}
 	}
 
+	lanDeployment, err := normalizeLANDeployment(input.LANDeployment)
+	if err != nil {
+		return models.SSLConfig{}, err
+	}
+
 	return models.SSLConfig{
 		DeploymentMode: mode,
 		Certificates:   certificates,
+		LANDeployment:  lanDeployment,
 	}, nil
 }
 
@@ -128,6 +175,10 @@ func copySSLConfig(input models.SSLConfig) models.SSLConfig {
 	return models.SSLConfig{
 		DeploymentMode: input.DeploymentMode,
 		Certificates:   certificates,
+		LANDeployment: models.SSLLANDeployment{
+			Enabled:   input.LANDeployment.Enabled,
+			Addresses: append([]string(nil), input.LANDeployment.Addresses...),
+		},
 	}
 }
 
@@ -145,6 +196,10 @@ func copySSLInfo(input models.SSLInfo) models.SSLInfo {
 		Enabled:        input.Enabled,
 		DeploymentMode: input.DeploymentMode,
 		Certificates:   certificates,
+		LANDeployment: models.SSLLANDeploymentInfo{
+			Enabled:   input.LANDeployment.Enabled,
+			Addresses: append([]string(nil), input.LANDeployment.Addresses...),
+		},
 	}
 }
 
@@ -164,8 +219,10 @@ func legacySSLPEMFromConfig(input models.SSLConfig) (string, string) {
 
 func newSSLRuntimeBundle(config models.SSLConfig) (*sslRuntimeBundle, error) {
 	bundle := newEmptySSLRuntimeBundle(config.DeploymentMode)
-	if len(config.Certificates) == 0 {
-		return bundle, nil
+	if config.LANDeployment.Enabled {
+		for _, address := range config.LANDeployment.Addresses {
+			bundle.lanAddresses[address] = struct{}{}
+		}
 	}
 
 	seenWildcards := make(map[string]struct{})
@@ -309,4 +366,46 @@ func (bundle *sslRuntimeBundle) certificateForServerName(serverName string) *tls
 	}
 
 	return bundle.defaultCert
+}
+
+func (bundle *sslRuntimeBundle) lanAddressAllowed(host string) bool {
+	if bundle == nil {
+		return false
+	}
+	_, ok := bundle.lanAddresses[normalizeTLSServerName(host)]
+	return ok
+}
+
+func (h *Handler) ClearSSLCertificate() error {
+	config := h.GetSSLDeployment()
+	config.DeploymentMode = models.SSLDeploymentModeSingleActive
+	config.Certificates = nil
+	return h.SetSSLDeployment(config)
+}
+
+func (h *Handler) SetSSLCertificate(cert *tls.Certificate, certPEM, keyPEM string) {
+	if cert == nil {
+		_ = h.ClearSSLCertificate()
+		return
+	}
+	normalizedCertPEM, normalizedKeyPEM, err := validateLegacySSLPair(certPEM, keyPEM)
+	if err != nil {
+		log.Printf("Failed to set legacy SSL certificate: %v", err)
+		return
+	}
+	config := buildLegacySSLConfig(normalizedCertPEM, normalizedKeyPEM)
+	config.LANDeployment = h.GetSSLDeployment().LANDeployment
+	if err := h.SetSSLDeployment(config); err != nil {
+		log.Printf("Failed to set legacy SSL certificate: %v", err)
+	}
+}
+
+func (h *Handler) SetSSLCertificatePEM(certPEM, keyPEM string) error {
+	normalizedCertPEM, normalizedKeyPEM, err := validateLegacySSLPair(certPEM, keyPEM)
+	if err != nil {
+		return err
+	}
+	config := buildLegacySSLConfig(normalizedCertPEM, normalizedKeyPEM)
+	config.LANDeployment = h.GetSSLDeployment().LANDeployment
+	return h.SetSSLDeployment(config)
 }

@@ -120,31 +120,109 @@ func ServeWebsiteIcon(w http.ResponseWriter, r *http.Request, favicon string) {
 }
 
 func decodeWebsiteIconDataURL(value string) (string, []byte, bool) {
-	value = strings.TrimSpace(value)
-	metadata, encoded, ok := strings.Cut(value, ",")
-	if !ok || !strings.HasPrefix(strings.ToLower(metadata), "data:image/") {
-		return "", nil, false
-	}
-	parts := strings.Split(strings.TrimPrefix(metadata, "data:"), ";")
-	if len(parts) < 2 || !strings.EqualFold(parts[len(parts)-1], "base64") {
-		return "", nil, false
-	}
-	contentType := strings.ToLower(strings.TrimSpace(parts[0]))
-	if !allowedWebsiteIconContentType(contentType) {
+	contentType, encoded, ok := validateBase64ImageDataURL(value, maxWebsiteIconBytes)
+	if !ok {
 		return "", nil, false
 	}
 	data, err := base64.StdEncoding.DecodeString(encoded)
-	if err != nil || len(data) == 0 || len(data) > maxWebsiteIconBytes {
+	if err != nil {
 		return "", nil, false
 	}
 	return contentType, data, true
 }
 
-func allowedWebsiteIconContentType(value string) bool {
-	switch value {
-	case "image/avif", "image/gif", "image/jpeg", "image/png", "image/svg+xml", "image/vnd.microsoft.icon", "image/webp", "image/x-icon":
-		return true
-	default:
-		return false
+// validateBase64ImageDataURL validates a Base64-only image data URL and
+// applies its limit to the decoded image bytes rather than to the encoded
+// transport representation. This keeps every Base64 favicon consumer on the
+// same size contract without allocating a decoded copy during toolbar renders.
+func validateBase64ImageDataURL(value string, maxDecodedBytes int) (string, string, bool) {
+	value = strings.TrimSpace(value)
+	metadata, encoded, ok := strings.Cut(value, ",")
+	if !ok || len(metadata) < len("data:") || !strings.EqualFold(metadata[:len("data:")], "data:") {
+		return "", "", false
 	}
+	metadataBody := metadata[len("data:"):]
+	firstSeparator := strings.IndexByte(metadataBody, ';')
+	lastSeparator := strings.LastIndexByte(metadataBody, ';')
+	if firstSeparator < 1 ||
+		lastSeparator < firstSeparator ||
+		!strings.EqualFold(strings.TrimSpace(metadataBody[lastSeparator+1:]), "base64") {
+		return "", "", false
+	}
+	contentType, ok := normalizeImageDataURLContentType(metadataBody[:firstSeparator])
+	if !ok {
+		return "", "", false
+	}
+	decodedBytes, ok := strictBase64DecodedLen(encoded)
+	if !ok || decodedBytes == 0 || maxDecodedBytes < 1 || decodedBytes > maxDecodedBytes {
+		return "", "", false
+	}
+	return contentType, encoded, true
+}
+
+func strictBase64DecodedLen(encoded string) (int, bool) {
+	if len(encoded) == 0 || len(encoded)%4 != 0 {
+		return 0, false
+	}
+
+	padding := 0
+	if encoded[len(encoded)-1] == '=' {
+		padding++
+		if len(encoded) > 1 && encoded[len(encoded)-2] == '=' {
+			padding++
+		}
+	}
+	dataEnd := len(encoded) - padding
+	for index := 0; index < dataEnd; index++ {
+		if _, ok := base64AlphabetValue(encoded[index]); !ok {
+			return 0, false
+		}
+	}
+	for index := dataEnd; index < len(encoded); index++ {
+		if encoded[index] != '=' {
+			return 0, false
+		}
+	}
+	lastValue, _ := base64AlphabetValue(encoded[dataEnd-1])
+	if (padding == 2 && lastValue&0x0f != 0) || (padding == 1 && lastValue&0x03 != 0) {
+		return 0, false
+	}
+
+	return len(encoded)/4*3 - padding, true
+}
+
+func base64AlphabetValue(value byte) (byte, bool) {
+	switch {
+	case value >= 'A' && value <= 'Z':
+		return value - 'A', true
+	case value >= 'a' && value <= 'z':
+		return value - 'a' + 26, true
+	case value >= '0' && value <= '9':
+		return value - '0' + 52, true
+	case value == '+':
+		return 62, true
+	case value == '/':
+		return 63, true
+	default:
+		return 0, false
+	}
+}
+
+func normalizeImageDataURLContentType(value string) (string, bool) {
+	value = strings.TrimSpace(value)
+	for _, allowed := range [...]string{
+		"image/avif",
+		"image/gif",
+		"image/jpeg",
+		"image/png",
+		"image/svg+xml",
+		"image/vnd.microsoft.icon",
+		"image/webp",
+		"image/x-icon",
+	} {
+		if strings.EqualFold(value, allowed) {
+			return allowed, true
+		}
+	}
+	return "", false
 }

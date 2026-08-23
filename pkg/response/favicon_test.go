@@ -55,6 +55,42 @@ func TestServeWebsiteIconFallsBackAndSandboxesSVG(t *testing.T) {
 	}
 }
 
+func TestValidateBase64ImageDataURLUsesDecodedByteLimit(t *testing.T) {
+	acceptedBytes := make([]byte, 114223)
+	accepted := "data:image/x-icon;base64," + base64.StdEncoding.EncodeToString(acceptedBytes)
+	if len(accepted) <= 128*1024 {
+		t.Fatalf("test data URL is not larger than the decoded-byte limit: %d", len(accepted))
+	}
+	contentType, encoded, ok := validateBase64ImageDataURL(accepted, 128*1024)
+	if !ok || contentType != "image/x-icon" || encoded == "" {
+		t.Fatalf("valid decoded-size data URL rejected: type=%q encoded=%d ok=%v", contentType, len(encoded), ok)
+	}
+
+	rejectedBytes := make([]byte, 128*1024+1)
+	rejected := "data:image/png;base64," + base64.StdEncoding.EncodeToString(rejectedBytes)
+	if _, _, ok := validateBase64ImageDataURL(rejected, 128*1024); ok {
+		t.Fatal("data URL above the decoded-byte limit was accepted")
+	}
+}
+
+func TestValidateBase64ImageDataURLRejectsMalformedInput(t *testing.T) {
+	for _, value := range []string{
+		"data:text/plain;base64,AAAA",
+		"data:image/png,AAAA",
+		"data:image/png;base64,",
+		"data:image/png;base64,AAA",
+		"data:image/png;base64,AA=A",
+		"data:image/png;base64,AA*A",
+		"data:image/png;base64,AAAA====",
+		"data:image/png;base64,AB==",
+		"data:image/png;base64,AAB=",
+	} {
+		if _, _, ok := validateBase64ImageDataURL(value, 128*1024); ok {
+			t.Fatalf("malformed data URL accepted: %q", value)
+		}
+	}
+}
+
 func TestFaviconPathsUseReservedNamespace(t *testing.T) {
 	for _, path := range []string{
 		"/favicon-16x16.png",

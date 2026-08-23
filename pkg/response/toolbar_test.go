@@ -1,6 +1,7 @@
 package response
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net/url"
@@ -275,7 +276,13 @@ func TestGenerateToolbarWithHostsIncludesFaviconOnlyWhenEnabled(t *testing.T) {
 }
 
 func TestGenerateToolbarWithHostsIncludesLargeFaviconUnderLimit(t *testing.T) {
-	icon := "data:image/x-icon;base64," + strings.Repeat("A", 90*1024)
+	// Mirrors the ANI-RSS favicon that exposed the old encoded-length bug: the
+	// ICO is below 128 KiB, while its Base64 data URL is above 128 KiB.
+	iconBytes := make([]byte, 114223)
+	icon := "data:image/x-icon;base64," + base64.StdEncoding.EncodeToString(iconBytes)
+	if len(icon) <= 128*1024 {
+		t.Fatalf("test favicon data URL is not large enough: %d", len(icon))
+	}
 	toolbar := GenerateToolbarWithHosts(
 		nil,
 		[]models.HostRule{{Host: "app.example.com", Title: "App Portal", Favicon: icon}},
@@ -291,7 +298,8 @@ func TestGenerateToolbarWithHostsIncludesLargeFaviconUnderLimit(t *testing.T) {
 }
 
 func TestGenerateToolbarWithHostsOmitsOversizedFavicon(t *testing.T) {
-	icon := "data:image/png;base64," + strings.Repeat("A", toolbarFaviconMaxBytes)
+	iconBytes := make([]byte, toolbarFaviconMaxDecodedBytes+1)
+	icon := "data:image/png;base64," + base64.StdEncoding.EncodeToString(iconBytes)
 	toolbar := GenerateToolbarWithHosts(
 		nil,
 		[]models.HostRule{{Host: "app.example.com", Title: "App Portal", Favicon: icon}},
@@ -303,6 +311,38 @@ func TestGenerateToolbarWithHostsOmitsOversizedFavicon(t *testing.T) {
 
 	if strings.Contains(toolbar, `"favicon":`) {
 		t.Fatalf("toolbar included oversized favicon field: %s", toolbar)
+	}
+}
+
+func TestGenerateToolbarWithHostsIncludesFaviconAtDecodedLimit(t *testing.T) {
+	iconBytes := make([]byte, toolbarFaviconMaxDecodedBytes)
+	icon := "data:image/png;base64," + base64.StdEncoding.EncodeToString(iconBytes)
+	toolbar := GenerateToolbarWithHosts(
+		nil,
+		[]models.HostRule{{Host: "app.example.com", Title: "App Portal", Favicon: icon}},
+		"",
+		"",
+		"",
+		models.GatewayPortalConfig{DisplayStyle: models.GatewayPortalDisplayStyleTitle, ShowAppIcon: true},
+	)
+
+	if !strings.Contains(toolbar, `"favicon":"`+icon+`"`) {
+		t.Fatal("toolbar omitted favicon at the decoded-byte limit")
+	}
+}
+
+func TestGenerateToolbarWithHostsRejectsInvalidBase64Favicon(t *testing.T) {
+	toolbar := GenerateToolbarWithHosts(
+		nil,
+		[]models.HostRule{{Host: "app.example.com", Favicon: "data:image/png;base64,AA*A"}},
+		"",
+		"",
+		"",
+		models.GatewayPortalConfig{ShowAppIcon: true},
+	)
+
+	if strings.Contains(toolbar, `"favicon":`) {
+		t.Fatalf("toolbar included invalid Base64 favicon: %s", toolbar)
 	}
 }
 

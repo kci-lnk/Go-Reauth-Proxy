@@ -1093,7 +1093,11 @@ const toolbarTemplate = `
 	`
 
 const toolbarDataMarker = "__REAUTH_TOOLBAR_DATA__"
-const toolbarFaviconMaxBytes = 128 * 1024
+
+// Keep this decoded-byte limit aligned with MAX_FAVICON_BYTES in the Rust
+// control plane. Base64 expands the transport string and must not reduce the
+// effective image limit.
+const toolbarFaviconMaxDecodedBytes = 128 * 1024
 const toolbarRuntimeDataExpression = `(window.__REAUTH_PROXY_TOOLBAR_DATA__ || {})`
 
 var (
@@ -1187,10 +1191,7 @@ func gatewayPortalHostFavicon(rule models.HostRule, normalizedPortal models.Gate
 		return ""
 	}
 	favicon := strings.TrimSpace(rule.Favicon)
-	if !hasFoldASCIIPrefix(favicon, "data:image/") {
-		return ""
-	}
-	if len(favicon) > toolbarFaviconMaxBytes {
+	if _, _, ok := validateBase64ImageDataURL(favicon, toolbarFaviconMaxDecodedBytes); !ok {
 		return ""
 	}
 	return favicon

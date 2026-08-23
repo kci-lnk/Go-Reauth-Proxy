@@ -145,7 +145,7 @@ func validateBase64ImageDataURL(value string, maxDecodedBytes int) (string, stri
 	firstSeparator := strings.IndexByte(metadataBody, ';')
 	lastSeparator := strings.LastIndexByte(metadataBody, ';')
 	if firstSeparator < 1 ||
-		lastSeparator < firstSeparator ||
+		lastSeparator != firstSeparator ||
 		!strings.EqualFold(strings.TrimSpace(metadataBody[lastSeparator+1:]), "base64") {
 		return "", "", false
 	}

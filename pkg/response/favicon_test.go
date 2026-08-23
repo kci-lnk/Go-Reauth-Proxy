@@ -77,6 +77,8 @@ func TestValidateBase64ImageDataURLRejectsMalformedInput(t *testing.T) {
 	for _, value := range []string{
 		"data:text/plain;base64,AAAA",
 		"data:image/png,AAAA",
+		"data:image/png;charset=utf-8;base64,AAAA",
+		"data:image/png;base64;base64,AAAA",
 		"data:image/png;base64,",
 		"data:image/png;base64,AAA",
 		"data:image/png;base64,AA=A",
@@ -89,6 +91,36 @@ func TestValidateBase64ImageDataURLRejectsMalformedInput(t *testing.T) {
 			t.Fatalf("malformed data URL accepted: %q", value)
 		}
 	}
+}
+
+func FuzzStrictBase64DecodedLenMatchesStrictDecoder(f *testing.F) {
+	for _, value := range []string{
+		"",
+		"AAAA",
+		"AA==",
+		"AAA=",
+		"AB==",
+		"AAB=",
+		"AA*A",
+		"AAAA====",
+		"0A00\n",
+	} {
+		f.Add(value)
+	}
+
+	f.Fuzz(func(t *testing.T, encoded string) {
+		gotLength, gotOK := strictBase64DecodedLen(encoded)
+		decoded, err := base64.StdEncoding.Strict().DecodeString(encoded)
+		// Encoding.Strict still ignores CR/LF. Data URLs do not need that
+		// transport accommodation, so the favicon contract rejects them.
+		wantOK := encoded != "" && !strings.ContainsAny(encoded, "\r\n") && err == nil
+		if gotOK != wantOK {
+			t.Fatalf("strictBase64DecodedLen(%q) ok = %v, want %v", encoded, gotOK, wantOK)
+		}
+		if gotOK && gotLength != len(decoded) {
+			t.Fatalf("strictBase64DecodedLen(%q) length = %d, want %d", encoded, gotLength, len(decoded))
+		}
+	})
 }
 
 func TestFaviconPathsUseReservedNamespace(t *testing.T) {

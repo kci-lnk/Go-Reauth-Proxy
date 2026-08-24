@@ -777,7 +777,7 @@ func (s *Server) handleSetGatewayVisibility(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	if err := s.ProxyHandler.SetGatewayVisibility(req); err != nil {
+	if err := s.ProxyHandler.SetGatewayVisibilityContext(r.Context(), req); err != nil {
 		response.Error(w, errors.CodeBadRequest, err.Error())
 		return
 	}

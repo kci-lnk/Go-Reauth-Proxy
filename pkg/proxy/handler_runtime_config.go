@@ -1,10 +1,16 @@
 package proxy
 
 import (
+	"context"
+	"reflect"
+	"time"
+
 	compiledipset "go-reauth-proxy/pkg/ipset"
 	"go-reauth-proxy/pkg/logger"
 	"go-reauth-proxy/pkg/models"
 )
+
+const gatewayVisibilityLockRetryInterval = 5 * time.Millisecond
 
 // commitConfigMutationLocked serializes the shared protocol for persisted
 // settings that also have a lock-free runtime representation. The caller must
@@ -61,8 +67,66 @@ func (h *Handler) SetReverseProxyThrottle(cfg models.ReverseProxyThrottleConfig)
 	return saveErr
 }
 
+func gatewayVisibilityConfigurationEqual(
+	current models.GatewayVisibilityConfig,
+	next models.GatewayVisibilityConfig,
+	currentPolicies map[string]models.CompiledIPSet,
+	nextPolicies map[string]models.CompiledIPSet,
+) bool {
+	// Runtime requests may carry the compiled policy inline, while persistence
+	// stores it in VisibilityPolicies. Compare the durable representations so an
+	// idempotent startup replay does not force an atomic config rewrite.
+	current.Policy = nil
+	next.Policy = nil
+	current.CIDRs = nil
+	next.CIDRs = nil
+	return reflect.DeepEqual(current, next) && reflect.DeepEqual(
+		copyVisibilityPolicies(currentPolicies),
+		copyVisibilityPolicies(nextPolicies),
+	)
+}
+
 func (h *Handler) SetGatewayVisibility(cfg models.GatewayVisibilityConfig) error {
-	h.mu.Lock()
+	return h.SetGatewayVisibilityContext(context.Background(), cfg)
+}
+
+func (h *Handler) lockGatewayVisibilityContext(ctx context.Context) error {
+	if ctx == nil || ctx.Done() == nil {
+		h.mu.Lock()
+		return nil
+	}
+
+	ticker := time.NewTicker(gatewayVisibilityLockRetryInterval)
+	defer ticker.Stop()
+	for {
+		if h.mu.TryLock() {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ticker.C:
+		}
+	}
+}
+
+func (h *Handler) SetGatewayVisibilityContext(
+	ctx context.Context,
+	cfg models.GatewayVisibilityConfig,
+) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	// A gRPC request can expire while waiting behind a slow disk flush. Stop the
+	// wait promptly instead of retaining a cancelled server goroutine until the
+	// shared handler lock eventually becomes available.
+	if err := h.lockGatewayVisibilityContext(ctx); err != nil {
+		return err
+	}
+	if err := ctx.Err(); err != nil {
+		h.mu.Unlock()
+		return err
+	}
 	candidatePolicies := copyVisibilityPolicies(h.VisibilityPolicies)
 	candidateSets := make(map[string]*compiledipset.Set, len(h.compiledVisibilityPolicies)+1)
 	for id, set := range h.compiledVisibilityPolicies {
@@ -74,6 +138,19 @@ func (h *Handler) SetGatewayVisibility(cfg models.GatewayVisibilityConfig) error
 		return err
 	}
 	pruneVisibilityPolicies(h.HostRules, normalized, candidatePolicies, candidateSets)
+	if gatewayVisibilityConfigurationEqual(
+		h.GatewayVisibility,
+		normalized,
+		h.VisibilityPolicies,
+		candidatePolicies,
+	) {
+		h.mu.Unlock()
+		return nil
+	}
+	if err := ctx.Err(); err != nil {
+		h.mu.Unlock()
+		return err
+	}
 	if err := h.persistGatewayVisibilityAndPoliciesLocked(normalized, candidatePolicies); err != nil {
 		h.mu.Unlock()
 		return err

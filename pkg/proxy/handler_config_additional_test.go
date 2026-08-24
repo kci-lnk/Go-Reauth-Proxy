@@ -1,10 +1,12 @@
 package proxy
 
 import (
+	"context"
 	"crypto/tls"
 	"errors"
 	"fmt"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"reflect"
 	"slices"
@@ -459,6 +461,101 @@ func TestSetGatewayVisibilityStoresCopy(t *testing.T) {
 	got.CIDRs[0] = "10.0.0.0/8"
 	if handler.GetGatewayVisibility().CIDRs[0] != "192.168.0.0/16" {
 		t.Fatal("GetGatewayVisibility() did not return a defensive copy")
+	}
+}
+
+func TestColdBootGatewayVisibilityReplaySkipsDurableRewrite(t *testing.T) {
+	handler, manager, configPath := newAdditionalProxyTestHandlerWithPath(t)
+	visibility := models.GatewayVisibilityConfig{
+		Enabled:   true,
+		CIDRs:     []string{"192.0.2.0/24"},
+		UpdatedAt: "2026-08-24T00:00:00Z",
+	}
+	if err := handler.SetGatewayVisibility(visibility); err != nil {
+		t.Fatalf("first SetGatewayVisibility() returned error: %v", err)
+	}
+
+	persisted, err := manager.Load()
+	if err != nil {
+		t.Fatalf("Load() returned error: %v", err)
+	}
+	policy, ok := persisted.VisibilityPolicies[persisted.Visibility.PolicyID]
+	if !ok {
+		t.Fatalf("persisted visibility policy %q is missing", persisted.Visibility.PolicyID)
+	}
+	restarted := NewHandler(
+		7996,
+		7999,
+		manager,
+		persisted,
+		filepath.Join(t.TempDir(), "restart-logs"),
+		nil,
+	)
+	t.Cleanup(restarted.gatewayLogManager.Close)
+	before, err := os.Stat(configPath)
+	if err != nil {
+		t.Fatalf("stat persisted config: %v", err)
+	}
+	if err := restarted.SetGatewayVisibility(models.GatewayVisibilityConfig{
+		Enabled:   persisted.Visibility.Enabled,
+		UpdatedAt: persisted.Visibility.UpdatedAt,
+		PolicyID:  persisted.Visibility.PolicyID,
+		Policy:    &policy,
+	}); err != nil {
+		t.Fatalf("cold-boot SetGatewayVisibility() returned error: %v", err)
+	}
+	after, err := os.Stat(configPath)
+	if err != nil {
+		t.Fatalf("stat persisted config after no-op: %v", err)
+	}
+	if !os.SameFile(before, after) {
+		t.Fatal("idempotent gateway visibility replay replaced the persisted config")
+	}
+	reloaded, err := manager.Load()
+	if err != nil {
+		t.Fatalf("Load() after no-op returned error: %v", err)
+	}
+	if !reflect.DeepEqual(reloaded.Visibility, persisted.Visibility) ||
+		!reflect.DeepEqual(reloaded.VisibilityPolicies, persisted.VisibilityPolicies) {
+		t.Fatalf("no-op changed persisted visibility: before=%#v after=%#v", persisted.Visibility, reloaded.Visibility)
+	}
+}
+
+func TestSetGatewayVisibilityContextDropsExpiredQueuedWrite(t *testing.T) {
+	handler, _, configPath := newAdditionalProxyTestHandlerWithPath(t)
+	before, err := os.Stat(configPath)
+	if err != nil {
+		t.Fatalf("stat initial config: %v", err)
+	}
+
+	handler.mu.Lock()
+	ctx, cancel := context.WithCancel(context.Background())
+	result := make(chan error, 1)
+	go func() {
+		result <- handler.SetGatewayVisibilityContext(ctx, models.GatewayVisibilityConfig{
+			Enabled: true,
+			CIDRs:   []string{"198.51.100.0/24"},
+		})
+	}()
+	cancel()
+
+	select {
+	case err := <-result:
+		if !errors.Is(err, context.Canceled) {
+			handler.mu.Unlock()
+			t.Fatalf("SetGatewayVisibilityContext() error = %v, want context canceled", err)
+		}
+	case <-time.After(time.Second):
+		handler.mu.Unlock()
+		t.Fatal("SetGatewayVisibilityContext() did not stop while the handler lock remained held")
+	}
+	handler.mu.Unlock()
+	after, err := os.Stat(configPath)
+	if err != nil {
+		t.Fatalf("stat config after cancellation: %v", err)
+	}
+	if !os.SameFile(before, after) {
+		t.Fatal("cancelled queued visibility update replaced the persisted config")
 	}
 }
 
@@ -1324,6 +1421,12 @@ func TestDrainWAFEventsReturnsEmptyWhenNoEvents(t *testing.T) {
 
 func newAdditionalProxyTestHandler(t *testing.T) (*Handler, *config.Manager) {
 	t.Helper()
+	handler, manager, _ := newAdditionalProxyTestHandlerWithPath(t)
+	return handler, manager
+}
+
+func newAdditionalProxyTestHandlerWithPath(t *testing.T) (*Handler, *config.Manager, string) {
+	t.Helper()
 	configPath := filepath.Join(t.TempDir(), "config.json")
 	manager := config.NewManager(configPath)
 	initialCfg, err := manager.Load()
@@ -1332,5 +1435,5 @@ func newAdditionalProxyTestHandler(t *testing.T) (*Handler, *config.Manager) {
 	}
 	handler := NewHandler(7996, 7999, manager, initialCfg, filepath.Join(t.TempDir(), "logs"), nil)
 	t.Cleanup(handler.gatewayLogManager.Close)
-	return handler, manager
+	return handler, manager, configPath
 }

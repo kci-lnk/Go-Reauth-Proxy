@@ -352,6 +352,20 @@ func TestGatewayControlResetAllDataClearsRuntimeAndPersistedConfig(t *testing.T)
 	}
 }
 
+func TestGatewayControlSetVisibilityPreservesContextCancellation(t *testing.T) {
+	server := newGatewayControlTestServer(t, "secret")
+	ctx, cancel := context.WithCancel(authTestContext())
+	cancel()
+
+	_, err := server.SetGatewayVisibility(ctx, &pb.GatewayVisibilityConfig{
+		Enabled: true,
+		Cidrs:   []string{"192.0.2.0/24"},
+	})
+	if status.Code(err) != codes.Canceled {
+		t.Fatalf("status = %v, want canceled", status.Code(err))
+	}
+}
+
 func TestGatewayControlRequestShutdownIsIdempotent(t *testing.T) {
 	server := newGatewayControlTestServer(t, "secret")
 	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs(rpcbridge.InternalTokenMetadataKey, "secret"))

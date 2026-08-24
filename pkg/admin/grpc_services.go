@@ -320,7 +320,10 @@ func (s *GRPCServer) SetGatewayVisibility(ctx context.Context, req *pb.GatewayVi
 	if req == nil {
 		return nil, grpcBadRequest("request is required")
 	}
-	if err := s.admin.ProxyHandler.SetGatewayVisibility(protoToGatewayVisibility(req)); err != nil {
+	if err := s.admin.ProxyHandler.SetGatewayVisibilityContext(ctx, protoToGatewayVisibility(req)); err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return nil, status.FromContextError(err).Err()
+		}
 		return nil, grpcBadRequest("%v", err)
 	}
 	return gatewayVisibilityToProto(s.admin.ProxyHandler.GetGatewayVisibility()), nil

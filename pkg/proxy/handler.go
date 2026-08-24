@@ -265,6 +265,8 @@ type preflightDecision struct {
 	deny               bool
 	redirectLocation   string
 	accessDeniedReason string
+	serviceUnavailable bool
+	retryAfter         string
 	credentialIdentity authCredentialIdentity
 }
 
@@ -900,6 +902,8 @@ const (
 	internalPreflightHeader           = "X-Reauth-Internal-Preflight"
 	reauthAccessDeniedHeader          = "X-Reauth-Access-Denied"
 	reauthScopeDeniedReason           = "scope"
+	reauthServiceUnavailableReason    = "auth_service_unavailable"
+	authServiceUnavailableMessage     = "Authentication Service Unavailable"
 	reauthSubdomainAccessHeader       = "X-Reauth-Subdomain-Access"
 	reauthAllowedSubdomainHostsHeader = "X-Reauth-Allowed-Subdomain-Hosts"
 	reauthCredentialIDHeader          = "X-Reauth-Credential-Id"
@@ -1604,9 +1608,15 @@ func (h *Handler) preflightDecisionFromResponse(resp *pb.PreflightAuthResponse, 
 
 	decision := preflightDecision{
 		deny:               resp.GetDeny() || strings.EqualFold(responseHeaders.Get("X-Option"), "deny"),
+		retryAfter:         strings.TrimSpace(responseHeaders.Get("Retry-After")),
 		credentialIdentity: parseAuthCredentialIdentity(responseHeaders),
 	}
-	decision.accessDeniedReason = normalizeReauthAccessDeniedReason(resp.GetAccessDeniedReason())
+	rawAccessDeniedReason := strings.TrimSpace(resp.GetAccessDeniedReason())
+	if rawAccessDeniedReason == "" {
+		rawAccessDeniedReason = strings.TrimSpace(responseHeaders.Get(reauthAccessDeniedHeader))
+	}
+	decision.serviceUnavailable = strings.EqualFold(rawAccessDeniedReason, reauthServiceUnavailableReason)
+	decision.accessDeniedReason = normalizeReauthAccessDeniedReason(rawAccessDeniedReason)
 	if decision.accessDeniedReason == "" {
 		decision.accessDeniedReason = normalizeReauthAccessDeniedReason(responseHeaders.Get(reauthAccessDeniedHeader))
 	}
@@ -1623,6 +1633,7 @@ func (h *Handler) preflightDecisionFromResponse(resp *pb.PreflightAuthResponse, 
 	if event := debugProxyEvent("preflight_request_end", requestID); event != nil {
 		event.Int("status", http.StatusNoContent).
 			Bool("deny", decision.deny).
+			Bool("service_unavailable", decision.serviceUnavailable).
 			Str("access_denied_reason", logger.SanitizeLogString(decision.accessDeniedReason)).
 			Str("redirect_location", logger.SanitizeURL(decision.redirectLocation)).
 			Int64("duration_ms", time.Since(start).Milliseconds()).
@@ -5617,6 +5628,18 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				response.AccessDenied(w, r)
 				return
 			}
+		}
+		if preflight.serviceUnavailable {
+			accessEntry.RouteType = "preflight"
+			accessEntry.AuthDecision = "auth_unavailable"
+			loggedStatusCode = http.StatusServiceUnavailable
+			if event := debugProxyEvent("preflight_auth_unavailable", requestID); event != nil {
+				event.Bool("matched", isMatch).
+					Str("access_mode", accessMode).
+					Send()
+			}
+			respondAuthServiceUnavailable(w, r, preflight.retryAfter)
+			return
 		}
 		if preflight.deny {
 			accessEntry.RouteType = "preflight"

@@ -49,7 +49,7 @@ type combinedHTTPAuthExecution struct {
 }
 
 func preflightStopsHTTPAuthorization(decision preflightDecision) bool {
-	return decision.deny || decision.accessDeniedReason != "" || decision.redirectLocation != ""
+	return decision.deny || decision.accessDeniedReason != "" || decision.serviceUnavailable || decision.redirectLocation != ""
 }
 
 func (h *Handler) cachedCombinedHTTPAuth(r *http.Request, authConfig models.AuthConfig, now time.Time, preflightLookup preflightCacheLookup, canPreflightLookup bool, authLookup authCacheLookup, canAuthLookup bool) (preflightDecision, bool, authCheckExecution, bool) {
@@ -363,13 +363,56 @@ func (h *Handler) authCheckPlanFromResponse(r *http.Request, authConfig models.A
 			statusCode = http.StatusUnauthorized
 		}
 	}
+	bridgeDecision := strings.TrimSpace(resp.GetDecision())
+	// A temporary-grant issuance limiter is deliberately fail-closed. Preserve
+	// the bridge's 429 and Retry-After instead of converting it to a login
+	// redirect or the generic access-denied page. Classify this before success
+	// so an internally inconsistent bridge response can never grant access.
+	if statusCode == http.StatusTooManyRequests {
+		diagnostics.RecordSubdomainGrantRateLimited()
+		retryAfter := strings.TrimSpace(responseHeaders.Get("Retry-After"))
+		return authCheckPlan{
+			result: authCheckResult{
+				decision:   "rate_limited",
+				statusCode: http.StatusTooManyRequests,
+				retryAfter: retryAfter,
+			},
+			setCookies: setCookies,
+		}
+	}
+	if authResponseIsUnavailable(resp, responseHeaders, statusCode) {
+		// A bridge/storage failure is not a policy denial. Keep the request
+		// fail-closed, but return a well-formed response so HTTP/2 clients do not
+		// see an application error disguised as a protocol-level stream reset.
+		if event := debugProxyEvent("auth_check_end", requestID); event != nil {
+			event.Int("status", http.StatusServiceUnavailable).
+				Bool("success", false).
+				Str("decision", "auth_unavailable").
+				Str("bridge_decision", logger.SanitizeLogString(bridgeDecision)).
+				Int("bridge_status", statusCode).
+				Int64("duration_ms", time.Since(start).Milliseconds()).
+				Send()
+		}
+		return authCheckPlan{
+			result: authCheckResult{
+				decision:   "auth_unavailable",
+				statusCode: http.StatusServiceUnavailable,
+			},
+			errorPage: &authCheckErrorPage{
+				code:       http.StatusServiceUnavailable,
+				title:      authServiceUnavailableMessage,
+				message:    authServiceUnavailableMessage,
+				retryAfter: strings.TrimSpace(responseHeaders.Get("Retry-After")),
+			},
+		}
+	}
 
-	if resp.GetSuccess() {
+	if resp.GetSuccess() && statusCode < http.StatusBadRequest {
 		subdomainAccessCustom, allowedSubdomainHosts := parseAllowedSubdomainHosts(responseHeaders)
 		credentialIdentity := parseAuthCredentialIdentity(responseHeaders)
 		isSubdomainRuleGrant := resp.GetGrantKind() == pb.AuthGrantKind_AUTH_GRANT_KIND_SUBDOMAIN_RULE
 		authenticated := true
-		decision := strings.TrimSpace(resp.GetDecision())
+		decision := bridgeDecision
 		if isSubdomainRuleGrant {
 			authenticated = resp.GetLoginAuthenticated()
 			diagnostics.RecordSubdomainGrantState(resp.GetAuthGrantState())
@@ -406,21 +449,6 @@ func (h *Handler) authCheckPlanFromResponse(r *http.Request, authConfig models.A
 				authRuleGroupID:       resp.GetAuthRuleGroupId(),
 				authGrantState:        resp.GetAuthGrantState(),
 				cacheMaxAgeSeconds:    resp.GetCacheMaxAgeSeconds(),
-			},
-			setCookies: setCookies,
-		}
-	}
-	// A temporary-grant issuance limiter is deliberately fail-closed. Preserve
-	// the bridge's 429 and Retry-After instead of converting it to a login
-	// redirect or the generic access-denied page.
-	if statusCode == http.StatusTooManyRequests {
-		diagnostics.RecordSubdomainGrantRateLimited()
-		retryAfter := strings.TrimSpace(responseHeaders.Get("Retry-After"))
-		return authCheckPlan{
-			result: authCheckResult{
-				decision:   "rate_limited",
-				statusCode: http.StatusTooManyRequests,
-				retryAfter: retryAfter,
 			},
 			setCookies: setCookies,
 		}

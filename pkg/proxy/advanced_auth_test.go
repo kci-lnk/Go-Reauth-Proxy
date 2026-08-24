@@ -640,3 +640,64 @@ func TestAuthRateLimitResponsePreserves429AndRetryAfter(t *testing.T) {
 		t.Fatalf("Retry-After = %q, want 7", got)
 	}
 }
+
+func TestStrictWhitelistAuthServiceFailureReturns503WithoutAbortingConnection(t *testing.T) {
+	tests := []struct {
+		name     string
+		response *pb.VerifyAuthResponse
+	}{
+		{
+			name: "ordinary internal failure",
+			response: &pb.VerifyAuthResponse{
+				Status:  http.StatusInternalServerError,
+				Message: "verification failed",
+			},
+		},
+		{
+			name: "contradictory success and internal status",
+			response: &pb.VerifyAuthResponse{
+				Success: true,
+				Status:  http.StatusInternalServerError,
+			},
+		},
+		{
+			name: "contradictory success and unavailable decision",
+			response: &pb.VerifyAuthResponse{
+				Success:  true,
+				Status:   http.StatusOK,
+				Decision: "auth_unavailable",
+			},
+		},
+		{
+			name: "contradictory success and unavailable reason",
+			response: &pb.VerifyAuthResponse{
+				Success:            true,
+				Status:             http.StatusOK,
+				AccessDeniedReason: reauthServiceUnavailableReason,
+			},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			handler := &Handler{}
+			request := httptest.NewRequest(http.MethodGet, "https://app.example/assets/app.js", nil)
+			plan := handler.authCheckPlanFromResponse(request, models.AuthConfig{}, "strict_whitelist", "", time.Now(), test.response)
+			if plan.abortConnection {
+				t.Fatal("auth service failure must not abort a strict-whitelist connection")
+			}
+
+			recorder := httptest.NewRecorder()
+			result := handler.applyAuthCheckPlan(recorder, request, plan, "192.0.2.1", "")
+			if result.decision != "auth_unavailable" || result.statusCode != http.StatusServiceUnavailable {
+				t.Fatalf("auth service failure result = %#v", result)
+			}
+			if recorder.Code != http.StatusServiceUnavailable {
+				t.Fatalf("status = %d, want 503", recorder.Code)
+			}
+			if got := recorder.Header().Get("Cache-Control"); !strings.Contains(got, "no-store") {
+				t.Fatalf("Cache-Control = %q, want no-store", got)
+			}
+		})
+	}
+}

@@ -230,6 +230,50 @@ func TestCombinedAuthPreflightStopDoesNotRequireVerifyResponse(t *testing.T) {
 	}
 }
 
+func TestCombinedAuthServiceUnavailablePreflightReturns503WithoutAborting(t *testing.T) {
+	var upstreamCalls atomic.Int32
+	bridge := testAuthBridge{
+		supports: true,
+		authorize: func(_ context.Context, _ *pb.AuthorizeHttpRequest) (*pb.AuthorizeHttpResponse, error) {
+			return &pb.AuthorizeHttpResponse{
+				Preflight: &pb.PreflightAuthResponse{
+					Deny:               true,
+					AccessDeniedReason: reauthServiceUnavailableReason,
+					ResponseHeaders: []*pb.Header{{
+						Name:   "Retry-After",
+						Values: []string{"1"},
+					}},
+				},
+				Verify: &pb.VerifyAuthResponse{
+					Status:   http.StatusServiceUnavailable,
+					Decision: "auth_unavailable",
+				},
+			}, nil
+		},
+	}
+	target := newCombinedAuthTestTarget(t, &upstreamCalls)
+	defer target.Close()
+	handler := newCombinedAuthTestHandler(target.URL, bridge, "path", 0)
+	recorder, recovered := serveCombinedAuthTestRequest(
+		handler,
+		newCombinedAuthTestRequest("path", "/protected/app.js"),
+	)
+
+	if recovered != nil {
+		t.Fatalf("ServeHTTP panic = %v", recovered)
+	}
+	if recorder.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503; body=%s", recorder.Code, recorder.Body.String())
+	}
+	if got := recorder.Header().Get("Retry-After"); got != "1" {
+		t.Fatalf("Retry-After = %q, want 1", got)
+	}
+	assertAuthResponseNoStore(t, recorder.Header())
+	if got := upstreamCalls.Load(); got != 0 {
+		t.Fatalf("upstream calls = %d, want 0", got)
+	}
+}
+
 func TestCombinedAuthContextUsesDedicatedAccessTokenFields(t *testing.T) {
 	var authorizeCalls atomic.Int32
 	bridge := testAuthBridge{

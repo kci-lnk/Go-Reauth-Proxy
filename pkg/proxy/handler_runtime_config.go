@@ -5,6 +5,7 @@ import (
 	"reflect"
 	"time"
 
+	"go-reauth-proxy/pkg/config"
 	compiledipset "go-reauth-proxy/pkg/ipset"
 	"go-reauth-proxy/pkg/logger"
 	"go-reauth-proxy/pkg/models"
@@ -19,10 +20,11 @@ const gatewayVisibilityLockRetryInterval = 5 * time.Millisecond
 func (h *Handler) commitConfigMutationLocked(
 	apply func(),
 	rollback func(),
+	persist func(*config.AppConfig),
 	publishRuntime func(),
 ) error {
 	apply()
-	if err := h.saveConfigLocked(); err != nil {
+	if err := h.saveConfigMutationLocked(persist); err != nil {
 		rollback()
 		return err
 	}
@@ -47,6 +49,9 @@ func (h *Handler) SetReverseProxyThrottle(cfg models.ReverseProxyThrottleConfig)
 		},
 		func() {
 			h.ReverseProxyThrottle = previous
+		},
+		func(conf *config.AppConfig) {
+			conf.ReverseProxyThrottle = h.ReverseProxyThrottle
 		},
 		func() {
 			throttle.updateConfig(normalized)
@@ -199,6 +204,9 @@ func (h *Handler) SetForwardedHeadersConfig(cfg models.ForwardedHeadersConfig) e
 		func() {
 			h.ForwardedHeaders = previous
 		},
+		func(conf *config.AppConfig) {
+			conf.ForwardedHeaders = h.ForwardedHeaders
+		},
 		func() {
 			forwardedHeaders.updateConfig(normalized)
 			h.forwardedHeaders = forwardedHeaders
@@ -233,6 +241,9 @@ func (h *Handler) SetPreserveHostConfig(cfg models.PreserveHostConfig) error {
 		},
 		func() {
 			h.PreserveHost = previous
+		},
+		func(conf *config.AppConfig) {
+			conf.PreserveHost = h.PreserveHost
 		},
 		func() {
 			preserveHost.updateConfig(normalized)

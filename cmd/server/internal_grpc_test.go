@@ -59,7 +59,7 @@ func TestInternalGRPCHealthIsNamedAndTokenProtected(t *testing.T) {
 	}
 }
 
-func TestInternalGRPCMutationGateDropsCancelledQueuedRetry(t *testing.T) {
+func TestInternalGRPCMutationGateDropsExpiredQueuedRetry(t *testing.T) {
 	interceptor := newInternalUnaryInterceptor("secret")
 	authContext := func(ctx context.Context) context.Context {
 		return metadata.NewIncomingContext(
@@ -92,8 +92,8 @@ func TestInternalGRPCMutationGateDropsCancelledQueuedRetry(t *testing.T) {
 	}()
 	<-firstStarted
 
-	ctx, cancel := context.WithCancel(authContext(context.Background()))
-	cancel()
+	ctx, cancel := context.WithTimeout(authContext(context.Background()), 25*time.Millisecond)
+	defer cancel()
 	queuedHandlerCalled := false
 	_, err := interceptor(
 		ctx,
@@ -104,11 +104,11 @@ func TestInternalGRPCMutationGateDropsCancelledQueuedRetry(t *testing.T) {
 			return nil, nil
 		},
 	)
-	if status.Code(err) != codes.Canceled {
-		t.Fatalf("queued mutation status = %v, want canceled", status.Code(err))
+	if status.Code(err) != codes.DeadlineExceeded {
+		t.Fatalf("queued mutation status = %v, want deadline exceeded", status.Code(err))
 	}
 	if queuedHandlerCalled {
-		t.Fatal("cancelled queued mutation entered the service handler")
+		t.Fatal("expired queued mutation entered the service handler")
 	}
 
 	readHandlerCalled := false
@@ -124,8 +124,57 @@ func TestInternalGRPCMutationGateDropsCancelledQueuedRetry(t *testing.T) {
 		t.Fatalf("read RPC was blocked by mutation: called=%v err=%v", readHandlerCalled, err)
 	}
 
+	firewallHandlerCalled := false
+	if _, err := interceptor(
+		authContext(context.Background()),
+		nil,
+		&grpc.UnaryServerInfo{FullMethod: pb.FirewallService_BlockAll_FullMethodName},
+		func(context.Context, any) (any, error) {
+			firewallHandlerCalled = true
+			return nil, nil
+		},
+	); err != nil || !firewallHandlerCalled {
+		t.Fatalf("firewall RPC was blocked by durable mutation: called=%v err=%v", firewallHandlerCalled, err)
+	}
+
 	close(releaseFirst)
 	if err := <-firstResult; err != nil {
 		t.Fatalf("first mutation returned error: %v", err)
+	}
+}
+
+func TestInternalGRPCMutationClassificationCoversDurableOperations(t *testing.T) {
+	for _, fullMethod := range []string{
+		pb.GatewayControlService_SetAuthConfig_FullMethodName,
+		pb.GatewayControlService_SetRules_FullMethodName,
+		pb.GatewayControlService_ResetAllData_FullMethodName,
+		pb.GatewayLogsService_SetLoggingConfig_FullMethodName,
+		pb.SecurityService_AddGeneralBlacklist_FullMethodName,
+		pb.WafService_SetWafConfig_FullMethodName,
+		pb.WafService_ReloadWafBundle_FullMethodName,
+		pb.SslService_SetSslDeployment_FullMethodName,
+		pb.SslService_SetSslPem_FullMethodName,
+		pb.SslService_ClearSsl_FullMethodName,
+	} {
+		if !isSerializedDurableMutation(fullMethod) {
+			t.Errorf("durable mutation %q is not serialized", fullMethod)
+		}
+	}
+	for _, fullMethod := range []string{
+		pb.GatewayControlService_GetRules_FullMethodName,
+		pb.GatewayControlService_SetGatewayMemoryConfig_FullMethodName,
+		pb.GatewayControlService_ReclaimGatewayMemory_FullMethodName,
+		pb.WafService_ValidateWafBundle_FullMethodName,
+		pb.FirewallService_BlockAll_FullMethodName,
+	} {
+		if isSerializedDurableMutation(fullMethod) {
+			t.Errorf("independent operation %q uses the durable mutation gate", fullMethod)
+		}
+	}
+	if !isSerializedFirewallMutation(pb.FirewallService_BlockAll_FullMethodName) {
+		t.Fatal("firewall mutation is not serialized")
+	}
+	if isSerializedFirewallMutation(pb.FirewallService_ListIptables_FullMethodName) {
+		t.Fatal("firewall read unexpectedly uses the mutation gate")
 	}
 }

@@ -128,11 +128,14 @@ func startInternalGRPCServer(port int, token string, control pb.GatewayControlSe
 func newInternalUnaryInterceptor(token string) grpc.UnaryServerInterceptor {
 	// Handler and firewall mutations are already serialized internally, but an
 	// ordinary mutex keeps cancelled RPC goroutines queued behind a slow durable
-	// flush or host command.
-	// This context-aware gate drops expired retries before they enter the
+	// flush or host command. Separate gates prevent a hibernating config volume
+	// from delaying independent firewall recovery.
+	// These context-aware gates drop expired retries before they enter the
 	// handler, while the original mutation is allowed to finish atomically.
 	durableMutationGate := make(chan struct{}, 1)
 	durableMutationGate <- struct{}{}
+	firewallMutationGate := make(chan struct{}, 1)
+	firewallMutationGate <- struct{}{}
 	return func(
 		ctx context.Context,
 		req any,
@@ -142,15 +145,21 @@ func newInternalUnaryInterceptor(token string) grpc.UnaryServerInterceptor {
 		if err := rpcbridge.CheckInternalToken(ctx, token); err != nil {
 			return nil, err
 		}
-		if !isSerializedGatewayMutation(info.FullMethod) {
+		var mutationGate chan struct{}
+		switch {
+		case isSerializedDurableMutation(info.FullMethod):
+			mutationGate = durableMutationGate
+		case isSerializedFirewallMutation(info.FullMethod):
+			mutationGate = firewallMutationGate
+		default:
 			return handler(ctx, req)
 		}
 		select {
 		case <-ctx.Done():
 			return nil, status.FromContextError(ctx.Err()).Err()
-		case <-durableMutationGate:
+		case <-mutationGate:
 		}
-		defer func() { durableMutationGate <- struct{}{} }()
+		defer func() { mutationGate <- struct{}{} }()
 		if err := ctx.Err(); err != nil {
 			return nil, status.FromContextError(err).Err()
 		}
@@ -158,7 +167,7 @@ func newInternalUnaryInterceptor(token string) grpc.UnaryServerInterceptor {
 	}
 }
 
-func isSerializedGatewayMutation(fullMethod string) bool {
+func isSerializedDurableMutation(fullMethod string) bool {
 	switch fullMethod {
 	case pb.GatewayControlService_SetGatewayListenerConfig_FullMethodName,
 		pb.GatewayControlService_SetGatewayProxyProtocolConfig_FullMethodName,
@@ -189,9 +198,19 @@ func isSerializedGatewayMutation(fullMethod string) bool {
 		pb.SecurityService_AddGeneralBlacklist_FullMethodName,
 		pb.SecurityService_RemoveGeneralBlacklist_FullMethodName,
 		pb.WafService_SetWafConfig_FullMethodName,
+		pb.WafService_ReloadWafBundle_FullMethodName,
 		pb.SslService_SetSslDeployment_FullMethodName,
 		pb.SslService_SetSslPem_FullMethodName,
-		pb.FirewallService_InitIptables_FullMethodName,
+		pb.SslService_ClearSsl_FullMethodName:
+		return true
+	default:
+		return false
+	}
+}
+
+func isSerializedFirewallMutation(fullMethod string) bool {
+	switch fullMethod {
+	case pb.FirewallService_InitIptables_FullMethodName,
 		pb.FirewallService_CleanIptables_FullMethodName,
 		pb.FirewallService_FlushIptables_FullMethodName,
 		pb.FirewallService_AllowIp_FullMethodName,

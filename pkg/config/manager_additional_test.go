@@ -1,6 +1,7 @@
 package config
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"os"
@@ -426,6 +427,36 @@ func TestManagerUpdateSkipsIdenticalDurableRewrite(t *testing.T) {
 	}
 }
 
+func TestManagerNoOpUpdateDoesNotPersistUnrelatedMigrations(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	beforeData := []byte(`{"rules":[]}`)
+	if err := os.WriteFile(path, beforeData, 0o600); err != nil {
+		t.Fatalf("write legacy config: %v", err)
+	}
+	before, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat legacy config: %v", err)
+	}
+
+	if err := NewManager(path).Update(func(*AppConfig) error { return nil }); err != nil {
+		t.Fatalf("Update() returned error: %v", err)
+	}
+	after, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat legacy config after update: %v", err)
+	}
+	if !os.SameFile(before, after) {
+		t.Fatal("no-op update rewrote the config to persist unrelated migrations")
+	}
+	afterData, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read legacy config after update: %v", err)
+	}
+	if !bytes.Equal(beforeData, afterData) {
+		t.Fatalf("no-op update changed config bytes: got %s want %s", afterData, beforeData)
+	}
+}
+
 func TestManagerRepeatedLoadSkipsIdenticalMigrationRewrite(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.json")
 	manager := NewManager(path)
@@ -446,6 +477,29 @@ func TestManagerRepeatedLoadSkipsIdenticalMigrationRewrite(t *testing.T) {
 	}
 	if !os.SameFile(before, after) {
 		t.Fatal("repeated load replaced an already-normalized config file")
+	}
+}
+
+func TestManagerIdenticalSaveStillReplacesConfigSymlink(t *testing.T) {
+	dir := t.TempDir()
+	targetPath := filepath.Join(dir, "target.json")
+	configPath := filepath.Join(dir, "config.json")
+	if err := NewManager(targetPath).Save(DefaultConfig()); err != nil {
+		t.Fatalf("save symlink target: %v", err)
+	}
+	if err := os.Symlink(targetPath, configPath); err != nil {
+		t.Skipf("config symlink is unavailable: %v", err)
+	}
+
+	if err := NewManager(configPath).Save(DefaultConfig()); err != nil {
+		t.Fatalf("Save() returned error: %v", err)
+	}
+	info, err := os.Lstat(configPath)
+	if err != nil {
+		t.Fatalf("lstat saved config: %v", err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+		t.Fatalf("config path mode = %v, want a regular replacement", info.Mode())
 	}
 }
 

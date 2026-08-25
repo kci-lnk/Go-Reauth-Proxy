@@ -34,6 +34,7 @@ import (
 	"net/url"
 	"os"
 	"path"
+	"reflect"
 	"sort"
 	"strconv"
 	"strings"
@@ -2013,47 +2014,15 @@ func (h *Handler) getGatewayListenerConfigChangeHook() func(models.GatewayListen
 	return hook
 }
 
-func (h *Handler) saveConfigLocked() error {
+func (h *Handler) saveConfigMutationLocked(update func(*config.AppConfig)) error {
 	if h.configManager == nil {
 		return nil
 	}
-
-	rulesCopy := make([]models.Rule, len(h.Rules))
-	copy(rulesCopy, h.Rules)
-	hostRulesCopy := copyHostRulesForPersistence(h.HostRules)
-	streamRulesCopy := copyStreamRules(h.StreamRules)
-	streamAvailabilityCopy := models.CopyDailyAvailability(h.StreamAvailability)
-
+	if update == nil {
+		return nil
+	}
 	if err := h.configManager.Update(func(conf *config.AppConfig) error {
-		conf.Rules = rulesCopy
-		conf.HostRules = hostRulesCopy
-		conf.VisibilityPolicies = copyVisibilityPolicies(h.VisibilityPolicies)
-		conf.StreamRules = streamRulesCopy
-		conf.StreamAccessPolicies = copyVisibilityPolicies(h.StreamAccessPolicies)
-		conf.StreamAvailability = streamAvailabilityCopy
-		conf.DefaultRoute = h.DefaultRoute
-		conf.AuthConfig = h.AuthConfig
-		conf.Logging = h.LoggingConfig
-		conf.ProxyProtocolForce = h.ProxyProtocolForce
-		conf.ProxyProtocol = h.ProxyProtocol
-		conf.GatewayListener = h.GatewayListener
-		conf.ReverseProxyThrottle = h.ReverseProxyThrottle
-		persistedVisibility := h.GatewayVisibility
-		if strings.TrimSpace(persistedVisibility.PolicyID) != "" {
-			persistedVisibility.CIDRs = nil
-		}
-		persistedVisibility.Policy = nil
-		conf.Visibility = persistedVisibility
-		conf.ForwardedHeaders = h.ForwardedHeaders
-		conf.PreserveHost = h.PreserveHost
-		conf.CrawlerBlocker = h.CrawlerBlocker
-		conf.Portal = h.GatewayPortal
-		conf.UnmatchedRoute = h.GatewayUnmatchedRoute
-		conf.FnosPortIconHijack = h.FnosPortIconHijack
-		conf.GeneralBlacklist = h.GeneralBlacklist
-		conf.WAF = h.WAFConfig
-		conf.SSL = copySSLConfig(h.sslConfig)
-		conf.SSLCert, conf.SSLKey = legacySSLPEMFromConfig(h.sslConfig)
+		update(conf)
 		return nil
 	}); err != nil {
 		if event := debugProxyEvent("config_save_failed", ""); event != nil {
@@ -2063,9 +2032,9 @@ func (h *Handler) saveConfigLocked() error {
 		return err
 	}
 	if event := debugProxyEvent("config_saved", ""); event != nil {
-		event.Int("path_rule_count", len(rulesCopy)).
-			Int("host_rule_count", len(hostRulesCopy)).
-			Int("stream_rule_count", len(streamRulesCopy)).
+		event.Int("path_rule_count", len(h.Rules)).
+			Int("host_rule_count", len(h.HostRules)).
+			Int("stream_rule_count", len(h.StreamRules)).
 			Bool("gateway_logging_enabled", h.LoggingConfig.Enabled).
 			Bool("waf_enabled", h.WAFConfig.Enabled).
 			Send()
@@ -2606,13 +2575,13 @@ func (h *Handler) emitGatewayVisibilityBlockedEvent(args gatewayVisibilityBlocke
 	}
 }
 
-func (h *Handler) SetSSLDeployment(config models.SSLConfig) error {
-	normalized, err := normalizeSSLConfig(config)
+func (h *Handler) SetSSLDeployment(candidate models.SSLConfig) error {
+	normalized, err := normalizeSSLConfig(candidate)
 	if err != nil {
 		if event := debugProxyEvent("ssl_deployment_invalid", ""); event != nil {
 			event.Str("error", logger.SanitizeLogString(err.Error())).
-				Str("deployment_mode", string(config.DeploymentMode)).
-				Int("certificate_count", len(config.Certificates)).
+				Str("deployment_mode", string(candidate.DeploymentMode)).
+				Int("certificate_count", len(candidate.Certificates)).
 				Send()
 		}
 		return err
@@ -2631,7 +2600,10 @@ func (h *Handler) SetSSLDeployment(config models.SSLConfig) error {
 	h.mu.Lock()
 	previous := h.sslConfig
 	h.sslConfig = normalized
-	saveErr := h.saveConfigLocked()
+	saveErr := h.saveConfigMutationLocked(func(conf *config.AppConfig) {
+		conf.SSL = copySSLConfig(h.sslConfig)
+		conf.SSLCert, conf.SSLKey = legacySSLPEMFromConfig(h.sslConfig)
+	})
 	if saveErr != nil {
 		h.sslConfig = previous
 		h.mu.Unlock()
@@ -2784,6 +2756,9 @@ func (h *Handler) AddRule(newRule models.Rule) error {
 	if err := h.commitConfigMutationLocked(
 		func() { h.Rules = nextRules },
 		func() { h.Rules = previous },
+		func(conf *config.AppConfig) {
+			conf.Rules = append([]models.Rule(nil), h.Rules...)
+		},
 		h.publishRequestSnapshotLocked,
 	); err != nil {
 		return err
@@ -2813,6 +2788,9 @@ func (h *Handler) SetRules(rules []models.Rule) error {
 	if err := h.commitConfigMutationLocked(
 		func() { h.Rules = normalized },
 		func() { h.Rules = previous },
+		func(conf *config.AppConfig) {
+			conf.Rules = append([]models.Rule(nil), h.Rules...)
+		},
 		h.publishRequestSnapshotLocked,
 	); err != nil {
 		return err
@@ -3101,6 +3079,9 @@ func (h *Handler) RemoveRule(path string) {
 	if err := h.commitConfigMutationLocked(
 		func() { h.Rules = newRules },
 		func() { h.Rules = previous },
+		func(conf *config.AppConfig) {
+			conf.Rules = append([]models.Rule(nil), h.Rules...)
+		},
 		h.publishRequestSnapshotLocked,
 	); err != nil {
 		log.Printf("Failed to remove path rule %q: %v", path, err)
@@ -3123,6 +3104,9 @@ func (h *Handler) FlushRules() error {
 	if err := h.commitConfigMutationLocked(
 		func() { h.Rules = nextRules },
 		func() { h.Rules = previous },
+		func(conf *config.AppConfig) {
+			conf.Rules = append([]models.Rule(nil), h.Rules...)
+		},
 		h.publishRequestSnapshotLocked,
 	); err != nil {
 		return err
@@ -3768,6 +3752,11 @@ func (h *Handler) setStreamRulesConfig(
 			h.StreamAvailability = previousAvailability
 			h.StreamAccessPolicies = previousPolicies
 		},
+		func(conf *config.AppConfig) {
+			conf.StreamRules = copyStreamRules(h.StreamRules)
+			conf.StreamAvailability = models.CopyDailyAvailability(h.StreamAvailability)
+			conf.StreamAccessPolicies = copyVisibilityPolicies(h.StreamAccessPolicies)
+		},
 		nil,
 	); err != nil {
 		return err
@@ -3799,6 +3788,11 @@ func (h *Handler) FlushStreamRules() error {
 			h.StreamRules = previousRules
 			h.StreamAvailability = previousAvailability
 			h.StreamAccessPolicies = previousPolicies
+		},
+		func(conf *config.AppConfig) {
+			conf.StreamRules = copyStreamRules(h.StreamRules)
+			conf.StreamAvailability = models.CopyDailyAvailability(h.StreamAvailability)
+			conf.StreamAccessPolicies = copyVisibilityPolicies(h.StreamAccessPolicies)
 		},
 		nil,
 	); err != nil {
@@ -3851,6 +3845,9 @@ func (h *Handler) SetDefaultRoute(route string) error {
 	if err := h.commitConfigMutationLocked(
 		func() { h.DefaultRoute = normalized },
 		func() { h.DefaultRoute = previous },
+		func(conf *config.AppConfig) {
+			conf.DefaultRoute = h.DefaultRoute
+		},
 		h.publishRequestSnapshotLocked,
 	); err != nil {
 		return err
@@ -3889,6 +3886,9 @@ func (h *Handler) SetLoggingConfig(cfg models.LoggingConfig) (gatewaylog.ConfigI
 	saveErr := h.commitConfigMutationLocked(
 		func() { h.LoggingConfig = normalized },
 		func() { h.LoggingConfig = previous },
+		func(conf *config.AppConfig) {
+			conf.Logging = h.LoggingConfig
+		},
 		nil,
 	)
 	h.mu.Unlock()
@@ -3999,9 +3999,16 @@ func (h *Handler) SetWAFConfig(cfg models.WAFConfig) (proxywaf.Status, error) {
 	}
 	normalized := prepared.Config()
 	h.mu.Lock()
+	if reflect.DeepEqual(h.WAFConfig, normalized) {
+		status := h.wafRuntime.Status()
+		h.mu.Unlock()
+		return status, nil
+	}
 	previous := h.WAFConfig
 	h.WAFConfig = normalized
-	saveErr := h.saveConfigLocked()
+	saveErr := h.saveConfigMutationLocked(func(conf *config.AppConfig) {
+		conf.WAF = proxywaf.CopyConfig(h.WAFConfig)
+	})
 	if saveErr != nil {
 		h.WAFConfig = previous
 		h.mu.Unlock()
@@ -4057,7 +4064,9 @@ func (h *Handler) ReloadWAFBundle(cfg models.WAFConfig, bundleID string, bundleP
 	h.mu.Lock()
 	previous := h.WAFConfig
 	h.WAFConfig = normalized
-	saveErr := h.saveConfigLocked()
+	saveErr := h.saveConfigMutationLocked(func(conf *config.AppConfig) {
+		conf.WAF = proxywaf.CopyConfig(h.WAFConfig)
+	})
 	if saveErr != nil {
 		h.WAFConfig = previous
 		h.mu.Unlock()
@@ -4083,51 +4092,54 @@ func (h *Handler) DrainWAFEvents(limit int) proxywaf.DrainResult {
 	return h.wafRuntime.Drain(limit)
 }
 
-func (h *Handler) SetAuthConfig(config models.AuthConfig) error {
-	if config.AuthPort <= 0 {
-		config.AuthPort = 7997
+func (h *Handler) SetAuthConfig(candidate models.AuthConfig) error {
+	if candidate.AuthPort <= 0 {
+		candidate.AuthPort = 7997
 	}
-	if config.AuthURL == "" {
-		config.AuthURL = "/api/auth/verify"
+	if candidate.AuthURL == "" {
+		candidate.AuthURL = "/api/auth/verify"
 	}
-	if config.LoginURL == "" {
-		config.LoginURL = "/login"
+	if candidate.LoginURL == "" {
+		candidate.LoginURL = "/login"
 	}
-	if config.LogoutURL == "" {
-		config.LogoutURL = "/api/auth/logout"
+	if candidate.LogoutURL == "" {
+		candidate.LogoutURL = "/api/auth/logout"
 	}
-	if config.PreflightURL == "" {
-		config.PreflightURL = "/api/auth/preflight"
+	if candidate.PreflightURL == "" {
+		candidate.PreflightURL = "/api/auth/preflight"
 	}
-	if config.AuthCacheTTL < 0 {
-		config.AuthCacheTTL = 0
+	if candidate.AuthCacheTTL < 0 {
+		candidate.AuthCacheTTL = 0
 	}
-	if config.AuthCacheFailTTL < 0 {
-		config.AuthCacheFailTTL = 0
+	if candidate.AuthCacheFailTTL < 0 {
+		candidate.AuthCacheFailTTL = 0
 	}
-	if config.PublicHTTPPort < 0 {
-		config.PublicHTTPPort = 0
+	if candidate.PublicHTTPPort < 0 {
+		candidate.PublicHTTPPort = 0
 	}
-	if config.PublicHTTPSPort < 0 {
-		config.PublicHTTPSPort = 0
+	if candidate.PublicHTTPSPort < 0 {
+		candidate.PublicHTTPSPort = 0
 	}
-	config.PublicAuthBaseURL = strings.TrimSpace(strings.TrimRight(config.PublicAuthBaseURL, "/"))
-	config.AuthHost = normalizeRequestHost(config.AuthHost)
-	config.NormalizeEdgeClientIPSelection()
+	candidate.PublicAuthBaseURL = strings.TrimSpace(strings.TrimRight(candidate.PublicAuthBaseURL, "/"))
+	candidate.AuthHost = normalizeRequestHost(candidate.AuthHost)
+	candidate.NormalizeEdgeClientIPSelection()
 
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	previous := h.AuthConfig
 	if err := h.commitConfigMutationLocked(
-		func() { h.AuthConfig = config },
+		func() { h.AuthConfig = candidate },
 		func() { h.AuthConfig = previous },
+		func(conf *config.AppConfig) {
+			conf.AuthConfig = h.AuthConfig
+		},
 		h.publishRequestSnapshotLocked,
 	); err != nil {
 		return err
 	}
 	h.clearAuthCache()
 	if event := debugProxyEvent("auth_config_set", ""); event != nil {
-		event.Interface("auth_config", debugAuthConfigSummary(config)).
+		event.Interface("auth_config", debugAuthConfigSummary(candidate)).
 			Send()
 	}
 	return nil
@@ -4208,7 +4220,9 @@ func (h *Handler) AddGeneralBlacklist(ips []string, source string, comment strin
 	}
 
 	h.GeneralBlacklist = normalized
-	if err := h.saveConfigLocked(); err != nil {
+	if err := h.saveConfigMutationLocked(func(conf *config.AppConfig) {
+		conf.GeneralBlacklist = h.GeneralBlacklist
+	}); err != nil {
 		runtime.updateConfig(previousRuntime)
 		h.GeneralBlacklist = previousConfigured
 		h.mu.Unlock()
@@ -4242,7 +4256,9 @@ func (h *Handler) RemoveGeneralBlacklist(ips []string) (models.GeneralBlacklistM
 	}
 
 	h.GeneralBlacklist = normalized
-	if err := h.saveConfigLocked(); err != nil {
+	if err := h.saveConfigMutationLocked(func(conf *config.AppConfig) {
+		conf.GeneralBlacklist = h.GeneralBlacklist
+	}); err != nil {
 		runtime.updateConfig(previousRuntime)
 		h.GeneralBlacklist = previousConfigured
 		h.mu.Unlock()
@@ -4496,6 +4512,9 @@ func (h *Handler) SetCrawlerBlockerConfig(cfg models.CrawlerBlockerConfig) (mode
 	saveErr := h.commitConfigMutationLocked(
 		func() { h.CrawlerBlocker = normalized },
 		func() { h.CrawlerBlocker = previous },
+		func(conf *config.AppConfig) {
+			conf.CrawlerBlocker = h.CrawlerBlocker
+		},
 		h.publishRequestSnapshotLocked,
 	)
 	h.mu.Unlock()
@@ -4525,6 +4544,9 @@ func (h *Handler) SetGatewayPortalConfig(cfg models.GatewayPortalConfig) (models
 	saveErr := h.commitConfigMutationLocked(
 		func() { h.GatewayPortal = normalized },
 		func() { h.GatewayPortal = previous },
+		func(conf *config.AppConfig) {
+			conf.Portal = h.GatewayPortal
+		},
 		h.publishRequestSnapshotLocked,
 	)
 	h.mu.Unlock()
@@ -4557,6 +4579,9 @@ func (h *Handler) SetGatewayUnmatchedRouteConfig(cfg models.GatewayUnmatchedRout
 	saveErr := h.commitConfigMutationLocked(
 		func() { h.GatewayUnmatchedRoute = normalized },
 		func() { h.GatewayUnmatchedRoute = previous },
+		func(conf *config.AppConfig) {
+			conf.UnmatchedRoute = h.GatewayUnmatchedRoute
+		},
 		h.publishRequestSnapshotLocked,
 	)
 	h.mu.Unlock()
@@ -4583,6 +4608,9 @@ func (h *Handler) SetFnosPortIconHijackConfig(cfg models.FnosPortIconHijackConfi
 	saveErr := h.commitConfigMutationLocked(
 		func() { h.FnosPortIconHijack = normalized },
 		func() { h.FnosPortIconHijack = previous },
+		func(conf *config.AppConfig) {
+			conf.FnosPortIconHijack = h.FnosPortIconHijack
+		},
 		nil,
 	)
 	h.mu.Unlock()

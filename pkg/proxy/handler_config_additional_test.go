@@ -521,6 +521,137 @@ func TestColdBootGatewayVisibilityReplaySkipsDurableRewrite(t *testing.T) {
 	}
 }
 
+func TestColdBootRuntimeReplaySkipsAllDurableRewrites(t *testing.T) {
+	handler, manager, configPath := newAdditionalProxyTestHandlerWithPath(t)
+	persisted, err := manager.Load()
+	if err != nil {
+		t.Fatalf("Load() returned error: %v", err)
+	}
+	before, err := os.Stat(configPath)
+	if err != nil {
+		t.Fatalf("stat persisted config: %v", err)
+	}
+	assertNotRewritten := func(operation string) {
+		t.Helper()
+		after, statErr := os.Stat(configPath)
+		if statErr != nil {
+			t.Fatalf("stat config after %s: %v", operation, statErr)
+		}
+		if !os.SameFile(before, after) {
+			t.Fatalf("%s replaced an unchanged persisted config", operation)
+		}
+	}
+
+	if err := handler.SetGatewayListenerConfig(persisted.GatewayListener); err != nil {
+		t.Fatalf("replay gateway listener: %v", err)
+	}
+	assertNotRewritten("gateway listener replay")
+	if err := handler.SetGatewayProxyProtocolConfig(persisted.ProxyProtocol); err != nil {
+		t.Fatalf("replay proxy protocol config: %v", err)
+	}
+	assertNotRewritten("proxy protocol config replay")
+	if err := handler.SetProxyProtocolForce(persisted.ProxyProtocolForce); err != nil {
+		t.Fatalf("replay proxy protocol force: %v", err)
+	}
+	assertNotRewritten("proxy protocol force replay")
+	if err := handler.SetRules(persisted.Rules); err != nil {
+		t.Fatalf("replay path rules: %v", err)
+	}
+	assertNotRewritten("path rules replay")
+	if err := handler.SetHostRulesBundle(persisted.HostRules, persisted.VisibilityPolicies); err != nil {
+		t.Fatalf("replay host rules: %v", err)
+	}
+	assertNotRewritten("host rules replay")
+	if err := handler.SetStreamRulesBundle(
+		persisted.StreamRules,
+		persisted.StreamAvailability,
+		persisted.StreamAccessPolicies,
+	); err != nil {
+		t.Fatalf("replay stream rules: %v", err)
+	}
+	assertNotRewritten("stream rules replay")
+	if err := handler.SetAuthConfig(persisted.AuthConfig); err != nil {
+		t.Fatalf("replay auth config: %v", err)
+	}
+	assertNotRewritten("auth config replay")
+	if err := handler.SetDefaultRoute(persisted.DefaultRoute); err != nil {
+		t.Fatalf("replay default route: %v", err)
+	}
+	assertNotRewritten("default route replay")
+	if err := handler.SetReverseProxyThrottle(persisted.ReverseProxyThrottle); err != nil {
+		t.Fatalf("replay reverse proxy throttle: %v", err)
+	}
+	assertNotRewritten("reverse proxy throttle replay")
+	visibility := persisted.Visibility
+	if policy, ok := persisted.VisibilityPolicies[visibility.PolicyID]; ok {
+		visibility.Policy = &policy
+	}
+	if err := handler.SetGatewayVisibility(visibility); err != nil {
+		t.Fatalf("replay gateway visibility: %v", err)
+	}
+	assertNotRewritten("gateway visibility replay")
+	if err := handler.SetForwardedHeadersConfig(persisted.ForwardedHeaders); err != nil {
+		t.Fatalf("replay forwarded headers: %v", err)
+	}
+	assertNotRewritten("forwarded headers replay")
+	if err := handler.SetPreserveHostConfig(persisted.PreserveHost); err != nil {
+		t.Fatalf("replay preserve host: %v", err)
+	}
+	assertNotRewritten("preserve host replay")
+	if _, err := handler.SetCrawlerBlockerConfig(persisted.CrawlerBlocker); err != nil {
+		t.Fatalf("replay crawler blocker: %v", err)
+	}
+	assertNotRewritten("crawler blocker replay")
+	if _, err := handler.SetGatewayPortalConfig(persisted.Portal); err != nil {
+		t.Fatalf("replay gateway portal: %v", err)
+	}
+	assertNotRewritten("gateway portal replay")
+	if _, err := handler.SetGatewayUnmatchedRouteConfig(persisted.UnmatchedRoute); err != nil {
+		t.Fatalf("replay unmatched route: %v", err)
+	}
+	assertNotRewritten("unmatched route replay")
+	if _, err := handler.SetFnosPortIconHijackConfig(persisted.FnosPortIconHijack); err != nil {
+		t.Fatalf("replay FNOS port icon hijack: %v", err)
+	}
+	assertNotRewritten("FNOS port icon hijack replay")
+	if _, err := handler.SetLoggingConfig(persisted.Logging); err != nil {
+		t.Fatalf("replay logging config: %v", err)
+	}
+	assertNotRewritten("logging config replay")
+	if _, err := handler.SetWAFConfig(persisted.WAF); err != nil {
+		t.Fatalf("replay WAF config: %v", err)
+	}
+	assertNotRewritten("WAF config replay")
+	if err := handler.SetSSLDeployment(persisted.SSL); err != nil {
+		t.Fatalf("replay SSL deployment: %v", err)
+	}
+	assertNotRewritten("SSL deployment replay")
+}
+
+func TestConfigMutationPersistsOnlyItsOwnedFields(t *testing.T) {
+	handler, manager := newAdditionalProxyTestHandler(t)
+	if handler.GetWAFConfig().Mode == "" {
+		t.Fatal("test handler did not normalize the in-memory WAF defaults")
+	}
+	if err := handler.SetRules([]models.Rule{{
+		Path:   "/app",
+		Target: "http://127.0.0.1:8080",
+	}}); err != nil {
+		t.Fatalf("SetRules() returned error: %v", err)
+	}
+
+	persisted, err := manager.Load()
+	if err != nil {
+		t.Fatalf("Load() returned error: %v", err)
+	}
+	if len(persisted.Rules) != 1 || persisted.Rules[0].Path != "/app" {
+		t.Fatalf("path rule was not persisted: %#v", persisted.Rules)
+	}
+	if persisted.WAF.Mode != "" || persisted.WAF.RulesDir != "" {
+		t.Fatalf("path-rule mutation also persisted unrelated WAF defaults: %#v", persisted.WAF)
+	}
+}
+
 func TestSetGatewayVisibilityContextDropsExpiredQueuedWrite(t *testing.T) {
 	handler, _, configPath := newAdditionalProxyTestHandlerWithPath(t)
 	before, err := os.Stat(configPath)

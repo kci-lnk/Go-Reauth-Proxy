@@ -664,13 +664,17 @@ func (m *Manager) Update(updateFn func(*AppConfig) error) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	cfg, _, _, err := m.loadUnlocked()
+	cfg, existed, _, err := m.loadUnlocked()
 	if err != nil {
 		if event := logger.DebugEvent("config", "update_load_failed"); event != nil {
 			event.Str("path", logger.SanitizeLogString(m.filePath)).
 				Str("error", logger.SanitizeLogString(err.Error())).
 				Send()
 		}
+		return err
+	}
+	before, err := json.Marshal(cfg)
+	if err != nil {
 		return err
 	}
 
@@ -684,6 +688,18 @@ func (m *Manager) Update(updateFn func(*AppConfig) error) error {
 	}
 
 	applyDefaults(cfg)
+	after, err := json.Marshal(cfg)
+	if err != nil {
+		return err
+	}
+	if existed && bytes.Equal(before, after) {
+		// Update callbacks now patch only their owned setting. If that setting is
+		// already current, do not let unrelated legacy/default normalization turn
+		// a cold-start replay into a physical config rewrite.
+		if info, statErr := os.Lstat(m.filePath); statErr == nil && info.Mode().IsRegular() {
+			return hardenConfigPermissions(m.filePath)
+		}
+	}
 	err = m.saveUnlocked(cfg)
 	if event := logger.DebugEvent("config", "update_saved"); event != nil {
 		event.Str("path", logger.SanitizeLogString(m.filePath)).

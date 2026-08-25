@@ -633,7 +633,7 @@ const toolbarV2Script = `(function(window, document) {
     if (window.self !== window.top) return;
     if (document.getElementById('reauth-proxy-toolbar')) return;
 
-    var toolbarData = window.__REAUTH_PROXY_TOOLBAR_DATA__ || {};
+    var toolbarData = __REAUTH_TOOLBAR_DATA__;
     var toolbarLabels = toolbarData.labels || {};
     var iconDragMode = toolbarData.icon_drag_mode === 'free' ? 'free' : 'corners';
     var cornerPositionStorageKey = 'reauth_proxy_toolbar_pos';
@@ -1319,9 +1319,10 @@ const toolbarV2Script = `(function(window, document) {
 
 func initToolbarV2Runtime() {
 	runtimeDocument := strings.Replace(toolbarV2Script, "__REAUTH_TOOLBAR_V2_STYLE__", strconv.Quote(toolbarV2Style), 1)
+	runtimeDocument = strings.Replace(runtimeDocument, toolbarDataMarker, toolbarRuntimeDataExpression, 1)
 	toolbarV2Runtime = []byte(strings.TrimSpace(runtimeDocument))
 	digest := sha256.Sum256(toolbarV2Runtime)
 	toolbarV2AssetPath = "/__assets__/toolbar/toolbar-v2." + hex.EncodeToString(digest[:]) + ".js"
-	toolbarV2TemplatePrefix = `<script id="reauth-proxy-toolbar-v2-loader">window.__REAUTH_PROXY_TOOLBAR_DATA__=`
-	toolbarV2TemplateSuffix = `;(function(d){var s=d.createElement("script");s.src="` + toolbarV2AssetPath + `";s.defer=true;(d.head||d.documentElement).appendChild(s);})(document);</script>`
+	toolbarV2TemplatePrefix = `<script id="reauth-proxy-toolbar-v2-loader" src="` + toolbarV2AssetPath + `" data-toolbar='`
+	toolbarV2TemplateSuffix = `' defer></script>`
 }

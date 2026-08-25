@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"html"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -93,6 +94,12 @@ func TestGenerateToolbarInjectsOnlyPayloadAndRuntimeLoader(t *testing.T) {
 	if strings.Contains(toolbar, "container.attachShadow") {
 		t.Fatal("toolbar HTML still embeds the static runtime")
 	}
+	if strings.Contains(toolbar, "window.__REAUTH_PROXY_TOOLBAR_DATA__") {
+		t.Fatal("toolbar loader still uses an inline script")
+	}
+	if !strings.HasPrefix(toolbar, toolbarTemplatePrefix) || !strings.HasSuffix(toolbar, toolbarTemplateSuffix) {
+		t.Fatalf("toolbar does not use the external-script wrapper: %s", toolbar)
+	}
 	if len(toolbar) >= len(toolbarRuntime) {
 		t.Fatalf("toolbar loader size = %d, runtime size = %d", len(toolbar), len(toolbarRuntime))
 	}
@@ -148,7 +155,7 @@ func TestGenerateToolbarV2PreservesEscapedGroupMetadataAndLabels(t *testing.T) {
 		} `json:"host_rules"`
 		Labels toolbarLabels `json:"labels"`
 	}
-	raw := toolbar[len(toolbarV2TemplatePrefix) : len(toolbar)-len(toolbarV2TemplateSuffix)]
+	raw := html.UnescapeString(toolbar[len(toolbarV2TemplatePrefix) : len(toolbar)-len(toolbarV2TemplateSuffix)])
 	if err := json.Unmarshal([]byte(raw), &payload); err != nil {
 		t.Fatalf("v2 toolbar payload is not valid JSON: %v\n%s", err, toolbar)
 	}
@@ -215,5 +222,16 @@ func TestToolbarV2RuntimeIsValidJavaScript(t *testing.T) {
 	cmd.Stdin = strings.NewReader(string(toolbarV2Runtime))
 	if output, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("v2 toolbar runtime is invalid JavaScript: %v\n%s", err, output)
+	}
+}
+
+func TestToolbarRuntimeIsValidJavaScript(t *testing.T) {
+	if _, err := exec.LookPath("node"); err != nil {
+		t.Skip("node is not installed")
+	}
+	cmd := exec.Command("node", "--check")
+	cmd.Stdin = strings.NewReader(string(toolbarRuntime))
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("toolbar runtime is invalid JavaScript: %v\n%s", err, output)
 	}
 }

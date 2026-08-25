@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"html"
 	"net/url"
 	"strings"
 	"testing"
@@ -68,7 +69,7 @@ func TestGenerateToolbarPayloadIsValidJSON(t *testing.T) {
 		[]models.Rule{{Path: `/app "quoted"`}},
 		[]models.HostRule{{
 			Host:    `app.example.com`,
-			Title:   `App <Portal>`,
+			Title:   `App <Portal> O'Reilly`,
 			Favicon: `data:image/png;base64,AAAA`,
 		}},
 		`/app "quoted"`,
@@ -100,7 +101,7 @@ func TestGenerateToolbarPayloadIsValidJSON(t *testing.T) {
 	}
 	if len(payload.HostRules) != 1 ||
 		payload.HostRules[0].Host != "app.example.com" ||
-		payload.HostRules[0].Label != "App <Portal>" ||
+		payload.HostRules[0].Label != "App <Portal> O'Reilly" ||
 		payload.HostRules[0].Favicon != "data:image/png;base64,AAAA" {
 		t.Fatalf("unexpected host rules payload: %#v", payload.HostRules)
 	}
@@ -172,7 +173,7 @@ func extractToolbarPayloadForTest(t *testing.T, toolbar string) string {
 	if !strings.HasPrefix(toolbar, toolbarTemplatePrefix) || !strings.HasSuffix(toolbar, toolbarTemplateSuffix) {
 		t.Fatalf("toolbar does not use expected template wrapper: %s", toolbar)
 	}
-	return toolbar[len(toolbarTemplatePrefix) : len(toolbar)-len(toolbarTemplateSuffix)]
+	return html.UnescapeString(toolbar[len(toolbarTemplatePrefix) : len(toolbar)-len(toolbarTemplateSuffix)])
 }
 
 func TestGenerateToolbarWithHostsReturnsEmptyWhenPortalDisabled(t *testing.T) {

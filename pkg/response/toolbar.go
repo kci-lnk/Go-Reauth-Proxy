@@ -1098,7 +1098,16 @@ const toolbarDataMarker = "__REAUTH_TOOLBAR_DATA__"
 // control plane. Base64 expands the transport string and must not reduce the
 // effective image limit.
 const toolbarFaviconMaxDecodedBytes = 128 * 1024
-const toolbarRuntimeDataExpression = `(window.__REAUTH_PROXY_TOOLBAR_DATA__ || {})`
+const toolbarRuntimeDataExpression = `(function() {
+    var loader = document.getElementById('reauth-proxy-toolbar-loader') ||
+        document.getElementById('reauth-proxy-toolbar-v2-loader');
+    if (!loader) return {};
+    try {
+        return JSON.parse(loader.getAttribute('data-toolbar') || '{}');
+    } catch (err) {
+        return {};
+    }
+})()`
 
 var (
 	toolbarTemplatePrefix   string
@@ -1124,8 +1133,8 @@ func init() {
 
 	digest := sha256.Sum256(toolbarRuntime)
 	toolbarAssetPath = "/__assets__/toolbar/toolbar." + hex.EncodeToString(digest[:]) + ".js"
-	toolbarTemplatePrefix = `<script id="reauth-proxy-toolbar-loader">window.__REAUTH_PROXY_TOOLBAR_DATA__=`
-	toolbarTemplateSuffix = `;(function(d){var s=d.createElement("script");s.src="` + toolbarAssetPath + `";s.defer=true;(d.head||d.documentElement).appendChild(s);})(document);</script>`
+	toolbarTemplatePrefix = `<script id="reauth-proxy-toolbar-loader" src="` + toolbarAssetPath + `" data-toolbar='`
+	toolbarTemplateSuffix = `' defer></script>`
 	initToolbarV2Runtime()
 }
 
@@ -1361,10 +1370,15 @@ func renderToolbarTemplateData(rules []models.Rule, hostRules []models.HostRule,
 		templatePrefix = toolbarV2TemplatePrefix
 		templateSuffix = toolbarV2TemplateSuffix
 	}
+	payloadSize := estimateToolbarPayloadSize(rules, hostRules, currentPath, currentHost, normalizedExcludedHost, portalConfig, labels)
+	var payload strings.Builder
+	payload.Grow(payloadSize)
+	writeToolbarPayloadJSON(&payload, rules, hostRules, currentPath, currentHost, normalizedExcludedHost, portalConfig, labels)
+
 	var b strings.Builder
-	b.Grow(len(templatePrefix) + estimateToolbarPayloadSize(rules, hostRules, currentPath, currentHost, normalizedExcludedHost, portalConfig, labels) + len(templateSuffix))
+	b.Grow(len(templatePrefix) + payload.Len() + len(templateSuffix))
 	b.WriteString(templatePrefix)
-	writeToolbarPayloadJSON(&b, rules, hostRules, currentPath, currentHost, normalizedExcludedHost, portalConfig, labels)
+	b.WriteString(strings.ReplaceAll(payload.String(), "'", "&#39;"))
 	b.WriteString(templateSuffix)
 	return b.String()
 }

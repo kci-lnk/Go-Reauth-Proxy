@@ -22,6 +22,8 @@ const (
 	CodeProxyTargetInvalid = 20001
 	CodeProxyAuthFailed    = 20002
 	CodeProxyTimeout       = 20003
+	CodeProxyBadGateway    = 20004
+	CodeProxyUnavailable   = 20005
 
 	// Iptables Errors
 	CodeIptablesInitError    = 30001
@@ -59,6 +61,8 @@ var ErrorKeyMap = map[int]string{
 	CodeProxyTargetInvalid:   "api.proxyTargetInvalid",
 	CodeProxyAuthFailed:      "api.proxyAuthFailed",
 	CodeProxyTimeout:         "api.proxyTimeout",
+	CodeProxyBadGateway:      "api.proxyBadGateway",
+	CodeProxyUnavailable:     "api.proxyUnavailable",
 	CodeIptablesInitError:    "api.iptablesInitError",
 	CodeIptablesCommandError: "api.iptablesCommandError",
 	CodeIptablesParseError:   "api.iptablesParseError",
@@ -78,6 +82,8 @@ var ErrorMap = map[int]string{
 	CodeProxyTargetInvalid:   i18n.T(i18n.DefaultLocale, ErrorKeyMap[CodeProxyTargetInvalid]),
 	CodeProxyAuthFailed:      i18n.T(i18n.DefaultLocale, ErrorKeyMap[CodeProxyAuthFailed]),
 	CodeProxyTimeout:         i18n.T(i18n.DefaultLocale, ErrorKeyMap[CodeProxyTimeout]),
+	CodeProxyBadGateway:      i18n.T(i18n.DefaultLocale, ErrorKeyMap[CodeProxyBadGateway]),
+	CodeProxyUnavailable:     i18n.T(i18n.DefaultLocale, ErrorKeyMap[CodeProxyUnavailable]),
 	CodeIptablesInitError:    i18n.T(i18n.DefaultLocale, ErrorKeyMap[CodeIptablesInitError]),
 	CodeIptablesCommandError: i18n.T(i18n.DefaultLocale, ErrorKeyMap[CodeIptablesCommandError]),
 	CodeIptablesParseError:   i18n.T(i18n.DefaultLocale, ErrorKeyMap[CodeIptablesParseError]),

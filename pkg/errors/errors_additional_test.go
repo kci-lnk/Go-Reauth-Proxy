@@ -57,6 +57,15 @@ func TestGetMessageForLocaleProxyTimeoutEnglish(t *testing.T) {
 	}
 }
 
+func TestGetMessageForLocaleProxyAvailabilityEnglish(t *testing.T) {
+	if got := GetMessageForLocale(i18n.LocaleEn, CodeProxyBadGateway); got != "Bad Gateway" {
+		t.Fatalf("proxy bad gateway message = %q", got)
+	}
+	if got := GetMessageForLocale(i18n.LocaleEn, CodeProxyUnavailable); got != "Upstream Temporarily Unavailable" {
+		t.Fatalf("proxy unavailable message = %q", got)
+	}
+}
+
 func TestGetMessageForLocaleIptablesInitEnglish(t *testing.T) {
 	if got := GetMessageForLocale(i18n.LocaleEn, CodeIptablesInitError); got != "Iptables Initialization Failed" {
 		t.Fatalf("iptables init message = %q", got)
@@ -103,7 +112,7 @@ func TestErrorKeyMapContainsAdminErrorCodes(t *testing.T) {
 }
 
 func TestErrorMapContainsLocalizedDefaultMessages(t *testing.T) {
-	for _, code := range []int{CodeSuccess, CodeInvalidJSON, CodeProxyTimeout, CodeIptablesParseError} {
+	for _, code := range []int{CodeSuccess, CodeInvalidJSON, CodeProxyTimeout, CodeProxyBadGateway, CodeProxyUnavailable, CodeIptablesParseError} {
 		if ErrorMap[code] == "" {
 			t.Fatalf("missing localized message for code %d", code)
 		}

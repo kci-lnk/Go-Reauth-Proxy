@@ -385,10 +385,12 @@ func mapHTTPStatus(code int) int {
 	}
 
 	switch code {
-	case errors.CodeProxyAuthFailed, errors.CodeProxyTargetInvalid:
+	case errors.CodeProxyAuthFailed, errors.CodeProxyTargetInvalid, errors.CodeProxyBadGateway:
 		return http.StatusBadGateway
 	case errors.CodeProxyTimeout:
 		return http.StatusGatewayTimeout
+	case errors.CodeProxyUnavailable:
+		return http.StatusServiceUnavailable
 	case errors.CodeUnauthorized:
 		return http.StatusUnauthorized
 	case errors.CodeNotFound:

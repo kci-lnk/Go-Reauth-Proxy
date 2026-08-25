@@ -403,6 +403,52 @@ func TestManagerUpdatePersistsMutation(t *testing.T) {
 	}
 }
 
+func TestManagerUpdateSkipsIdenticalDurableRewrite(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	manager := NewManager(path)
+	if err := manager.Save(DefaultConfig()); err != nil {
+		t.Fatalf("Save() returned error: %v", err)
+	}
+	before, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat config before no-op update: %v", err)
+	}
+
+	if err := manager.Update(func(*AppConfig) error { return nil }); err != nil {
+		t.Fatalf("Update() returned error: %v", err)
+	}
+	after, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat config after no-op update: %v", err)
+	}
+	if !os.SameFile(before, after) {
+		t.Fatal("no-op update atomically replaced an identical config file")
+	}
+}
+
+func TestManagerRepeatedLoadSkipsIdenticalMigrationRewrite(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	manager := NewManager(path)
+	if err := manager.Save(DefaultConfig()); err != nil {
+		t.Fatalf("Save() returned error: %v", err)
+	}
+	before, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat config before repeated load: %v", err)
+	}
+
+	if _, err := manager.Load(); err != nil {
+		t.Fatalf("Load() returned error: %v", err)
+	}
+	after, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat config after repeated load: %v", err)
+	}
+	if !os.SameFile(before, after) {
+		t.Fatal("repeated load replaced an already-normalized config file")
+	}
+}
+
 func TestManagerUpdateCallbackErrorDoesNotPersist(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.json")
 	manager := NewManager(path)

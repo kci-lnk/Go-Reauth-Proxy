@@ -74,6 +74,8 @@
   "api.proxyTargetInvalid": "프록시 대상이 유효하지 않습니다",
   "api.proxyAuthFailed": "인증 실패",
   "api.proxyTimeout": "상위 서버 시간 초과",
+  "api.proxyBadGateway": "상위 게이트웨이 오류",
+  "api.proxyUnavailable": "상위 서버를 일시적으로 사용할 수 없음",
   "api.iptablesInitError": "iptables 초기화 실패",
   "api.iptablesCommandError": "iptables 명령 실패",
   "api.iptablesParseError": "iptables 파싱 실패",

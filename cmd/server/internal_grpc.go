@@ -17,6 +17,7 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/health"
 	healthpb "google.golang.org/grpc/health/grpc_health_v1"
+	"google.golang.org/grpc/status"
 )
 
 const internalGRPCMaxMessageSize = 16 << 20
@@ -39,12 +40,7 @@ func startInternalGRPCServer(port int, token string, control pb.GatewayControlSe
 	server := grpc.NewServer(
 		grpc.MaxRecvMsgSize(internalGRPCMaxMessageSize),
 		grpc.MaxSendMsgSize(internalGRPCMaxMessageSize),
-		grpc.UnaryInterceptor(func(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
-			if err := rpcbridge.CheckInternalToken(ctx, token); err != nil {
-				return nil, err
-			}
-			return handler(ctx, req)
-		}),
+		grpc.UnaryInterceptor(newInternalUnaryInterceptor(token)),
 		grpc.StreamInterceptor(func(srv any, stream grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler) error {
 			if err := rpcbridge.CheckInternalToken(stream.Context(), token); err != nil {
 				return err
@@ -127,6 +123,93 @@ func startInternalGRPCServer(port int, token string, control pb.GatewayControlSe
 	healthServer.SetServingStatus(healthGatewayProcess, healthpb.HealthCheckResponse_SERVING)
 	logger.Diagnostic("INFO", "gateway_process", "ready", "grpc_serving", nil)
 	return runtimeServer, nil
+}
+
+func newInternalUnaryInterceptor(token string) grpc.UnaryServerInterceptor {
+	// Handler and firewall mutations are already serialized internally, but an
+	// ordinary mutex keeps cancelled RPC goroutines queued behind a slow durable
+	// flush or host command.
+	// This context-aware gate drops expired retries before they enter the
+	// handler, while the original mutation is allowed to finish atomically.
+	durableMutationGate := make(chan struct{}, 1)
+	durableMutationGate <- struct{}{}
+	return func(
+		ctx context.Context,
+		req any,
+		info *grpc.UnaryServerInfo,
+		handler grpc.UnaryHandler,
+	) (any, error) {
+		if err := rpcbridge.CheckInternalToken(ctx, token); err != nil {
+			return nil, err
+		}
+		if !isSerializedGatewayMutation(info.FullMethod) {
+			return handler(ctx, req)
+		}
+		select {
+		case <-ctx.Done():
+			return nil, status.FromContextError(ctx.Err()).Err()
+		case <-durableMutationGate:
+		}
+		defer func() { durableMutationGate <- struct{}{} }()
+		if err := ctx.Err(); err != nil {
+			return nil, status.FromContextError(err).Err()
+		}
+		return handler(ctx, req)
+	}
+}
+
+func isSerializedGatewayMutation(fullMethod string) bool {
+	switch fullMethod {
+	case pb.GatewayControlService_SetGatewayListenerConfig_FullMethodName,
+		pb.GatewayControlService_SetGatewayProxyProtocolConfig_FullMethodName,
+		pb.GatewayControlService_ResetAllData_FullMethodName,
+		pb.GatewayControlService_SetRules_FullMethodName,
+		pb.GatewayControlService_FlushRules_FullMethodName,
+		pb.GatewayControlService_SetHostRules_FullMethodName,
+		pb.GatewayControlService_FlushHostRules_FullMethodName,
+		pb.GatewayControlService_SetStreamRules_FullMethodName,
+		pb.GatewayControlService_FlushStreamRules_FullMethodName,
+		pb.GatewayControlService_SetAuthConfig_FullMethodName,
+		pb.GatewayControlService_SetDefaultRoute_FullMethodName,
+		pb.GatewayControlService_SetProxyProtocolForce_FullMethodName,
+		pb.GatewayControlService_SetLocaleConfig_FullMethodName,
+		pb.GatewayControlService_SetReverseProxyThrottle_FullMethodName,
+		pb.GatewayControlService_SetGatewayVisibility_FullMethodName,
+		pb.GatewayControlService_SetForwardedHeadersConfig_FullMethodName,
+		pb.GatewayControlService_SetPreserveHostConfig_FullMethodName,
+		pb.GatewayControlService_SetCrawlerBlockerConfig_FullMethodName,
+		pb.GatewayControlService_SetGatewayPortalConfig_FullMethodName,
+		pb.GatewayControlService_SetGatewayUnmatchedRouteConfig_FullMethodName,
+		pb.GatewayControlService_SetFnosPortIconHijackConfig_FullMethodName,
+		pb.GatewayControlService_SetFnosConnectIngressConfig_FullMethodName,
+		pb.GatewayControlService_SetReverseProxyThrottleExemptIps_FullMethodName,
+		pb.GatewayControlService_SetGatewayTrustedClientIps_FullMethodName,
+		pb.GatewayControlService_SetCommonLocationExemptions_FullMethodName,
+		pb.GatewayLogsService_SetLoggingConfig_FullMethodName,
+		pb.SecurityService_AddGeneralBlacklist_FullMethodName,
+		pb.SecurityService_RemoveGeneralBlacklist_FullMethodName,
+		pb.WafService_SetWafConfig_FullMethodName,
+		pb.SslService_SetSslDeployment_FullMethodName,
+		pb.SslService_SetSslPem_FullMethodName,
+		pb.FirewallService_InitIptables_FullMethodName,
+		pb.FirewallService_CleanIptables_FullMethodName,
+		pb.FirewallService_FlushIptables_FullMethodName,
+		pb.FirewallService_AllowIp_FullMethodName,
+		pb.FirewallService_BlockIp_FullMethodName,
+		pb.FirewallService_RemoveIp_FullMethodName,
+		pb.FirewallService_BlockTcpPortForIp_FullMethodName,
+		pb.FirewallService_RemoveTcpPortRule_FullMethodName,
+		pb.FirewallService_SyncSshFirewall_FullMethodName,
+		pb.FirewallService_ClearSshFirewall_FullMethodName,
+		pb.FirewallService_SyncWhitelistFirewall_FullMethodName,
+		pb.FirewallService_BlockAll_FullMethodName,
+		pb.FirewallService_AllowAll_FullMethodName,
+		pb.FirewallService_EnsureTcpRedirect_FullMethodName,
+		pb.FirewallService_ClearTcpRedirect_FullMethodName:
+		return true
+	default:
+		return false
+	}
 }
 
 func (s *internalGRPCServer) SetServingStatus(service string, serving bool) {

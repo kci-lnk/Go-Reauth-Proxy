@@ -219,6 +219,27 @@ func TestHTMLMapsProxyTimeoutToGatewayTimeout(t *testing.T) {
 	}
 }
 
+func TestHTMLMapsProxyAvailabilityErrors(t *testing.T) {
+	tests := []struct {
+		name string
+		code int
+		want int
+	}{
+		{name: "bad gateway", code: proxyerrors.CodeProxyBadGateway, want: http.StatusBadGateway},
+		{name: "unavailable", code: proxyerrors.CodeProxyUnavailable, want: http.StatusServiceUnavailable},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, "http://gateway.example.test/error", nil)
+			rec := httptest.NewRecorder()
+			HTML(rec, req, tt.code, "upstream error", nil)
+			if rec.Code != tt.want {
+				t.Fatalf("status = %d, want %d", rec.Code, tt.want)
+			}
+		})
+	}
+}
+
 func TestHTMLSetsContentLanguageFromRequest(t *testing.T) {
 	i18n.SetDefaultLocale(i18n.LocaleEn)
 	t.Cleanup(func() {

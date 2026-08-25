@@ -1217,6 +1217,7 @@ func logEntryToProto(entry gatewaylog.Entry) *pb.GatewayLogEntry {
 		RouteType:               entry.RouteType,
 		RouteKey:                entry.RouteKey,
 		Upstream:                entry.Upstream,
+		UpstreamErrorClass:      entry.UpstreamErrorClass,
 		Matched:                 entry.Matched,
 		BytesIn:                 entry.BytesIn,
 		BytesOut:                entry.BytesOut,

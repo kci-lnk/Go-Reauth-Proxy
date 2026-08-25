@@ -74,6 +74,8 @@
   "api.proxyTargetInvalid": "無効なプロキシ ターゲットです",
   "api.proxyAuthFailed": "認証に失敗しました",
   "api.proxyTimeout": "アップストリームタイムアウト",
+  "api.proxyBadGateway": "不正なゲートウェイ応答",
+  "api.proxyUnavailable": "アップストリームは一時的に利用できません",
   "api.iptablesInitError": "iptables の初期化に失敗しました",
   "api.iptablesCommandError": "iptables コマンドが失敗しました",
   "api.iptablesParseError": "iptables の解析に失敗しました",

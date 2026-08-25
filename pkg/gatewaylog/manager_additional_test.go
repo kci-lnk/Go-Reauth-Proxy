@@ -234,6 +234,31 @@ func TestManagerLogFiltersLocalhostIPv4HTTPButKeepsStreamEntries(t *testing.T) {
 	}
 }
 
+func TestManagerPreservesUpstreamErrorClass(t *testing.T) {
+	dir := t.TempDir()
+	manager := NewManager(dir, models.LoggingConfig{Enabled: true, RecordLocalhost: true})
+	t.Cleanup(manager.Close)
+
+	manager.Log(Entry{
+		Method:             "GET",
+		Host:               "app.example.com",
+		Status:             503,
+		RemoteIP:           "198.51.100.8",
+		UpstreamErrorClass: "connect_unavailable",
+	})
+
+	result, err := manager.Query("", 1, 20, "", "", "", "", "", "page")
+	if err != nil {
+		t.Fatalf("Query() returned error: %v", err)
+	}
+	if result.Total != 1 || len(result.Items) != 1 {
+		t.Fatalf("Query() = %#v, want one item", result)
+	}
+	if got := result.Items[0].UpstreamErrorClass; got != "connect_unavailable" {
+		t.Fatalf("upstream error class = %q", got)
+	}
+}
+
 func TestManagerLogRecordsLocalhostIPv4WhenConfigured(t *testing.T) {
 	dir := t.TempDir()
 	manager := NewManager(dir, models.LoggingConfig{Enabled: true})

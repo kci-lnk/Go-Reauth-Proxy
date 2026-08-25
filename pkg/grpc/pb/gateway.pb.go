@@ -4675,6 +4675,7 @@ type GatewayLogEntry struct {
 	ValidationEvidence      []string               `protobuf:"bytes,52,rep,name=validation_evidence,json=validationEvidence,proto3" json:"validation_evidence,omitempty"`
 	BypassPolicyVersion     string                 `protobuf:"bytes,53,opt,name=bypass_policy_version,json=bypassPolicyVersion,proto3" json:"bypass_policy_version,omitempty"`
 	BypassGroupId           string                 `protobuf:"bytes,54,opt,name=bypass_group_id,json=bypassGroupId,proto3" json:"bypass_group_id,omitempty"`
+	UpstreamErrorClass      string                 `protobuf:"bytes,55,opt,name=upstream_error_class,json=upstreamErrorClass,proto3" json:"upstream_error_class,omitempty"`
 	unknownFields           protoimpl.UnknownFields
 	sizeCache               protoimpl.SizeCache
 }
@@ -5083,6 +5084,13 @@ func (x *GatewayLogEntry) GetBypassPolicyVersion() string {
 func (x *GatewayLogEntry) GetBypassGroupId() string {
 	if x != nil {
 		return x.BypassGroupId
+	}
+	return ""
+}
+
+func (x *GatewayLogEntry) GetUpstreamErrorClass() string {
+	if x != nil {
+		return x.UpstreamErrorClass
 	}
 	return ""
 }
@@ -11376,7 +11384,7 @@ const file_fnknock_v1_gateway_proto_rawDesc = "" +
 	"\aenabled\x18\x01 \x01(\bR\aenabled\x12'\n" +
 	"\x0fdeployment_mode\x18\x02 \x01(\tR\x0edeploymentMode\x12J\n" +
 	"\fcertificates\x18\x03 \x03(\v2&.fnknock.v1.SslDeployedCertificateInfoR\fcertificates\x12G\n" +
-	"\x0elan_deployment\x18\x04 \x01(\v2 .fnknock.v1.SslLanDeploymentInfoR\rlanDeployment\"\xdd\x0e\n" +
+	"\x0elan_deployment\x18\x04 \x01(\v2 .fnknock.v1.SslLanDeploymentInfoR\rlanDeployment\"\x8f\x0f\n" +
 	"\x0fGatewayLogEntry\x12\x12\n" +
 	"\x04time\x18\x01 \x01(\tR\x04time\x12\x14\n" +
 	"\x05level\x18\x02 \x01(\tR\x05level\x12\x16\n" +
@@ -11444,7 +11452,8 @@ const file_fnknock_v1_gateway_proto_rawDesc = "" +
 	"\x13validation_decision\x183 \x01(\tR\x12validationDecision\x12/\n" +
 	"\x13validation_evidence\x184 \x03(\tR\x12validationEvidence\x122\n" +
 	"\x15bypass_policy_version\x185 \x01(\tR\x13bypassPolicyVersion\x12&\n" +
-	"\x0fbypass_group_id\x186 \x01(\tR\rbypassGroupId\"X\n" +
+	"\x0fbypass_group_id\x186 \x01(\tR\rbypassGroupId\x120\n" +
+	"\x14upstream_error_class\x187 \x01(\tR\x12upstreamErrorClass\"X\n" +
 	"\x0fGatewayLogDates\x12\x14\n" +
 	"\x05today\x18\x01 \x01(\tR\x05today\x12\x19\n" +
 	"\blogs_dir\x18\x02 \x01(\tR\alogsDir\x12\x14\n" +

@@ -4904,10 +4904,11 @@ func (trc *trafficReadCloser) Read(p []byte) (int, error) {
 
 type trafficResponseWriter struct {
 	http.ResponseWriter
-	handler       *Handler
-	metrics       requestTrafficMetrics
-	deepMonitor   *deepMonitorRequest
-	skipAccessLog bool
+	handler            *Handler
+	metrics            requestTrafficMetrics
+	deepMonitor        *deepMonitorRequest
+	skipAccessLog      bool
+	upstreamErrorClass string
 }
 
 func (tw *trafficResponseWriter) WriteHeader(statusCode int) {
@@ -5063,6 +5064,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		accessEntry.BytesIn = metrics.inBytes
 		accessEntry.BytesOut = metrics.outBytes
 		accessEntry.DurationMs = time.Since(start).Milliseconds()
+		accessEntry.UpstreamErrorClass = tw.upstreamErrorClass
 		if loggedStatusCode > 0 {
 			accessEntry.Status = loggedStatusCode
 		} else {
@@ -5089,6 +5091,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				Str("route_type", accessEntry.RouteType).
 				Str("route_key", logger.SanitizeLogString(accessEntry.RouteKey)).
 				Str("upstream", logger.SanitizeURL(accessEntry.Upstream)).
+				Str("upstream_error_class", accessEntry.UpstreamErrorClass).
 				Int("status", accessEntry.Status).
 				Int64("duration_ms", accessEntry.DurationMs).
 				Uint64("bytes_in", accessEntry.BytesIn).
@@ -6417,48 +6420,6 @@ func (h *Handler) handleNoMatchRoute(w http.ResponseWriter, r *http.Request, sna
 		}
 	}
 	response.RouteNotFound(w, r, snapshot.rules, authenticated)
-}
-
-func upstreamUnavailableMessage(cfg models.GatewayUnmatchedRouteConfig, err error) string {
-	normalized := models.NormalizeGatewayUnmatchedRouteConfig(cfg)
-	if normalized.UpstreamErrorDetail == models.GatewayUpstreamErrorDetailMore && err != nil {
-		return "Upstream unavailable: " + err.Error()
-	}
-	return "Upstream unavailable"
-}
-
-func (h *Handler) abortUpstreamConnectionIfConfigured(
-	w http.ResponseWriter,
-	cfg models.GatewayUnmatchedRouteConfig,
-) bool {
-	normalized := models.NormalizeGatewayUnmatchedRouteConfig(cfg)
-	if normalized.UpstreamErrorDetail != models.GatewayUpstreamErrorDetailResetConnection {
-		return false
-	}
-	markConnectionResetStatus(w)
-	h.abortConnection(w)
-	return true
-}
-
-func (h *Handler) handleUpstreamUnavailable(
-	w http.ResponseWriter,
-	r *http.Request,
-	cfg models.GatewayUnmatchedRouteConfig,
-	rules []models.Rule,
-	authenticated bool,
-	err error,
-) {
-	if h.abortUpstreamConnectionIfConfigured(w, cfg) {
-		return
-	}
-	response.HTMLWithSelectLink(
-		w,
-		r,
-		errors.CodeProxyTimeout,
-		upstreamUnavailableMessage(cfg, err),
-		rules,
-		authenticated,
-	)
 }
 
 func serveHostLocationResponse(w http.ResponseWriter, location models.HostLocation) {

@@ -58,3 +58,74 @@ func TestInternalGRPCHealthIsNamedAndTokenProtected(t *testing.T) {
 		t.Fatalf("updated dataplane health = %#v, %v", response, err)
 	}
 }
+
+func TestInternalGRPCMutationGateDropsCancelledQueuedRetry(t *testing.T) {
+	interceptor := newInternalUnaryInterceptor("secret")
+	authContext := func(ctx context.Context) context.Context {
+		return metadata.NewIncomingContext(
+			ctx,
+			metadata.Pairs(rpcbridge.InternalTokenMetadataKey, "secret"),
+		)
+	}
+	firstStarted := make(chan struct{})
+	releaseFirst := make(chan struct{})
+	defer func() {
+		select {
+		case <-releaseFirst:
+		default:
+			close(releaseFirst)
+		}
+	}()
+	firstResult := make(chan error, 1)
+	go func() {
+		_, err := interceptor(
+			authContext(context.Background()),
+			nil,
+			&grpc.UnaryServerInfo{FullMethod: pb.GatewayControlService_SetAuthConfig_FullMethodName},
+			func(context.Context, any) (any, error) {
+				close(firstStarted)
+				<-releaseFirst
+				return nil, nil
+			},
+		)
+		firstResult <- err
+	}()
+	<-firstStarted
+
+	ctx, cancel := context.WithCancel(authContext(context.Background()))
+	cancel()
+	queuedHandlerCalled := false
+	_, err := interceptor(
+		ctx,
+		nil,
+		&grpc.UnaryServerInfo{FullMethod: pb.GatewayControlService_SetRules_FullMethodName},
+		func(context.Context, any) (any, error) {
+			queuedHandlerCalled = true
+			return nil, nil
+		},
+	)
+	if status.Code(err) != codes.Canceled {
+		t.Fatalf("queued mutation status = %v, want canceled", status.Code(err))
+	}
+	if queuedHandlerCalled {
+		t.Fatal("cancelled queued mutation entered the service handler")
+	}
+
+	readHandlerCalled := false
+	if _, err := interceptor(
+		authContext(context.Background()),
+		nil,
+		&grpc.UnaryServerInfo{FullMethod: pb.GatewayControlService_GetRules_FullMethodName},
+		func(context.Context, any) (any, error) {
+			readHandlerCalled = true
+			return nil, nil
+		},
+	); err != nil || !readHandlerCalled {
+		t.Fatalf("read RPC was blocked by mutation: called=%v err=%v", readHandlerCalled, err)
+	}
+
+	close(releaseFirst)
+	if err := <-firstResult; err != nil {
+		t.Fatalf("first mutation returned error: %v", err)
+	}
+}

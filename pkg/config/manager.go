@@ -1,6 +1,7 @@
 package config
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"go-reauth-proxy/pkg/gatewaylog"
@@ -486,6 +487,16 @@ func (m *Manager) saveUnlocked(cfg *AppConfig) error {
 	}
 	if int64(len(data)) > maxConfigFileBytes {
 		return errConfigFileTooLarge
+	}
+	// Startup replays the durable gateway configuration to rebuild runtime
+	// state. Replacing an identical file still forces a file fsync, rename, and
+	// parent-directory fsync; on a DSM volume waking from hibernation that can
+	// take longer than the RPC deadline and cause retries to pile up. Preserve
+	// the existing inode when the exact durable representation is unchanged.
+	if info, statErr := os.Lstat(m.filePath); statErr == nil && info.Mode().IsRegular() {
+		if current, readErr := readFileLimited(m.filePath, maxConfigFileBytes); readErr == nil && bytes.Equal(current, data) {
+			return hardenConfigPermissions(m.filePath)
+		}
 	}
 
 	return writeFileAtomically(m.filePath, data, 0600)

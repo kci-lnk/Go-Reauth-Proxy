@@ -68,6 +68,7 @@ type Entry struct {
 	RouteType               string `json:"route_type,omitempty"`
 	RouteKey                string `json:"route_key,omitempty"`
 	Upstream                string `json:"upstream,omitempty"`
+	UpstreamErrorClass      string `json:"upstream_error_class,omitempty"`
 	Matched                 bool   `json:"matched"`
 	BytesIn                 uint64 `json:"bytes_in"`
 	BytesOut                uint64 `json:"bytes_out"`
@@ -682,6 +683,7 @@ func (m *Manager) writeLogEntry(entry *Entry) {
 		Str("route_type", entry.RouteType).
 		Str("route_key", entry.RouteKey).
 		Str("upstream", entry.Upstream).
+		Str("upstream_error_class", entry.UpstreamErrorClass).
 		Bool("matched", entry.Matched).
 		Uint64("bytes_in", entry.BytesIn).
 		Uint64("bytes_out", entry.BytesOut).

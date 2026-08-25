@@ -74,6 +74,8 @@
   "api.proxyTargetInvalid": "Invalid Proxy Target",
   "api.proxyAuthFailed": "Authentication Failed",
   "api.proxyTimeout": "Upstream Timeout",
+  "api.proxyBadGateway": "Bad Gateway",
+  "api.proxyUnavailable": "Upstream Temporarily Unavailable",
   "api.iptablesInitError": "Iptables Initialization Failed",
   "api.iptablesCommandError": "Iptables Command Failed",
   "api.iptablesParseError": "Iptables Parse Failed",

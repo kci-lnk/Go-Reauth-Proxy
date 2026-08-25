@@ -257,8 +257,8 @@ func TestUnavailablePublicHostHidesSelectLinkWithoutAuthenticatedIdentity(t *tes
 
 	handler.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusGatewayTimeout {
-		t.Fatalf("status = %d, want 504; body = %s", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503; body = %s", rec.Code, rec.Body.String())
 	}
 	if body := rec.Body.String(); strings.Contains(body, "/__select__") {
 		t.Fatalf("anonymous upstream error included select link: %s", body)
@@ -284,8 +284,8 @@ func TestUnavailablePublicHostCanShowConnectionDetailsForTroubleshooting(t *test
 
 	handler.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusGatewayTimeout {
-		t.Fatalf("status = %d, want 504; body = %s", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503; body = %s", rec.Code, rec.Body.String())
 	}
 	targetAddress := strings.TrimPrefix(targetURL, "http://")
 	// Go preserves the target address in net.OpError on every supported OS, but
@@ -313,8 +313,8 @@ func TestUnavailablePublicHostShowsSelectLinkForAuthenticatedIdentity(t *testing
 
 	handler.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusGatewayTimeout {
-		t.Fatalf("status = %d, want 504; body = %s", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503; body = %s", rec.Code, rec.Body.String())
 	}
 	if body := rec.Body.String(); !strings.Contains(body, "/__select__") {
 		t.Fatalf("authenticated upstream error did not include select link: %s", body)

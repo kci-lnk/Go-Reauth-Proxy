@@ -74,6 +74,8 @@
   "api.proxyTargetInvalid": "代理目標無效",
   "api.proxyAuthFailed": "認證失敗",
   "api.proxyTimeout": "上游超時",
+  "api.proxyBadGateway": "上游閘道錯誤",
+  "api.proxyUnavailable": "上游暫時無法使用",
   "api.iptablesInitError": "iptables 初始化失敗",
   "api.iptablesCommandError": "iptables 命令失敗",
   "api.iptablesParseError": "iptables 解析失敗",

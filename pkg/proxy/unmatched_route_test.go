@@ -22,7 +22,9 @@ import (
 	"github.com/soheilhy/cmux"
 
 	"go-reauth-proxy/pkg/config"
+	proxyerrors "go-reauth-proxy/pkg/errors"
 	"go-reauth-proxy/pkg/grpc/pb"
+	"go-reauth-proxy/pkg/i18n"
 	"go-reauth-proxy/pkg/models"
 	"go-reauth-proxy/pkg/response"
 )
@@ -476,20 +478,120 @@ func TestGatewayUnmatchedRouteErrorPageRemainsDefault(t *testing.T) {
 }
 
 func TestUpstreamUnavailableMessageHidesDetailsByDefault(t *testing.T) {
+	i18n.SetDefaultLocale(i18n.LocaleEn)
+	t.Cleanup(func() { i18n.SetDefaultLocale(i18n.DefaultLocale) })
 	err := errors.New("dial tcp 127.0.0.1:16601: connect: connection refused")
-	if got := upstreamUnavailableMessage(models.GatewayUnmatchedRouteConfig{}, err); got != "Upstream unavailable" {
+	req := httptest.NewRequest(http.MethodGet, "http://app.example.com/", nil)
+	if got := upstreamUnavailableMessage(req, models.GatewayUnmatchedRouteConfig{}, err, proxyerrors.CodeProxyUnavailable); got != "Upstream Temporarily Unavailable" {
 		t.Fatalf("message = %q, want redacted message", got)
 	}
 }
 
 func TestUpstreamUnavailableMessageCanShowMoreForTroubleshooting(t *testing.T) {
+	i18n.SetDefaultLocale(i18n.LocaleEn)
+	t.Cleanup(func() { i18n.SetDefaultLocale(i18n.DefaultLocale) })
 	err := errors.New("dial tcp 127.0.0.1:16601: connect: connection refused")
 	cfg := models.GatewayUnmatchedRouteConfig{
 		UpstreamErrorDetail: models.GatewayUpstreamErrorDetailMore,
 	}
-	got := upstreamUnavailableMessage(cfg, err)
+	req := httptest.NewRequest(http.MethodGet, "http://app.example.com/", nil)
+	got := upstreamUnavailableMessage(req, cfg, err, proxyerrors.CodeProxyUnavailable)
 	if !strings.Contains(got, "127.0.0.1:16601") || !strings.Contains(got, "connection refused") {
 		t.Fatalf("message = %q, want detailed upstream error", got)
+	}
+}
+
+func TestClassifyUpstreamFailure(t *testing.T) {
+	tests := []struct {
+		name      string
+		err       error
+		wantCode  int
+		wantClass string
+		wantRetry string
+	}{
+		{name: "deadline", err: context.DeadlineExceeded, wantCode: proxyerrors.CodeProxyTimeout, wantClass: "timeout"},
+		{name: "canceled", err: context.Canceled, wantClass: "request_canceled"},
+		{name: "connection refused", err: errors.New("dial tcp 127.0.0.1:7997: connect: connection refused"), wantCode: proxyerrors.CodeProxyUnavailable, wantClass: "connect_unavailable", wantRetry: "1"},
+		{name: "typed connection refused", err: &net.OpError{Op: "dial", Net: "tcp", Err: syscall.ECONNREFUSED}, wantCode: proxyerrors.CodeProxyUnavailable, wantClass: "connect_unavailable", wantRetry: "1"},
+		{name: "temporary dns", err: &net.DNSError{Err: "temporary", Name: "upstream.test", IsTemporary: true}, wantCode: proxyerrors.CodeProxyUnavailable, wantClass: "dns_temporary", wantRetry: "1"},
+		{name: "dns", err: &net.DNSError{Err: "no such host", Name: "upstream.test", IsNotFound: true}, wantCode: proxyerrors.CodeProxyBadGateway, wantClass: "dns_error"},
+		{name: "unexpected eof", err: io.ErrUnexpectedEOF, wantCode: proxyerrors.CodeProxyBadGateway, wantClass: "upstream_eof"},
+		{name: "reset", err: errors.New("read: connection reset by peer"), wantCode: proxyerrors.CodeProxyBadGateway, wantClass: "upstream_reset"},
+		{name: "typed reset", err: &net.OpError{Op: "read", Net: "tcp", Err: syscall.ECONNRESET}, wantCode: proxyerrors.CodeProxyBadGateway, wantClass: "upstream_reset"},
+		{name: "other", err: errors.New("malformed upstream response"), wantCode: proxyerrors.CodeProxyBadGateway, wantClass: "bad_gateway"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := classifyUpstreamFailure(tt.err)
+			if got.code != tt.wantCode || got.class != tt.wantClass || got.retryAfter != tt.wantRetry {
+				t.Fatalf("classification = %#v, want code=%d class=%q retry=%q", got, tt.wantCode, tt.wantClass, tt.wantRetry)
+			}
+		})
+	}
+}
+
+func TestCanceledUpstreamRequestRecords499WithoutWritingErrorPage(t *testing.T) {
+	handler := &Handler{}
+	recorder := httptest.NewRecorder()
+	trafficWriter := &trafficResponseWriter{ResponseWriter: recorder, handler: handler}
+	trafficWriter.metrics.statusCode = http.StatusOK
+	writer := newProxyResponseCoalescer(trafficWriter)
+	req := httptest.NewRequest(http.MethodGet, "http://app.example.com/", nil)
+
+	handler.handleUpstreamUnavailable(writer, req, models.GatewayUnmatchedRouteConfig{}, nil, false, context.Canceled)
+
+	if trafficWriter.metrics.statusCode != 499 {
+		t.Fatalf("logged status = %d, want 499", trafficWriter.metrics.statusCode)
+	}
+	if trafficWriter.metrics.wroteHeader {
+		t.Fatal("canceled request wrote an HTTP error response")
+	}
+	if trafficWriter.upstreamErrorClass != "request_canceled" {
+		t.Fatalf("logged error class = %q, want request_canceled", trafficWriter.upstreamErrorClass)
+	}
+}
+
+func TestUpstreamUnavailableWritesClassifiedResponse(t *testing.T) {
+	i18n.SetDefaultLocale(i18n.LocaleEn)
+	t.Cleanup(func() { i18n.SetDefaultLocale(i18n.DefaultLocale) })
+	tests := []struct {
+		name      string
+		err       error
+		wantCode  int
+		wantClass string
+		wantRetry string
+	}{
+		{name: "timeout", err: context.DeadlineExceeded, wantCode: http.StatusGatewayTimeout, wantClass: "timeout"},
+		{name: "unavailable", err: errors.New("dial tcp: connection refused"), wantCode: http.StatusServiceUnavailable, wantClass: "connect_unavailable", wantRetry: "1"},
+		{name: "bad gateway", err: io.ErrUnexpectedEOF, wantCode: http.StatusBadGateway, wantClass: "upstream_eof"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			handler := &Handler{}
+			recorder := httptest.NewRecorder()
+			trafficWriter := &trafficResponseWriter{ResponseWriter: recorder, handler: handler}
+			trafficWriter.metrics.statusCode = http.StatusOK
+			writer := newProxyResponseCoalescer(trafficWriter)
+			req := httptest.NewRequest(http.MethodGet, "http://app.example.com/", nil)
+
+			handler.handleUpstreamUnavailable(writer, req, models.GatewayUnmatchedRouteConfig{}, nil, false, tt.err)
+
+			if recorder.Code != tt.wantCode {
+				t.Fatalf("status = %d, want %d", recorder.Code, tt.wantCode)
+			}
+			if got := recorder.Header().Get(upstreamErrorClassHeader); got != tt.wantClass {
+				t.Fatalf("error class header = %q, want %q", got, tt.wantClass)
+			}
+			if got := recorder.Header().Get("Retry-After"); got != tt.wantRetry {
+				t.Fatalf("Retry-After = %q, want %q", got, tt.wantRetry)
+			}
+			if trafficWriter.upstreamErrorClass != tt.wantClass {
+				t.Fatalf("logged error class = %q, want %q", trafficWriter.upstreamErrorClass, tt.wantClass)
+			}
+			if got := recorder.Header().Get("Cache-Control"); got != "no-store" {
+				t.Fatalf("Cache-Control = %q, want no-store", got)
+			}
+		})
 	}
 }
 

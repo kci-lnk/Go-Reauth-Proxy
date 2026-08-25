@@ -5,9 +5,14 @@ import (
 	"encoding/hex"
 	"go-reauth-proxy/pkg/i18n"
 	"go-reauth-proxy/pkg/models"
+	"html"
 	"net/http"
+	"net/netip"
+	"net/url"
 	"strings"
 	"unicode/utf8"
+
+	"golang.org/x/net/idna"
 )
 
 const toolbarTemplate = `
@@ -756,11 +761,146 @@ const toolbarTemplate = `
 	    }
 	}
 
+	var toolbarWarmupStorageKey = 'reauth_proxy_toolbar_warmup';
+	var toolbarWarmupHistoryLimit = 32;
+	var toolbarWarmupPreconnectLimit = 2;
+	var toolbarWarmupWeekMillis = 7 * 24 * 60 * 60 * 1000;
+	var toolbarWarmupOrigins = {};
+
+	function toolbarWarmupOrigin(href) {
+	    try {
+	        var target = new URL(href, window.location.href);
+	        if ((target.protocol !== 'http:' && target.protocol !== 'https:') || target.origin === window.location.origin) {
+	            return '';
+	        }
+	        return target.origin;
+	    } catch (err) {
+	        return '';
+	    }
+	}
+
+	function readToolbarWarmupHistory() {
+	    var raw = safeGetStoredItem(toolbarWarmupStorageKey);
+	    if (!raw) return {};
+	    try {
+	        var parsed = JSON.parse(raw);
+	        return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+	    } catch (err) {
+	        return {};
+	    }
+	}
+
+	function writeToolbarWarmupHistory(history) {
+	    var entries = [];
+	    for (var origin in history) {
+	        if (!Object.prototype.hasOwnProperty.call(history, origin)) continue;
+	        var entry = history[origin] || {};
+	        var clicks = Number(entry.clicks);
+	        var last = Number(entry.last);
+	        if (!isFinite(clicks) || clicks < 1 || !isFinite(last) || last < 0) continue;
+	        entries.push({origin: origin, clicks: Math.floor(clicks), last: Math.floor(last)});
+	    }
+	    entries.sort(function(left, right) {
+	        return right.last - left.last || right.clicks - left.clicks || (left.origin < right.origin ? -1 : 1);
+	    });
+	    var bounded = {};
+	    for (var i = 0; i < entries.length && i < toolbarWarmupHistoryLimit; i++) {
+	        bounded[entries[i].origin] = {clicks: entries[i].clicks, last: entries[i].last};
+	    }
+	    safeSetStoredItem(toolbarWarmupStorageKey, JSON.stringify(bounded));
+	    return bounded;
+	}
+
+	function rememberToolbarWarmupOrigin(origin) {
+	    if (!origin) return;
+	    var history = readToolbarWarmupHistory();
+	    var previous = history[origin] || {};
+	    var clicks = Number(previous.clicks);
+	    history[origin] = {
+	        clicks: isFinite(clicks) && clicks > 0 ? Math.floor(clicks) + 1 : 1,
+	        last: Date.now()
+	    };
+	    writeToolbarWarmupHistory(history);
+	}
+
+	function preconnectToolbarOrigin(origin) {
+	    if (!origin || toolbarWarmupOrigins[origin]) return;
+	    toolbarWarmupOrigins[origin] = true;
+	    var hint = document.createElement('link');
+	    hint.rel = 'preconnect';
+	    hint.href = origin;
+	    hint.crossOrigin = 'anonymous';
+	    var parent = document.head || document.getElementsByTagName('head')[0] || document.documentElement;
+	    if (parent) parent.appendChild(hint);
+	}
+
+	function warmToolbarLink(link) {
+	    if (!link) return;
+	    preconnectToolbarOrigin(toolbarWarmupOrigin(link.href || link.getAttribute('href')));
+	}
+
+	function attachToolbarWarmup(link) {
+	    if (!link) return;
+	    var warm = function() { warmToolbarLink(link); };
+	    link.addEventListener('pointerenter', warm);
+	    link.addEventListener('focus', warm);
+	    link.addEventListener('touchstart', warm, {passive: true});
+	    link.addEventListener('click', function() {
+	        var origin = toolbarWarmupOrigin(link.href || link.getAttribute('href'));
+	        rememberToolbarWarmupOrigin(origin);
+	        preconnectToolbarOrigin(origin);
+	    });
+	}
+
+	function shouldSkipToolbarIdleWarmup() {
+	    if (document.visibilityState && document.visibilityState !== 'visible') return true;
+	    var connection = navigator.connection || navigator.mozConnection || navigator.webkitConnection;
+	    if (!connection) return false;
+	    return connection.saveData || connection.effectiveType === 'slow-2g' || connection.effectiveType === '2g';
+	}
+
+	function scheduleToolbarIdleWarmup() {
+	    if (shouldSkipToolbarIdleWarmup()) return;
+	    var run = function() {
+	        if (shouldSkipToolbarIdleWarmup()) return;
+	        var hostRules = Array.isArray(toolbarData.host_rules) ? toolbarData.host_rules : [];
+	        var history = readToolbarWarmupHistory();
+	        var candidates = [];
+	        var seen = {};
+	        var now = Date.now();
+	        for (var i = 0; i < hostRules.length; i++) {
+	            var origin = toolbarWarmupOrigin(buildHostHref(asString((hostRules[i] || {}).host)));
+	            if (!origin || seen[origin]) continue;
+	            seen[origin] = true;
+	            var entry = history[origin] || {};
+	            var clicks = Number(entry.clicks);
+	            var last = Number(entry.last);
+	            var age = isFinite(last) ? Math.max(0, now - last) : toolbarWarmupWeekMillis;
+	            var recency = Math.max(0, 1 - age / toolbarWarmupWeekMillis);
+	            var score = (isFinite(clicks) && clicks > 0 ? 4 * Math.log(1 + clicks) : 0) + 6 * recency;
+	            candidates.push({origin: origin, score: score, index: i});
+	        }
+	        candidates.sort(function(left, right) {
+	            return right.score - left.score || left.index - right.index;
+	        });
+	        for (var j = 0; j < candidates.length && j < toolbarWarmupPreconnectLimit; j++) {
+	            preconnectToolbarOrigin(candidates[j].origin);
+	        }
+	    };
+	    var afterLoad = function() {
+	        if (window.requestIdleCallback) window.requestIdleCallback(run, {timeout: 1500});
+	        else window.setTimeout(run, 250);
+	    };
+	    if (document.readyState === 'complete') afterLoad();
+	    else window.addEventListener('load', afterLoad, {once: true});
+	}
+
     var navLinks = shadow.querySelectorAll('.nav-link');
     for (var i = 0; i < navLinks.length; i++) {
         var host = navLinks[i].getAttribute('data-host');
         if (host) {
             navLinks[i].setAttribute('href', buildHostHref(host));
+            attachToolbarWarmup(navLinks[i]);
         }
 
         navLinks[i].addEventListener('click', function(e) {
@@ -770,6 +910,8 @@ const toolbarTemplate = `
             menu.classList.remove('open');
         });
     }
+
+    scheduleToolbarIdleWarmup();
 
     var isDragging = false;
     var startX, startY, initialLeft, initialTop;
@@ -1374,13 +1516,96 @@ func renderToolbarTemplateData(rules []models.Rule, hostRules []models.HostRule,
 	var payload strings.Builder
 	payload.Grow(payloadSize)
 	writeToolbarPayloadJSON(&payload, rules, hostRules, currentPath, currentHost, normalizedExcludedHost, portalConfig, labels)
+	dnsPrefetchLinks := renderToolbarDNSPrefetchLinks(hostRules, normalizedExcludedHost)
 
 	var b strings.Builder
-	b.Grow(len(templatePrefix) + payload.Len() + len(templateSuffix))
+	b.Grow(len(dnsPrefetchLinks) + len(templatePrefix) + payload.Len() + len(templateSuffix))
+	b.WriteString(dnsPrefetchLinks)
 	b.WriteString(templatePrefix)
 	b.WriteString(strings.ReplaceAll(payload.String(), "'", "&#39;"))
 	b.WriteString(templateSuffix)
 	return b.String()
+}
+
+// renderToolbarDNSPrefetchLinks returns static DNS hints for the same host
+// rules the toolbar is allowed to display. The toolbar is injected near the
+// end of the document, so keeping these links immediately before the runtime
+// loader lets the browser start resolving hosts before the deferred script
+// executes.
+func renderToolbarDNSPrefetchLinks(hostRules []models.HostRule, normalizedExcludedHost string) string {
+	if len(hostRules) == 0 {
+		return ""
+	}
+
+	seen := make(map[string]struct{}, len(hostRules))
+	var hints strings.Builder
+	for _, rule := range hostRules {
+		if normalizedExcludedHost != "" && toolbarHostMatchesNormalized(rule.Host, normalizedExcludedHost) {
+			continue
+		}
+		hostname := toolbarDNSPrefetchHostname(rule.Host)
+		if hostname == "" {
+			continue
+		}
+		if _, exists := seen[hostname]; exists {
+			continue
+		}
+		seen[hostname] = struct{}{}
+		hints.WriteString(`<link rel="dns-prefetch" href="//`)
+		hints.WriteString(html.EscapeString(hostname))
+		hints.WriteString(`">`)
+	}
+	return hints.String()
+}
+
+// toolbarDNSPrefetchHostname extracts a DNS hostname from a configured host
+// rule. IP literals do not need DNS and malformed or URL-like values must not
+// become browser-issued resource hints.
+func toolbarDNSPrefetchHostname(host string) string {
+	value := normalizeToolbarHost(host)
+	if value == "" {
+		return ""
+	}
+
+	parsed, err := url.Parse("https://" + value)
+	if err != nil || parsed.User != nil || parsed.Path != "" || parsed.RawQuery != "" || parsed.Fragment != "" || parsed.Host != value {
+		return ""
+	}
+	hostname := normalizeToolbarHost(parsed.Hostname())
+	if hostname == "" {
+		return ""
+	}
+	hostname, err = idna.Lookup.ToASCII(hostname)
+	if err != nil {
+		return ""
+	}
+	hostname = lowerASCIIString(hostname)
+	if _, err := netip.ParseAddr(hostname); err == nil {
+		return ""
+	}
+	if !isToolbarDNSHostname(hostname) {
+		return ""
+	}
+	return hostname
+}
+
+func isToolbarDNSHostname(hostname string) bool {
+	if len(hostname) > 253 {
+		return false
+	}
+	for _, label := range strings.Split(hostname, ".") {
+		if len(label) == 0 || len(label) > 63 || label[0] == '-' || label[len(label)-1] == '-' {
+			return false
+		}
+		for i := 0; i < len(label); i++ {
+			char := label[i]
+			if (char >= 'a' && char <= 'z') || (char >= '0' && char <= '9') || char == '-' {
+				continue
+			}
+			return false
+		}
+	}
+	return true
 }
 
 func writeToolbarPayloadJSON(b *strings.Builder, rules []models.Rule, hostRules []models.HostRule, currentPath string, currentHost string, normalizedExcludedHost string, portalConfig models.GatewayPortalConfig, labels toolbarLabels) {

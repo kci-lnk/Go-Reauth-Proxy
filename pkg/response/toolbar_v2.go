@@ -750,6 +750,128 @@ const toolbarV2Script = `(function(window, document) {
             return '/';
         }
     }
+    var toolbarWarmupStorageKey = 'reauth_proxy_toolbar_warmup';
+    var toolbarWarmupHistoryLimit = 32;
+    var toolbarWarmupPreconnectLimit = 2;
+    var toolbarWarmupWeekMillis = 7 * 24 * 60 * 60 * 1000;
+    var toolbarWarmupOrigins = {};
+    function toolbarWarmupOrigin(href) {
+        try {
+            var target = new URL(href, window.location.href);
+            if ((target.protocol !== 'http:' && target.protocol !== 'https:') || target.origin === window.location.origin) return '';
+            return target.origin;
+        } catch (err) {
+            return '';
+        }
+    }
+    function readToolbarWarmupHistory() {
+        var raw = safeGetStoredItem(toolbarWarmupStorageKey);
+        if (!raw) return {};
+        try {
+            var parsed = JSON.parse(raw);
+            return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+        } catch (err) {
+            return {};
+        }
+    }
+    function writeToolbarWarmupHistory(history) {
+        var entries = [];
+        for (var origin in history) {
+            if (!Object.prototype.hasOwnProperty.call(history, origin)) continue;
+            var entry = history[origin] || {};
+            var clicks = Number(entry.clicks);
+            var last = Number(entry.last);
+            if (!isFinite(clicks) || clicks < 1 || !isFinite(last) || last < 0) continue;
+            entries.push({origin: origin, clicks: Math.floor(clicks), last: Math.floor(last)});
+        }
+        entries.sort(function(left, right) {
+            return right.last - left.last || right.clicks - left.clicks || (left.origin < right.origin ? -1 : 1);
+        });
+        var bounded = {};
+        for (var i = 0; i < entries.length && i < toolbarWarmupHistoryLimit; i++) {
+            bounded[entries[i].origin] = {clicks: entries[i].clicks, last: entries[i].last};
+        }
+        safeSetStoredItem(toolbarWarmupStorageKey, JSON.stringify(bounded));
+        return bounded;
+    }
+    function rememberToolbarWarmupOrigin(origin) {
+        if (!origin) return;
+        var history = readToolbarWarmupHistory();
+        var previous = history[origin] || {};
+        var clicks = Number(previous.clicks);
+        history[origin] = {
+            clicks: isFinite(clicks) && clicks > 0 ? Math.floor(clicks) + 1 : 1,
+            last: Date.now()
+        };
+        writeToolbarWarmupHistory(history);
+    }
+    function preconnectToolbarOrigin(origin) {
+        if (!origin || toolbarWarmupOrigins[origin]) return;
+        toolbarWarmupOrigins[origin] = true;
+        var hint = document.createElement('link');
+        hint.rel = 'preconnect';
+        hint.href = origin;
+        hint.crossOrigin = 'anonymous';
+        var parent = document.head || document.getElementsByTagName('head')[0] || document.documentElement;
+        if (parent) parent.appendChild(hint);
+    }
+    function warmToolbarLink(link) {
+        if (!link) return;
+        preconnectToolbarOrigin(toolbarWarmupOrigin(link.href || link.getAttribute('href')));
+    }
+    function attachToolbarWarmup(link) {
+        if (!link) return;
+        var warm = function() { warmToolbarLink(link); };
+        link.addEventListener('pointerenter', warm);
+        link.addEventListener('focus', warm);
+        link.addEventListener('touchstart', warm, {passive: true});
+        link.addEventListener('click', function() {
+            var origin = toolbarWarmupOrigin(link.href || link.getAttribute('href'));
+            rememberToolbarWarmupOrigin(origin);
+            preconnectToolbarOrigin(origin);
+        });
+    }
+    function shouldSkipToolbarIdleWarmup() {
+        if (document.visibilityState && document.visibilityState !== 'visible') return true;
+        var connection = navigator.connection || navigator.mozConnection || navigator.webkitConnection;
+        if (!connection) return false;
+        return connection.saveData || connection.effectiveType === 'slow-2g' || connection.effectiveType === '2g';
+    }
+    function scheduleToolbarIdleWarmup() {
+        if (shouldSkipToolbarIdleWarmup()) return;
+        var run = function() {
+            if (shouldSkipToolbarIdleWarmup()) return;
+            var hostRules = Array.isArray(toolbarData.host_rules) ? toolbarData.host_rules : [];
+            var history = readToolbarWarmupHistory();
+            var candidates = [];
+            var seen = {};
+            var now = Date.now();
+            for (var i = 0; i < hostRules.length; i++) {
+                var origin = toolbarWarmupOrigin(buildHostHref(asString((hostRules[i] || {}).host)));
+                if (!origin || seen[origin]) continue;
+                seen[origin] = true;
+                var entry = history[origin] || {};
+                var clicks = Number(entry.clicks);
+                var last = Number(entry.last);
+                var age = isFinite(last) ? Math.max(0, now - last) : toolbarWarmupWeekMillis;
+                var recency = Math.max(0, 1 - age / toolbarWarmupWeekMillis);
+                var score = (isFinite(clicks) && clicks > 0 ? 4 * Math.log(1 + clicks) : 0) + 6 * recency;
+                candidates.push({origin: origin, score: score, index: i});
+            }
+            candidates.sort(function(left, right) {
+                return right.score - left.score || left.index - right.index;
+            });
+            for (var j = 0; j < candidates.length && j < toolbarWarmupPreconnectLimit; j++) {
+                preconnectToolbarOrigin(candidates[j].origin);
+            }
+        };
+        var afterLoad = function() {
+            if (window.requestIdleCallback) window.requestIdleCallback(run, {timeout: 1500});
+            else window.setTimeout(run, 250);
+        };
+        if (document.readyState === 'complete') afterLoad();
+        else window.addEventListener('load', afterLoad, {once: true});
+    }
     function isAppIconSrc(value) {
         return /^data:image\//i.test(asString(value).trim());
     }
@@ -1000,6 +1122,7 @@ const toolbarV2Script = `(function(window, document) {
         link.href = app.href;
         link.target = '_blank';
         link.rel = 'noopener noreferrer';
+        attachToolbarWarmup(link);
         link.setAttribute('data-group-key', app.groupId && app.groupName ? 'group:' + app.groupId : 'ungrouped');
         link.style.setProperty('--app-index', String(Math.min(index, 12)));
         if (app.active) {
@@ -1045,6 +1168,7 @@ const toolbarV2Script = `(function(window, document) {
     for (var appIndex = 0; appIndex < apps.length; appIndex++) {
         appsGrid.appendChild(createApp(apps[appIndex], appIndex));
     }
+    scheduleToolbarIdleWarmup();
     emptyState.hidden = apps.length !== 0;
     appsGrid.hidden = apps.length === 0;
 

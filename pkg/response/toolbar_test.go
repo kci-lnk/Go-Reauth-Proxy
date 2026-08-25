@@ -113,6 +113,72 @@ func TestGenerateToolbarPayloadIsValidJSON(t *testing.T) {
 	}
 }
 
+func TestGenerateToolbarAddsDNSPrefetchHintsBeforeRuntimeLoader(t *testing.T) {
+	toolbar := GenerateToolbarWithHosts(
+		nil,
+		[]models.HostRule{
+			{Host: "current.example.com"},
+			{Host: "Apps.Example.com."},
+			{Host: "apps.example.com"},
+			{Host: "media.example.com"},
+			{Host: "192.0.2.10"},
+			{Host: "[2001:db8::10]"},
+			{Host: "invalid.example.com/path"},
+		},
+		"",
+		"current.example.com",
+		"current.example.com",
+		models.GatewayPortalConfig{},
+	)
+
+	for _, want := range []string{
+		`<link rel="dns-prefetch" href="//apps.example.com">`,
+		`<link rel="dns-prefetch" href="//media.example.com">`,
+	} {
+		if strings.Count(toolbar, want) != 1 {
+			t.Fatalf("DNS hint %q appears %d times in %s", want, strings.Count(toolbar, want), toolbar)
+		}
+	}
+	firstHint := strings.Index(toolbar, `<link rel="dns-prefetch"`)
+	loader := strings.Index(toolbar, toolbarTemplatePrefix)
+	if firstHint < 0 || loader < 0 || firstHint >= loader {
+		t.Fatalf("DNS hints must precede the toolbar loader: %s", toolbar)
+	}
+	hints := toolbar[:loader]
+	for _, forbidden := range []string{
+		"current.example.com",
+		"192.0.2.10",
+		"2001:db8::10",
+		"invalid.example.com/path",
+	} {
+		if strings.Contains(hints, forbidden) {
+			t.Fatalf("toolbar contains invalid DNS hint target %q: %s", forbidden, hints)
+		}
+	}
+}
+
+func TestToolbarDNSPrefetchHostnameRejectsURLLikeAndIPHosts(t *testing.T) {
+	tests := map[string]string{
+		"apps.example.com":        "apps.example.com",
+		"APPS.example.com.":       "apps.example.com",
+		"apps.example.com:8443":   "apps.example.com",
+		"bücher.example":          "xn--bcher-kva.example",
+		"192.0.2.10":              "",
+		"[2001:db8::1]":           "",
+		"apps.example.com/path":   "",
+		"user@apps.example.com":   "",
+		"apps.example.com?x=true": "",
+		"apps_example.com":        "",
+		"apps&example.com":        "",
+		"-apps.example.com":       "",
+	}
+	for input, want := range tests {
+		if got := toolbarDNSPrefetchHostname(input); got != want {
+			t.Errorf("toolbarDNSPrefetchHostname(%q) = %q, want %q", input, got, want)
+		}
+	}
+}
+
 func TestToolbarVersionsPlaceWOLShortcutBeforeLogout(t *testing.T) {
 	toolbar := GenerateToolbarWithHosts(
 		nil,
@@ -170,10 +236,11 @@ func TestGenerateToolbarPayloadIncludesFreeIconDragMode(t *testing.T) {
 
 func extractToolbarPayloadForTest(t *testing.T, toolbar string) string {
 	t.Helper()
-	if !strings.HasPrefix(toolbar, toolbarTemplatePrefix) || !strings.HasSuffix(toolbar, toolbarTemplateSuffix) {
+	loader := strings.Index(toolbar, toolbarTemplatePrefix)
+	if loader < 0 || !strings.HasSuffix(toolbar, toolbarTemplateSuffix) {
 		t.Fatalf("toolbar does not use expected template wrapper: %s", toolbar)
 	}
-	return html.UnescapeString(toolbar[len(toolbarTemplatePrefix) : len(toolbar)-len(toolbarTemplateSuffix)])
+	return html.UnescapeString(toolbar[loader+len(toolbarTemplatePrefix) : len(toolbar)-len(toolbarTemplateSuffix)])
 }
 
 func TestGenerateToolbarWithHostsReturnsEmptyWhenPortalDisabled(t *testing.T) {

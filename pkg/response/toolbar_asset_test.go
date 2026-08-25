@@ -2,6 +2,7 @@ package response
 
 import (
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"html"
@@ -69,8 +70,8 @@ func TestToolbarV2RuntimeUsesNativeSafeNewTabNavigation(t *testing.T) {
 		}
 	}
 	for _, forbidden := range []string{
-		"link.addEventListener('click'",
 		"window.location.assign(href)",
+		"e.preventDefault()",
 	} {
 		if strings.Contains(runtime, forbidden) {
 			t.Fatalf("v2 runtime still hijacks application navigation with %q", forbidden)
@@ -97,7 +98,7 @@ func TestGenerateToolbarInjectsOnlyPayloadAndRuntimeLoader(t *testing.T) {
 	if strings.Contains(toolbar, "window.__REAUTH_PROXY_TOOLBAR_DATA__") {
 		t.Fatal("toolbar loader still uses an inline script")
 	}
-	if !strings.HasPrefix(toolbar, toolbarTemplatePrefix) || !strings.HasSuffix(toolbar, toolbarTemplateSuffix) {
+	if !strings.Contains(toolbar, toolbarTemplatePrefix) || !strings.HasSuffix(toolbar, toolbarTemplateSuffix) {
 		t.Fatalf("toolbar does not use the external-script wrapper: %s", toolbar)
 	}
 	if len(toolbar) >= len(toolbarRuntime) {
@@ -140,7 +141,7 @@ func TestGenerateToolbarV2PreservesEscapedGroupMetadataAndLabels(t *testing.T) {
 			Version:      models.GatewayPortalVersionV2,
 		},
 	)
-	if !strings.HasPrefix(toolbar, toolbarV2TemplatePrefix) || !strings.HasSuffix(toolbar, toolbarV2TemplateSuffix) {
+	if !strings.Contains(toolbar, toolbarV2TemplatePrefix) || !strings.HasSuffix(toolbar, toolbarV2TemplateSuffix) {
 		t.Fatalf("v2 toolbar does not use the v2 template wrapper: %s", toolbar)
 	}
 	if count := strings.Count(toolbar, "</script>"); count != 1 {
@@ -155,7 +156,8 @@ func TestGenerateToolbarV2PreservesEscapedGroupMetadataAndLabels(t *testing.T) {
 		} `json:"host_rules"`
 		Labels toolbarLabels `json:"labels"`
 	}
-	raw := html.UnescapeString(toolbar[len(toolbarV2TemplatePrefix) : len(toolbar)-len(toolbarV2TemplateSuffix)])
+	loader := strings.Index(toolbar, toolbarV2TemplatePrefix)
+	raw := html.UnescapeString(toolbar[loader+len(toolbarV2TemplatePrefix) : len(toolbar)-len(toolbarV2TemplateSuffix)])
 	if err := json.Unmarshal([]byte(raw), &payload); err != nil {
 		t.Fatalf("v2 toolbar payload is not valid JSON: %v\n%s", err, toolbar)
 	}
@@ -235,3 +237,133 @@ func TestToolbarRuntimeIsValidJavaScript(t *testing.T) {
 		t.Fatalf("toolbar runtime is invalid JavaScript: %v\n%s", err, output)
 	}
 }
+
+func TestToolbarWarmupRuntimeBehavior(t *testing.T) {
+	if _, err := exec.LookPath("node"); err != nil {
+		t.Skip("node is not installed")
+	}
+
+	tests := []struct {
+		name      string
+		runtime   []byte
+		endMarker string
+	}{
+		{name: "v1", runtime: toolbarRuntime, endMarker: "var navLinks"},
+		{name: "v2", runtime: toolbarV2Runtime, endMarker: "function isAppIconSrc"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			snippet := toolbarWarmupSnippetForTest(t, string(tc.runtime), tc.endMarker)
+			cmd := exec.Command("node", "-e", toolbarWarmupNodeFixture, base64.StdEncoding.EncodeToString([]byte(snippet)))
+			if output, err := cmd.CombinedOutput(); err != nil {
+				t.Fatalf("toolbar warmup behavior failed: %v\n%s", err, output)
+			}
+		})
+	}
+}
+
+func toolbarWarmupSnippetForTest(t *testing.T, runtime string, endMarker string) string {
+	t.Helper()
+	start := strings.Index(runtime, "function buildHostHref")
+	if start < 0 {
+		t.Fatal("toolbar runtime has no host URL builder")
+	}
+	endOffset := strings.Index(runtime[start:], endMarker)
+	if endOffset < 0 {
+		t.Fatalf("toolbar runtime has no warmup end marker %q", endMarker)
+	}
+	return runtime[start : start+endOffset]
+}
+
+const toolbarWarmupNodeFixture = `
+const snippet = Buffer.from(process.argv[1], 'base64').toString('utf8');
+function assert(condition, message) {
+  if (!condition) throw new Error(message);
+}
+function makeEnvironment(hostRules, options) {
+  options = options || {};
+  const storage = Object.assign({}, options.storage || {});
+  const links = [];
+  const idle = [];
+  const head = {appendChild(node) { if (node.rel === 'preconnect') links.push(node); return node; }};
+  const document = {
+    head,
+    documentElement: head,
+    readyState: 'complete',
+    visibilityState: options.visibility || 'visible',
+    createElement() { return {}; },
+    getElementsByTagName() { return [head]; }
+  };
+  const window = {
+    location: new URL('https://launcher.example.test:8443/app'),
+    requestIdleCallback(callback) { idle.push(callback); },
+    setTimeout(callback) { idle.push(callback); },
+    localStorage: {
+      getItem(key) { return Object.prototype.hasOwnProperty.call(storage, key) ? storage[key] : null; },
+      setItem(key, value) { storage[key] = String(value); }
+    }
+  };
+  const navigator = {connection: options.connection || {}};
+  const toolbarData = {host_rules: hostRules};
+  const safeGetStoredItem = (key) => window.localStorage.getItem(key);
+  const safeSetStoredItem = (key, value) => window.localStorage.setItem(key, value);
+  const asString = (value) => typeof value === 'string' ? value : '';
+  const api = new Function('window', 'document', 'navigator', 'toolbarData', 'safeGetStoredItem', 'safeSetStoredItem', 'asString', snippet + '\nreturn { scheduleToolbarIdleWarmup, attachToolbarWarmup };')(
+    window, document, navigator, toolbarData, safeGetStoredItem, safeSetStoredItem, asString
+  );
+  return {api, links, idle, storage};
+}
+const hosts = [{host: 'one.example.test'}, {host: 'two.example.test'}, {host: 'three.example.test'}];
+const first = makeEnvironment(hosts);
+first.api.scheduleToolbarIdleWarmup();
+assert(first.idle.length === 1, 'idle warmup was not scheduled');
+first.idle.shift()();
+assert(first.links.length === 2, 'idle warmup must preconnect at most two origins');
+assert(first.links[0].href === 'https://one.example.test:8443', 'first-run order must follow toolbar order');
+assert(first.links[1].href === 'https://two.example.test:8443', 'second first-run candidate is wrong');
+assert(first.links.every((link) => link.crossOrigin === 'anonymous'), 'preconnect links must be anonymous');
+
+const recentHistory = JSON.stringify({'https://three.example.test:8443': {clicks: 3, last: Date.now()}});
+const ranked = makeEnvironment(hosts, {storage: {reauth_proxy_toolbar_warmup: recentHistory}});
+ranked.api.scheduleToolbarIdleWarmup();
+ranked.idle.shift()();
+assert(ranked.links[0].href === 'https://three.example.test:8443', 'recent click history must rank the target first');
+
+const saveData = makeEnvironment(hosts, {connection: {saveData: true}});
+saveData.api.scheduleToolbarIdleWarmup();
+assert(saveData.idle.length === 0, 'save-data must suppress idle warmup');
+const slowNetwork = makeEnvironment(hosts, {connection: {effectiveType: '2g'}});
+slowNetwork.api.scheduleToolbarIdleWarmup();
+assert(slowNetwork.idle.length === 0, '2g must suppress idle warmup');
+const hiddenPage = makeEnvironment(hosts, {visibility: 'hidden'});
+hiddenPage.api.scheduleToolbarIdleWarmup();
+assert(hiddenPage.idle.length === 0, 'hidden pages must suppress idle warmup');
+
+const intent = makeEnvironment([]);
+const listeners = {};
+const link = {
+  href: 'https://intent.example.test:8443/',
+  getAttribute(name) { return name === 'href' ? this.href : null; },
+  addEventListener(name, callback) { listeners[name] = callback; }
+};
+intent.api.attachToolbarWarmup(link);
+assert(listeners.pointerenter && listeners.focus && listeners.touchstart && listeners.click, 'intent listeners are incomplete');
+listeners.pointerenter();
+assert(intent.links.length === 1 && intent.links[0].href === 'https://intent.example.test:8443', 'pointer intent did not preconnect');
+listeners.click();
+const history = JSON.parse(intent.storage.reauth_proxy_toolbar_warmup);
+assert(history['https://intent.example.test:8443'].clicks === 1, 'click history was not persisted');
+
+const bounded = makeEnvironment([]);
+for (let index = 0; index < 33; index++) {
+  const boundedListeners = {};
+  const boundedLink = {
+    href: 'https://bounded-' + index + '.example.test:8443/',
+    getAttribute(name) { return name === 'href' ? this.href : null; },
+    addEventListener(name, callback) { boundedListeners[name] = callback; }
+  };
+  bounded.api.attachToolbarWarmup(boundedLink);
+  boundedListeners.click();
+}
+assert(Object.keys(JSON.parse(bounded.storage.reauth_proxy_toolbar_warmup)).length === 32, 'click history must stay bounded');
+`

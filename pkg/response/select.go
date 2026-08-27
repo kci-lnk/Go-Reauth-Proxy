@@ -19,7 +19,7 @@ var htmlFuncMap = template.FuncMap{
 	},
 	"hostDisplayLabel": GatewayPortalHostLabel,
 	"hostFaviconURL": func(rule models.HostRule, portalConfig models.GatewayPortalConfig) template.URL {
-		return template.URL(GatewayPortalHostFavicon(rule, portalConfig))
+		return template.URL(gatewayPortalHostInlineFavicon(rule, models.NormalizeGatewayPortalConfig(portalConfig)))
 	},
 }
 

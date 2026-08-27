@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"go-reauth-proxy/pkg/models"
 	"go-reauth-proxy/pkg/response"
@@ -18,7 +19,7 @@ const (
 )
 
 func normalizeToolbarPagePath(raw string) (string, bool) {
-	if raw == "" || len(raw) > toolbarPagePathMaxBytes || raw[0] != '/' || strings.ContainsAny(raw, "\x00\r\n") {
+	if raw == "" || len(raw) > toolbarPagePathMaxBytes || raw[0] != '/' || toolbarInputHasInvalidText(raw) {
 		return "", false
 	}
 	cleaned := path.Clean(raw)
@@ -29,10 +30,26 @@ func normalizeToolbarPagePath(raw string) (string, bool) {
 }
 
 func normalizeToolbarPageQuery(raw string) (string, bool) {
-	if len(raw) > toolbarPagePathMaxBytes || strings.ContainsAny(raw, "\x00\r\n#") {
+	if len(raw) > toolbarPagePathMaxBytes || strings.ContainsRune(raw, '#') || toolbarInputHasInvalidText(raw) {
+		return "", false
+	}
+	decoded, err := url.QueryUnescape(raw)
+	if err != nil || toolbarInputHasInvalidText(decoded) {
 		return "", false
 	}
 	return raw, true
+}
+
+func toolbarInputHasInvalidText(raw string) bool {
+	if !utf8.ValidString(raw) {
+		return true
+	}
+	for i := 0; i < len(raw); i++ {
+		if raw[i] < 0x20 || raw[i] == 0x7f {
+			return true
+		}
+	}
+	return false
 }
 
 func toolbarPageRequest(r *http.Request, pagePath string, pageQuery string) *http.Request {
@@ -55,7 +72,13 @@ func (h *Handler) handleToolbarDataRoute(w http.ResponseWriter, r *http.Request,
 		return result
 	}
 
-	pagePath, ok := normalizeToolbarPagePath(r.URL.Query().Get("page_path"))
+	queryValues, err := url.ParseQuery(r.URL.RawQuery)
+	pagePaths := queryValues["page_path"]
+	if err != nil || len(queryValues) != 1 || len(pagePaths) != 1 {
+		http.Error(w, "Invalid page_path", http.StatusBadRequest)
+		return result
+	}
+	pagePath, ok := normalizeToolbarPagePath(pagePaths[0])
 	if !ok {
 		http.Error(w, "Invalid page_path", http.StatusBadRequest)
 		return result

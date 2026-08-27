@@ -15,8 +15,10 @@ import (
 )
 
 const (
-	WebsiteIconPathPrefix = "/__assets__/website_icon."
-	maxWebsiteIconBytes   = 1024 * 1024
+	WebsiteIconPathPrefix   = "/__assets__/website_icon."
+	maxWebsiteIconBytes     = 1024 * 1024
+	maxWebsiteIconPathBytes = 512
+	derivedIconPathSuffix   = ".img"
 )
 
 //go:embed static/favicon/*
@@ -92,6 +94,18 @@ func ServeFavicon(w http.ResponseWriter, r *http.Request) {
 // authenticated proxy session. Invalid or missing icon data falls back to the
 // embedded fn-knock icon so the URL remains usable for every mapped website.
 func ServeWebsiteIcon(w http.ResponseWriter, r *http.Request, favicon string) {
+	serveWebsiteIcon(w, r, favicon, false)
+}
+
+// ServeContentAddressedWebsiteIcon serves an automatically derived icon path
+// with immutable caching. It verifies the request path against the favicon
+// content before enabling the long-lived policy.
+func ServeContentAddressedWebsiteIcon(w http.ResponseWriter, r *http.Request, favicon string) {
+	derivedPath := EffectiveWebsiteIconPath("", favicon)
+	serveWebsiteIcon(w, r, favicon, derivedPath != "" && r.URL.Path == derivedPath)
+}
+
+func serveWebsiteIcon(w http.ResponseWriter, r *http.Request, favicon string, immutable bool) {
 	contentType, data, ok := decodeWebsiteIconDataURL(favicon)
 	if !ok {
 		contentType = "image/png"
@@ -101,7 +115,11 @@ func ServeWebsiteIcon(w http.ResponseWriter, r *http.Request, favicon string) {
 	hash := sha256.Sum256(data)
 	etag := `"` + hex.EncodeToString(hash[:]) + `"`
 	w.Header().Set("Content-Type", contentType)
-	w.Header().Set("Cache-Control", "public, max-age=300, stale-while-revalidate=86400")
+	cacheControl := "public, max-age=300, stale-while-revalidate=86400"
+	if immutable {
+		cacheControl = "public, max-age=31536000, immutable"
+	}
+	w.Header().Set("Cache-Control", cacheControl)
 	w.Header().Set("Cross-Origin-Resource-Policy", "cross-origin")
 	w.Header().Set("ETag", etag)
 	w.Header().Set("X-Content-Type-Options", "nosniff")
@@ -117,6 +135,46 @@ func ServeWebsiteIcon(w http.ResponseWriter, r *http.Request, favicon string) {
 		return
 	}
 	_, _ = w.Write(data)
+}
+
+// EffectiveWebsiteIconPath returns a short per-host asset path for a favicon.
+// Configured opaque paths are preserved; otherwise valid image data receives
+// a deterministic content-addressed path so toolbar payloads never need to
+// repeat the Base64 image itself.
+func EffectiveWebsiteIconPath(configuredPath string, favicon string) string {
+	if configuredPath = normalizeWebsiteIconPath(configuredPath); configuredPath != "" {
+		return configuredPath
+	}
+	favicon = strings.TrimSpace(favicon)
+	if _, _, ok := validateBase64ImageDataURL(favicon, maxWebsiteIconBytes); !ok {
+		return ""
+	}
+	digest := sha256.Sum256([]byte(favicon))
+	return WebsiteIconPathPrefix + hex.EncodeToString(digest[:]) + derivedIconPathSuffix
+}
+
+func normalizeWebsiteIconPath(value string) string {
+	value = strings.TrimSpace(value)
+	if !strings.HasPrefix(value, WebsiteIconPathPrefix) || len(value) > maxWebsiteIconPathBytes {
+		return ""
+	}
+	name := strings.TrimPrefix(value, WebsiteIconPathPrefix)
+	if name == "" || !isASCIIAlphaNumeric(name[0]) {
+		return ""
+	}
+	for i := 0; i < len(name); i++ {
+		char := name[i]
+		if (char >= 'a' && char <= 'z') || (char >= 'A' && char <= 'Z') ||
+			(char >= '0' && char <= '9') || char == '.' || char == '_' || char == '-' {
+			continue
+		}
+		return ""
+	}
+	return value
+}
+
+func isASCIIAlphaNumeric(char byte) bool {
+	return (char >= 'a' && char <= 'z') || (char >= 'A' && char <= 'Z') || (char >= '0' && char <= '9')
 }
 
 func decodeWebsiteIconDataURL(value string) (string, []byte, bool) {

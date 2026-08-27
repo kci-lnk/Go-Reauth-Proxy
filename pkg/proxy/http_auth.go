@@ -411,10 +411,9 @@ func (h *Handler) authCheckPlanFromResponse(r *http.Request, authConfig models.A
 		subdomainAccessCustom, allowedSubdomainHosts := parseAllowedSubdomainHosts(responseHeaders)
 		credentialIdentity := parseAuthCredentialIdentity(responseHeaders)
 		isSubdomainRuleGrant := resp.GetGrantKind() == pb.AuthGrantKind_AUTH_GRANT_KIND_SUBDOMAIN_RULE
-		authenticated := true
+		authenticated := verifyResponseHasSystemLogin(resp)
 		decision := bridgeDecision
 		if isSubdomainRuleGrant {
-			authenticated = resp.GetLoginAuthenticated()
 			diagnostics.RecordSubdomainGrantState(resp.GetAuthGrantState())
 			if decision == "" {
 				decision = "subdomain_rule_allowed"

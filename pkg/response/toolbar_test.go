@@ -65,12 +65,13 @@ func TestGenerateToolbarWithHostsEscapesDynamicRouteData(t *testing.T) {
 }
 
 func TestGenerateToolbarPayloadIsValidJSON(t *testing.T) {
+	const icon = "data:image/png;base64,AAAA"
 	toolbar := GenerateToolbarWithHosts(
 		[]models.Rule{{Path: `/app "quoted"`}},
 		[]models.HostRule{{
 			Host:    `app.example.com`,
 			Title:   `App <Portal> O'Reilly`,
-			Favicon: `data:image/png;base64,AAAA`,
+			Favicon: icon,
 		}},
 		`/app "quoted"`,
 		`app.example.com`,
@@ -102,7 +103,7 @@ func TestGenerateToolbarPayloadIsValidJSON(t *testing.T) {
 	if len(payload.HostRules) != 1 ||
 		payload.HostRules[0].Host != "app.example.com" ||
 		payload.HostRules[0].Label != "App <Portal> O'Reilly" ||
-		payload.HostRules[0].Favicon != "data:image/png;base64,AAAA" {
+		payload.HostRules[0].Favicon != EffectiveWebsiteIconPath("", icon) {
 		t.Fatalf("unexpected host rules payload: %#v", payload.HostRules)
 	}
 	if payload.CurrentPath != `/app "quoted"` || payload.CurrentHost != "app.example.com" || !payload.ShowAppIcon {
@@ -335,8 +336,9 @@ func TestGenerateToolbarWithHostsIncludesFaviconOnlyWhenEnabled(t *testing.T) {
 		"",
 		models.GatewayPortalConfig{DisplayStyle: models.GatewayPortalDisplayStyleTitle, ShowAppIcon: true},
 	)
-	if !strings.Contains(enabled, `"favicon":"`+icon+`"`) {
-		t.Fatalf("toolbar did not include favicon while app icon display enabled: %s", enabled)
+	iconPath := EffectiveWebsiteIconPath("", icon)
+	if !strings.Contains(enabled, `"favicon":"`+iconPath+`"`) || strings.Contains(enabled, icon) {
+		t.Fatalf("toolbar did not replace favicon data with its asset path: %s", enabled)
 	}
 	if !strings.Contains(enabled, `"show_app_icon":true`) {
 		t.Fatalf("toolbar did not mark app icon display as enabled: %s", enabled)
@@ -360,8 +362,12 @@ func TestGenerateToolbarWithHostsIncludesLargeFaviconUnderLimit(t *testing.T) {
 		models.GatewayPortalConfig{DisplayStyle: models.GatewayPortalDisplayStyleTitle, ShowAppIcon: true},
 	)
 
-	if !strings.Contains(toolbar, `"favicon":"`+icon+`"`) {
-		t.Fatalf("toolbar did not include large favicon under limit: %s", toolbar)
+	iconPath := EffectiveWebsiteIconPath("", icon)
+	if !strings.Contains(toolbar, `"favicon":"`+iconPath+`"`) || strings.Contains(toolbar, icon) {
+		t.Fatalf("toolbar did not externalize large favicon: %s", toolbar)
+	}
+	if len(toolbar) >= len(icon)/10 {
+		t.Fatalf("externalized toolbar remains unexpectedly large: toolbar=%d icon=%d", len(toolbar), len(icon))
 	}
 }
 
@@ -394,8 +400,27 @@ func TestGenerateToolbarWithHostsIncludesFaviconAtDecodedLimit(t *testing.T) {
 		models.GatewayPortalConfig{DisplayStyle: models.GatewayPortalDisplayStyleTitle, ShowAppIcon: true},
 	)
 
-	if !strings.Contains(toolbar, `"favicon":"`+icon+`"`) {
+	if !strings.Contains(toolbar, `"favicon":"`+EffectiveWebsiteIconPath("", icon)+`"`) {
 		t.Fatal("toolbar omitted favicon at the decoded-byte limit")
+	}
+}
+
+func TestGenerateToolbarPrefersConfiguredWebsiteIconPath(t *testing.T) {
+	const iconPath = WebsiteIconPathPrefix + "550e8400-e29b-41d4-a716-446655440000.png"
+	toolbar := GenerateToolbarWithHosts(
+		nil,
+		[]models.HostRule{{
+			Host:            "app.example.com",
+			Favicon:         "data:image/png;base64,AAAA",
+			WebsiteIconPath: iconPath,
+		}},
+		"",
+		"",
+		"",
+		models.GatewayPortalConfig{ShowAppIcon: true},
+	)
+	if !strings.Contains(toolbar, `"favicon":"`+iconPath+`"`) || strings.Contains(toolbar, "data:image") {
+		t.Fatalf("toolbar did not prefer configured website icon path: %s", toolbar)
 	}
 }
 

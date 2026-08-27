@@ -49,7 +49,7 @@ func (b testAuthBridge) AuthorizeHTTP(ctx context.Context, in *pb.AuthorizeHttpR
 	}
 	return &pb.AuthorizeHttpResponse{
 		Preflight: &pb.PreflightAuthResponse{},
-		Verify:    &pb.VerifyAuthResponse{Success: true, Status: http.StatusOK},
+		Verify:    &pb.VerifyAuthResponse{Success: true, Status: http.StatusOK, LoginAuthenticated: true},
 	}, nil
 }
 
@@ -65,7 +65,7 @@ func (b testAuthBridge) VerifyAuth(ctx context.Context, in *pb.VerifyAuthRequest
 	if b.verify != nil {
 		return b.verify(ctx, in)
 	}
-	return &pb.VerifyAuthResponse{Success: true, Status: http.StatusOK}, nil
+	return &pb.VerifyAuthResponse{Success: true, Status: http.StatusOK, LoginAuthenticated: true}, nil
 }
 
 func (b testAuthBridge) PreflightAuth(ctx context.Context, in *pb.PreflightAuthRequest) (*pb.PreflightAuthResponse, error) {

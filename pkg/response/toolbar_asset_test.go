@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"html"
 	"io"
 	"net/http"
@@ -122,6 +123,35 @@ func TestGenerateToolbarDataSelectsRuntimeAndPreservesPayloadShape(t *testing.T)
 	}
 }
 
+func TestGenerateToolbarDataExternalizesRepeatedFaviconBytes(t *testing.T) {
+	icon := "data:image/png;base64," + base64.StdEncoding.EncodeToString([]byte(strings.Repeat("icon-bytes", 4096)))
+	hostRules := make([]models.HostRule, 16)
+	for i := range hostRules {
+		hostRules[i] = models.HostRule{
+			Host:    fmt.Sprintf("app-%d.example.com", i),
+			Favicon: icon,
+		}
+	}
+	body := GenerateToolbarDataWithPrefilteredHostsForLocale(
+		"en",
+		nil,
+		hostRules,
+		"/",
+		"app-0.example.com",
+		"",
+		models.GatewayPortalConfig{ShowAppIcon: true},
+	)
+	if strings.Contains(body, "data:image") {
+		t.Fatal("toolbar data still embeds Base64 favicon bytes")
+	}
+	if got := strings.Count(body, WebsiteIconPathPrefix); got != len(hostRules) {
+		t.Fatalf("website icon paths = %d, want %d", got, len(hostRules))
+	}
+	if len(body) >= 8*1024 {
+		t.Fatalf("externalized toolbar data is unexpectedly large: %d bytes", len(body))
+	}
+}
+
 func TestToolbarV2RuntimeKeepsFixedDesktopScaleAndCoversTabletViewport(t *testing.T) {
 	runtime := string(toolbarV2Runtime)
 	for _, expected := range []string{
@@ -136,6 +166,23 @@ func TestToolbarV2RuntimeKeepsFixedDesktopScaleAndCoversTabletViewport(t *testin
 	} {
 		if !strings.Contains(runtime, expected) {
 			t.Fatalf("v2 runtime is missing responsive invariant %q", expected)
+		}
+	}
+}
+
+func TestToolbarRuntimesResolveWebsiteIconPathsPerHost(t *testing.T) {
+	for name, runtime := range map[string]string{
+		"v1": string(toolbarRuntime),
+		"v2": string(toolbarV2Runtime),
+	} {
+		for _, expected := range []string{
+			"function resolveAppIconSrc(value, host)",
+			"new URL(value, buildHostHref(host)).href",
+			"/__assets__\\/website_icon\\.",
+		} {
+			if !strings.Contains(runtime, expected) {
+				t.Fatalf("%s runtime is missing cached website icon support %q", name, expected)
+			}
 		}
 	}
 }

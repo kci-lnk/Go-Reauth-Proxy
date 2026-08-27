@@ -478,8 +478,9 @@ func TestWOLRouteRequiresLoginAndBuiltinPermission(t *testing.T) {
 						return &pb.VerifyAuthResponse{Success: false, Status: http.StatusUnauthorized}, nil
 					}
 					return &pb.VerifyAuthResponse{
-						Success: true,
-						Status:  http.StatusOK,
+						Success:            true,
+						Status:             http.StatusOK,
+						LoginAuthenticated: true,
 						ResponseHeaders: headersToProto(http.Header{
 							reauthSubdomainAccessHeader:       []string{reauthSubdomainAccessCustom},
 							reauthAllowedSubdomainHostsHeader: test.allowedHosts,
@@ -531,9 +532,10 @@ func TestSelectRouteFiltersHostRulesByCredentialScope(t *testing.T) {
 				t.Fatalf("X-Forwarded-Path = %q, want /__select__", got)
 			}
 			return &pb.VerifyAuthResponse{
-				Success: true,
-				Message: "ok",
-				Status:  http.StatusOK,
+				Success:            true,
+				Message:            "ok",
+				Status:             http.StatusOK,
+				LoginAuthenticated: true,
 				ResponseHeaders: headersToProto(http.Header{
 					reauthSubdomainAccessHeader:       []string{reauthSubdomainAccessCustom},
 					reauthAllowedSubdomainHostsHeader: []string{"app.example.com"},
@@ -603,9 +605,10 @@ func TestSelectRouteCachedCredentialScopeStillFiltersHostRules(t *testing.T) {
 		verify: func(context.Context, *pb.VerifyAuthRequest) (*pb.VerifyAuthResponse, error) {
 			atomic.AddInt32(&verifyHits, 1)
 			return &pb.VerifyAuthResponse{
-				Success: true,
-				Message: "ok",
-				Status:  http.StatusOK,
+				Success:            true,
+				Message:            "ok",
+				Status:             http.StatusOK,
+				LoginAuthenticated: true,
 				ResponseHeaders: headersToProto(http.Header{
 					reauthSubdomainAccessHeader:       []string{reauthSubdomainAccessCustom},
 					reauthAllowedSubdomainHostsHeader: []string{"app.example.com"},

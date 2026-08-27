@@ -14,6 +14,7 @@ import (
 
 	"go-reauth-proxy/pkg/config"
 	"go-reauth-proxy/pkg/models"
+	"go-reauth-proxy/pkg/response"
 )
 
 func TestNewHandlerInitializesSharedProductionTransport(t *testing.T) {
@@ -406,8 +407,9 @@ func TestRequestSnapshotCachesReverseProxyTargets(t *testing.T) {
 		},
 		HostRules: []models.HostRule{
 			{
-				Host:   "app.example.com",
-				Target: "https://127.0.0.1:9443",
+				Host:    "app.example.com",
+				Target:  "https://127.0.0.1:9443",
+				Favicon: "data:image/png;base64,iVBORw0KGgo=",
 				Locations: []models.HostLocation{
 					{Path: "/api", Match: models.HostLocationMatchPrefix, Action: models.HostLocationActionProxy, Target: "wss://127.0.0.1:9444/ws"},
 					{Path: "/healthz", Match: models.HostLocationMatchExact, Action: models.HostLocationActionResponse},
@@ -455,6 +457,13 @@ func TestRequestSnapshotCachesReverseProxyTargets(t *testing.T) {
 	}
 	if len(snapshot.toolbarHostRules) != 1 || snapshot.toolbarHostRules[0].Host != "app.example.com" {
 		t.Fatalf("toolbar host rules = %#v, want only app.example.com", snapshot.toolbarHostRules)
+	}
+	wantIconPath := response.EffectiveWebsiteIconPath("", handler.HostRules[0].Favicon)
+	if got := snapshot.toolbarHostRules[0].WebsiteIconPath; got != wantIconPath {
+		t.Fatalf("toolbar website icon path = %q, want %q", got, wantIconPath)
+	}
+	if got := handler.HostRules[0].WebsiteIconPath; got != "" {
+		t.Fatalf("source website icon path = %q, want unchanged", got)
 	}
 }
 

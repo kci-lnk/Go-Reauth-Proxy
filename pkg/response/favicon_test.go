@@ -35,6 +35,59 @@ func TestServeWebsiteIconUsesRuleDataAndStableCaching(t *testing.T) {
 	}
 }
 
+func TestDerivedWebsiteIconPathIsContentAddressedAndImmutable(t *testing.T) {
+	icon := "data:image/png;base64," + base64.StdEncoding.EncodeToString([]byte("derived-icon"))
+	path := EffectiveWebsiteIconPath("", icon)
+	if !strings.HasPrefix(path, WebsiteIconPathPrefix) || !strings.HasSuffix(path, derivedIconPathSuffix) {
+		t.Fatalf("derived path = %q", path)
+	}
+	if second := EffectiveWebsiteIconPath("", icon); second != path {
+		t.Fatalf("derived path is unstable: %q != %q", second, path)
+	}
+	changedIcon := "data:image/png;base64," + base64.StdEncoding.EncodeToString([]byte("different-icon"))
+	if changed := EffectiveWebsiteIconPath("", changedIcon); changed == path {
+		t.Fatal("different icon data reused the same derived path")
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "http://app.example.com"+path, nil)
+	rec := httptest.NewRecorder()
+	ServeContentAddressedWebsiteIcon(rec, req, icon)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("derived icon response status = %d", rec.Code)
+	}
+	if got := rec.Header().Get("Cache-Control"); got != "public, max-age=31536000, immutable" {
+		t.Fatalf("derived icon Cache-Control = %q", got)
+	}
+}
+
+func TestEffectiveWebsiteIconPathRejectsUnsafeConfiguredPaths(t *testing.T) {
+	icon := "data:image/png;base64,AAAA"
+	for _, configured := range []string{
+		"/favicon.png",
+		WebsiteIconPathPrefix + "_icon.png",
+		WebsiteIconPathPrefix + "../favicon.png",
+		WebsiteIconPathPrefix + "icon.png?token=x",
+		WebsiteIconPathPrefix + "nested/icon.png",
+	} {
+		if got := EffectiveWebsiteIconPath(configured, icon); got == configured {
+			t.Fatalf("unsafe configured path accepted: %q", configured)
+		}
+	}
+}
+
+func TestConfiguredWebsiteIconPathNeverUsesImmutableCaching(t *testing.T) {
+	icon := "data:image/png;base64," + base64.StdEncoding.EncodeToString([]byte("configured-icon"))
+	configuredPath := EffectiveWebsiteIconPath("", icon)
+	req := httptest.NewRequest(http.MethodGet, "http://app.example.com"+configuredPath, nil)
+	rec := httptest.NewRecorder()
+
+	ServeWebsiteIcon(rec, req, icon)
+
+	if got := rec.Header().Get("Cache-Control"); got != "public, max-age=300, stale-while-revalidate=86400" {
+		t.Fatalf("configured website icon Cache-Control = %q", got)
+	}
+}
+
 func TestServeWebsiteIconFallsBackAndSandboxesSVG(t *testing.T) {
 	fallbackReq := httptest.NewRequest(http.MethodGet, "http://app.example.com"+WebsiteIconPathPrefix+"fallback.png", nil)
 	fallbackRec := httptest.NewRecorder()

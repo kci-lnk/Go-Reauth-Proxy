@@ -64,7 +64,7 @@ func TestPublicHostRuleInjectsToolbarWhenAuthCookieIsAuthenticated(t *testing.T)
 			if !strings.Contains(ctx.GetCookie(), authSessionCookieName+"=ok") {
 				t.Fatalf("auth request Cookie = %q, want %s=ok", ctx.GetCookie(), authSessionCookieName)
 			}
-			return &pb.VerifyAuthResponse{Success: true, Status: http.StatusOK}, nil
+			return &pb.VerifyAuthResponse{Success: true, Status: http.StatusOK, LoginAuthenticated: true}, nil
 		},
 	}
 
@@ -303,7 +303,7 @@ func TestUnavailablePublicHostShowsSelectLinkForAuthenticatedIdentity(t *testing
 
 	bridge := testAuthBridge{
 		verify: func(context.Context, *pb.VerifyAuthRequest) (*pb.VerifyAuthResponse, error) {
-			return &pb.VerifyAuthResponse{Success: true, Status: http.StatusOK}, nil
+			return &pb.VerifyAuthResponse{Success: true, Status: http.StatusOK, LoginAuthenticated: true}, nil
 		},
 	}
 	handler := newPublicHostToolbarHandler(targetURL, bridge)

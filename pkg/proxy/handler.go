@@ -2908,6 +2908,7 @@ func buildToolbarRouteSnapshot(rules []models.Rule, hostRules []models.HostRule,
 		if !targetSupportsToolbarNavigation(rule.Target, targets) {
 			continue
 		}
+		rule.WebsiteIconPath = response.EffectiveWebsiteIconPath(rule.WebsiteIconPath, rule.Favicon)
 		toolbarHostRules = append(toolbarHostRules, rule)
 	}
 	return toolbarRules, toolbarHostRules

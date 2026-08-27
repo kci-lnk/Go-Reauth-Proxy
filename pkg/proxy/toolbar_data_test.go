@@ -55,7 +55,7 @@ func TestToolbarDataRouteUsesOriginalPageContextAndLatestSnapshot(t *testing.T) 
 			if got := in.GetContext().GetRawQuery(); got != "tab=recent" {
 				t.Fatalf("auth context query = %q, want tab=recent", got)
 			}
-			return &pb.VerifyAuthResponse{Success: true, Status: http.StatusOK}, nil
+			return &pb.VerifyAuthResponse{Success: true, Status: http.StatusOK, LoginAuthenticated: true}, nil
 		},
 	}
 	target := newToolbarHTMLTarget(t)
@@ -130,7 +130,7 @@ func TestToolbarDataRouteRevalidatesAuthenticationAfterLogout(t *testing.T) {
 					SetCookies: []string{clearSessionCookie},
 				}, nil
 			}
-			return &pb.VerifyAuthResponse{Success: true, Status: http.StatusOK}, nil
+			return &pb.VerifyAuthResponse{Success: true, Status: http.StatusOK, LoginAuthenticated: true}, nil
 		},
 	}
 	target := newToolbarHTMLTarget(t)
@@ -180,6 +180,70 @@ func TestToolbarDataRouteRevalidatesAuthenticationAfterLogout(t *testing.T) {
 	}
 }
 
+func TestToolbarDataRouteDoesNotTreatRouteAccessAsLogin(t *testing.T) {
+	const clearSessionCookie = authSessionCookieName + "=; Path=/; Max-Age=0; HttpOnly; SameSite=Lax"
+	tests := []struct {
+		name       string
+		credential func(*http.Request)
+		setCookies []string
+	}{
+		{
+			name: "forged session cookie",
+			credential: func(r *http.Request) {
+				r.AddCookie(&http.Cookie{Name: authSessionCookieName, Value: "forged"})
+			},
+			setCookies: []string{clearSessionCookie},
+		},
+		{
+			name: "forged share cookie",
+			credential: func(r *http.Request) {
+				r.AddCookie(&http.Cookie{Name: authShareSessionCookieName, Value: "forged"})
+			},
+		},
+		{
+			name: "forged authorization header",
+			credential: func(r *http.Request) {
+				r.Header.Set("Authorization", "Bearer forged")
+			},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var verifyCalls atomic.Int32
+			bridge := testAuthBridge{
+				verify: func(context.Context, *pb.VerifyAuthRequest) (*pb.VerifyAuthResponse, error) {
+					verifyCalls.Add(1)
+					return &pb.VerifyAuthResponse{
+						Success:            true,
+						Status:             http.StatusOK,
+						LoginAuthenticated: false,
+						SetCookies:         test.setCookies,
+					}, nil
+				},
+			}
+			target := newToolbarHTMLTarget(t)
+			defer target.Close()
+			handler := newPublicHostToolbarHandler(target.URL, bridge)
+			req := httptest.NewRequest(http.MethodGet, "http://public.example.com"+response.ToolbarDataPath()+"?page_path=/", nil)
+			test.credential(req)
+			rec := httptest.NewRecorder()
+
+			handler.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusNoContent || rec.Body.Len() != 0 {
+				t.Fatalf("route-authorized anonymous response = %d %q", rec.Code, rec.Body.String())
+			}
+			if got := verifyCalls.Load(); got != 1 {
+				t.Fatalf("verify calls = %d, want 1", got)
+			}
+			if got := rec.Header().Get("Cache-Control"); !strings.Contains(got, "no-store") {
+				t.Fatalf("Cache-Control = %q, want no-store", got)
+			}
+		})
+	}
+}
+
 func TestToolbarDataRoutePreservesAccessModeAndAdvancedPolicyCacheDimension(t *testing.T) {
 	var verifyCalls int32
 	bridge := testAuthBridge{
@@ -191,6 +255,7 @@ func TestToolbarDataRoutePreservesAccessModeAndAdvancedPolicyCacheDimension(t *t
 			return &pb.VerifyAuthResponse{
 				Success:            true,
 				Status:             http.StatusOK,
+				LoginAuthenticated: true,
 				CacheMaxAgeSeconds: 60,
 			}, nil
 		},
@@ -300,6 +365,28 @@ func TestToolbarDataRouteFailsClosed(t *testing.T) {
 	handler.ServeHTTP(invalidQuery, invalidQueryRequest)
 	if invalidQuery.Code != http.StatusBadRequest {
 		t.Fatalf("invalid page query status = %d", invalidQuery.Code)
+	}
+	invalidUTF8 := httptest.NewRecorder()
+	handler.ServeHTTP(invalidUTF8, httptest.NewRequest(http.MethodGet, "http://public.example.com"+response.ToolbarDataPath()+"?page_path=%2F%FF", nil))
+	if invalidUTF8.Code != http.StatusBadRequest {
+		t.Fatalf("invalid UTF-8 page_path status = %d", invalidUTF8.Code)
+	}
+	duplicatePath := httptest.NewRecorder()
+	handler.ServeHTTP(duplicatePath, httptest.NewRequest(http.MethodGet, "http://public.example.com"+response.ToolbarDataPath()+"?page_path=%2F&page_path=%2Fadmin", nil))
+	if duplicatePath.Code != http.StatusBadRequest {
+		t.Fatalf("duplicate page_path status = %d", duplicatePath.Code)
+	}
+	unknownParameter := httptest.NewRecorder()
+	handler.ServeHTTP(unknownParameter, httptest.NewRequest(http.MethodGet, "http://public.example.com"+response.ToolbarDataPath()+"?page_path=%2F&extra=value", nil))
+	if unknownParameter.Code != http.StatusBadRequest {
+		t.Fatalf("unknown toolbar data parameter status = %d", unknownParameter.Code)
+	}
+	invalidEncodedQuery := httptest.NewRecorder()
+	invalidEncodedQueryRequest := authenticatedToolbarDataRequest(http.MethodGet, "public.example.com", "/")
+	invalidEncodedQueryRequest.Header.Set(toolbarPageQueryHeader, "tab=%FF")
+	handler.ServeHTTP(invalidEncodedQuery, invalidEncodedQueryRequest)
+	if invalidEncodedQuery.Code != http.StatusBadRequest {
+		t.Fatalf("invalid encoded page query status = %d", invalidEncodedQuery.Code)
 	}
 
 	methodNotAllowed := httptest.NewRecorder()

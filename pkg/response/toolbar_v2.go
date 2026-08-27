@@ -872,8 +872,29 @@ const toolbarV2Script = `(function(window, document) {
         if (document.readyState === 'complete') afterLoad();
         else window.addEventListener('load', afterLoad, {once: true});
     }
+    function isWebsiteIconPath(value) {
+        return /^\/__assets__\/website_icon\.[A-Za-z0-9][A-Za-z0-9._-]{0,486}$/.test(asString(value).trim());
+    }
+    function resolveAppIconSrc(value, host) {
+        value = asString(value).trim();
+        if (/^data:image\//i.test(value)) return value;
+        if (!isWebsiteIconPath(value)) return '';
+        try {
+            return new URL(value, buildHostHref(host)).href;
+        } catch (err) {
+            return '';
+        }
+    }
     function isAppIconSrc(value) {
-        return /^data:image\//i.test(asString(value).trim());
+        value = asString(value).trim();
+        if (/^data:image\//i.test(value)) return true;
+        try {
+            var parsed = new URL(value);
+            return (parsed.protocol === 'http:' || parsed.protocol === 'https:') &&
+                !parsed.search && !parsed.hash && isWebsiteIconPath(parsed.pathname);
+        } catch (err) {
+            return false;
+        }
     }
     function fallbackLetter(value) {
         var characters = Array.from(asString(value).trim());
@@ -1096,7 +1117,7 @@ const toolbarV2Script = `(function(window, document) {
             apps.push({
                 label: asString(hostRule.label) || host,
                 href: buildHostHref(host),
-                icon: toolbarData.show_app_icon ? asString(hostRule.favicon) : '',
+                icon: toolbarData.show_app_icon ? resolveAppIconSrc(hostRule.favicon, host) : '',
                 groupId: asString(hostRule.group_id).trim(),
                 groupName: asString(hostRule.group_name).trim(),
                 active: isActiveHost(host)

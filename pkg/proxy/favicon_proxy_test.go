@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"go-reauth-proxy/pkg/models"
+	"go-reauth-proxy/pkg/response"
 )
 
 func TestHostRuleServesStableWebsiteIconBeforeAuthentication(t *testing.T) {
@@ -42,6 +43,33 @@ func TestHostRuleServesStableWebsiteIconBeforeAuthentication(t *testing.T) {
 	handler.ServeHTTP(guessedRec, guessed)
 	if guessedRec.Code != http.StatusNotFound {
 		t.Fatalf("guessed website icon status=%d, want 404", guessedRec.Code)
+	}
+}
+
+func TestHostRuleServesDerivedWebsiteIconPath(t *testing.T) {
+	icon := "data:image/png;base64," + base64.StdEncoding.EncodeToString([]byte("derived-private-icon"))
+	iconPath := response.EffectiveWebsiteIconPath("", icon)
+	handler := &Handler{
+		HostRules: []models.HostRule{{
+			Host:    "private.example.com",
+			Target:  "http://127.0.0.1:1",
+			UseAuth: true,
+			Favicon: icon,
+		}},
+		authCache:      newAuthStateCache(),
+		preflightCache: newPreflightStateCache(),
+	}
+	handler.publishRequestSnapshotLocked()
+
+	req := httptest.NewRequest(http.MethodGet, "http://private.example.com"+iconPath, nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK || rec.Body.String() != "derived-private-icon" {
+		t.Fatalf("derived website icon status=%d body=%q", rec.Code, rec.Body.String())
+	}
+	if got := rec.Header().Get("Cache-Control"); got != "public, max-age=31536000, immutable" {
+		t.Fatalf("derived website icon Cache-Control = %q", got)
 	}
 }
 

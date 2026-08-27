@@ -21,16 +21,25 @@ func serveWebsiteIconRequest(
 	if rule == nil || !strings.HasPrefix(r.URL.Path, response.WebsiteIconPathPrefix) {
 		return false
 	}
-	if rule.WebsiteIconPath == "" || r.URL.Path != rule.WebsiteIconPath {
+	configuredPath := response.EffectiveWebsiteIconPath(rule.WebsiteIconPath, "")
+	iconPath := configuredPath
+	if iconPath == "" {
+		iconPath = response.EffectiveWebsiteIconPath("", rule.Favicon)
+	}
+	if iconPath == "" || r.URL.Path != iconPath {
 		http.NotFound(w, r)
 		return true
 	}
 	accessEntry.RouteType = "favicon"
-	accessEntry.RouteKey = rule.WebsiteIconPath
+	accessEntry.RouteKey = iconPath
 	accessEntry.Matched = true
 	if event := debugProxyEvent("favicon_served", requestID); event != nil {
-		event.Str("path", rule.WebsiteIconPath).Send()
+		event.Str("path", iconPath).Send()
 	}
-	response.ServeWebsiteIcon(w, r, rule.Favicon)
+	if configuredPath == "" {
+		response.ServeContentAddressedWebsiteIcon(w, r, rule.Favicon)
+	} else {
+		response.ServeWebsiteIcon(w, r, rule.Favicon)
+	}
 	return true
 }

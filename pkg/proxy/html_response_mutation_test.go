@@ -489,7 +489,7 @@ func TestPublicHostRuleToolbarStreamsLargeHTMLBody(t *testing.T) {
 	bridge := testAuthBridge{
 		verify: func(context.Context, *pb.VerifyAuthRequest) (*pb.VerifyAuthResponse, error) {
 			atomic.AddInt32(&verifyCalls, 1)
-			return &pb.VerifyAuthResponse{Success: true, Status: http.StatusOK}, nil
+			return &pb.VerifyAuthResponse{Success: true, Status: http.StatusOK, LoginAuthenticated: true}, nil
 		},
 	}
 

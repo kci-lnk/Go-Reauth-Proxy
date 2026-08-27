@@ -229,7 +229,7 @@ func TestSelectRouteFiltersUnavailableHostRules(t *testing.T) {
 		},
 		authBridge: testAuthBridge{
 			verify: func(context.Context, *pb.VerifyAuthRequest) (*pb.VerifyAuthResponse, error) {
-				return &pb.VerifyAuthResponse{Success: true, Status: http.StatusOK}, nil
+				return &pb.VerifyAuthResponse{Success: true, Status: http.StatusOK, LoginAuthenticated: true}, nil
 			},
 		},
 		authCache:      newAuthStateCache(),

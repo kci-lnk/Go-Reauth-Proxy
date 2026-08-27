@@ -592,8 +592,9 @@ func successfulCombinedAuthResponse(mode pb.HttpAuthMode, preflightScope pb.Auth
 
 func successfulVerifyAuthResponse(setCookies []string) *pb.VerifyAuthResponse {
 	return &pb.VerifyAuthResponse{
-		Success:    true,
-		Status:     http.StatusOK,
-		SetCookies: append([]string(nil), setCookies...),
+		Success:            true,
+		Status:             http.StatusOK,
+		SetCookies:         append([]string(nil), setCookies...),
+		LoginAuthenticated: true,
 	}
 }

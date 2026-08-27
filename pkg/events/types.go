@@ -14,6 +14,7 @@ type SystemEventSubject struct {
 }
 
 type SystemEventPublishInput struct {
+	TraceID          string              `json:"trace_id,omitempty"`
 	Type             string              `json:"type"`
 	Source           string              `json:"source"`
 	Level            string              `json:"level,omitempty"`

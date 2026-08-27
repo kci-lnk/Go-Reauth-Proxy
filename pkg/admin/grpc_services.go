@@ -639,6 +639,24 @@ func (s *GRPCServer) QueryLogEntries(ctx context.Context, req *pb.GatewayLogQuer
 	return logQueryResultToProto(result), nil
 }
 
+func (s *GRPCServer) FindLogEntryByTraceId(ctx context.Context, req *pb.GatewayLogTraceRequest) (*pb.GatewayLogTraceResult, error) {
+	if err := s.checkToken(ctx); err != nil {
+		return nil, err
+	}
+	if req == nil || strings.TrimSpace(req.GetTraceId()) == "" {
+		return nil, grpcBadRequest("trace_id is required")
+	}
+	result, err := s.admin.ProxyHandler.FindLogEntryByTraceID(req.GetTraceId())
+	if err != nil {
+		return nil, grpcInternal("failed to find log entry: %v", err)
+	}
+	response := &pb.GatewayLogTraceResult{TraceId: result.TraceID, Found: result.Found}
+	if result.Found {
+		response.Entry = logEntryToProto(result.Entry)
+	}
+	return response, nil
+}
+
 func (s *GRPCServer) AnalyzeLogEntries(ctx context.Context, req *pb.GatewayLogAnalyticsQuery) (*pb.GatewayLogAnalyticsResult, error) {
 	if err := s.checkToken(ctx); err != nil {
 		return nil, err

@@ -474,7 +474,10 @@ func (rt *Runtime) Evaluate(r *http.Request, ctx EvaluateContext) Decision {
 		return decision
 	}
 
-	traceID := newTraceID()
+	traceID := strings.TrimSpace(ctx.TraceID)
+	if traceID == "" {
+		traceID = newTraceID()
+	}
 	decision.TraceID = traceID
 	decision.BundleID = compiled.BundleID
 
@@ -931,7 +934,7 @@ func newTraceID() string {
 
 func formatTraceID(uuid [16]byte) string {
 	var buf [40]byte
-	copy(buf[:], "waf_")
+	copy(buf[:], "trc_")
 	hex.Encode(buf[4:12], uuid[0:4])
 	buf[12] = '-'
 	hex.Encode(buf[13:17], uuid[4:6])

@@ -2114,13 +2114,14 @@ var GatewayControlService_ServiceDesc = grpc.ServiceDesc{
 }
 
 const (
-	GatewayLogsService_GetLoggingConfig_FullMethodName    = "/fnknock.v1.GatewayLogsService/GetLoggingConfig"
-	GatewayLogsService_SetLoggingConfig_FullMethodName    = "/fnknock.v1.GatewayLogsService/SetLoggingConfig"
-	GatewayLogsService_GetLoggingDirectory_FullMethodName = "/fnknock.v1.GatewayLogsService/GetLoggingDirectory"
-	GatewayLogsService_GetLogDates_FullMethodName         = "/fnknock.v1.GatewayLogsService/GetLogDates"
-	GatewayLogsService_QueryLogEntries_FullMethodName     = "/fnknock.v1.GatewayLogsService/QueryLogEntries"
-	GatewayLogsService_AnalyzeLogEntries_FullMethodName   = "/fnknock.v1.GatewayLogsService/AnalyzeLogEntries"
-	GatewayLogsService_DeleteLogDate_FullMethodName       = "/fnknock.v1.GatewayLogsService/DeleteLogDate"
+	GatewayLogsService_GetLoggingConfig_FullMethodName      = "/fnknock.v1.GatewayLogsService/GetLoggingConfig"
+	GatewayLogsService_SetLoggingConfig_FullMethodName      = "/fnknock.v1.GatewayLogsService/SetLoggingConfig"
+	GatewayLogsService_GetLoggingDirectory_FullMethodName   = "/fnknock.v1.GatewayLogsService/GetLoggingDirectory"
+	GatewayLogsService_GetLogDates_FullMethodName           = "/fnknock.v1.GatewayLogsService/GetLogDates"
+	GatewayLogsService_QueryLogEntries_FullMethodName       = "/fnknock.v1.GatewayLogsService/QueryLogEntries"
+	GatewayLogsService_FindLogEntryByTraceId_FullMethodName = "/fnknock.v1.GatewayLogsService/FindLogEntryByTraceId"
+	GatewayLogsService_AnalyzeLogEntries_FullMethodName     = "/fnknock.v1.GatewayLogsService/AnalyzeLogEntries"
+	GatewayLogsService_DeleteLogDate_FullMethodName         = "/fnknock.v1.GatewayLogsService/DeleteLogDate"
 )
 
 // GatewayLogsServiceClient is the client API for GatewayLogsService service.
@@ -2132,6 +2133,7 @@ type GatewayLogsServiceClient interface {
 	GetLoggingDirectory(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*StringValue, error)
 	GetLogDates(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*GatewayLogDates, error)
 	QueryLogEntries(ctx context.Context, in *GatewayLogQuery, opts ...grpc.CallOption) (*GatewayLogQueryResult, error)
+	FindLogEntryByTraceId(ctx context.Context, in *GatewayLogTraceRequest, opts ...grpc.CallOption) (*GatewayLogTraceResult, error)
 	AnalyzeLogEntries(ctx context.Context, in *GatewayLogAnalyticsQuery, opts ...grpc.CallOption) (*GatewayLogAnalyticsResult, error)
 	DeleteLogDate(ctx context.Context, in *StringValue, opts ...grpc.CallOption) (*GatewayLogDeleteResult, error)
 }
@@ -2194,6 +2196,16 @@ func (c *gatewayLogsServiceClient) QueryLogEntries(ctx context.Context, in *Gate
 	return out, nil
 }
 
+func (c *gatewayLogsServiceClient) FindLogEntryByTraceId(ctx context.Context, in *GatewayLogTraceRequest, opts ...grpc.CallOption) (*GatewayLogTraceResult, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GatewayLogTraceResult)
+	err := c.cc.Invoke(ctx, GatewayLogsService_FindLogEntryByTraceId_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *gatewayLogsServiceClient) AnalyzeLogEntries(ctx context.Context, in *GatewayLogAnalyticsQuery, opts ...grpc.CallOption) (*GatewayLogAnalyticsResult, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(GatewayLogAnalyticsResult)
@@ -2223,6 +2235,7 @@ type GatewayLogsServiceServer interface {
 	GetLoggingDirectory(context.Context, *emptypb.Empty) (*StringValue, error)
 	GetLogDates(context.Context, *emptypb.Empty) (*GatewayLogDates, error)
 	QueryLogEntries(context.Context, *GatewayLogQuery) (*GatewayLogQueryResult, error)
+	FindLogEntryByTraceId(context.Context, *GatewayLogTraceRequest) (*GatewayLogTraceResult, error)
 	AnalyzeLogEntries(context.Context, *GatewayLogAnalyticsQuery) (*GatewayLogAnalyticsResult, error)
 	DeleteLogDate(context.Context, *StringValue) (*GatewayLogDeleteResult, error)
 	mustEmbedUnimplementedGatewayLogsServiceServer()
@@ -2249,6 +2262,9 @@ func (UnimplementedGatewayLogsServiceServer) GetLogDates(context.Context, *empty
 }
 func (UnimplementedGatewayLogsServiceServer) QueryLogEntries(context.Context, *GatewayLogQuery) (*GatewayLogQueryResult, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method QueryLogEntries not implemented")
+}
+func (UnimplementedGatewayLogsServiceServer) FindLogEntryByTraceId(context.Context, *GatewayLogTraceRequest) (*GatewayLogTraceResult, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method FindLogEntryByTraceId not implemented")
 }
 func (UnimplementedGatewayLogsServiceServer) AnalyzeLogEntries(context.Context, *GatewayLogAnalyticsQuery) (*GatewayLogAnalyticsResult, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method AnalyzeLogEntries not implemented")
@@ -2367,6 +2383,24 @@ func _GatewayLogsService_QueryLogEntries_Handler(srv interface{}, ctx context.Co
 	return interceptor(ctx, in, info, handler)
 }
 
+func _GatewayLogsService_FindLogEntryByTraceId_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GatewayLogTraceRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(GatewayLogsServiceServer).FindLogEntryByTraceId(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: GatewayLogsService_FindLogEntryByTraceId_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(GatewayLogsServiceServer).FindLogEntryByTraceId(ctx, req.(*GatewayLogTraceRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _GatewayLogsService_AnalyzeLogEntries_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(GatewayLogAnalyticsQuery)
 	if err := dec(in); err != nil {
@@ -2429,6 +2463,10 @@ var GatewayLogsService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "QueryLogEntries",
 			Handler:    _GatewayLogsService_QueryLogEntries_Handler,
+		},
+		{
+			MethodName: "FindLogEntryByTraceId",
+			Handler:    _GatewayLogsService_FindLogEntryByTraceId_Handler,
 		},
 		{
 			MethodName: "AnalyzeLogEntries",

@@ -1,7 +1,6 @@
 package proxy
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"crypto/hmac"
@@ -2332,6 +2331,7 @@ func (h *Handler) allowReverseProxyRequest(
 		}
 		if decision.NewlyBlocked {
 			h.enqueueGatewayThrottleBlockedEvent(gatewayThrottleBlockedEvent{
+				TraceID:      requestTraceID(r),
 				ClientIP:     clientIP,
 				BlockedUntil: decision.BlockedUntil,
 				Config:       decision.Config,
@@ -2382,6 +2382,7 @@ func gatewayThrottleDedupeKey(ip string, blockedUntil time.Time) string {
 const gatewayThrottleEventQueueSize = 64
 
 type gatewayThrottleBlockedEvent struct {
+	TraceID      string
 	ClientIP     string
 	BlockedUntil time.Time
 	Config       models.ReverseProxyThrottleConfig
@@ -2435,6 +2436,7 @@ func (h *Handler) emitGatewayThrottleBlockedEvent(args gatewayThrottleBlockedEve
 	defer cancel()
 
 	err := client.Publish(ctx, 0, events.SystemEventPublishInput{
+		TraceID:          args.TraceID,
 		Type:             events.FnEventGatewayThrottleBlocked,
 		Source:           events.SystemEventSourceGoReauthProxy,
 		Level:            events.FnEventLevelWarn,
@@ -2470,6 +2472,7 @@ const (
 )
 
 type gatewayVisibilityBlockedEvent struct {
+	TraceID         string
 	ClientIP        string
 	BlockedAt       time.Time
 	Method          string
@@ -2545,6 +2548,7 @@ func (h *Handler) emitGatewayVisibilityBlockedEvent(args gatewayVisibilityBlocke
 	defer cancel()
 
 	err := client.Publish(ctx, 0, events.SystemEventPublishInput{
+		TraceID:          args.TraceID,
 		Type:             events.FnEventGatewayVisibilityBlocked,
 		Source:           events.SystemEventSourceGoReauthProxy,
 		Level:            events.FnEventLevelWarn,
@@ -4917,100 +4921,6 @@ func (m *requestTrafficMetrics) add5xx() {
 	m.hostTraffic.error5xx.Add(1)
 }
 
-type trafficReadCloser struct {
-	io.ReadCloser
-	handler *Handler
-	metrics *requestTrafficMetrics
-}
-
-func (trc *trafficReadCloser) Read(p []byte) (int, error) {
-	n, err := trc.ReadCloser.Read(p)
-	if n > 0 {
-		trc.metrics.addIn(trc.handler, uint64(n))
-	}
-	return n, err
-}
-
-type trafficResponseWriter struct {
-	http.ResponseWriter
-	handler            *Handler
-	metrics            requestTrafficMetrics
-	deepMonitor        *deepMonitorRequest
-	skipAccessLog      bool
-	upstreamErrorClass string
-}
-
-func (tw *trafficResponseWriter) WriteHeader(statusCode int) {
-	if !tw.metrics.wroteHeader {
-		tw.metrics.wroteHeader = true
-		tw.metrics.statusCode = statusCode
-		if tw.deepMonitor != nil {
-			tw.deepMonitor.captureClientHeader(tw.Header())
-		}
-	}
-	tw.ResponseWriter.WriteHeader(statusCode)
-}
-
-func (tw *trafficResponseWriter) Write(p []byte) (int, error) {
-	if !tw.metrics.wroteHeader {
-		tw.WriteHeader(http.StatusOK)
-	}
-	n, err := tw.ResponseWriter.Write(p)
-	if n > 0 {
-		tw.metrics.addOut(tw.handler, uint64(n))
-		if tw.deepMonitor != nil {
-			tw.deepMonitor.captureClientBody(p[:n])
-		}
-	}
-	return n, err
-}
-
-func (tw *trafficResponseWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
-	hj, ok := tw.ResponseWriter.(http.Hijacker)
-	if !ok {
-		return nil, nil, http.ErrNotSupported
-	}
-	return hj.Hijack()
-}
-
-func (tw *trafficResponseWriter) Flush() {
-	if fl, ok := tw.ResponseWriter.(http.Flusher); ok {
-		fl.Flush()
-	}
-}
-
-func (tw *trafficResponseWriter) Push(target string, opts *http.PushOptions) error {
-	ps, ok := tw.ResponseWriter.(http.Pusher)
-	if !ok {
-		return http.ErrNotSupported
-	}
-	return ps.Push(target, opts)
-}
-
-func (tw *trafficResponseWriter) SuppressAccessLog() {
-	tw.skipAccessLog = true
-}
-
-type accessLogSuppressor interface {
-	SuppressAccessLog()
-}
-
-func suppressAccessLog(w http.ResponseWriter) {
-	if suppressor, ok := w.(accessLogSuppressor); ok {
-		suppressor.SuppressAccessLog()
-	}
-}
-
-func wrapRequestBodyForTraffic(r *http.Request, h *Handler, metrics *requestTrafficMetrics) {
-	if r == nil || r.Body == nil || r.Body == http.NoBody {
-		return
-	}
-	if _, ok := r.Body.(*trafficReadCloser); ok {
-		return
-	}
-	r.Body = &trafficReadCloser{ReadCloser: r.Body, handler: h, metrics: metrics}
-}
-
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	diagnostics.BeginProxyRequest()
 	defer diagnostics.EndProxyRequest()
@@ -5025,6 +4935,14 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		// a query was supplied so the reserved route can reject it below.
 		r.URL.RawQuery = ""
 	}
+	traceID := newRequestTraceID()
+	if r.Header == nil {
+		r.Header = make(http.Header)
+	}
+	r.Header.Del(traceIDHeader)
+	r.Header.Set(traceIDHeader, traceID)
+	w.Header().Set(traceIDHeader, traceID)
+	r = withRequestTraceID(r, traceID)
 	var deepMonitorTrace *deepMonitorRequest
 	if !certificateDeploySensitivePath {
 		deepMonitorTrace = h.beginDeepMonitor(r, start)
@@ -5034,10 +4952,16 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if logger.DebugEnabled() {
 		requestID = logger.NextDebugRequestID()
 	}
-	tw := &trafficResponseWriter{ResponseWriter: w, handler: h, deepMonitor: deepMonitorTrace}
+	tw := &trafficResponseWriter{
+		ResponseWriter: w,
+		handler:        h,
+		traceID:        traceID,
+		deepMonitor:    deepMonitorTrace,
+	}
 	tw.metrics.statusCode = http.StatusOK
 	metrics := &tw.metrics
 	accessEntry := gatewaylog.Entry{
+		TraceID:         traceID,
 		Method:          r.Method,
 		Scheme:          requestScheme(r),
 		Host:            r.Host,
@@ -5065,7 +4989,8 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w = tw
 	debugHeaderField, debugHeaderValue := requestDebugHeaders(certificateDeploySensitivePath, r.Header)
 	if event := debugProxyEvent("request_start", requestID); event != nil {
-		event.Str("method", r.Method).
+		event.Str("trace_id", traceID).
+			Str("method", r.Method).
 			Str("scheme", requestScheme(r)).
 			Str("host", logger.SanitizeLogString(r.Host)).
 			Str("path", logger.SanitizeLogString(r.URL.Path)).
@@ -5114,7 +5039,8 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			h.gatewayLogManager.Log(accessEntry)
 		}
 		if event := debugProxyEvent("request_end", requestID); event != nil {
-			event.Str("method", r.Method).
+			event.Str("trace_id", traceID).
+				Str("method", r.Method).
 				Str("host", logger.SanitizeLogString(accessEntry.Host)).
 				Str("path", logger.SanitizeLogString(accessEntry.Path)).
 				Str("route_type", accessEntry.RouteType).
@@ -5262,6 +5188,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		visibilityScope, visibilityMode := gatewayVisibilityPolicyContext(matchedHostRule, snapshot)
 		routeType, routeKey := gatewayVisibilityRouteContext(r, snapshot, matchedHostRule, fnosConnect != nil)
 		h.enqueueGatewayVisibilityBlockedEvent(gatewayVisibilityBlockedEvent{
+			TraceID:         traceID,
 			ClientIP:        clientIP,
 			BlockedAt:       time.Now(),
 			Method:          r.Method,
@@ -5538,6 +5465,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if !trustedClientIP && !wafBypassedByCommonLocation {
 			wafTimingStarted := time.Now()
 			decision := wafRuntime.Evaluate(r, proxywaf.EvaluateContext{
+				TraceID:    traceID,
 				ClientIP:   clientIP,
 				RouteType:  wafRouteType,
 				RouteKey:   wafRouteKey,

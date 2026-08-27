@@ -429,6 +429,13 @@ func serveReverseProxyWithResponseCoalescer(proxy *httputil.ReverseProxy, writer
 	proxyCopy := *proxy
 	originalModifyResponse := proxy.ModifyResponse
 	proxyCopy.ModifyResponse = func(resp *http.Response) error {
+		if traceID := requestTraceID(r); traceID != "" {
+			if resp.StatusCode == http.StatusSwitchingProtocols {
+				resp.Header.Del(traceIDHeader)
+			} else {
+				resp.Header.Set(traceIDHeader, traceID)
+			}
+		}
 		if originalModifyResponse != nil {
 			if err := originalModifyResponse(resp); err != nil {
 				return err

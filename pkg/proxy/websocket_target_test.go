@@ -13,8 +13,9 @@ import (
 )
 
 type websocketUpstreamRequest struct {
-	path  string
-	query string
+	path    string
+	query   string
+	traceID string
 }
 
 func newWebSocketEchoServer(t *testing.T, tls bool) (*httptest.Server, <-chan websocketUpstreamRequest) {
@@ -28,11 +29,17 @@ func newWebSocketEchoServer(t *testing.T, tls bool) (*httptest.Server, <-chan we
 	}
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		select {
-		case seenRequests <- websocketUpstreamRequest{path: r.URL.Path, query: r.URL.RawQuery}:
+		case seenRequests <- websocketUpstreamRequest{
+			path:    r.URL.Path,
+			query:   r.URL.RawQuery,
+			traceID: r.Header.Get(traceIDHeader),
+		}:
 		default:
 		}
 
-		conn, err := upgrader.Upgrade(w, r, nil)
+		upstreamResponseHeaders := http.Header{}
+		upstreamResponseHeaders.Set(traceIDHeader, "upstream-supplied")
+		conn, err := upgrader.Upgrade(w, r, upstreamResponseHeaders)
 		if err != nil {
 			t.Errorf("upstream upgrade failed: %v", err)
 			return
@@ -136,11 +143,21 @@ func TestPathRuleProxiesWebSocketTargets(t *testing.T) {
 
 			wsURL := "ws" + strings.TrimPrefix(proxyServer.URL, "http") + tt.requestPath
 			dialer := websocket.Dialer{HandshakeTimeout: 2 * time.Second}
-			conn, _, err := dialer.Dial(wsURL, nil)
+			forgedTraceID := "trc_00000000-0000-4000-8000-000000000000"
+			headers := http.Header{}
+			headers.Set(traceIDHeader, forgedTraceID)
+			conn, response, err := dialer.Dial(wsURL, headers)
 			if err != nil {
 				t.Fatalf("dial proxy websocket: %v", err)
 			}
 			defer conn.Close()
+			responseTraceID := response.Header.Get(traceIDHeader)
+			if responseTraceID == "" || responseTraceID == forgedTraceID {
+				t.Fatalf("websocket response trace id was not securely replaced: %q", responseTraceID)
+			}
+			if values := response.Header.Values(traceIDHeader); len(values) != 1 || values[0] != responseTraceID {
+				t.Fatalf("websocket response trace headers = %q, want only gateway trace %q", values, responseTraceID)
+			}
 
 			deadline := time.Now().Add(2 * time.Second)
 			if err := conn.SetReadDeadline(deadline); err != nil {
@@ -164,8 +181,11 @@ func TestPathRuleProxiesWebSocketTargets(t *testing.T) {
 
 			select {
 			case got := <-seenRequests:
-				if got != tt.wantUpstream {
+				if got.path != tt.wantUpstream.path || got.query != tt.wantUpstream.query {
 					t.Fatalf("upstream request = %+v, want %+v", got, tt.wantUpstream)
+				}
+				if got.traceID != responseTraceID {
+					t.Fatalf("upstream trace id = %q, response trace id = %q", got.traceID, responseTraceID)
 				}
 			case <-time.After(2 * time.Second):
 				t.Fatal("timed out waiting for upstream websocket request")
@@ -248,7 +268,7 @@ func TestHostRuleWebSocketTargetPathActsAsEntryPath(t *testing.T) {
 	select {
 	case got := <-seenRequests:
 		want := websocketUpstreamRequest{path: "/p/socket", query: "room=photos"}
-		if got != want {
+		if got.path != want.path || got.query != want.query {
 			t.Fatalf("upstream request = %+v, want %+v", got, want)
 		}
 	case <-time.After(2 * time.Second):

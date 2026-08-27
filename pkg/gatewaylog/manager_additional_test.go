@@ -437,6 +437,36 @@ func TestQueryCursorReturnsNextCursorWhenMoreItemsExist(t *testing.T) {
 	}
 }
 
+func TestFindByTraceIDScansNewestDatesAndSupportsLegacyWAFTrace(t *testing.T) {
+	dir := t.TempDir()
+	traceID := "trc_3f93d40a-89ea-4dbe-a04f-67692778d973"
+	legacyID := "waf_3f93d40a-89ea-4dbe-a04f-67692778d973"
+	writeAdditionalLogLines(t, filepath.Join(dir, "2026-01-01"+fileExtension),
+		mustJSONLogLine(t, Entry{TraceID: traceID, Path: "/older"}),
+		mustJSONLogLine(t, Entry{WAFTraceID: legacyID, Path: "/legacy"}),
+	)
+	writeAdditionalLogLines(t, filepath.Join(dir, "2026-01-02"+fileExtension),
+		mustJSONLogLine(t, Entry{TraceID: traceID, Path: "/newer"}),
+	)
+
+	manager := NewManager(dir, models.LoggingConfig{MaxDays: 365})
+	result, err := manager.FindByTraceID(traceID)
+	if err != nil {
+		t.Fatalf("FindByTraceID() returned error: %v", err)
+	}
+	if !result.Found || result.Entry.Path != "/newer" {
+		t.Fatalf("FindByTraceID() = %#v", result)
+	}
+	legacy, err := manager.FindByTraceID(legacyID)
+	if err != nil || !legacy.Found || legacy.Entry.Path != "/legacy" {
+		t.Fatalf("legacy FindByTraceID() = %#v, %v", legacy, err)
+	}
+	missing, err := manager.FindByTraceID("trc_00000000-0000-4000-8000-000000000000")
+	if err != nil || missing.Found {
+		t.Fatalf("missing FindByTraceID() = %#v, %v", missing, err)
+	}
+}
+
 func TestContainsFoldASCIIBytesMatchesCaseInsensitively(t *testing.T) {
 	if !containsFoldASCIIBytes([]byte("Hello Gateway"), "gateway") {
 		t.Fatal("containsFoldASCIIBytes() did not match case-insensitively")

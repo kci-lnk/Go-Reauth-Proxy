@@ -145,7 +145,7 @@ func (s *EventStore) Lease(limit int) DrainResult {
 		return DrainResult{Events: []Event{}, Remaining: s.availableLocked()}
 	}
 
-	leaseID := "waf_lease_" + newTraceID()[len("waf_"):]
+	leaseID := "waf_lease_" + newTraceID()[len("trc_"):]
 	for _, id := range ids {
 		s.leased[id] = leaseID
 	}

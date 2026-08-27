@@ -41,6 +41,7 @@ const (
 var errStopScan = errors.New("stop scan")
 
 type Entry struct {
+	TraceID                 string `json:"trace_id,omitempty"`
 	Time                    string `json:"time,omitempty"`
 	Level                   string `json:"level,omitempty"`
 	Method                  string `json:"method,omitempty"`
@@ -130,6 +131,12 @@ type QueryResult struct {
 	NextCursor     string   `json:"next_cursor,omitempty"`
 	HasMore        bool     `json:"has_more"`
 	Items          []Entry  `json:"items"`
+}
+
+type TraceResult struct {
+	TraceID string `json:"trace_id"`
+	Found   bool   `json:"found"`
+	Entry   Entry  `json:"entry"`
 }
 
 type queryFilter struct {
@@ -657,7 +664,8 @@ func (m *Manager) writeLogEntry(entry *Entry) {
 	m.mu.RUnlock()
 
 	event := logger.Info()
-	event.Str("method", entry.Method).
+	event.Str("trace_id", entry.TraceID).
+		Str("method", entry.Method).
 		Str("scheme", entry.Scheme).
 		Str("host", entry.Host).
 		Str("path", entry.Path).
@@ -785,6 +793,70 @@ func (m *Manager) Query(date string, page int, limit int, search string, status 
 		HasMore:        hasMore,
 		Items:          items,
 	}, nil
+}
+
+func (m *Manager) FindByTraceID(traceID string) (TraceResult, error) {
+	traceID = strings.TrimSpace(traceID)
+	result := TraceResult{TraceID: traceID}
+	if traceID == "" {
+		return result, nil
+	}
+	m.Flush()
+	dates, err := m.listDates(false)
+	if err != nil {
+		return result, err
+	}
+	m.mu.RLock()
+	maxDays := normalizeMaxDays(m.config.MaxDays)
+	m.mu.RUnlock()
+	oldestRetainedDay := dayStart(time.Now()).AddDate(0, 0, -(maxDays - 1))
+	needle := []byte(traceID)
+	for _, date := range dates {
+		parsedDate, parseErr := time.ParseInLocation(dateLayout, date, time.Local)
+		if parseErr != nil || parsedDate.Before(oldestRetainedDay) {
+			continue
+		}
+		logPath := filepath.Join(m.logsDir, date+fileExtension)
+		file, openErr := os.Open(logPath)
+		if openErr != nil {
+			if errors.Is(openErr, os.ErrNotExist) {
+				continue
+			}
+			return result, openErr
+		}
+		stat, statErr := file.Stat()
+		if statErr != nil {
+			_ = file.Close()
+			return result, statErr
+		}
+		var matched Entry
+		found := false
+		scanErr := scanLinesBackward(file, stat.Size(), func(line []byte, _ int64) (bool, error) {
+			if !bytes.Contains(line, needle) || !jsonLogLineLooksLikeEntryObject(line) {
+				return true, nil
+			}
+			var entry Entry
+			if err := json.Unmarshal(line, &entry); err != nil {
+				return true, nil
+			}
+			if entry.TraceID != traceID && entry.WAFTraceID != traceID {
+				return true, nil
+			}
+			matched = entry
+			found = true
+			return false, nil
+		})
+		_ = file.Close()
+		if scanErr != nil {
+			return result, scanErr
+		}
+		if found {
+			result.Found = true
+			result.Entry = matched
+			return result, nil
+		}
+	}
+	return result, nil
 }
 
 func (m *Manager) DeleteDate(date string) (DeleteResult, error) {

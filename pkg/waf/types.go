@@ -13,6 +13,7 @@ const (
 )
 
 type EvaluateContext struct {
+	TraceID    string
 	ClientIP   string
 	RouteType  string
 	RouteKey   string

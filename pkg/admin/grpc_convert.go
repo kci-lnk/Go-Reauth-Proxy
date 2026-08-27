@@ -1190,6 +1190,7 @@ func logEntryToProto(entry gatewaylog.Entry) *pb.GatewayLogEntry {
 		validationEvidence = []string{entry.ValidationEvidence}
 	}
 	return &pb.GatewayLogEntry{
+		TraceId:                 entry.TraceID,
 		Time:                    entry.Time,
 		Level:                   entry.Level,
 		Method:                  entry.Method,

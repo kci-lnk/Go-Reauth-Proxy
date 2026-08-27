@@ -372,6 +372,7 @@ func TestRuntimeEvaluateBlocksAndDrainsEvent(t *testing.T) {
 	req.RemoteAddr = "203.0.113.10:12345"
 
 	decision := rt.Evaluate(req, EvaluateContext{
+		TraceID:   "trc_3f93d40a-89ea-4dbe-a04f-67692778d973",
 		ClientIP:  "203.0.113.10",
 		RouteType: "host_rule",
 		RouteKey:  "app.example.test",
@@ -390,8 +391,8 @@ func TestRuntimeEvaluateBlocksAndDrainsEvent(t *testing.T) {
 	if slices.Contains(decision.RuleIDs, internalSetupRuleID) {
 		t.Fatalf("did not expect internal setup rule id in event, got %#v", decision.RuleIDs)
 	}
-	if decision.TraceID == "" {
-		t.Fatalf("expected trace id")
+	if decision.TraceID != "trc_3f93d40a-89ea-4dbe-a04f-67692778d973" {
+		t.Fatalf("expected request trace id to be reused, got %q", decision.TraceID)
 	}
 
 	drained := rt.Drain(10)
@@ -400,6 +401,9 @@ func TestRuntimeEvaluateBlocksAndDrainsEvent(t *testing.T) {
 	}
 	if drained.Events[0].TraceID != decision.TraceID {
 		t.Fatalf("expected drained event trace %q, got %q", decision.TraceID, drained.Events[0].TraceID)
+	}
+	if drained.Events[0].TransactionID != decision.TraceID {
+		t.Fatalf("expected WAF transaction id %q, got %q", decision.TraceID, drained.Events[0].TransactionID)
 	}
 	if drained.Events[0].Interruption == nil || drained.Events[0].Interruption.RuleID != 1001 {
 		t.Fatalf("expected interruption for rule 1001, got %#v", drained.Events[0].Interruption)
@@ -625,7 +629,7 @@ func TestEventStoreDefaultLimitIsBounded(t *testing.T) {
 
 func TestNewTraceIDUsesUUIDFormat(t *testing.T) {
 	traceID := newTraceID()
-	pattern := regexp.MustCompile(`^waf_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`)
+	pattern := regexp.MustCompile(`^trc_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`)
 	if !pattern.MatchString(traceID) {
 		t.Fatalf("expected waf UUID trace id, got %q", traceID)
 	}

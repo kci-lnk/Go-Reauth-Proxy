@@ -115,6 +115,71 @@ func TestToolbarDataRouteUsesOriginalPageContextAndLatestSnapshot(t *testing.T) 
 	}
 }
 
+func TestToolbarDataRouteRevalidatesAuthenticationAfterLogout(t *testing.T) {
+	const clearSessionCookie = authSessionCookieName + "=; Path=/; Max-Age=0; HttpOnly; SameSite=Lax"
+	var verifyCalls atomic.Int32
+	var loggedOut atomic.Bool
+	bridge := testAuthBridge{
+		verify: func(context.Context, *pb.VerifyAuthRequest) (*pb.VerifyAuthResponse, error) {
+			verifyCalls.Add(1)
+			if loggedOut.Load() {
+				return &pb.VerifyAuthResponse{
+					Success:    false,
+					Status:     http.StatusUnauthorized,
+					Message:    "session revoked",
+					SetCookies: []string{clearSessionCookie},
+				}, nil
+			}
+			return &pb.VerifyAuthResponse{Success: true, Status: http.StatusOK}, nil
+		},
+	}
+	target := newToolbarHTMLTarget(t)
+	defer target.Close()
+	handler := newPublicHostToolbarHandler(target.URL, bridge)
+	handler.mu.Lock()
+	handler.AuthConfig.AuthCacheTTL = 60
+	handler.publishRequestSnapshotLocked()
+	handler.mu.Unlock()
+
+	// A normal page request populates the shared proxy-auth cache for this
+	// session and page context before the user logs out.
+	pageRequest := httptest.NewRequest(http.MethodGet, "http://public.example.com/", nil)
+	pageRequest.AddCookie(&http.Cookie{Name: authSessionCookieName, Value: "ok"})
+	pageResponse := httptest.NewRecorder()
+	handler.ServeHTTP(pageResponse, pageRequest)
+	if pageResponse.Code != http.StatusOK {
+		t.Fatalf("authenticated page response = %d %q", pageResponse.Code, pageResponse.Body.String())
+	}
+	handler.authCache.mu.RLock()
+	cachedEntries := len(handler.authCache.entries)
+	handler.authCache.mu.RUnlock()
+	if cachedEntries == 0 {
+		t.Fatal("authenticated page request did not seed the proxy-auth cache")
+	}
+
+	// Keep the same browser cookie to model a logout/revocation racing cookie
+	// removal. The data endpoint must bypass that positive cache entry and
+	// treat the authentication service as authoritative.
+	loggedOut.Store(true)
+	second := httptest.NewRecorder()
+	handler.ServeHTTP(second, authenticatedToolbarDataRequest(http.MethodGet, "public.example.com", "/"))
+	if second.Code != http.StatusNoContent || second.Body.Len() != 0 {
+		t.Fatalf("logged-out response = %d %q", second.Code, second.Body.String())
+	}
+	if got := second.Header().Values("Set-Cookie"); len(got) != 1 || got[0] != clearSessionCookie {
+		t.Fatalf("logged-out Set-Cookie = %#v, want clear cookie", got)
+	}
+	if got := verifyCalls.Load(); got != 2 {
+		t.Fatalf("verify calls = %d, want 2 fresh checks", got)
+	}
+	handler.authCache.mu.RLock()
+	remainingCachedEntries := len(handler.authCache.entries)
+	handler.authCache.mu.RUnlock()
+	if remainingCachedEntries != 0 {
+		t.Fatalf("stale proxy-auth cache entries after revocation = %d", remainingCachedEntries)
+	}
+}
+
 func TestToolbarDataRoutePreservesAccessModeAndAdvancedPolicyCacheDimension(t *testing.T) {
 	var verifyCalls int32
 	bridge := testAuthBridge{

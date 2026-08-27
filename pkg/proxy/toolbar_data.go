@@ -154,11 +154,12 @@ func (h *Handler) handleToolbarDataRoute(w http.ResponseWriter, r *http.Request,
 }
 
 func (h *Handler) checkToolbarDataAuth(w http.ResponseWriter, r *http.Request, authConfig models.AuthConfig, clientIP string, accessMode string, requestID string, requestAuth *requestAuthContext) authCheckResult {
-	execution := h.executeAuthCheck(r, authConfig, clientIP, accessMode, requestID, requestAuth)
-	if execution.entry != nil {
-		return h.applyToolbarAuthCacheEntry(w, r, *execution.entry, clientIP)
-	}
-	return h.applyToolbarAuthCheckPlan(w, r, execution.plan, clientIP)
+	// This endpoint exposes the current portal navigation and authorization
+	// scope. A positive proxy-auth cache entry can outlive a logout/revocation,
+	// so it must never be used here: every bootstrap request revalidates the
+	// presented credential against the authentication service and fails closed.
+	plan := h.performAuthCheck(r, authConfig, clientIP, accessMode, requestID, requestAuth)
+	return h.applyToolbarAuthCheckPlan(w, r, plan, clientIP)
 }
 
 func prepareToolbarProxyRequest(r *http.Request) {

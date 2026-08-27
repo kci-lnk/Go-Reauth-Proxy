@@ -5338,6 +5338,15 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		response.ServeToolbarAsset(w, r)
 		return
 	}
+	if fnosConnect == nil && response.IsToolbarDataPath(r.URL.Path) {
+		accessEntry.RouteType = "toolbar_data"
+		accessEntry.RouteKey = r.URL.Path
+		accessEntry.Matched = true
+		accessEntry.AuthRequired = true
+		authResult := h.handleToolbarDataRoute(w, r, snapshot, clientIP, requestID, matchedHostRule)
+		applyAuthResultToLogEntry(&accessEntry, authResult)
+		return
+	}
 
 	isSelectRoute := fnosConnect == nil && r.URL.Path == "/__select__"
 	isWOLPath := fnosConnect == nil && r.URL.Path == "/__wol__"
@@ -6550,8 +6559,11 @@ func (h *Handler) proxyToHostLocationTarget(w http.ResponseWriter, r *http.Reque
 				}
 			}
 
-			if (targetSupportsHTMLFeatures && location.RewriteHTML) || toolbarCandidate {
+			if targetSupportsHTMLFeatures && location.RewriteHTML {
 				pr.Out.Header.Del("Accept-Encoding")
+			}
+			if toolbarCandidate {
+				prepareToolbarProxyRequest(pr.Out)
 			}
 			if event := debugProxyEvent("reverse_proxy_rewrite", requestID); event != nil {
 				event.Str("route_type", "host_location").
@@ -6615,15 +6627,7 @@ func (h *Handler) proxyToHostLocationTarget(w http.ResponseWriter, r *http.Reque
 			rewritePrefix: strings.TrimSuffix(location.Path, "/"),
 			toolbar:       needsToolbar,
 			toolbarHTML: func() string {
-				return response.GenerateToolbarWithPrefilteredHostsForRequest(
-					r,
-					snapshot.toolbarRules,
-					filterAvailableHostRulesByAuthScope(snapshot.toolbarHostRules, authResult, time.Now()),
-					r.URL.Path,
-					matchedRule.Host,
-					snapshot.authConfig.AuthHost,
-					gatewayPortalForAuth(snapshot.gatewayPortal, authResult),
-				)
+				return response.GenerateToolbarBootstrap()
 			},
 			requestID: requestID,
 			routeType: "host_location",
@@ -6731,7 +6735,7 @@ func (h *Handler) proxyToHostTarget(w http.ResponseWriter, r *http.Request, snap
 			}
 
 			if toolbarCandidate {
-				pr.Out.Header.Del("Accept-Encoding")
+				prepareToolbarProxyRequest(pr.Out)
 			}
 			if event := debugProxyEvent("reverse_proxy_rewrite", requestID); event != nil {
 				event.Str("route_type", "host_rule").
@@ -6785,15 +6789,7 @@ func (h *Handler) proxyToHostTarget(w http.ResponseWriter, r *http.Request, snap
 		return maybeMutateHTMLProxyResponse(resp, htmlResponseMutationOptions{
 			toolbar: needsToolbar,
 			toolbarHTML: func() string {
-				return response.GenerateToolbarWithPrefilteredHostsForRequest(
-					r,
-					snapshot.toolbarRules,
-					filterAvailableHostRulesByAuthScope(snapshot.toolbarHostRules, authResult, time.Now()),
-					r.URL.Path,
-					matchedRule.Host,
-					snapshot.authConfig.AuthHost,
-					gatewayPortalForAuth(snapshot.gatewayPortal, authResult),
-				)
+				return response.GenerateToolbarBootstrap()
 			},
 			requestID: requestID,
 			routeType: "host_rule",
@@ -6899,8 +6895,11 @@ func (h *Handler) proxyToRuleTarget(w http.ResponseWriter, r *http.Request, snap
 				}
 			}
 
-			if (targetSupportsHTMLFeatures && matchedRule.RewriteHTML) || toolbarCandidate {
+			if targetSupportsHTMLFeatures && matchedRule.RewriteHTML {
 				pr.Out.Header.Del("Accept-Encoding")
+			}
+			if toolbarCandidate {
+				prepareToolbarProxyRequest(pr.Out)
 			}
 			h.maybePrepareFnosPortIconHijackHTTPProxyRequest(pr.Out)
 			if event := debugProxyEvent("reverse_proxy_rewrite", requestID); event != nil {
@@ -6960,7 +6959,7 @@ func (h *Handler) proxyToRuleTarget(w http.ResponseWriter, r *http.Request, snap
 			rewritePrefix: strings.TrimSuffix(matchedRule.Path, "/"),
 			toolbar:       needsToolbar,
 			toolbarHTML: func() string {
-				return response.GenerateToolbarWithPrefilteredHostsForRequest(r, snapshot.toolbarRules, nil, matchedRule.Path, "", "", gatewayPortalForAuth(snapshot.gatewayPortal, authResult))
+				return response.GenerateToolbarBootstrap()
 			},
 			requestID: requestID,
 			routeType: "path_rule",

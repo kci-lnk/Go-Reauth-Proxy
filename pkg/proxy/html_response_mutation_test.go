@@ -159,6 +159,74 @@ func TestMaybeMutateHTMLProxyResponseToolbarOnlyStreamsBeforeBodyClose(t *testin
 	}
 }
 
+func TestMaybeMutateHTMLProxyResponseInvalidatesRepresentationValidators(t *testing.T) {
+	body := []byte(`<html><body><main>app</main></body></html>`)
+	resp, _ := newHTMLMutationResponse(body, "text/html", int64(len(body)))
+	resp.StatusCode = http.StatusOK
+	for name, value := range map[string]string{
+		"ETag":           `"upstream"`,
+		"Last-Modified":  "Wed, 21 Oct 2015 07:28:00 GMT",
+		"Content-MD5":    "stale",
+		"Digest":         "sha-256=stale",
+		"Content-Digest": "sha-256=:stale:",
+		"Repr-Digest":    "sha-256=:stale:",
+		"Accept-Ranges":  "bytes",
+	} {
+		resp.Header.Set(name, value)
+	}
+	resp.Header.Set("Cache-Control", "public, max-age=3600")
+	resp.Header.Set("Vary", "Accept-Language")
+
+	err := maybeMutateHTMLProxyResponse(resp, htmlResponseMutationOptions{
+		toolbar: true,
+		toolbarHTML: func() string {
+			return `<script>toolbar()</script>`
+		},
+	})
+	if err != nil {
+		t.Fatalf("maybeMutateHTMLProxyResponse returned error: %v", err)
+	}
+	for _, name := range []string{"ETag", "Last-Modified", "Content-MD5", "Digest", "Content-Digest", "Repr-Digest", "Accept-Ranges"} {
+		if got := resp.Header.Get(name); got != "" {
+			t.Fatalf("%s = %q, want empty", name, got)
+		}
+	}
+	if got := resp.Header.Get("Cache-Control"); got != "public, max-age=3600" {
+		t.Fatalf("Cache-Control = %q", got)
+	}
+	if got := resp.Header.Get("Vary"); got != "Accept-Language" {
+		t.Fatalf("Vary = %q", got)
+	}
+}
+
+func TestMaybeMutateHTMLProxyResponseSkipsNotModifiedAndPartialToolbarResponses(t *testing.T) {
+	for _, status := range []int{http.StatusNotModified, http.StatusPartialContent} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			body := []byte(`<html><body>cached</body></html>`)
+			resp, _ := newHTMLMutationResponse(body, "text/html", int64(len(body)))
+			resp.StatusCode = status
+			resp.Header.Set("ETag", `"cached"`)
+
+			err := maybeMutateHTMLProxyResponse(resp, htmlResponseMutationOptions{
+				toolbar: true,
+				toolbarHTML: func() string {
+					return `<script>toolbar()</script>`
+				},
+			})
+			if err != nil {
+				t.Fatalf("maybeMutateHTMLProxyResponse returned error: %v", err)
+			}
+			got, err := io.ReadAll(resp.Body)
+			if err != nil {
+				t.Fatalf("read response body: %v", err)
+			}
+			if !bytes.Equal(got, body) || resp.Header.Get("ETag") != `"cached"` {
+				t.Fatalf("status %d response was mutated: body=%q headers=%#v", status, got, resp.Header)
+			}
+		})
+	}
+}
+
 func TestMaybeMutateHTMLProxyResponseToolbarOnlyStreamsAcrossBodyCloseBoundary(t *testing.T) {
 	prefix := "<html><body>" + strings.Repeat("x", htmlToolbarStreamChunkSize-len("<html><body>")-len("</"))
 	body := []byte(prefix + `</body></html>`)

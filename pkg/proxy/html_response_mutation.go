@@ -66,6 +66,17 @@ func maybeMutateHTMLProxyResponse(resp *http.Response, opts htmlResponseMutation
 		logHTMLProxyMutation(opts, nil, "skipped", "no_response", 0, 0)
 		return nil
 	}
+	if htmlProxyResponseMustNotHaveBody(resp) {
+		logHTMLProxyMutation(opts, resp, "skipped", "no_response_body", 0, 0)
+		return nil
+	}
+	if opts.toolbar && resp.StatusCode != 0 && resp.StatusCode != http.StatusOK {
+		opts.toolbar = false
+		if !opts.rewrite {
+			logHTMLProxyMutation(opts, resp, "skipped", "toolbar_status_not_ok", 0, 0)
+			return nil
+		}
+	}
 	if !isHTMLContentType(resp.Header.Get("Content-Type")) {
 		logHTMLProxyMutation(opts, resp, "skipped", "not_html", 0, 0)
 		return nil
@@ -86,6 +97,7 @@ func maybeMutateHTMLProxyResponse(resp *http.Response, opts htmlResponseMutation
 		resp.Body = newStreamingToolbarReadCloser(resp.Body, toolbarHTML)
 		resp.ContentLength = -1
 		resp.Header.Del("Content-Length")
+		invalidateMutatedHTMLRepresentationHeaders(resp.Header)
 		logHTMLProxyMutation(opts, resp, "streaming", "", 0, 0)
 		return nil
 	}
@@ -111,8 +123,38 @@ func maybeMutateHTMLProxyResponse(resp *http.Response, opts htmlResponseMutation
 	resp.Body = io.NopCloser(bytes.NewReader(bodyBytes))
 	resp.ContentLength = int64(len(bodyBytes))
 	resp.Header.Set("Content-Length", strconv.Itoa(len(bodyBytes)))
+	invalidateMutatedHTMLRepresentationHeaders(resp.Header)
 	logHTMLProxyMutation(opts, resp, "applied", "", originalLen, len(bodyBytes))
 	return nil
+}
+
+func htmlProxyResponseMustNotHaveBody(resp *http.Response) bool {
+	if resp == nil {
+		return true
+	}
+	if resp.Request != nil && resp.Request.Method == http.MethodHead {
+		return true
+	}
+	return resp.StatusCode >= 100 && resp.StatusCode <= 199 ||
+		resp.StatusCode == http.StatusNoContent ||
+		resp.StatusCode == http.StatusNotModified
+}
+
+func invalidateMutatedHTMLRepresentationHeaders(headers http.Header) {
+	if headers == nil {
+		return
+	}
+	for _, name := range []string{
+		"ETag",
+		"Last-Modified",
+		"Content-MD5",
+		"Digest",
+		"Content-Digest",
+		"Repr-Digest",
+		"Accept-Ranges",
+	} {
+		headers.Del(name)
+	}
 }
 
 func readHTMLProxyMutationBody(resp *http.Response, limit int64) ([]byte, string, error) {

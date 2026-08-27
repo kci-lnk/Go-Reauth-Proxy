@@ -25,7 +25,7 @@ func ToolbarAssetPathForVersion(version string) string {
 
 // IsToolbarAssetPath reports whether path names the current toolbar runtime.
 func IsToolbarAssetPath(requestPath string) bool {
-	return requestPath == toolbarAssetPath || requestPath == toolbarV2AssetPath
+	return requestPath == toolbarAssetPath || requestPath == toolbarV2AssetPath || requestPath == toolbarBootstrapAssetURL
 }
 
 // ServeToolbarAsset serves the immutable, content-addressed toolbar runtime.
@@ -47,6 +47,9 @@ func ServeToolbarAsset(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Path == toolbarV2AssetPath {
 		runtimePath = toolbarV2AssetPath
 		runtimeBody = toolbarV2Runtime
+	} else if r.URL.Path == toolbarBootstrapAssetURL {
+		runtimePath = toolbarBootstrapAssetURL
+		runtimeBody = toolbarBootstrapRuntime
 	}
 	http.ServeContent(w, r, path.Base(runtimePath), time.Time{}, bytes.NewReader(runtimeBody))
 }

@@ -1278,6 +1278,7 @@ func init() {
 	toolbarTemplatePrefix = `<script id="reauth-proxy-toolbar-loader" src="` + toolbarAssetPath + `" data-toolbar='`
 	toolbarTemplateSuffix = `' defer></script>`
 	initToolbarV2Runtime()
+	initToolbarBootstrap()
 }
 
 type toolbarLabels struct {
@@ -1485,8 +1486,40 @@ func GenerateToolbarWithPrefilteredHostsForLocale(locale string, filteredRules [
 		return ""
 	}
 	normalizedExcludedHost := normalizeToolbarHost(excludedHost)
+	labels := resolveToolbarLabels(locale)
+	return renderToolbarTemplateData(filteredRules, filteredHostRules, currentPath, currentHost, normalizedExcludedHost, normalizedPortal, labels)
+}
 
-	labels := toolbarLabels{
+// GenerateToolbarDataWithPrefilteredHostsForRequest serializes the fresh
+// toolbar data endpoint response. The payload retains the runtime's existing
+// data shape and adds only the selected content-addressed runtime URL.
+func GenerateToolbarDataWithPrefilteredHostsForRequest(r *http.Request, filteredRules []models.Rule, filteredHostRules []models.HostRule, currentPath string, currentHost string, excludedHost string, portalConfig models.GatewayPortalConfig) string {
+	return GenerateToolbarDataWithPrefilteredHostsForLocale(i18n.ResolveRequestLocale(r), filteredRules, filteredHostRules, currentPath, currentHost, excludedHost, portalConfig)
+}
+
+// GenerateToolbarDataWithPrefilteredHostsForLocale is the locale-explicit
+// variant used by tests and non-request callers.
+func GenerateToolbarDataWithPrefilteredHostsForLocale(locale string, filteredRules []models.Rule, filteredHostRules []models.HostRule, currentPath string, currentHost string, excludedHost string, portalConfig models.GatewayPortalConfig) string {
+	normalizedPortal := models.NormalizeGatewayPortalConfig(portalConfig)
+	if !normalizedPortal.Enabled {
+		return ""
+	}
+
+	normalizedExcludedHost := normalizeToolbarHost(excludedHost)
+	labels := resolveToolbarLabels(locale)
+	payloadSize := estimateToolbarPayloadSize(filteredRules, filteredHostRules, currentPath, currentHost, normalizedExcludedHost, normalizedPortal, labels)
+	var b strings.Builder
+	b.Grow(payloadSize + 128)
+	b.WriteString(`{"runtime_url":`)
+	writeJSONString(&b, ToolbarAssetPathForVersion(normalizedPortal.Version))
+	b.WriteString(`,"data":`)
+	writeToolbarPayloadJSON(&b, filteredRules, filteredHostRules, currentPath, currentHost, normalizedExcludedHost, normalizedPortal, labels)
+	b.WriteByte('}')
+	return b.String()
+}
+
+func resolveToolbarLabels(locale string) toolbarLabels {
+	return toolbarLabels{
 		WOL:                i18n.T(locale, "gateway.wolShortcut"),
 		Logout:             i18n.T(locale, "gateway.logout"),
 		LogoutTitle:        i18n.T(locale, "gateway.logoutConfirmTitle"),
@@ -1502,7 +1535,6 @@ func GenerateToolbarWithPrefilteredHostsForLocale(locale string, filteredRules [
 		Close:              i18n.T(locale, "gateway.close"),
 		Current:            i18n.T(locale, "gateway.current"),
 	}
-	return renderToolbarTemplateData(filteredRules, filteredHostRules, currentPath, currentHost, normalizedExcludedHost, normalizedPortal, labels)
 }
 
 func renderToolbarTemplateData(rules []models.Rule, hostRules []models.HostRule, currentPath string, currentHost string, normalizedExcludedHost string, portalConfig models.GatewayPortalConfig, labels toolbarLabels) string {

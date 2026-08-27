@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"go-reauth-proxy/pkg/gatewaylog"
 	"go-reauth-proxy/pkg/grpc/pb"
 	"go-reauth-proxy/pkg/models"
 )
@@ -42,6 +43,43 @@ func TestSetHostRulesRejectsRootHostLocation(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("SetHostRules returned nil error, want root location validation error")
+	}
+}
+
+func TestNormalizeHostLocationAuthMode(t *testing.T) {
+	handler := &Handler{}
+	for _, test := range []struct {
+		name string
+		mode string
+		want string
+	}{
+		{name: "missing defaults to inherit", want: models.HostLocationAuthModeInherit},
+		{name: "inherit", mode: models.HostLocationAuthModeInherit, want: models.HostLocationAuthModeInherit},
+		{name: "public", mode: models.HostLocationAuthModePublic, want: models.HostLocationAuthModePublic},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			location, err := handler.normalizeHostLocation(models.HostLocation{
+				Path:     "/healthz",
+				Match:    models.HostLocationMatchExact,
+				Action:   models.HostLocationActionResponse,
+				AuthMode: test.mode,
+			})
+			if err != nil {
+				t.Fatalf("normalizeHostLocation returned error: %v", err)
+			}
+			if location.AuthMode != test.want {
+				t.Fatalf("auth mode = %q, want %q", location.AuthMode, test.want)
+			}
+		})
+	}
+
+	if _, err := handler.normalizeHostLocation(models.HostLocation{
+		Path:     "/healthz",
+		Match:    models.HostLocationMatchExact,
+		Action:   models.HostLocationActionResponse,
+		AuthMode: "private",
+	}); err == nil {
+		t.Fatal("invalid auth mode was accepted")
 	}
 }
 
@@ -425,6 +463,90 @@ func TestHostLocationFixedResponseRequiresHostAuth(t *testing.T) {
 	}
 }
 
+func TestPublicHostLocationsBypassProtectedHostAuth(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, "public proxy")
+	}))
+	defer upstream.Close()
+
+	bridge := testAuthBridge{
+		preflight: func(context.Context, *pb.PreflightAuthRequest) (*pb.PreflightAuthResponse, error) {
+			t.Fatal("public host location unexpectedly ran auth preflight")
+			return nil, nil
+		},
+		verify: func(context.Context, *pb.VerifyAuthRequest) (*pb.VerifyAuthResponse, error) {
+			t.Fatal("public host location unexpectedly ran auth verification")
+			return nil, nil
+		},
+	}
+	handler := newHostLocationTestHandler(models.HostRule{
+		Host:            "app.example.com",
+		Target:          "http://127.0.0.1:8080",
+		UseAuth:         true,
+		AccessMode:      "strict_whitelist",
+		SuppressToolbar: true,
+		Locations: []models.HostLocation{
+			{
+				Path:     "/healthz",
+				Match:    models.HostLocationMatchExact,
+				Action:   models.HostLocationActionResponse,
+				AuthMode: models.HostLocationAuthModePublic,
+				Response: models.HostLocationResponse{Status: http.StatusOK, Body: "public response"},
+			},
+			{
+				Path:      "/assets",
+				Match:     models.HostLocationMatchPrefix,
+				Action:    models.HostLocationActionProxy,
+				Target:    upstream.URL,
+				AuthMode:  models.HostLocationAuthModePublic,
+				StripPath: true,
+			},
+		},
+	})
+	handler.AuthConfig = models.AuthConfig{AuthURL: "/api/auth/verify"}
+	handler.gatewayLogManager = gatewaylog.NewManager(t.TempDir(), models.LoggingConfig{
+		Enabled:         true,
+		RecordLocalhost: true,
+		MaxDays:         1,
+	})
+	t.Cleanup(handler.gatewayLogManager.Close)
+	setTestAuthBridge(t, handler, bridge)
+	handler.publishRequestSnapshotLocked()
+
+	for _, test := range []struct {
+		path string
+		body string
+	}{
+		{path: "/healthz", body: "public response"},
+		{path: "/assets/app.js", body: "public proxy"},
+	} {
+		t.Run(test.path, func(t *testing.T) {
+			recorder := httptest.NewRecorder()
+			request := httptest.NewRequest(http.MethodGet, "http://app.example.com"+test.path, nil)
+
+			handler.ServeHTTP(recorder, request)
+
+			if recorder.Code != http.StatusOK || recorder.Body.String() != test.body {
+				t.Fatalf("response = %d %q, want 200 %q", recorder.Code, recorder.Body.String(), test.body)
+			}
+		})
+	}
+
+	handler.gatewayLogManager.Flush()
+	result, err := handler.QueryLogEntries("", 1, 20, "host_location", "", "", "", "", "page")
+	if err != nil {
+		t.Fatalf("QueryLogEntries returned error: %v", err)
+	}
+	if len(result.Items) != 2 {
+		t.Fatalf("logged items = %d, want 2", len(result.Items))
+	}
+	for _, entry := range result.Items {
+		if entry.AuthRequired || entry.RouteType != "host_location" || !strings.HasPrefix(entry.RouteKey, "app.example.com ") {
+			t.Fatalf("public host location log = %#v, want auth_required=false host_location identity", entry)
+		}
+	}
+}
+
 func TestHostLocationProxyStripsPathAndRewritesHTML(t *testing.T) {
 	var gotPath string
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -466,13 +588,15 @@ func TestHostLocationProxyStripsPathAndRewritesHTML(t *testing.T) {
 
 func TestHostLocationRouteContextMarksWAFAndThrottleAsHostLocation(t *testing.T) {
 	hostRule := &models.HostRule{
-		Host:   "app.example.com",
-		Target: "http://127.0.0.1:8080",
+		Host:    "app.example.com",
+		Target:  "http://127.0.0.1:8080",
+		UseAuth: true,
 	}
 	location := &models.HostLocation{
-		Path:   "/healthz",
-		Match:  models.HostLocationMatchExact,
-		Action: models.HostLocationActionResponse,
+		Path:     "/healthz",
+		Match:    models.HostLocationMatchExact,
+		Action:   models.HostLocationActionResponse,
+		AuthMode: models.HostLocationAuthModePublic,
 	}
 	req := httptest.NewRequest(http.MethodGet, "http://app.example.com/healthz", nil)
 

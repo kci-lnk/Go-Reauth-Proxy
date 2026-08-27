@@ -113,6 +113,7 @@ func hostLocationsToProto(locations []models.HostLocation) []*pb.HostLocation {
 			StripPath:   location.StripPath,
 			RewriteHtml: location.RewriteHTML,
 			Response:    hostLocationResponseToProto(location.Response),
+			AuthMode:    location.AuthMode,
 		})
 	}
 	return items
@@ -132,6 +133,7 @@ func protoToHostLocations(locations []*pb.HostLocation) []models.HostLocation {
 			StripPath:   location.GetStripPath(),
 			RewriteHTML: location.GetRewriteHtml(),
 			Response:    protoToHostLocationResponse(location.GetResponse()),
+			AuthMode:    location.GetAuthMode(),
 		})
 	}
 	return items

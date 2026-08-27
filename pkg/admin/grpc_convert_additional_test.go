@@ -57,6 +57,7 @@ func TestHostRulesProtoRoundTripPreservesLocations(t *testing.T) {
 		BasicAuth:        models.BasicAuthConfig{Enabled: true, Username: "u", Password: "p"},
 		Locations: []models.HostLocation{{
 			Path: "/api", Match: models.HostLocationMatchPrefix, Action: models.HostLocationActionResponse,
+			AuthMode: models.HostLocationAuthModePublic,
 			Response: models.HostLocationResponse{Status: 200, Headers: map[string]string{"X-Test": "ok"}},
 		}},
 	}}

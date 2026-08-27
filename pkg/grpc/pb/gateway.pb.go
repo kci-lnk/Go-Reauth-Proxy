@@ -28,18 +28,18 @@ type ControlApiVersion int32
 
 const (
 	ControlApiVersion_CONTROL_API_VERSION_UNSPECIFIED ControlApiVersion = 0
-	ControlApiVersion_CONTROL_API_VERSION_CURRENT     ControlApiVersion = 18
+	ControlApiVersion_CONTROL_API_VERSION_CURRENT     ControlApiVersion = 19
 )
 
 // Enum value maps for ControlApiVersion.
 var (
 	ControlApiVersion_name = map[int32]string{
 		0:  "CONTROL_API_VERSION_UNSPECIFIED",
-		18: "CONTROL_API_VERSION_CURRENT",
+		19: "CONTROL_API_VERSION_CURRENT",
 	}
 	ControlApiVersion_value = map[string]int32{
 		"CONTROL_API_VERSION_UNSPECIFIED": 0,
-		"CONTROL_API_VERSION_CURRENT":     18,
+		"CONTROL_API_VERSION_CURRENT":     19,
 	}
 )
 
@@ -571,6 +571,7 @@ type HostLocation struct {
 	StripPath     bool                   `protobuf:"varint,5,opt,name=strip_path,json=stripPath,proto3" json:"strip_path,omitempty"`
 	RewriteHtml   bool                   `protobuf:"varint,6,opt,name=rewrite_html,json=rewriteHtml,proto3" json:"rewrite_html,omitempty"`
 	Response      *HostLocationResponse  `protobuf:"bytes,7,opt,name=response,proto3" json:"response,omitempty"`
+	AuthMode      string                 `protobuf:"bytes,8,opt,name=auth_mode,json=authMode,proto3" json:"auth_mode,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -652,6 +653,13 @@ func (x *HostLocation) GetResponse() *HostLocationResponse {
 		return x.Response
 	}
 	return nil
+}
+
+func (x *HostLocation) GetAuthMode() string {
+	if x != nil {
+		return x.AuthMode
+	}
+	return ""
 }
 
 type HostRuleAvailability struct {
@@ -11102,7 +11110,7 @@ const file_fnknock_v1_gateway_proto_rawDesc = "" +
 	"\x04body\x18\x04 \x01(\tR\x04body\x1a:\n" +
 	"\fHeadersEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xe8\x01\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\x85\x02\n" +
 	"\fHostLocation\x12\x12\n" +
 	"\x04path\x18\x01 \x01(\tR\x04path\x12\x14\n" +
 	"\x05match\x18\x02 \x01(\tR\x05match\x12\x16\n" +
@@ -11111,7 +11119,8 @@ const file_fnknock_v1_gateway_proto_rawDesc = "" +
 	"\n" +
 	"strip_path\x18\x05 \x01(\bR\tstripPath\x12!\n" +
 	"\frewrite_html\x18\x06 \x01(\bR\vrewriteHtml\x12<\n" +
-	"\bresponse\x18\a \x01(\v2 .fnknock.v1.HostLocationResponseR\bresponse\"j\n" +
+	"\bresponse\x18\a \x01(\v2 .fnknock.v1.HostLocationResponseR\bresponse\x12\x1b\n" +
+	"\tauth_mode\x18\b \x01(\tR\bauthMode\"j\n" +
 	"\x14HostRuleAvailability\x12\x18\n" +
 	"\aenabled\x18\x01 \x01(\bR\aenabled\x12\x1d\n" +
 	"\n" +
@@ -12133,7 +12142,7 @@ const file_fnknock_v1_gateway_proto_rawDesc = "" +
 	"last_error\x18\t \x01(\tR\tlastError*Y\n" +
 	"\x11ControlApiVersion\x12#\n" +
 	"\x1fCONTROL_API_VERSION_UNSPECIFIED\x10\x00\x12\x1f\n" +
-	"\x1bCONTROL_API_VERSION_CURRENT\x10\x12*\x9d\x01\n" +
+	"\x1bCONTROL_API_VERSION_CURRENT\x10\x13*\x9d\x01\n" +
 	"\x11WafDrainOperation\x12#\n" +
 	"\x1fWAF_DRAIN_OPERATION_UNSPECIFIED\x10\x00\x12\x1d\n" +
 	"\x19WAF_DRAIN_OPERATION_LEASE\x10\x01\x12#\n" +

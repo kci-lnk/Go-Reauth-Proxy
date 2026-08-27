@@ -164,6 +164,9 @@ const (
 
 	HostLocationActionProxy    = "proxy"
 	HostLocationActionResponse = "response"
+
+	HostLocationAuthModeInherit = "inherit"
+	HostLocationAuthModePublic  = "public"
 )
 
 type HostLocation struct {
@@ -174,6 +177,7 @@ type HostLocation struct {
 	StripPath   bool                 `json:"strip_path" example:"true"`
 	RewriteHTML bool                 `json:"rewrite_html" example:"true"`
 	Response    HostLocationResponse `json:"response,omitempty"`
+	AuthMode    string               `json:"auth_mode,omitempty" example:"inherit"`
 }
 
 type HostLocationResponse struct {

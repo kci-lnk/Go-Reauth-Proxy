@@ -138,8 +138,16 @@ func TestOutsideAvailabilityWindowReturnsUnavailableAndLogsHost(t *testing.T) {
 	endTime := formatAvailabilityTestMinute(endMinute)
 	handler := &Handler{
 		HostRules: []models.HostRule{{
-			Host:   "app.example.com",
-			Target: upstream.URL,
+			Host:    "app.example.com",
+			Target:  upstream.URL,
+			UseAuth: true,
+			Locations: []models.HostLocation{{
+				Path:     "/dashboard",
+				Match:    models.HostLocationMatchExact,
+				Action:   models.HostLocationActionProxy,
+				Target:   upstream.URL,
+				AuthMode: models.HostLocationAuthModePublic,
+			}},
 			Availability: &models.HostRuleAvailability{
 				Enabled:   true,
 				StartTime: startTime,

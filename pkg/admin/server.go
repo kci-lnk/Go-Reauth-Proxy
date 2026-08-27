@@ -290,6 +290,7 @@ func (s *Server) handleAddHostRule(w http.ResponseWriter, r *http.Request) {
 		StripPath   *bool                       `json:"strip_path"`
 		RewriteHTML *bool                       `json:"rewrite_html"`
 		Response    models.HostLocationResponse `json:"response"`
+		AuthMode    string                      `json:"auth_mode"`
 	}
 	type hostRuleRequest struct {
 		Host            string                       `json:"host"`
@@ -338,6 +339,7 @@ func (s *Server) handleAddHostRule(w http.ResponseWriter, r *http.Request) {
 				StripPath:   stripPath,
 				RewriteHTML: rewriteHTML,
 				Response:    locationReq.Response,
+				AuthMode:    locationReq.AuthMode,
 			})
 		}
 

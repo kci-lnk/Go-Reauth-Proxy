@@ -72,26 +72,35 @@ func TestNewInternalTransportUsesHighThroughputConnectionLimits(t *testing.T) {
 }
 
 func TestShouldRunPreflightForRouteKeepsLegacyDefault(t *testing.T) {
-	if !shouldRunPreflightForRoute(false, false, nil, nil) {
+	if !shouldRunPreflightForRoute(false, false, nil, nil, nil) {
 		t.Fatalf("unmatched requests should keep the legacy preflight path")
 	}
-	if !shouldRunPreflightForRoute(true, false, nil, nil) {
+	if !shouldRunPreflightForRoute(true, false, nil, nil, nil) {
 		t.Fatalf("select route should run preflight")
 	}
-	if shouldRunPreflightForRoute(false, true, nil, nil) {
+	if shouldRunPreflightForRoute(false, true, nil, nil, nil) {
 		t.Fatalf("auth route should bypass preflight so login and logout remain reachable")
 	}
-	if shouldRunPreflightForRoute(false, false, &models.HostRule{UseAuth: false}, nil) {
+	if shouldRunPreflightForRoute(false, false, &models.HostRule{UseAuth: false}, nil, nil) {
 		t.Fatalf("host rule with use_auth=false should skip preflight")
 	}
-	if !shouldRunPreflightForRoute(false, false, &models.HostRule{UseAuth: true}, nil) {
+	if !shouldRunPreflightForRoute(false, false, &models.HostRule{UseAuth: true}, nil, nil) {
 		t.Fatalf("host rule with use_auth=true should run preflight")
 	}
-	if shouldRunPreflightForRoute(false, false, nil, &models.Rule{UseAuth: false}) {
+	if shouldRunPreflightForRoute(false, false, nil, nil, &models.Rule{UseAuth: false}) {
 		t.Fatalf("path rule with use_auth=false should skip preflight")
 	}
-	if !shouldRunPreflightForRoute(false, false, nil, &models.Rule{UseAuth: true}) {
+	if !shouldRunPreflightForRoute(false, false, nil, nil, &models.Rule{UseAuth: true}) {
 		t.Fatalf("path rule with use_auth=true should run preflight")
+	}
+	if shouldRunPreflightForRoute(
+		false,
+		false,
+		&models.HostRule{UseAuth: true},
+		&models.HostLocation{AuthMode: models.HostLocationAuthModePublic},
+		nil,
+	) {
+		t.Fatalf("public host location should skip preflight")
 	}
 }
 

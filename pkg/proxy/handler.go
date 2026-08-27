@@ -403,6 +403,7 @@ func hostLocationRouteIncarnationSignature(
 	return strings.TrimSpace(location.Target) +
 		"\x00action=" + location.Action +
 		"\x00strip=" + strconv.FormatBool(location.StripPath) +
+		"\x00auth=" + location.AuthMode +
 		"\x00preserve=" + strconv.FormatBool(rule.PreserveHost)
 }
 
@@ -1643,7 +1644,12 @@ func (h *Handler) preflightDecisionFromResponse(resp *pb.PreflightAuthResponse, 
 	return decision
 }
 
-func shouldRunPreflightForRoute(isSelectRoute bool, isAuthRoute bool, matchedHostRule *models.HostRule, matchedRule *models.Rule) bool {
+func hostLocationUsesAuth(hostRule *models.HostRule, location *models.HostLocation) bool {
+	return hostRule != nil && hostRule.UseAuth &&
+		(location == nil || location.AuthMode != models.HostLocationAuthModePublic)
+}
+
+func shouldRunPreflightForRoute(isSelectRoute bool, isAuthRoute bool, matchedHostRule *models.HostRule, matchedHostLocation *models.HostLocation, matchedRule *models.Rule) bool {
 	// The reserved internal auth namespace is the ingress to the authentication
 	// service itself. Applying a consumer-route preflight here recursively asks
 	// the auth service to authenticate its own login/logout/callback endpoints,
@@ -1657,7 +1663,7 @@ func shouldRunPreflightForRoute(isSelectRoute bool, isAuthRoute bool, matchedHos
 		return true
 	}
 	if matchedHostRule != nil {
-		return matchedHostRule.UseAuth
+		return hostLocationUsesAuth(matchedHostRule, matchedHostLocation)
 	}
 	if matchedRule != nil {
 		return matchedRule.UseAuth
@@ -3215,6 +3221,15 @@ func (h *Handler) normalizeHostLocation(location models.HostLocation) (models.Ho
 		location.Action = models.HostLocationActionResponse
 	default:
 		return models.HostLocation{}, fmt.Errorf("host location action must be proxy or response")
+	}
+
+	switch strings.TrimSpace(location.AuthMode) {
+	case "", models.HostLocationAuthModeInherit:
+		location.AuthMode = models.HostLocationAuthModeInherit
+	case models.HostLocationAuthModePublic:
+		location.AuthMode = models.HostLocationAuthModePublic
+	default:
+		return models.HostLocation{}, fmt.Errorf("host location auth mode must be inherit or public")
 	}
 
 	switch location.Action {
@@ -5291,8 +5306,9 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if matchedHostRule != nil {
 		accessMode = matchedHostRule.AccessMode
 	}
+	effectiveHostUseAuth := hostLocationUsesAuth(matchedHostRule, matchedHostLocation)
 	authContextAccessMode := ""
-	if matchedHostRule != nil && matchedHostRule.UseAuth {
+	if effectiveHostUseAuth {
 		authContextAccessMode = accessMode
 	}
 	var requestAuth *requestAuthContext
@@ -5329,6 +5345,12 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		matchedRule,
 		needsSlashRedirect,
 	)
+	effectiveHostUseAuth = hostLocationUsesAuth(matchedHostRule, matchedHostLocation)
+	if effectiveHostUseAuth {
+		authContextAccessMode = accessMode
+	} else {
+		authContextAccessMode = ""
+	}
 	if matchedHostRule != nil {
 		matchedRule = nil
 		needsSlashRedirect = ""
@@ -5524,7 +5546,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		response.RouteNotFound(w, r, nil, false)
 		return
 	}
-	if matchedHostRule != nil && matchedHostRule.UseAuth && !isAuthRoute && !isBuiltinAuthRoute &&
+	if effectiveHostUseAuth && !isAuthRoute && !isBuiltinAuthRoute &&
 		normalizeRequestHost(matchedHostRule.Host) != normalizeRequestHost(snapshot.authConfig.AuthHost) {
 		host := normalizeRequestHost(matchedHostRule.Host)
 		withAdvancedAuthPolicyVersion(r, matchedHostRule.AdvancedAuth.PolicyVersion)
@@ -5553,14 +5575,14 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	defer finishAuthTiming()
 	var preparedAuth *authCheckExecution
-	if shouldRunPreflightForRoute(isBuiltinAuthRoute, isAuthRoute, matchedHostRule, matchedRule) {
+	if shouldRunPreflightForRoute(isBuiltinAuthRoute, isAuthRoute, matchedHostRule, matchedHostLocation, matchedRule) {
 		authTimingStarted = time.Now()
 		if strings.TrimSpace(snapshot.authConfig.AuthURL) != "" {
 			requestAuth = newRequestAuthContext(r, clientIP, authContextAccessMode, routedBackend)
 		}
 		preflight := preflightDecision{}
 		verifyRequired := strings.TrimSpace(snapshot.authConfig.AuthURL) != "" && !isAuthRoute &&
-			(isBuiltinAuthRoute || (matchedHostRule != nil && matchedHostRule.UseAuth) || (matchedRule != nil && matchedRule.UseAuth))
+			(isBuiltinAuthRoute || effectiveHostUseAuth || (matchedRule != nil && matchedRule.UseAuth))
 		if verifyRequired {
 			if combined, used := h.executeCombinedHTTPAuth(r, snapshot.authConfig, clientIP, authContextAccessMode, isMatch, requestID, requestAuth); used {
 				preflight = combined.preflight
@@ -5726,7 +5748,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				toolbarProbeTarget = ""
 			}
 		}
-		accessEntry.AuthRequired = matchedHostRule.UseAuth && snapshot.authConfig.AuthURL != ""
+		accessEntry.AuthRequired = effectiveHostUseAuth && snapshot.authConfig.AuthURL != ""
 		authResult := authCheckResult{allowed: true, decision: "not_required"}
 		if accessEntry.AuthRequired {
 			authTimingStarted = time.Now()

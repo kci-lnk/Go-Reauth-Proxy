@@ -11,9 +11,6 @@ import (
 )
 
 const (
-	defaultReverseProxyThrottleRPS         = 100
-	defaultReverseProxyThrottleBurst       = 200
-	defaultReverseProxyThrottleBlockSecs   = 30
 	reverseProxyThrottleCleanupInterval    = 1 * time.Minute
 	reverseProxyThrottleMinimumEntryTTL    = 2 * time.Minute
 	reverseProxyThrottleShardCount         = 64
@@ -61,13 +58,13 @@ func normalizeReverseProxyThrottleConfig(cfg models.ReverseProxyThrottleConfig) 
 	}
 
 	if cfg.RequestsPerSecond <= 0 {
-		cfg.RequestsPerSecond = defaultReverseProxyThrottleRPS
+		cfg.RequestsPerSecond = models.DefaultReverseProxyThrottleRequestsPerSecond
 	}
 	if cfg.Burst <= 0 {
-		cfg.Burst = defaultReverseProxyThrottleBurst
+		cfg.Burst = models.DefaultReverseProxyThrottleBurst
 	}
 	if cfg.BlockSeconds <= 0 {
-		cfg.BlockSeconds = defaultReverseProxyThrottleBlockSecs
+		cfg.BlockSeconds = models.DefaultReverseProxyThrottleBlockSeconds
 	}
 	return cfg
 }

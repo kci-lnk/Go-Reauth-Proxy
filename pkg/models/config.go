@@ -378,9 +378,24 @@ type WAFConfig struct {
 
 type ReverseProxyThrottleConfig struct {
 	Enabled           bool `json:"enabled,omitempty"`
-	RequestsPerSecond int  `json:"requests_per_second,omitempty" example:"100"`
-	Burst             int  `json:"burst,omitempty" example:"200"`
+	RequestsPerSecond int  `json:"requests_per_second,omitempty" example:"500"`
+	Burst             int  `json:"burst,omitempty" example:"1000"`
 	BlockSeconds      int  `json:"block_seconds,omitempty" example:"30"`
+}
+
+const (
+	DefaultReverseProxyThrottleRequestsPerSecond = 500
+	DefaultReverseProxyThrottleBurst             = 1000
+	DefaultReverseProxyThrottleBlockSeconds      = 30
+)
+
+func DefaultReverseProxyThrottleConfig() ReverseProxyThrottleConfig {
+	return ReverseProxyThrottleConfig{
+		Enabled:           true,
+		RequestsPerSecond: DefaultReverseProxyThrottleRequestsPerSecond,
+		Burst:             DefaultReverseProxyThrottleBurst,
+		BlockSeconds:      DefaultReverseProxyThrottleBlockSeconds,
+	}
 }
 
 type GatewayVisibilityConfig struct {

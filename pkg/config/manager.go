@@ -18,9 +18,6 @@ import (
 const (
 	defaultAuthCacheTTLSeconds                   = 1
 	defaultAuthCacheUnauthorizedTTLSeconds       = 1
-	defaultReverseProxyThrottleRPS               = 100
-	defaultReverseProxyThrottleBurst             = 200
-	defaultReverseProxyThrottleBlockSecs         = 30
 	maxConfigFileBytes                     int64 = 128 << 20
 )
 
@@ -108,12 +105,7 @@ func defaultConfig() *AppConfig {
 		GatewayListener: models.GatewayListenerConfig{
 			Scope: defaultGatewayListenerScope(),
 		},
-		ReverseProxyThrottle: models.ReverseProxyThrottleConfig{
-			Enabled:           true,
-			RequestsPerSecond: defaultReverseProxyThrottleRPS,
-			Burst:             defaultReverseProxyThrottleBurst,
-			BlockSeconds:      defaultReverseProxyThrottleBlockSecs,
-		},
+		ReverseProxyThrottle: models.DefaultReverseProxyThrottleConfig(),
 		Visibility: models.GatewayVisibilityConfig{
 			Enabled:   false,
 			CIDRs:     []string{},
@@ -322,15 +314,17 @@ func applyDefaults(cfg *AppConfig) bool {
 	}
 	if cfg.ReverseProxyThrottle.Enabled {
 		if cfg.ReverseProxyThrottle.RequestsPerSecond <= 0 {
-			cfg.ReverseProxyThrottle.RequestsPerSecond = defaultReverseProxyThrottleRPS
+			cfg.ReverseProxyThrottle.RequestsPerSecond =
+				models.DefaultReverseProxyThrottleRequestsPerSecond
 			changed = true
 		}
 		if cfg.ReverseProxyThrottle.Burst <= 0 {
-			cfg.ReverseProxyThrottle.Burst = defaultReverseProxyThrottleBurst
+			cfg.ReverseProxyThrottle.Burst = models.DefaultReverseProxyThrottleBurst
 			changed = true
 		}
 		if cfg.ReverseProxyThrottle.BlockSeconds <= 0 {
-			cfg.ReverseProxyThrottle.BlockSeconds = defaultReverseProxyThrottleBlockSecs
+			cfg.ReverseProxyThrottle.BlockSeconds =
+				models.DefaultReverseProxyThrottleBlockSeconds
 			changed = true
 		}
 	}
@@ -434,12 +428,7 @@ func applyMissingReverseProxyThrottleDefaults(cfg *AppConfig, hasReverseProxyThr
 		return false
 	}
 
-	cfg.ReverseProxyThrottle = models.ReverseProxyThrottleConfig{
-		Enabled:           true,
-		RequestsPerSecond: defaultReverseProxyThrottleRPS,
-		Burst:             defaultReverseProxyThrottleBurst,
-		BlockSeconds:      defaultReverseProxyThrottleBlockSecs,
-	}
+	cfg.ReverseProxyThrottle = models.DefaultReverseProxyThrottleConfig()
 	return true
 }
 

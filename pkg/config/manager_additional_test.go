@@ -138,9 +138,9 @@ func TestManagerLoadKeepsTencentEdgeOneMutuallyExclusive(t *testing.T) {
 func TestManagerLoadAppliesMissingReverseProxyThrottleDefaults(t *testing.T) {
 	cfg := loadConfigFromJSON(t, `{}`)
 	if !cfg.ReverseProxyThrottle.Enabled ||
-		cfg.ReverseProxyThrottle.RequestsPerSecond != defaultReverseProxyThrottleRPS ||
-		cfg.ReverseProxyThrottle.Burst != defaultReverseProxyThrottleBurst ||
-		cfg.ReverseProxyThrottle.BlockSeconds != defaultReverseProxyThrottleBlockSecs {
+		cfg.ReverseProxyThrottle.RequestsPerSecond != models.DefaultReverseProxyThrottleRequestsPerSecond ||
+		cfg.ReverseProxyThrottle.Burst != models.DefaultReverseProxyThrottleBurst ||
+		cfg.ReverseProxyThrottle.BlockSeconds != models.DefaultReverseProxyThrottleBlockSeconds {
 		t.Fatalf("reverse proxy throttle defaults = %#v", cfg.ReverseProxyThrottle)
 	}
 }

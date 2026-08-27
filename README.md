@@ -132,8 +132,8 @@ flowchart LR
   },
   "reverse_proxy_throttle": {
     "enabled": true,
-    "requests_per_second": 100,
-    "burst": 200,
+    "requests_per_second": 500,
+    "burst": 1000,
     "block_seconds": 30
   }
 }

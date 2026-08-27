@@ -11,6 +11,27 @@ import (
 
 var reverseProxyThrottleBenchmarkSink string
 
+func TestNormalizeReverseProxyThrottleConfigUsesExpandedDefaults(t *testing.T) {
+	got := normalizeReverseProxyThrottleConfig(models.ReverseProxyThrottleConfig{
+		Enabled:           true,
+		RequestsPerSecond: -1,
+		Burst:             -1,
+	})
+	if got.RequestsPerSecond != 500 || got.Burst != 1000 || got.BlockSeconds != 30 {
+		t.Fatalf("normalized defaults = %#v, want 500/1000/30", got)
+	}
+
+	custom := normalizeReverseProxyThrottleConfig(models.ReverseProxyThrottleConfig{
+		Enabled:           true,
+		RequestsPerSecond: 123,
+		Burst:             456,
+		BlockSeconds:      7,
+	})
+	if custom.RequestsPerSecond != 123 || custom.Burst != 456 || custom.BlockSeconds != 7 {
+		t.Fatalf("normalized custom config = %#v, want values preserved", custom)
+	}
+}
+
 func TestReverseProxyThrottleTracksIdentitiesIndependently(t *testing.T) {
 	throttle := newReverseProxyThrottle(models.ReverseProxyThrottleConfig{
 		Enabled:           true,

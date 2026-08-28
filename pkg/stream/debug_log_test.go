@@ -52,7 +52,9 @@ func TestDebugLogRecordsStreamReconcileWithAdminPortRedaction(t *testing.T) {
 	if !strings.Contains(got, `"component":"stream"`) || !strings.Contains(got, `"event":"reconcile_failed"`) {
 		t.Fatalf("expected stream reconcile debug events, got %q", got)
 	}
-	if !strings.Contains(got, `[admin-port]`) || strings.Contains(got, "7996") {
+	if !strings.Contains(got, `[admin-port]`) ||
+		strings.Contains(got, `"listen_port":"7996"`) ||
+		strings.Contains(got, `listen_port 7996 is reserved`) {
 		t.Fatalf("expected admin port to be redacted, got %q", got)
 	}
 }

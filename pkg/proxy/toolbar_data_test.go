@@ -115,6 +115,46 @@ func TestToolbarDataRouteUsesOriginalPageContextAndLatestSnapshot(t *testing.T) 
 	}
 }
 
+func TestToolbarDataRouteAcceptsAuthenticatedIPGrantWithoutExplicitCredential(t *testing.T) {
+	var verifyCalls atomic.Int32
+	bridge := testAuthBridge{
+		verify: func(_ context.Context, in *pb.VerifyAuthRequest) (*pb.VerifyAuthResponse, error) {
+			verifyCalls.Add(1)
+			if got := in.GetContext().GetCookie(); got != "" {
+				t.Fatalf("auth context Cookie = %q, want empty for IP grant", got)
+			}
+			if got := in.GetContext().GetAccessMode(); got != "login_first" {
+				t.Fatalf("auth context access mode = %q, want login_first", got)
+			}
+			return &pb.VerifyAuthResponse{
+				Success:            true,
+				Status:             http.StatusOK,
+				LoginAuthenticated: true,
+				GrantKind:          pb.AuthGrantKind_AUTH_GRANT_KIND_LOGIN,
+			}, nil
+		},
+	}
+	target := newToolbarHTMLTarget(t)
+	defer target.Close()
+	handler := newPublicHostToolbarHandler(target.URL, bridge)
+	handler.mu.Lock()
+	handler.HostRules[0].UseAuth = true
+	handler.HostRules[0].AccessMode = "login_first"
+	handler.publishRequestSnapshotLocked()
+	handler.mu.Unlock()
+	req := httptest.NewRequest(http.MethodGet, "http://public.example.com"+response.ToolbarDataPath()+"?page_path=/", nil)
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("IP-authenticated response = %d %q, want 200", rec.Code, rec.Body.String())
+	}
+	if got := verifyCalls.Load(); got != 1 {
+		t.Fatalf("verify calls = %d, want 1", got)
+	}
+}
+
 func TestToolbarDataRouteRevalidatesAuthenticationAfterLogout(t *testing.T) {
 	const clearSessionCookie = authSessionCookieName + "=; Path=/; Max-Age=0; HttpOnly; SameSite=Lax"
 	var verifyCalls atomic.Int32
@@ -309,8 +349,8 @@ func TestToolbarDataRouteFailsClosed(t *testing.T) {
 	if unauthenticated.Code != http.StatusNoContent || unauthenticated.Body.Len() != 0 {
 		t.Fatalf("unauthenticated response = %d %q", unauthenticated.Code, unauthenticated.Body.String())
 	}
-	if got := atomic.LoadInt32(&verifyCalls); got != 0 {
-		t.Fatalf("unauthenticated request made %d verify calls", got)
+	if got := atomic.LoadInt32(&verifyCalls); got != 1 {
+		t.Fatalf("unauthenticated request made %d verify calls, want 1", got)
 	}
 
 	handler.mu.Lock()
@@ -322,7 +362,7 @@ func TestToolbarDataRouteFailsClosed(t *testing.T) {
 	if suppressed.Code != http.StatusNoContent || suppressed.Body.Len() != 0 {
 		t.Fatalf("suppressed response = %d %q", suppressed.Code, suppressed.Body.String())
 	}
-	if got := atomic.LoadInt32(&verifyCalls); got != 0 {
+	if got := atomic.LoadInt32(&verifyCalls); got != 1 {
 		t.Fatalf("suppressed request made %d verify calls", got)
 	}
 
@@ -336,7 +376,7 @@ func TestToolbarDataRouteFailsClosed(t *testing.T) {
 	if unavailable.Code != http.StatusNoContent || unavailable.Body.Len() != 0 {
 		t.Fatalf("unavailable response = %d %q", unavailable.Code, unavailable.Body.String())
 	}
-	if got := atomic.LoadInt32(&verifyCalls); got != 0 {
+	if got := atomic.LoadInt32(&verifyCalls); got != 1 {
 		t.Fatalf("unavailable request made %d verify calls", got)
 	}
 
@@ -350,7 +390,7 @@ func TestToolbarDataRouteFailsClosed(t *testing.T) {
 	if disabledPortal.Code != http.StatusNoContent || disabledPortal.Body.Len() != 0 {
 		t.Fatalf("disabled portal response = %d %q", disabledPortal.Code, disabledPortal.Body.String())
 	}
-	if got := atomic.LoadInt32(&verifyCalls); got != 0 {
+	if got := atomic.LoadInt32(&verifyCalls); got != 1 {
 		t.Fatalf("disabled portal request made %d verify calls", got)
 	}
 

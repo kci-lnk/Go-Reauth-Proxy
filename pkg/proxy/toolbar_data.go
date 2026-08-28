@@ -88,7 +88,7 @@ func (h *Handler) handleToolbarDataRoute(w http.ResponseWriter, r *http.Request,
 		http.Error(w, "Invalid page query", http.StatusBadRequest)
 		return result
 	}
-	if !snapshot.gatewayPortal.Enabled || response.ShouldSuppressToolbarForUserAgent(r.UserAgent()) || !requestHasExplicitAuthIdentity(r) {
+	if !snapshot.gatewayPortal.Enabled || response.ShouldSuppressToolbarForUserAgent(r.UserAgent()) {
 		w.WriteHeader(http.StatusNoContent)
 		return result
 	}

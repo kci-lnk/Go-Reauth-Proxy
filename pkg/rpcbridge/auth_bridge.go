@@ -22,13 +22,15 @@ import (
 )
 
 const (
-	InternalTokenMetadataKey       = "x-fn-knock-internal-rpc-token"
-	CapabilityAuthorizeHTTPV1      = "authorize_http_v1"
-	CapabilitySubdomainRuleGrantV1 = "subdomain_rule_grant_v1"
-	authBridgeSendQueueSize        = 256
-	authBridgePendingShardCount    = 64
-	authBridgeRoundTripTimeout     = 5 * time.Second
-	authBridgeCanceledSendGrace    = 100 * time.Millisecond
+	InternalTokenMetadataKey        = "x-fn-knock-internal-rpc-token"
+	AuthBridgeInstanceMetadataKey   = "x-fn-knock-auth-bridge-instance-id"
+	AuthBridgeCapabilityMetadataKey = "x-fn-knock-auth-bridge-capability"
+	CapabilityAuthorizeHTTPV1       = "authorize_http_v1"
+	CapabilitySubdomainRuleGrantV1  = "subdomain_rule_grant_v1"
+	authBridgeSendQueueSize         = 256
+	authBridgePendingShardCount     = 64
+	authBridgeRoundTripTimeout      = 5 * time.Second
+	authBridgeCanceledSendGrace     = 100 * time.Millisecond
 )
 
 var (
@@ -128,8 +130,8 @@ func NewAuthBridgeManager(token string) *AuthBridgeManager {
 	return m
 }
 
-// IsReady reports whether the currently active bridge completed its Ready
-// handshake. A connected stream is deliberately not considered ready yet.
+// IsReady reports whether the currently active authenticated bridge completed
+// metadata initialization or entered the capability-safe legacy fallback.
 func (m *AuthBridgeManager) IsReady() bool {
 	active := m.stream.Load()
 	return active != nil && active.capabilities.Load() != nil && !active.isClosed()
@@ -156,9 +158,9 @@ func (m *AuthBridgeManager) notifyReadyChange(ready bool) {
 	}
 }
 
-// WaitReady blocks until a connected Rust bridge has completed its Ready
-// handshake. Callers use this to keep public proxy listeners closed during
-// startup while the internal gRPC control plane remains available.
+// WaitReady blocks until a connected Rust bridge has completed initialization.
+// Callers use this to keep public proxy listeners closed during startup while
+// the internal gRPC control plane remains available.
 func (m *AuthBridgeManager) WaitReady(ctx context.Context) error {
 	if ctx == nil {
 		ctx = context.Background()
@@ -177,18 +179,28 @@ func (m *AuthBridgeManager) ConnectAuthBridge(stream pb.AuthBridgeService_Connec
 	if err := CheckInternalToken(stream.Context(), m.token); err != nil {
 		return err
 	}
-	// Tonic waits for the server's initial response headers before it resolves a
-	// bidirectional streaming call. Flush them before waiting for the Rust side's
-	// Ready envelope, otherwise both peers can wait for one another indefinitely.
+	// Tonic does not guarantee that the request body is polled before the server
+	// returns initial response headers. Current Rust clients therefore advertise
+	// readiness in request metadata, which arrives with the HTTP/2 headers and
+	// cannot race the first DATA frame. The body Ready envelope remains supported
+	// for capability refreshes. A legacy client without capability metadata is
+	// still safe to mark ready with an empty capability set: callers then use the
+	// older split authorization RPCs instead of assuming newer bridge features.
+	ready := authBridgeReadyFromMetadata(stream.Context())
+	if ready == nil {
+		ready = &pb.AuthBridgeReady{}
+	}
 	if err := stream.SendHeader(metadata.MD{}); err != nil {
 		return status.Errorf(codes.Unavailable, "send auth bridge initial headers: %v", err)
 	}
 
 	active := m.attachStream(stream)
-
 	defer func() {
 		m.detachStream(active)
 	}()
+	m.handleIncoming(active, &pb.AuthBridgeEnvelope{
+		Payload: &pb.AuthBridgeEnvelope_Ready{Ready: ready},
+	})
 
 	recvCh := make(chan authBridgeRecvResult, 1)
 	go active.recvLoop(recvCh)
@@ -208,6 +220,28 @@ func (m *AuthBridgeManager) ConnectAuthBridge(stream pb.AuthBridgeService_Connec
 			return result.err
 		}
 	}
+}
+
+func authBridgeReadyFromMetadata(ctx context.Context) *pb.AuthBridgeReady {
+	md, ok := metadata.FromIncomingContext(ctx)
+	if !ok {
+		return nil
+	}
+	values := md.Get(AuthBridgeCapabilityMetadataKey)
+	capabilities := make([]string, 0, len(values))
+	for _, value := range values {
+		if capability := strings.TrimSpace(value); capability != "" {
+			capabilities = append(capabilities, capability)
+		}
+	}
+	if len(capabilities) == 0 {
+		return nil
+	}
+	instanceID := ""
+	if values := md.Get(AuthBridgeInstanceMetadataKey); len(values) > 0 {
+		instanceID = strings.TrimSpace(values[0])
+	}
+	return &pb.AuthBridgeReady{InstanceId: instanceID, Capabilities: capabilities}
 }
 
 // SupportsCapability reports whether the currently connected bridge advertised
@@ -290,11 +324,17 @@ func (m *AuthBridgeManager) roundTrip(ctx context.Context, msg *pb.AuthBridgeEnv
 }
 
 func (m *AuthBridgeManager) roundTripOnStream(ctx context.Context, expected *authBridgeStream, msg *pb.AuthBridgeEnvelope) (*pb.AuthBridgeEnvelope, error) {
+	started := time.Now()
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	ctx, cancel := context.WithDeadline(ctx, deadlineOrDefault(ctx, authBridgeRoundTripTimeout))
 	defer cancel()
+	deadline, _ := ctx.Deadline()
+	// Stamp the deadline before enqueueing. The Rust bridge must account for
+	// time spent in this process's writer queue and in the gRPC transport rather
+	// than starting a fresh timeout after it eventually receives the request.
+	msg.DeadlineUnixMillis = deadline.UnixMilli()
 
 	active := m.stream.Load()
 	if active == nil || (expected != nil && active != expected) {
@@ -341,7 +381,7 @@ func (m *AuthBridgeManager) roundTripOnStream(ctx context.Context, expected *aut
 	if err != nil {
 		if errors.Is(err, context.DeadlineExceeded) {
 			operationallog.Diagnostic("WARN", "auth_bridge", "round_trip_timeout", "response_timeout", map[string]any{
-				"duration_ms": int64(authBridgeRoundTripTimeout / time.Millisecond),
+				"duration_ms": time.Since(started).Milliseconds(),
 				"queue_depth": len(active.sendQueue),
 			})
 		}
@@ -645,8 +685,9 @@ func internalTokenEqual(got string, want string) bool {
 }
 
 func deadlineOrDefault(ctx context.Context, fallback time.Duration) time.Time {
-	if deadline, ok := ctx.Deadline(); ok {
+	fallbackDeadline := time.Now().Add(fallback)
+	if deadline, ok := ctx.Deadline(); ok && deadline.Before(fallbackDeadline) {
 		return deadline
 	}
-	return time.Now().Add(fallback)
+	return fallbackDeadline
 }

@@ -28,18 +28,18 @@ type ControlApiVersion int32
 
 const (
 	ControlApiVersion_CONTROL_API_VERSION_UNSPECIFIED ControlApiVersion = 0
-	ControlApiVersion_CONTROL_API_VERSION_CURRENT     ControlApiVersion = 19
+	ControlApiVersion_CONTROL_API_VERSION_CURRENT     ControlApiVersion = 20
 )
 
 // Enum value maps for ControlApiVersion.
 var (
 	ControlApiVersion_name = map[int32]string{
 		0:  "CONTROL_API_VERSION_UNSPECIFIED",
-		19: "CONTROL_API_VERSION_CURRENT",
+		20: "CONTROL_API_VERSION_CURRENT",
 	}
 	ControlApiVersion_value = map[string]int32{
 		"CONTROL_API_VERSION_UNSPECIFIED": 0,
-		"CONTROL_API_VERSION_CURRENT":     19,
+		"CONTROL_API_VERSION_CURRENT":     20,
 	}
 )
 
@@ -10721,6 +10721,11 @@ func (x *AuthBridgeReady) GetCapabilities() []string {
 type AuthBridgeEnvelope struct {
 	state     protoimpl.MessageState `protogen:"open.v1"`
 	RequestId string                 `protobuf:"bytes,1,opt,name=request_id,json=requestId,proto3" json:"request_id,omitempty"`
+	// Absolute wall-clock deadline assigned by the Go gateway before the
+	// request enters its bounded send queue. Rust uses the same deadline for
+	// bridge admission, authorization work, and response delivery so time spent
+	// waiting in either process cannot reset the request budget.
+	DeadlineUnixMillis int64 `protobuf:"varint,11,opt,name=deadline_unix_millis,json=deadlineUnixMillis,proto3" json:"deadline_unix_millis,omitempty"`
 	// Types that are valid to be assigned to Payload:
 	//
 	//	*AuthBridgeEnvelope_Ready
@@ -10772,6 +10777,13 @@ func (x *AuthBridgeEnvelope) GetRequestId() string {
 		return x.RequestId
 	}
 	return ""
+}
+
+func (x *AuthBridgeEnvelope) GetDeadlineUnixMillis() int64 {
+	if x != nil {
+		return x.DeadlineUnixMillis
+	}
+	return 0
 }
 
 func (x *AuthBridgeEnvelope) GetPayload() isAuthBridgeEnvelope_Payload {
@@ -12107,10 +12119,11 @@ const file_fnknock_v1_gateway_proto_rawDesc = "" +
 	"\x0fAuthBridgeReady\x12\x1f\n" +
 	"\vinstance_id\x18\x01 \x01(\tR\n" +
 	"instanceId\x12\"\n" +
-	"\fcapabilities\x18\x02 \x03(\tR\fcapabilities\"\xd1\x06\n" +
+	"\fcapabilities\x18\x02 \x03(\tR\fcapabilities\"\x83\a\n" +
 	"\x12AuthBridgeEnvelope\x12\x1d\n" +
 	"\n" +
-	"request_id\x18\x01 \x01(\tR\trequestId\x123\n" +
+	"request_id\x18\x01 \x01(\tR\trequestId\x120\n" +
+	"\x14deadline_unix_millis\x18\v \x01(\x03R\x12deadlineUnixMillis\x123\n" +
 	"\x05ready\x18\x02 \x01(\v2\x1b.fnknock.v1.AuthBridgeReadyH\x00R\x05ready\x12O\n" +
 	"\x13verify_auth_request\x18\x03 \x01(\v2\x1d.fnknock.v1.VerifyAuthRequestH\x00R\x11verifyAuthRequest\x12R\n" +
 	"\x14verify_auth_response\x18\x04 \x01(\v2\x1e.fnknock.v1.VerifyAuthResponseH\x00R\x12verifyAuthResponse\x12X\n" +
@@ -12142,7 +12155,7 @@ const file_fnknock_v1_gateway_proto_rawDesc = "" +
 	"last_error\x18\t \x01(\tR\tlastError*Y\n" +
 	"\x11ControlApiVersion\x12#\n" +
 	"\x1fCONTROL_API_VERSION_UNSPECIFIED\x10\x00\x12\x1f\n" +
-	"\x1bCONTROL_API_VERSION_CURRENT\x10\x13*\x9d\x01\n" +
+	"\x1bCONTROL_API_VERSION_CURRENT\x10\x14*\x9d\x01\n" +
 	"\x11WafDrainOperation\x12#\n" +
 	"\x1fWAF_DRAIN_OPERATION_UNSPECIFIED\x10\x00\x12\x1d\n" +
 	"\x19WAF_DRAIN_OPERATION_LEASE\x10\x01\x12#\n" +

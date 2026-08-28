@@ -289,7 +289,11 @@ func TestAuthBridgeGRPCRoundTrip(t *testing.T) {
 	client := pb.NewAuthBridgeServiceClient(conn)
 	streamCtx := metadata.NewOutgoingContext(
 		context.Background(),
-		metadata.Pairs(InternalTokenMetadataKey, "secret"),
+		metadata.Pairs(
+			InternalTokenMetadataKey, "secret",
+			AuthBridgeInstanceMetadataKey, "grpc-client",
+			AuthBridgeCapabilityMetadataKey, CapabilityAuthorizeHTTPV1,
+		),
 	)
 	stream, err := client.ConnectAuthBridge(streamCtx)
 	if err != nil {
@@ -309,10 +313,11 @@ func TestAuthBridgeGRPCRoundTrip(t *testing.T) {
 			t.Fatalf("auth bridge initial headers: %v", err)
 		}
 	case <-time.After(time.Second):
-		t.Fatal("auth bridge did not send initial headers before Ready")
+		t.Fatal("auth bridge did not send initial headers from metadata handshake")
 	}
 
 	waitForConnectedBridge(t, manager)
+	waitForCapability(t, manager, CapabilityAuthorizeHTTPV1)
 	if err := stream.Send(&pb.AuthBridgeEnvelope{
 		Payload: &pb.AuthBridgeEnvelope_Ready{Ready: &pb.AuthBridgeReady{
 			InstanceId:   "grpc-client",
@@ -321,7 +326,6 @@ func TestAuthBridgeGRPCRoundTrip(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("send ready envelope: %v", err)
 	}
-	waitForCapability(t, manager, CapabilityAuthorizeHTTPV1)
 
 	clientDone := make(chan error, 1)
 	go func() {
@@ -363,6 +367,43 @@ func TestAuthBridgeGRPCRoundTrip(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("bridge client did not handle request")
 	}
+
+	// A pre-metadata bridge must still become usable after receiving the
+	// server headers. It starts with the capability-safe split-RPC fallback,
+	// then its first body Ready envelope may advertise newer capabilities.
+	if err := stream.CloseSend(); err != nil {
+		t.Fatalf("close metadata bridge: %v", err)
+	}
+	waitForDisconnectedBridge(t, manager)
+	legacyCtx := metadata.NewOutgoingContext(
+		context.Background(),
+		metadata.Pairs(InternalTokenMetadataKey, "secret"),
+	)
+	legacyStream, err := client.ConnectAuthBridge(legacyCtx)
+	if err != nil {
+		t.Fatalf("connect legacy auth bridge: %v", err)
+	}
+	t.Cleanup(func() { _ = legacyStream.CloseSend() })
+	if _, err := legacyStream.Header(); err != nil {
+		t.Fatalf("legacy auth bridge initial headers: %v", err)
+	}
+	readyCtx, readyCancel := context.WithTimeout(context.Background(), time.Second)
+	defer readyCancel()
+	if err := manager.WaitReady(readyCtx); err != nil {
+		t.Fatalf("legacy auth bridge did not enter safe ready state: %v", err)
+	}
+	if manager.SupportsCapability(CapabilityAuthorizeHTTPV1) {
+		t.Fatal("legacy auth bridge unexpectedly inherited a metadata capability")
+	}
+	if err := legacyStream.Send(&pb.AuthBridgeEnvelope{
+		Payload: &pb.AuthBridgeEnvelope_Ready{Ready: &pb.AuthBridgeReady{
+			InstanceId:   "legacy-client",
+			Capabilities: []string{CapabilityAuthorizeHTTPV1},
+		}},
+	}); err != nil {
+		t.Fatalf("send legacy ready envelope: %v", err)
+	}
+	waitForCapability(t, manager, CapabilityAuthorizeHTTPV1)
 }
 
 func TestAuthBridgeReadyCapabilitiesAndAuthorizeHTTP(t *testing.T) {
@@ -415,6 +456,10 @@ func TestAuthBridgeReadyCapabilitiesAndAuthorizeHTTP(t *testing.T) {
 	if got := request.GetAuthorizeHttpRequest(); got == nil || !got.GetMatched() {
 		t.Fatalf("request = %#v, want matched authorize HTTP request", request)
 	}
+	deadline := time.UnixMilli(request.GetDeadlineUnixMillis())
+	if remaining := time.Until(deadline); remaining <= 0 || remaining > authBridgeRoundTripTimeout {
+		t.Fatalf("request deadline remaining = %s, want (0, %s]", remaining, authBridgeRoundTripTimeout)
+	}
 	manager.dispatchResponse(active, &pb.AuthBridgeEnvelope{
 		RequestId: request.GetRequestId(),
 		Payload: &pb.AuthBridgeEnvelope_AuthorizeHttpResponse{
@@ -437,6 +482,25 @@ func TestAuthBridgeReadyCapabilitiesAndAuthorizeHTTP(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("AuthorizeHTTP did not complete")
+	}
+}
+
+func TestDeadlineOrDefaultUsesEarliestBudget(t *testing.T) {
+	const fallback = 5 * time.Second
+
+	shortContext, shortCancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer shortCancel()
+	shortDeadline, _ := shortContext.Deadline()
+	if got := deadlineOrDefault(shortContext, fallback); !got.Equal(shortDeadline) {
+		t.Fatalf("short context deadline = %s, want %s", got, shortDeadline)
+	}
+
+	longContext, longCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer longCancel()
+	started := time.Now()
+	got := deadlineOrDefault(longContext, fallback)
+	if got.Before(started.Add(fallback-time.Second)) || got.After(started.Add(fallback+time.Second)) {
+		t.Fatalf("long context deadline = %s, want fallback near %s", got, started.Add(fallback))
 	}
 }
 
@@ -825,6 +889,18 @@ func waitForConnectedBridge(t *testing.T, manager *AuthBridgeManager) {
 		time.Sleep(5 * time.Millisecond)
 	}
 	t.Fatal("auth bridge did not connect")
+}
+
+func waitForDisconnectedBridge(t *testing.T, manager *AuthBridgeManager) {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if manager.stream.Load() == nil {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatal("auth bridge did not disconnect within one second")
 }
 
 func waitForCapability(t *testing.T, manager *AuthBridgeManager, capability string) {

@@ -268,7 +268,7 @@ func TestStreamActiveIPsToProtoFormatsIdentityAndTime(t *testing.T) {
 }
 
 func TestWAFConfigProtoRoundTrip(t *testing.T) {
-	input := models.WAFConfig{Enabled: true, Mode: "block", RulesDir: "/rules", ActiveBundleID: "bundle", ParanoiaLevel: 2, ExecutingParanoiaLevel: 1, InboundAnomalyThreshold: 5, OutboundAnomalyThreshold: 4, RequestBodyAccess: true, RequestBodyLimitBytes: 100, RequestBodyInMemoryLimitBytes: 50, ResponseBodyAccess: true, DisabledHosts: []string{"app"}, DisabledPathPrefixes: []string{"/health"}, UpdatedAt: "now", PrivateIPExemptEnabled: true}
+	input := models.WAFConfig{Enabled: true, Mode: "block", RulesDir: "/rules", ActiveBundleID: "bundle", ParanoiaLevel: 2, ExecutingParanoiaLevel: 1, InboundAnomalyThreshold: 5, OutboundAnomalyThreshold: 4, RequestBodyAccess: true, RequestBodyLimitBytes: 100, RequestBodyInMemoryLimitBytes: 50, ResponseBodyAccess: true, DisabledHosts: []string{"app"}, DisabledPathPrefixes: []string{"/health"}, UpdatedAt: "now", PrivateIPExemptEnabled: true, BlockBehavior: models.WAFBlockBehaviorResetConnection}
 	if got := protoToWAFConfig(wafConfigToProto(input)); !reflect.DeepEqual(got, input) {
 		t.Fatalf("round trip = %#v", got)
 	}

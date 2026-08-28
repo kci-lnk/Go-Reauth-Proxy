@@ -147,6 +147,11 @@ func defaultConfig() *AppConfig {
 		GeneralBlacklist: models.GeneralBlacklistConfig{
 			Items: []models.GeneralBlacklistRecord{},
 		},
+		WAF: models.WAFConfig{
+			BlockBehavior:        models.WAFBlockBehaviorErrorPage,
+			DisabledHosts:        []string{},
+			DisabledPathPrefixes: []string{},
+		},
 		SSL: models.SSLConfig{
 			DeploymentMode: models.SSLDeploymentModeSingleActive,
 			Certificates:   []models.SSLDeployedCertificate{},
@@ -366,6 +371,11 @@ func applyDefaults(cfg *AppConfig) bool {
 	}
 	if cfg.WAF.DisabledPathPrefixes == nil {
 		cfg.WAF.DisabledPathPrefixes = []string{}
+		changed = true
+	}
+	if cfg.WAF.BlockBehavior != models.WAFBlockBehaviorErrorPage &&
+		cfg.WAF.BlockBehavior != models.WAFBlockBehaviorResetConnection {
+		cfg.WAF.BlockBehavior = models.WAFBlockBehaviorErrorPage
 		changed = true
 	}
 

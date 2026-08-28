@@ -28,18 +28,18 @@ type ControlApiVersion int32
 
 const (
 	ControlApiVersion_CONTROL_API_VERSION_UNSPECIFIED ControlApiVersion = 0
-	ControlApiVersion_CONTROL_API_VERSION_CURRENT     ControlApiVersion = 20
+	ControlApiVersion_CONTROL_API_VERSION_CURRENT     ControlApiVersion = 21
 )
 
 // Enum value maps for ControlApiVersion.
 var (
 	ControlApiVersion_name = map[int32]string{
 		0:  "CONTROL_API_VERSION_UNSPECIFIED",
-		20: "CONTROL_API_VERSION_CURRENT",
+		21: "CONTROL_API_VERSION_CURRENT",
 	}
 	ControlApiVersion_value = map[string]int32{
 		"CONTROL_API_VERSION_UNSPECIFIED": 0,
-		"CONTROL_API_VERSION_CURRENT":     20,
+		"CONTROL_API_VERSION_CURRENT":     21,
 	}
 )
 
@@ -3370,6 +3370,7 @@ type WafConfig struct {
 	DisabledPathPrefixes          []string               `protobuf:"bytes,14,rep,name=disabled_path_prefixes,json=disabledPathPrefixes,proto3" json:"disabled_path_prefixes,omitempty"`
 	UpdatedAt                     string                 `protobuf:"bytes,15,opt,name=updated_at,json=updatedAt,proto3" json:"updated_at,omitempty"`
 	PrivateIpExemptEnabled        bool                   `protobuf:"varint,16,opt,name=private_ip_exempt_enabled,json=privateIpExemptEnabled,proto3" json:"private_ip_exempt_enabled,omitempty"`
+	BlockBehavior                 string                 `protobuf:"bytes,17,opt,name=block_behavior,json=blockBehavior,proto3" json:"block_behavior,omitempty"`
 	unknownFields                 protoimpl.UnknownFields
 	sizeCache                     protoimpl.SizeCache
 }
@@ -3514,6 +3515,13 @@ func (x *WafConfig) GetPrivateIpExemptEnabled() bool {
 		return x.PrivateIpExemptEnabled
 	}
 	return false
+}
+
+func (x *WafConfig) GetBlockBehavior() string {
+	if x != nil {
+		return x.BlockBehavior
+	}
+	return ""
 }
 
 type WafStatus struct {
@@ -11390,7 +11398,7 @@ const file_fnknock_v1_gateway_proto_rawDesc = "" +
 	"\arecords\x18\x01 \x03(\v2/.fnknock.v1.GeneralBlacklistStatus.RecordsEntryR\arecords\x1a^\n" +
 	"\fRecordsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x128\n" +
-	"\x05value\x18\x02 \x01(\v2\".fnknock.v1.GeneralBlacklistRecordR\x05value:\x028\x01\"\xf8\x05\n" +
+	"\x05value\x18\x02 \x01(\v2\".fnknock.v1.GeneralBlacklistRecordR\x05value:\x028\x01\"\x9f\x06\n" +
 	"\tWafConfig\x12\x18\n" +
 	"\aenabled\x18\x01 \x01(\bR\aenabled\x12\x12\n" +
 	"\x04mode\x18\x02 \x01(\tR\x04mode\x12\x1b\n" +
@@ -11409,7 +11417,8 @@ const file_fnknock_v1_gateway_proto_rawDesc = "" +
 	"\x16disabled_path_prefixes\x18\x0e \x03(\tR\x14disabledPathPrefixes\x12\x1d\n" +
 	"\n" +
 	"updated_at\x18\x0f \x01(\tR\tupdatedAt\x129\n" +
-	"\x19private_ip_exempt_enabled\x18\x10 \x01(\bR\x16privateIpExemptEnabled\"\x8f\x02\n" +
+	"\x19private_ip_exempt_enabled\x18\x10 \x01(\bR\x16privateIpExemptEnabled\x12%\n" +
+	"\x0eblock_behavior\x18\x11 \x01(\tR\rblockBehavior\"\x8f\x02\n" +
 	"\tWafStatus\x12\x18\n" +
 	"\aenabled\x18\x01 \x01(\bR\aenabled\x12\x12\n" +
 	"\x04mode\x18\x02 \x01(\tR\x04mode\x12\x16\n" +
@@ -12155,7 +12164,7 @@ const file_fnknock_v1_gateway_proto_rawDesc = "" +
 	"last_error\x18\t \x01(\tR\tlastError*Y\n" +
 	"\x11ControlApiVersion\x12#\n" +
 	"\x1fCONTROL_API_VERSION_UNSPECIFIED\x10\x00\x12\x1f\n" +
-	"\x1bCONTROL_API_VERSION_CURRENT\x10\x14*\x9d\x01\n" +
+	"\x1bCONTROL_API_VERSION_CURRENT\x10\x15*\x9d\x01\n" +
 	"\x11WafDrainOperation\x12#\n" +
 	"\x1fWAF_DRAIN_OPERATION_UNSPECIFIED\x10\x00\x12\x1d\n" +
 	"\x19WAF_DRAIN_OPERATION_LEASE\x10\x01\x12#\n" +

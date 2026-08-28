@@ -5543,6 +5543,12 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				accessEntry.AuthDecision = "waf_blocked"
 				accessEntry.WAFBlocked = true
 				loggedStatusCode = decision.Status
+				if decision.BlockBehavior == models.WAFBlockBehaviorResetConnection {
+					loggedStatusCode = 499
+					markConnectionResetStatus(w)
+					h.abortConnection(w)
+					return
+				}
 				response.WAFBlocked(w, r, response.WAFBlockPageOptions{
 					Status:  decision.Status,
 					TraceID: decision.TraceID,

@@ -72,6 +72,9 @@ func NormalizeConfig(cfg models.WAFConfig, defaultRulesDir string) models.WAFCon
 		cfg.RequestBodyInMemoryLimitBytes = cfg.RequestBodyLimitBytes
 	}
 	cfg.ResponseBodyAccess = false
+	if cfg.BlockBehavior != models.WAFBlockBehaviorResetConnection {
+		cfg.BlockBehavior = models.WAFBlockBehaviorErrorPage
+	}
 	cfg.DisabledHosts = normalizeStringList(cfg.DisabledHosts, true)
 	cfg.DisabledPathPrefixes = normalizePathPrefixes(cfg.DisabledPathPrefixes)
 	cfg.UpdatedAt = strings.TrimSpace(cfg.UpdatedAt)

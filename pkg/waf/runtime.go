@@ -374,6 +374,7 @@ func (rt *Runtime) Evaluate(r *http.Request, ctx EvaluateContext) Decision {
 	cfg := snapshot.config
 	decision.Enabled = IsActive(cfg)
 	decision.Mode = cfg.Mode
+	decision.BlockBehavior = cfg.BlockBehavior
 	decision.DetectionOnly = cfg.Mode == ModeDetection
 	clientIP, clientPort := splitAddress(ctx.ClientIP, r.RemoteAddr)
 	privateIPExempted := cfg.PrivateIPExemptEnabled && isPrivateOrLocalIP(clientIP)

@@ -378,7 +378,13 @@ type WAFConfig struct {
 	DisabledPathPrefixes          []string `json:"disabled_path_prefixes,omitempty"`
 	UpdatedAt                     string   `json:"updated_at,omitempty"`
 	PrivateIPExemptEnabled        bool     `json:"private_ip_exempt_enabled,omitempty"`
+	BlockBehavior                 string   `json:"block_behavior,omitempty" example:"error_page"`
 }
+
+const (
+	WAFBlockBehaviorErrorPage       = "error_page"
+	WAFBlockBehaviorResetConnection = "reset_connection"
+)
 
 type ReverseProxyThrottleConfig struct {
 	Enabled           bool `json:"enabled,omitempty"`

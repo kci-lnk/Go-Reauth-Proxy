@@ -974,6 +974,7 @@ func wafConfigToProto(cfg models.WAFConfig) *pb.WafConfig {
 		DisabledPathPrefixes:          cfg.DisabledPathPrefixes,
 		UpdatedAt:                     cfg.UpdatedAt,
 		PrivateIpExemptEnabled:        cfg.PrivateIPExemptEnabled,
+		BlockBehavior:                 cfg.BlockBehavior,
 	}
 }
 
@@ -998,6 +999,7 @@ func protoToWAFConfig(cfg *pb.WafConfig) models.WAFConfig {
 		DisabledPathPrefixes:          cfg.GetDisabledPathPrefixes(),
 		UpdatedAt:                     cfg.GetUpdatedAt(),
 		PrivateIPExemptEnabled:        cfg.GetPrivateIpExemptEnabled(),
+		BlockBehavior:                 cfg.GetBlockBehavior(),
 	}
 }
 

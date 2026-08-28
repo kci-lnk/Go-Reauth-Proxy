@@ -138,6 +138,24 @@ func TestNormalizeConfigDisablesResponseBodyAccess(t *testing.T) {
 	}
 }
 
+func TestNormalizeConfigDefaultsInvalidBlockBehaviorToErrorPage(t *testing.T) {
+	for _, behavior := range []string{"", "invalid", " reset_connection "} {
+		cfg := NormalizeConfig(models.WAFConfig{BlockBehavior: behavior}, "/rules")
+		if cfg.BlockBehavior != models.WAFBlockBehaviorErrorPage {
+			t.Fatalf("block behavior for %q = %q", behavior, cfg.BlockBehavior)
+		}
+	}
+}
+
+func TestNormalizeConfigPreservesResetConnectionBlockBehavior(t *testing.T) {
+	cfg := NormalizeConfig(models.WAFConfig{
+		BlockBehavior: models.WAFBlockBehaviorResetConnection,
+	}, "/rules")
+	if cfg.BlockBehavior != models.WAFBlockBehaviorResetConnection {
+		t.Fatalf("block behavior = %q", cfg.BlockBehavior)
+	}
+}
+
 func TestNormalizeConfigNormalizesDisabledHosts(t *testing.T) {
 	cfg := NormalizeConfig(models.WAFConfig{DisabledHosts: []string{" App.Example.COM ", "app.example.com", ""}}, "/rules")
 

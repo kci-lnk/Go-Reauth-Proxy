@@ -29,6 +29,7 @@ type Decision struct {
 	TraceID       string
 	Status        int
 	Mode          string
+	BlockBehavior string
 	Action        string
 	BundleID      string
 	RuleIDs       []int

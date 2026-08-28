@@ -43,8 +43,28 @@ func TestManagerLoadCreatesDefaultConfigFile(t *testing.T) {
 	if cfg.GatewayListener.Scope != models.GatewayListenerScopeAll {
 		t.Fatalf("default listener scope = %q, want %q", cfg.GatewayListener.Scope, models.GatewayListenerScopeAll)
 	}
+	if cfg.WAF.BlockBehavior != models.WAFBlockBehaviorErrorPage {
+		t.Fatalf("default WAF block behavior = %q, want error_page", cfg.WAF.BlockBehavior)
+	}
 	if _, err := os.Stat(path); err != nil {
 		t.Fatalf("default config was not written: %v", err)
+	}
+}
+
+func TestManagerLoadNormalizesWAFBlockBehavior(t *testing.T) {
+	for _, raw := range []string{
+		`{"waf":{}}`,
+		`{"waf":{"block_behavior":"invalid"}}`,
+	} {
+		cfg := loadConfigFromJSON(t, raw)
+		if cfg.WAF.BlockBehavior != models.WAFBlockBehaviorErrorPage {
+			t.Fatalf("WAF block behavior = %q, want error_page", cfg.WAF.BlockBehavior)
+		}
+	}
+
+	cfg := loadConfigFromJSON(t, `{"waf":{"block_behavior":"reset_connection"}}`)
+	if cfg.WAF.BlockBehavior != models.WAFBlockBehaviorResetConnection {
+		t.Fatalf("WAF block behavior = %q, want reset_connection", cfg.WAF.BlockBehavior)
 	}
 }
 

@@ -91,6 +91,29 @@ func TestLoggedInActiveEnforcesMaxEntriesOnWrite(t *testing.T) {
 	}
 }
 
+func TestRecentLoggedInActiveMatchesRequestIdentityAndExpires(t *testing.T) {
+	handler := &Handler{}
+	now := time.Unix(100, 0)
+	req := httptest.NewRequest(http.MethodGet, "https://app.example.test/", nil)
+	req.AddCookie(&http.Cookie{Name: "app-session", Value: "one"})
+	handler.markLoggedInActive(req, "192.0.2.10", now)
+
+	if !handler.hasRecentLoggedInActive(req, "192.0.2.10", now.Add(loggedInActiveWindow)) {
+		t.Fatal("login activity expired at the inclusive window boundary")
+	}
+	otherReq := httptest.NewRequest(http.MethodGet, "https://app.example.test/", nil)
+	otherReq.AddCookie(&http.Cookie{Name: "app-session", Value: "two"})
+	if handler.hasRecentLoggedInActive(otherReq, "192.0.2.10", now) {
+		t.Fatal("login activity leaked to a different request identity")
+	}
+	if handler.hasRecentLoggedInActive(req, "192.0.2.10", now.Add(loggedInActiveWindow+time.Nanosecond)) {
+		t.Fatal("expired login activity remained eligible")
+	}
+	if got := handler.loggedInActiveCount.Load(); got != 0 {
+		t.Fatalf("logged-in active count = %d, want 0 after expiry", got)
+	}
+}
+
 func TestTrafficStatsBatchFlushesCounters(t *testing.T) {
 	handler := &Handler{
 		HostRules: []models.HostRule{{Host: "app.example.com"}},

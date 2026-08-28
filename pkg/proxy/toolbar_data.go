@@ -92,6 +92,10 @@ func (h *Handler) handleToolbarDataRoute(w http.ResponseWriter, r *http.Request,
 		w.WriteHeader(http.StatusNoContent)
 		return result
 	}
+	if !requestHasExplicitAuthIdentity(r) && !h.hasRecentLoggedInActive(r, clientIP, time.Now()) {
+		w.WriteHeader(http.StatusNoContent)
+		return result
+	}
 
 	pageRequest := toolbarPageRequest(r, pagePath, pageQuery)
 	var matchedHostLocation *models.HostLocation

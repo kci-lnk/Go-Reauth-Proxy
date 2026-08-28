@@ -4772,6 +4772,23 @@ func (h *Handler) MarkLoggedInActiveByClientIP(clientIP string, now time.Time) {
 	h.storeLoggedInActive(activeIdentityKeyFromClientIP(clientIP), now)
 }
 
+func (h *Handler) hasRecentLoggedInActive(r *http.Request, clientIP string, now time.Time) bool {
+	key := activeIdentityKey(r, clientIP)
+	if key == "" {
+		return false
+	}
+	value, ok := h.loggedInActive.Load(key)
+	lastSeen, valid := value.(int64)
+	if !ok || !valid || lastSeen < now.Add(-loggedInActiveWindow).UnixNano() {
+		if ok {
+			h.deleteLoggedInActive(key)
+		}
+		return false
+	}
+	h.cleanupLoggedInActiveIfNeeded(now)
+	return true
+}
+
 func (h *Handler) activeLoggedInCount(now time.Time) int64 {
 	h.cleanupLoggedInActive(now)
 	return h.loggedInActiveCount.Load()

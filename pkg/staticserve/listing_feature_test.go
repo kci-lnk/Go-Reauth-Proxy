@@ -230,6 +230,13 @@ func TestListingFeatureSortDefaultsAndToggleLinks(t *testing.T) {
 				if !wantActive && link.AriaSort != "" {
 					t.Errorf("inactive link %s aria-sort = %q, want empty", link.Label, link.AriaSort)
 				}
+				wantIndicator := "unsorted"
+				if wantActive {
+					wantIndicator = testCase.wantAria
+				}
+				if link.Indicator != wantIndicator {
+					t.Errorf("link %s indicator = %q, want %q", link.Label, link.Indicator, wantIndicator)
+				}
 			}
 		})
 	}

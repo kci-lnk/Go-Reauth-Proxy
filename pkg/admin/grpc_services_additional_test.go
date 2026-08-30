@@ -170,6 +170,84 @@ func TestGatewayControlProbeStaticPath(t *testing.T) {
 	}
 }
 
+func TestGatewayControlBrowseStaticPath(t *testing.T) {
+	server := newGatewayControlTestServer(t, "secret")
+	root := t.TempDir()
+	directoryPath := filepath.Join(root, "folder")
+	if err := os.Mkdir(directoryPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	selectedPath := filepath.Join(root, "asset.txt")
+	if err := os.WriteFile(selectedPath, []byte("asset"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	directoryResult, err := server.BrowseStaticPath(authTestContext(), &pb.StaticPathBrowseRequest{
+		TargetType: pb.HostRuleTargetType_HOST_RULE_TARGET_TYPE_DIRECTORY,
+		Path:       root,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if directoryResult.GetErrorCode() != "" || directoryResult.GetCurrentPath() != filepath.Clean(root) || directoryResult.GetPlatform() == "" || directoryResult.SelectedPath != nil || len(directoryResult.GetBreadcrumbs()) == 0 {
+		t.Fatalf("directory browse = %#v", directoryResult)
+	}
+	if len(directoryResult.GetEntries()) != 2 || directoryResult.GetEntries()[0].GetName() != "folder" || !directoryResult.GetEntries()[0].GetNavigable() || !directoryResult.GetEntries()[0].GetSelectable() {
+		t.Fatalf("directory entries = %#v", directoryResult.GetEntries())
+	}
+	fileEntry := directoryResult.GetEntries()[1]
+	if fileEntry.GetName() != "asset.txt" || fileEntry.GetNavigable() || fileEntry.GetSelectable() || fileEntry.SizeBytes == nil || fileEntry.GetSizeBytes() != 5 || fileEntry.ModifiedAt == nil {
+		t.Fatalf("directory-mode file entry = %#v", fileEntry)
+	}
+
+	fileResult, err := server.BrowseStaticPath(authTestContext(), &pb.StaticPathBrowseRequest{
+		TargetType: pb.HostRuleTargetType_HOST_RULE_TARGET_TYPE_FILE,
+		Path:       selectedPath,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fileResult.GetErrorCode() != "" || fileResult.GetCurrentPath() != filepath.Clean(root) || fileResult.GetSelectedPath() != filepath.Clean(selectedPath) {
+		t.Fatalf("file browse = %#v", fileResult)
+	}
+	if fileResult.GetEntries()[1].GetSelectable() != true {
+		t.Fatalf("file-mode selected entry = %#v", fileResult.GetEntries()[1])
+	}
+
+	protected, err := server.BrowseStaticPath(authTestContext(), &pb.StaticPathBrowseRequest{
+		TargetType: pb.HostRuleTargetType_HOST_RULE_TARGET_TYPE_DIRECTORY,
+		Path:       server.admin.ConfigManager.RuntimeDir(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if protected.GetErrorCode() != "protected_path" || protected.CurrentPath != nil || protected.ParentPath != nil || protected.SelectedPath != nil || len(protected.GetBreadcrumbs()) != 0 || len(protected.GetEntries()) != 0 || protected.GetPreviousCursor() != "" || protected.GetNextCursor() != "" {
+		t.Fatalf("protected browse leaked fields = %#v", protected)
+	}
+
+	invalidCursor, err := server.BrowseStaticPath(authTestContext(), &pb.StaticPathBrowseRequest{
+		TargetType: pb.HostRuleTargetType_HOST_RULE_TARGET_TYPE_FILE,
+		Path:       root,
+		Cursor:     "not-a-valid-cursor",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if invalidCursor.GetErrorCode() != "invalid_cursor" || invalidCursor.CurrentPath != nil || len(invalidCursor.GetEntries()) != 0 {
+		t.Fatalf("invalid cursor result = %#v", invalidCursor)
+	}
+
+	if _, err := server.BrowseStaticPath(context.Background(), &pb.StaticPathBrowseRequest{TargetType: pb.HostRuleTargetType_HOST_RULE_TARGET_TYPE_FILE}); status.Code(err) != codes.Unauthenticated {
+		t.Fatalf("unauthenticated status = %v, want unauthenticated", status.Code(err))
+	}
+	if _, err := server.BrowseStaticPath(authTestContext(), nil); status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("nil request status = %v, want invalid argument", status.Code(err))
+	}
+	if _, err := server.BrowseStaticPath(authTestContext(), &pb.StaticPathBrowseRequest{}); status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("unspecified target status = %v, want invalid argument", status.Code(err))
+	}
+}
+
 func TestGatewayControlLegacyHostRuleUpdatePreservesGroupsAndExplicitEmptyClears(t *testing.T) {
 	server := newGatewayControlTestServer(t, "secret")
 	ctx := authTestContext()

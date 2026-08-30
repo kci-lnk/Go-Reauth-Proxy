@@ -135,6 +135,7 @@ func TestGatewayControlServerInfoIncludesCompatibilityMetadata(t *testing.T) {
 	}
 	hasTrustedClientIPBypass := false
 	hasMemoryControl := false
+	hasStaticPathBrowse := false
 	for _, capability := range info.GetCapabilities() {
 		if capability == "trusted_client_ip_bypass_v1" {
 			hasTrustedClientIPBypass = true
@@ -142,12 +143,18 @@ func TestGatewayControlServerInfoIncludesCompatibilityMetadata(t *testing.T) {
 		if capability == "memory_control_v1" {
 			hasMemoryControl = true
 		}
+		if capability == "static_path_browse_v1" {
+			hasStaticPathBrowse = true
+		}
 	}
 	if !hasTrustedClientIPBypass {
 		t.Fatalf("server info is missing trusted_client_ip_bypass_v1: %#v", info.GetCapabilities())
 	}
 	if !hasMemoryControl {
 		t.Fatalf("server info is missing memory_control_v1: %#v", info.GetCapabilities())
+	}
+	if !hasStaticPathBrowse {
+		t.Fatalf("server info is missing static_path_browse_v1: %#v", info.GetCapabilities())
 	}
 }
 

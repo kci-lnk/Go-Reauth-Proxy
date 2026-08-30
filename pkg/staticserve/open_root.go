@@ -53,6 +53,17 @@ func openStaticDirectoryRoot(pathValue string, protectedPaths ...string) (*stati
 }
 
 func openStaticDirectoryRootAfterPreopen(pathValue string, afterPreopen func(), protectedPaths ...string) (*staticDirectoryRoot, error) {
+	return openStaticDirectoryRootWithValidator(pathValue, afterPreopen, func(resolvedPath string) error {
+		return ValidateProtectedPath(resolvedPath, protectedPaths...)
+	})
+}
+
+// openStaticDirectoryRootWithValidator keeps the descriptor-pinning and
+// identity checks shared by serving and administrative browsing while letting
+// each caller apply its own resolved-path policy. Serving rejects both sides of
+// every protected-path overlap; browsing additionally needs to traverse a
+// protected directory's strict ancestors without ever selecting them.
+func openStaticDirectoryRootWithValidator(pathValue string, afterPreopen func(), validateResolvedPath func(string) error) (*staticDirectoryRoot, error) {
 	preopened, err := preopenStaticDirectory(pathValue)
 	if err != nil {
 		return nil, err
@@ -102,9 +113,11 @@ func openStaticDirectoryRootAfterPreopen(pathValue string, afterPreopen func(), 
 		_ = root.Close()
 		return nil, errUnsafeRootTarget
 	}
-	if err := ValidateProtectedPath(resolvedOpenedRoot, protectedPaths...); err != nil {
-		_ = root.Close()
-		return nil, err
+	if validateResolvedPath != nil {
+		if err := validateResolvedPath(resolvedOpenedRoot); err != nil {
+			_ = root.Close()
+			return nil, err
+		}
 	}
 	return root, nil
 }

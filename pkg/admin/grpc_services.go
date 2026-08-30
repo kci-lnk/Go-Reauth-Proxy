@@ -124,6 +124,61 @@ func (s *GRPCServer) ProbeStaticPath(ctx context.Context, req *pb.StaticPathProb
 	}, nil
 }
 
+func (s *GRPCServer) BrowseStaticPath(ctx context.Context, req *pb.StaticPathBrowseRequest) (*pb.StaticPathBrowseResult, error) {
+	if err := s.checkToken(ctx); err != nil {
+		return nil, err
+	}
+	if req == nil {
+		return nil, grpcBadRequest("request is required")
+	}
+	targetType := protoToHostRuleTargetType(req.GetTargetType())
+	if targetType != models.HostRuleTargetTypeFile && targetType != models.HostRuleTargetTypeDirectory {
+		return nil, grpcBadRequest("target_type must be file or directory")
+	}
+	runtimeDir := ""
+	if s.admin != nil && s.admin.ConfigManager != nil {
+		runtimeDir = s.admin.ConfigManager.RuntimeDir()
+	}
+	browse := staticserve.BrowsePath(
+		ctx,
+		targetType,
+		req.GetPath(),
+		req.GetCursor(),
+		staticserve.GatewayProtectedPaths(runtimeDir, os.Getenv(logger.DataDirEnv))...,
+	)
+	result := &pb.StaticPathBrowseResult{
+		TargetType:        staticProbeTargetTypeToProto(browse.TargetType),
+		Platform:          browse.Platform,
+		CurrentPath:       browse.CurrentPath,
+		ParentPath:        browse.ParentPath,
+		CurrentSelectable: browse.CurrentSelectable,
+		SelectedPath:      browse.SelectedPath,
+		PreviousCursor:    browse.PreviousCursor,
+		NextCursor:        browse.NextCursor,
+		ErrorCode:         browse.ErrorCode,
+	}
+	result.Breadcrumbs = make([]*pb.StaticPathBreadcrumb, 0, len(browse.Breadcrumbs))
+	for _, breadcrumb := range browse.Breadcrumbs {
+		result.Breadcrumbs = append(result.Breadcrumbs, &pb.StaticPathBreadcrumb{
+			Name: breadcrumb.Name,
+			Path: breadcrumb.Path,
+		})
+	}
+	result.Entries = make([]*pb.StaticPathBrowseEntry, 0, len(browse.Entries))
+	for _, entry := range browse.Entries {
+		result.Entries = append(result.Entries, &pb.StaticPathBrowseEntry{
+			Name:       entry.Name,
+			Path:       entry.Path,
+			EntryType:  staticProbeTargetTypeToProto(entry.EntryType),
+			Navigable:  entry.Navigable,
+			Selectable: entry.Selectable,
+			SizeBytes:  entry.SizeBytes,
+			ModifiedAt: entry.ModifiedAt,
+		})
+	}
+	return result, nil
+}
+
 func (s *GRPCServer) FlushHostRules(ctx context.Context, _ *emptypb.Empty) (*pb.RpcStatus, error) {
 	if err := s.checkToken(ctx); err != nil {
 		return nil, err

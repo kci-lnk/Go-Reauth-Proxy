@@ -351,7 +351,8 @@ const listingPageTemplateSuffix = `</script>
     .listing-table td.size, .listing-table td.modified { color: var(--muted); font-size: .875rem; font-variant-numeric: tabular-nums; }
     .sort-link { display: inline-flex; min-height: 2rem; align-items: center; gap: .35rem; color: inherit; }
     .sort-link:hover { color: var(--text); }
-    .sort-indicator { width: 1em; color: var(--muted); font-size: .78rem; text-align: center; opacity: .7; }
+    .sort-indicator { display: inline-flex; width: 1em; height: 1em; align-items: center; justify-content: center; color: var(--muted); opacity: .7; }
+    .sort-icon { display: block; width: 1em; height: 1em; fill: none; stroke: currentColor; stroke-width: 1.35; stroke-linecap: round; stroke-linejoin: round; }
     .sort-link.is-active { color: var(--text); }
     .sort-link.is-active .sort-indicator { color: var(--link); opacity: 1; }
     .empty-state { color: var(--muted); text-align: center !important; }
@@ -461,11 +462,11 @@ const listingPageTemplateSuffix = `</script>
       </div>
       <h1>{{.Title}}</h1>
     </header>
-    <nav class="mobile-sort" aria-label="Sort directory"><span>Sort:</span>{{range .SortLinks}}<a class="sort-chip{{if .Active}} is-active{{end}}" href="{{.Href}}"{{if .Active}} aria-current="true" aria-label="{{.Label}}, currently sorted {{.AriaSort}}; {{.AriaLabel}}"{{else}} aria-label="{{.AriaLabel}}"{{end}}>{{.Label}} <span class="sort-indicator" aria-hidden="true">{{.Indicator}}</span></a>{{end}}</nav>
+    <nav class="mobile-sort" aria-label="Sort directory"><span>Sort:</span>{{range .SortLinks}}<a class="sort-chip{{if .Active}} is-active{{end}}" href="{{.Href}}"{{if .Active}} aria-current="true" aria-label="{{.Label}}, currently sorted {{.AriaSort}}; {{.AriaLabel}}"{{else}} aria-label="{{.AriaLabel}}"{{end}}>{{.Label}} {{template "sort-indicator" .}}</a>{{end}}</nav>
     <div class="listing-panel">
       <table class="listing-table">
         <caption class="visually-hidden">Directory contents</caption>
-        <thead><tr>{{range .SortLinks}}<th class="{{.FieldClass}}" scope="col"{{if .AriaSort}} aria-sort="{{.AriaSort}}"{{end}}><a class="sort-link{{if .Active}} is-active{{end}}" href="{{.Href}}" aria-label="{{.AriaLabel}}">{{.Label}} <span class="sort-indicator" aria-hidden="true">{{.Indicator}}</span></a></th>{{end}}</tr></thead>
+        <thead><tr>{{range .SortLinks}}<th class="{{.FieldClass}}" scope="col"{{if .AriaSort}} aria-sort="{{.AriaSort}}"{{end}}><a class="sort-link{{if .Active}} is-active{{end}}" href="{{.Href}}" aria-label="{{.AriaLabel}}">{{.Label}} {{template "sort-indicator" .}}</a></th>{{end}}</tr></thead>
         <tbody>
           {{if .ParentHref}}<tr class="parent-entry"><td class="name"><a href="{{.ParentHref}}" aria-label="Parent directory"><span aria-hidden="true">../</span></a></td><td class="size"><span class="mobile-cell-label">Size</span>—</td><td class="modified"><span class="mobile-cell-label">Modified</span></td></tr>{{end}}
           {{range .Entries}}<tr{{if .Directory}} class="directory-entry"{{end}}><td class="name"><a href="{{.Href}}">{{.Name}}{{if .Directory}}/{{end}}</a></td><td class="size"><span class="mobile-cell-label">Size</span>{{.Size}}</td><td class="modified"><span class="mobile-cell-label">Modified</span><time datetime="{{.ModifiedTime}}" title="Beijing time (UTC+8)">{{.Modified}}</time></td></tr>{{end}}
@@ -479,7 +480,9 @@ const listingPageTemplateSuffix = `</script>
 </body>
 </html>`
 
-var listingPageTemplate = template.Must(template.New("directory-listing").Parse(listingPageTemplatePrefix + listingThemeScript + listingPageTemplateSuffix))
+const listingSortIndicatorTemplate = `{{define "sort-indicator"}}<span class="sort-indicator is-{{.Indicator}}" aria-hidden="true"><svg class="sort-icon" viewBox="0 0 12 12" focusable="false">{{if eq .Indicator "ascending"}}<path d="M6 10V2M2.75 5.25 6 2l3.25 3.25"></path>{{else if eq .Indicator "descending"}}<path d="M6 2v8m3.25-3.25L6 10 2.75 6.75"></path>{{else}}<path d="M3.25 9V3m-2 2 2-2 2 2M8.75 3v6m2-2-2 2-2-2"></path>{{end}}</svg></span>{{end}}`
+
+var listingPageTemplate = template.Must(template.New("directory-listing").Parse(listingSortIndicatorTemplate + listingPageTemplatePrefix + listingThemeScript + listingPageTemplateSuffix))
 
 var listingPageCSP = "default-src 'none'; style-src 'unsafe-inline'; script-src 'sha256-" + listingThemeScriptHash() + "'; script-src-attr 'none'; img-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
 
@@ -942,14 +945,14 @@ func listingSortLinks(active listingSort) []listingSortLinkView {
 			directionLabel = "descending"
 		}
 		ariaSort := ""
-		indicator := "↕"
+		indicator := "unsorted"
 		if isActive {
 			if active.order == listingSortAscending {
 				ariaSort = "ascending"
-				indicator = "↑"
+				indicator = "ascending"
 			} else {
 				ariaSort = "descending"
-				indicator = "↓"
+				indicator = "descending"
 			}
 		}
 		result = append(result, listingSortLinkView{FieldClass: activeSortFieldClass(item.field), Label: item.label, Href: listingPageHref("", target, ""), AriaLabel: "Sort by " + item.label + ", " + directionLabel, AriaSort: ariaSort, Indicator: indicator, Active: isActive})

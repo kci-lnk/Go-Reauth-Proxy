@@ -313,6 +313,18 @@ func TestDirectoryListingOnlyActiveSortHeaderHasAriaSort(t *testing.T) {
 			if !strings.Contains(body, currentLabel) {
 				t.Fatalf("mobile sort is missing current field and direction %q: %s", currentLabel, body)
 			}
+			if strings.ContainsAny(body, "↕↑↓") {
+				t.Fatalf("sort controls must not contain Unicode arrow glyphs: %s", body)
+			}
+			if got := strings.Count(body, `<svg class="sort-icon"`); got != 6 {
+				t.Fatalf("sort icon count = %d, want desktop and mobile SVGs for all fields", got)
+			}
+			if got := strings.Count(body, `sort-indicator is-`+testCase.want); got != 2 {
+				t.Fatalf("active %s SVG state count = %d, want desktop and mobile", testCase.want, got)
+			}
+			if got := strings.Count(body, `sort-indicator is-unsorted`); got != 4 {
+				t.Fatalf("unsorted SVG state count = %d, want two inactive fields in desktop and mobile", got)
+			}
 		})
 	}
 }

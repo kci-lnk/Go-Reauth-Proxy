@@ -38,8 +38,7 @@ func ProbePath(requestedType, pathValue string, protectedPaths ...string) ProbeR
 		return result
 	}
 
-	pathValue = strings.TrimSpace(pathValue)
-	if pathValue == "" || !filepath.IsAbs(pathValue) {
+	if strings.TrimSpace(pathValue) == "" || !filepath.IsAbs(pathValue) {
 		result.ErrorCode = ProbeErrorInvalidPath
 		return result
 	}

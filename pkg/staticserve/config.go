@@ -101,8 +101,8 @@ func NormalizeConfig(targetType string, cfg *models.StaticServeConfig, protected
 		return nil, fmt.Errorf("%w: static_serve is required", ErrInvalidConfig)
 	}
 
-	pathValue := strings.TrimSpace(cfg.Path)
-	if pathValue == "" {
+	pathValue := cfg.Path
+	if strings.TrimSpace(pathValue) == "" {
 		return nil, fmt.Errorf("%w: path is required", ErrInvalidConfig)
 	}
 	if strings.IndexByte(pathValue, 0) >= 0 || !utf8.ValidString(pathValue) {

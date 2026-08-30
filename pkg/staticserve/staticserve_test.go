@@ -307,6 +307,72 @@ func TestProbePathAndProtectedPaths(t *testing.T) {
 	}
 }
 
+func TestProbeAndNormalizeConfigPreservePOSIXWhitespacePathIdentity(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Win32 normalizes trailing spaces and the shared name policy rejects them")
+	}
+	root := t.TempDir()
+	parent := filepath.Join(root, "parent")
+	if err := os.Mkdir(parent, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	spacedPath := filepath.Join(parent, " ")
+	mustWriteFile(t, spacedPath, "spaced")
+
+	probe := ProbePath(models.HostRuleTargetTypeFile, spacedPath)
+	if probe.ErrorCode != "" || !probe.Exists || !probe.Readable || probe.ActualType != models.HostRuleTargetTypeFile || probe.NormalizedPath != spacedPath {
+		t.Fatalf("whitespace file probe = %#v, want exact path %q", probe, spacedPath)
+	}
+	normalized, err := NormalizeConfig(models.HostRuleTargetTypeFile, &models.StaticServeConfig{Path: spacedPath})
+	if err != nil {
+		t.Fatalf("NormalizeConfig(whitespace path) error = %v", err)
+	}
+	if normalized.Path != spacedPath || normalized.Path == parent {
+		t.Fatalf("normalized path = %q, want exact path %q", normalized.Path, spacedPath)
+	}
+
+	adjacentDirectory := filepath.Join(parent, "directory")
+	spacedDirectory := filepath.Join(parent, "directory ")
+	for _, directory := range []string{adjacentDirectory, spacedDirectory} {
+		if err := os.Mkdir(directory, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mustWriteFile(t, filepath.Join(adjacentDirectory, "adjacent-only.txt"), "adjacent")
+	mustWriteFile(t, filepath.Join(spacedDirectory, "selected-only.txt"), "selected")
+
+	directoryProbe := ProbePath(models.HostRuleTargetTypeDirectory, spacedDirectory)
+	if directoryProbe.ErrorCode != "" || !directoryProbe.Exists || !directoryProbe.Readable || directoryProbe.ActualType != models.HostRuleTargetTypeDirectory || directoryProbe.NormalizedPath != spacedDirectory {
+		t.Fatalf("whitespace directory probe = %#v, want exact path %q", directoryProbe, spacedDirectory)
+	}
+	directoryConfig, err := NormalizeConfig(models.HostRuleTargetTypeDirectory, &models.StaticServeConfig{Path: spacedDirectory})
+	if err != nil {
+		t.Fatalf("NormalizeConfig(whitespace directory) error = %v", err)
+	}
+	selected := serveRequest(t, models.HostRuleTargetTypeDirectory, directoryConfig, http.MethodGet, "/selected-only.txt", nil, Options{})
+	if selected.Code != http.StatusOK || selected.Body.String() != "selected" {
+		t.Fatalf("selected whitespace directory response = %d %q", selected.Code, selected.Body.String())
+	}
+	adjacent := serveRequest(t, models.HostRuleTargetTypeDirectory, directoryConfig, http.MethodGet, "/adjacent-only.txt", nil, Options{})
+	if adjacent.Code != http.StatusNotFound {
+		t.Fatalf("adjacent directory leaked through whitespace mapping: status = %d body = %q", adjacent.Code, adjacent.Body.String())
+	}
+}
+
+func TestProbeAndNormalizeConfigRejectWhitespaceOnlyPaths(t *testing.T) {
+	for _, pathValue := range []string{"", " ", "\t\r\n"} {
+		t.Run(strconv.Quote(pathValue), func(t *testing.T) {
+			probe := ProbePath(models.HostRuleTargetTypeFile, pathValue)
+			if probe.ErrorCode != ProbeErrorInvalidPath || probe.NormalizedPath != "" || probe.Exists || probe.Readable {
+				t.Fatalf("ProbePath(%q) = %#v, want invalid_path without filesystem fields", pathValue, probe)
+			}
+			if _, err := NormalizeConfig(models.HostRuleTargetTypeFile, &models.StaticServeConfig{Path: pathValue}); !errors.Is(err, ErrInvalidConfig) {
+				t.Fatalf("NormalizeConfig(%q) error = %v, want ErrInvalidConfig", pathValue, err)
+			}
+		})
+	}
+}
+
 func TestNormalizeStaticConfigBoundaries(t *testing.T) {
 	root := t.TempDir()
 	hidden := filepath.Join(root, ".secret")

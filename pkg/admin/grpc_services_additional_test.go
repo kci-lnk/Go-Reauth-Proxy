@@ -100,6 +100,76 @@ func TestGatewayControlHostRulesRoundTrip(t *testing.T) {
 	}
 }
 
+func TestGatewayControlStaticHostRuleRoundTrip(t *testing.T) {
+	server := newGatewayControlTestServer(t, "secret")
+	staticRoot := t.TempDir()
+	ctx := authTestContext()
+	_, err := server.SetHostRules(ctx, &pb.HostRules{Items: []*pb.HostRule{{
+		Host:       "static.example.test",
+		Target:     "ignored",
+		TargetType: pb.HostRuleTargetType_HOST_RULE_TARGET_TYPE_DIRECTORY,
+		StaticServe: &pb.StaticServeConfig{
+			Path:       staticRoot,
+			IndexFiles: []string{"index.html"},
+			DirectoryListing: &pb.StaticDirectoryListingConfig{
+				Enabled:      true,
+				RenderReadme: true,
+			},
+		},
+	}}})
+	if err != nil {
+		t.Fatalf("SetHostRules() returned error: %v", err)
+	}
+	got, err := server.GetHostRules(ctx, &emptypb.Empty{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.GetItems()) != 1 {
+		t.Fatalf("rules = %#v", got.GetItems())
+	}
+	rule := got.GetItems()[0]
+	if rule.GetTargetType() != pb.HostRuleTargetType_HOST_RULE_TARGET_TYPE_DIRECTORY || rule.GetTarget() != "" || !rule.GetSuppressToolbar() {
+		t.Fatalf("static rule = %#v", rule)
+	}
+	if rule.GetStaticServe().GetPath() != filepath.Clean(staticRoot) || !rule.GetStaticServe().GetDirectoryListing().GetRenderReadme() {
+		t.Fatalf("static config = %#v", rule.GetStaticServe())
+	}
+}
+
+func TestGatewayControlProbeStaticPath(t *testing.T) {
+	server := newGatewayControlTestServer(t, "secret")
+	filePath := filepath.Join(t.TempDir(), "asset.txt")
+	if err := os.WriteFile(filePath, []byte("ok"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, err := server.ProbeStaticPath(authTestContext(), &pb.StaticPathProbeRequest{
+		RequestedType: pb.HostRuleTargetType_HOST_RULE_TARGET_TYPE_FILE,
+		Path:          filePath,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.GetExists() || !got.GetReadable() || got.GetActualType() != pb.HostRuleTargetType_HOST_RULE_TARGET_TYPE_FILE || got.GetNormalizedPath() != filepath.Clean(filePath) || got.GetErrorCode() != "" {
+		t.Fatalf("probe = %#v", got)
+	}
+
+	protected, err := server.ProbeStaticPath(authTestContext(), &pb.StaticPathProbeRequest{
+		RequestedType: pb.HostRuleTargetType_HOST_RULE_TARGET_TYPE_DIRECTORY,
+		Path:          server.admin.ConfigManager.RuntimeDir(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if protected.GetErrorCode() != "protected_path" || protected.GetReadable() {
+		t.Fatalf("protected probe = %#v", protected)
+	}
+
+	_, err = server.ProbeStaticPath(authTestContext(), &pb.StaticPathProbeRequest{Path: filePath})
+	if status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("unspecified requested type status = %v", status.Code(err))
+	}
+}
+
 func TestGatewayControlLegacyHostRuleUpdatePreservesGroupsAndExplicitEmptyClears(t *testing.T) {
 	server := newGatewayControlTestServer(t, "secret")
 	ctx := authTestContext()

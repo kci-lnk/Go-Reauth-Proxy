@@ -67,6 +67,47 @@ func TestHostRulesProtoRoundTripPreservesLocations(t *testing.T) {
 	}
 }
 
+func TestStaticHostRuleProtoRoundTrip(t *testing.T) {
+	input := []models.HostRule{{
+		Host:       "static.example.test",
+		TargetType: models.HostRuleTargetTypeDirectory,
+		Locations:  []models.HostLocation{},
+		StaticServe: &models.StaticServeConfig{
+			Path:       "/srv/public",
+			IndexFiles: []string{"index.html", "index.htm"},
+			DirectoryListing: models.StaticDirectoryListingConfig{
+				Enabled:      true,
+				RenderReadme: true,
+			},
+		},
+	}}
+	got := protoToHostRules(hostRulesToProto(input))
+	if !reflect.DeepEqual(got, input) {
+		t.Fatalf("static round trip = %#v, want %#v", got, input)
+	}
+	legacy := protoToHostRules(&pb.HostRules{Items: []*pb.HostRule{{
+		Host:   "legacy.example.test",
+		Target: "http://127.0.0.1:8080",
+	}}})
+	if len(legacy) != 1 || legacy[0].TargetType != "" {
+		t.Fatalf("legacy target type = %#v, want omitted", legacy)
+	}
+}
+
+func TestStaticServeProtoTreatsOmittedAndExplicitEmptyIndexFilesLiterally(t *testing.T) {
+	omitted := protoToStaticServeConfig(&pb.StaticServeConfig{Path: "/srv/omitted"})
+	explicitEmpty := protoToStaticServeConfig(&pb.StaticServeConfig{
+		Path:       "/srv/explicit-empty",
+		IndexFiles: []string{},
+	})
+	if len(omitted.IndexFiles) != 0 || len(explicitEmpty.IndexFiles) != 0 {
+		t.Fatalf("empty index lists changed across protobuf conversion: omitted=%#v explicit=%#v", omitted.IndexFiles, explicitEmpty.IndexFiles)
+	}
+	if staticServeConfigToProto(&models.StaticServeConfig{IndexFiles: []string{}}).GetIndexFiles() != nil {
+		t.Fatal("proto3 repeated field unexpectedly retained explicit-empty presence")
+	}
+}
+
 func TestHostRulesProtoDistinguishesExplicitDisabledAdvancedAuth(t *testing.T) {
 	rules := protoToHostRules(&pb.HostRules{Items: []*pb.HostRule{
 		{

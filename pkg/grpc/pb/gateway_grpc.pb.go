@@ -36,6 +36,7 @@ const (
 	GatewayControlService_GetHostRules_FullMethodName                     = "/fnknock.v1.GatewayControlService/GetHostRules"
 	GatewayControlService_SetHostRules_FullMethodName                     = "/fnknock.v1.GatewayControlService/SetHostRules"
 	GatewayControlService_FlushHostRules_FullMethodName                   = "/fnknock.v1.GatewayControlService/FlushHostRules"
+	GatewayControlService_ProbeStaticPath_FullMethodName                  = "/fnknock.v1.GatewayControlService/ProbeStaticPath"
 	GatewayControlService_GetStreamRules_FullMethodName                   = "/fnknock.v1.GatewayControlService/GetStreamRules"
 	GatewayControlService_SetStreamRules_FullMethodName                   = "/fnknock.v1.GatewayControlService/SetStreamRules"
 	GatewayControlService_FlushStreamRules_FullMethodName                 = "/fnknock.v1.GatewayControlService/FlushStreamRules"
@@ -99,6 +100,7 @@ type GatewayControlServiceClient interface {
 	GetHostRules(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*HostRules, error)
 	SetHostRules(ctx context.Context, in *HostRules, opts ...grpc.CallOption) (*HostRules, error)
 	FlushHostRules(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*RpcStatus, error)
+	ProbeStaticPath(ctx context.Context, in *StaticPathProbeRequest, opts ...grpc.CallOption) (*StaticPathProbeResult, error)
 	GetStreamRules(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*StreamRules, error)
 	SetStreamRules(ctx context.Context, in *StreamRules, opts ...grpc.CallOption) (*StreamRules, error)
 	FlushStreamRules(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*RpcStatus, error)
@@ -303,6 +305,16 @@ func (c *gatewayControlServiceClient) FlushHostRules(ctx context.Context, in *em
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(RpcStatus)
 	err := c.cc.Invoke(ctx, GatewayControlService_FlushHostRules_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *gatewayControlServiceClient) ProbeStaticPath(ctx context.Context, in *StaticPathProbeRequest, opts ...grpc.CallOption) (*StaticPathProbeResult, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(StaticPathProbeResult)
+	err := c.cc.Invoke(ctx, GatewayControlService_ProbeStaticPath_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -705,6 +717,7 @@ type GatewayControlServiceServer interface {
 	GetHostRules(context.Context, *emptypb.Empty) (*HostRules, error)
 	SetHostRules(context.Context, *HostRules) (*HostRules, error)
 	FlushHostRules(context.Context, *emptypb.Empty) (*RpcStatus, error)
+	ProbeStaticPath(context.Context, *StaticPathProbeRequest) (*StaticPathProbeResult, error)
 	GetStreamRules(context.Context, *emptypb.Empty) (*StreamRules, error)
 	SetStreamRules(context.Context, *StreamRules) (*StreamRules, error)
 	FlushStreamRules(context.Context, *emptypb.Empty) (*RpcStatus, error)
@@ -802,6 +815,9 @@ func (UnimplementedGatewayControlServiceServer) SetHostRules(context.Context, *H
 }
 func (UnimplementedGatewayControlServiceServer) FlushHostRules(context.Context, *emptypb.Empty) (*RpcStatus, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method FlushHostRules not implemented")
+}
+func (UnimplementedGatewayControlServiceServer) ProbeStaticPath(context.Context, *StaticPathProbeRequest) (*StaticPathProbeResult, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ProbeStaticPath not implemented")
 }
 func (UnimplementedGatewayControlServiceServer) GetStreamRules(context.Context, *emptypb.Empty) (*StreamRules, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method GetStreamRules not implemented")
@@ -1219,6 +1235,24 @@ func _GatewayControlService_FlushHostRules_Handler(srv interface{}, ctx context.
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(GatewayControlServiceServer).FlushHostRules(ctx, req.(*emptypb.Empty))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _GatewayControlService_ProbeStaticPath_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(StaticPathProbeRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(GatewayControlServiceServer).ProbeStaticPath(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: GatewayControlService_ProbeStaticPath_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(GatewayControlServiceServer).ProbeStaticPath(ctx, req.(*StaticPathProbeRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -1959,6 +1993,10 @@ var GatewayControlService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "FlushHostRules",
 			Handler:    _GatewayControlService_FlushHostRules_Handler,
+		},
+		{
+			MethodName: "ProbeStaticPath",
+			Handler:    _GatewayControlService_ProbeStaticPath_Handler,
 		},
 		{
 			MethodName: "GetStreamRules",

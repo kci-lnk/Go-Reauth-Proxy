@@ -17,6 +17,12 @@ const (
 )
 
 const (
+	HostRuleTargetTypeProxy     = "proxy"
+	HostRuleTargetTypeFile      = "file"
+	HostRuleTargetTypeDirectory = "directory"
+)
+
+const (
 	HostVisibilityModeInherit  = "inherit"
 	HostVisibilityModeCustom   = "custom"
 	HostVisibilityModeDisabled = "disabled"
@@ -86,6 +92,23 @@ func NormalizeHostTargetPathMode(value string) string {
 	}
 }
 
+// NormalizeHostRuleTargetType canonicalizes the HostRule target discriminator.
+// An omitted value keeps the historical reverse-proxy behavior. Unsupported
+// non-empty values return an empty string so callers can reject malformed
+// configuration instead of silently selecting a different target kind.
+func NormalizeHostRuleTargetType(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "", HostRuleTargetTypeProxy:
+		return HostRuleTargetTypeProxy
+	case HostRuleTargetTypeFile:
+		return HostRuleTargetTypeFile
+	case HostRuleTargetTypeDirectory:
+		return HostRuleTargetTypeDirectory
+	default:
+		return ""
+	}
+}
+
 type Rule struct {
 	Path        string `json:"path" example:"/api"`                  // Path prefix to match (e.g., "/api")
 	Target      string `json:"target" example:"ws://localhost:8080"` // Target URL (e.g., "http://localhost:7996" or "ws://localhost:7996")
@@ -98,6 +121,8 @@ type Rule struct {
 type HostRule struct {
 	Host             string                `json:"host" example:"redis.example.com"`
 	Target           string                `json:"target" example:"http://127.0.0.1:5173"`
+	TargetType       string                `json:"target_type,omitempty" example:"proxy"`
+	StaticServe      *StaticServeConfig    `json:"static_serve,omitempty"`
 	TargetPathMode   string                `json:"target_path_mode" example:"entry"` // entry uses the target path only for public /; prefix mounts every request below it.
 	ProtocolMode     string                `json:"protocol_mode,omitempty" example:"auto"`
 	GroupID          string                `json:"group_id,omitempty"`
@@ -118,6 +143,17 @@ type HostRule struct {
 	WebsiteIconPath  string                `json:"website_icon_path,omitempty" example:"/__assets__/website_icon.550e8400-e29b-41d4-a716-446655440000.png"`
 	BasicAuth        BasicAuthConfig       `json:"basic_auth,omitempty"`
 	Locations        []HostLocation        `json:"locations,omitempty"`
+}
+
+type StaticServeConfig struct {
+	Path             string                       `json:"path"`
+	IndexFiles       []string                     `json:"index_files,omitempty"`
+	DirectoryListing StaticDirectoryListingConfig `json:"directory_listing,omitempty"`
+}
+
+type StaticDirectoryListingConfig struct {
+	Enabled      bool `json:"enabled,omitempty"`
+	RenderReadme bool `json:"render_readme,omitempty"`
 }
 
 type AdvancedAuthConfig struct {

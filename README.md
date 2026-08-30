@@ -102,10 +102,12 @@ flowchart LR
 
 ### 环境要求
 
-- Go `1.25+`；仓库通过 `toolchain` 指定 Go `1.26.5`
+- Go `1.25.13+`；仓库通过 `toolchain` 指定 Go `1.26.7`，同时覆盖 `os.Root` 越界及 2026 年 8 月标准库安全修复
 - 可选：[Task](https://taskfile.dev/) 用于统一执行构建与测试命令
 - 配套的 FN-Knock Rust 后端，用于建立 AuthBridge 和管理网关
 - 使用防火墙能力时需要 Linux、`iptables` / `ip6tables` 及相应权限
+
+CI 和 `task security:vuln` 会使用 `govulncheck` 检查实际可达的 Go/依赖漏洞；若升级依赖或工具链后重新引入已知漏洞，构建会直接失败。
 
 ### 1. 准备配置
 
@@ -207,6 +209,32 @@ FN_KNOCK_INTERNAL_RPC_TOKEN='replace-with-a-long-random-token' \
 - `basic_auth` 用于向可信上游注入 Basic Auth，不是面向访客的登录机制
 
 Host 目标中可附带入口路径。例如 `http://127.0.0.1:19122/p` 仅把公开根请求 `/` 映射到 `/p`；`/assets/app.js` 等非根路径仍按原路径转发。
+
+Host 也可以由网关直接映射单个文件或只读目录：
+
+```json
+{
+  "host": "docs.example.com",
+  "target_type": "directory",
+  "static_serve": {
+    "path": "/srv/fn-knock-static/docs",
+    "index_files": ["index.html", "index.htm"],
+    "directory_listing": {
+      "enabled": true,
+      "render_readme": true
+    }
+  },
+  "use_auth": true
+}
+```
+
+- `target_type` 为 `proxy`、`file` 或 `directory`；旧配置缺省为 `proxy`。
+- `file` 只响应 `GET`/`HEAD /`；`directory` 依序寻找默认文档，未找到时才按配置显示目录列表与当前目录的 `README.md`。
+- 目录映射省略 `index_files` 时，管理服务会将其补齐为 `index.html`、`index.htm`；显式配置 `[]` 会关闭默认文档查找。由于 proto3 的 repeated 字段没有 presence，Go 数据面始终按收到的空列表原样执行，不会再次补默认值。
+- `static_serve.path` 是网关进程或容器内的绝对路径，不是浏览器所在电脑的路径。容器部署应使用只读挂载，例如 `-v /host/docs:/srv/fn-knock-static/docs:ro`。
+- 静态服务使用根目录约束打开，不接受点文件、编码分隔符、路径穿越、特殊设备或网关 `/__…` 内部命名空间。根内可见符号链接必须仍解析到同一根内；配置/数据/密钥、系统设备与敏感目录及其祖先/后代不能映射。
+- 文件响应支持 `HEAD`、Range、Last-Modified 与弱 ETag。需要认证的映射使用 `private, no-store`；目录列表和净化后的 README 还会启用严格 CSP。
+- 当前版本仅只读响应，不提供上传、删除、重命名、SPA fallback、动态压缩或静态目标自定义响应头；点目录一律拒绝，因此不支持 `.well-known`。
 
 ### 路径路由
 
@@ -404,8 +432,17 @@ task build:windows      # Windows AMD64
 task run                # 本地运行
 task test               # 全量测试
 task test:race          # Race Detector
+task security:vuln      # govulncheck 可达漏洞扫描
+task security:docker-ro-smoke # Linux 只读挂载 HTTP 冒烟
 task bench:hot          # 热路径基准测试
 task bench:all          # 全量基准测试
+```
+
+静态路径安全语料可额外用原生 Go fuzzing 复验：
+
+```bash
+go test ./pkg/staticserve -fuzz=FuzzStaticDirectoryNeverEscapesRoot -fuzztime=30s
+go test ./pkg/staticserve -fuzz=FuzzRequestRootNameIsAlwaysLocalAndVisible -fuzztime=30s
 ```
 
 每个 PR 会在同一 CI runner 上将热路径 benchmark 与目标分支基线进行比较。基线和当前版本会先各执行一轮不计入结果的完整预热，再以交替顺序运行 6 轮独立样本，避免进程启动、CPU 初始调频、固定的先后顺序、热漂移或前序 benchmark 的自适应工作量系统性影响其中一方。比较器取每个 benchmark 的样本中位数：`ns/op`（等价吞吐门禁）最多回退 5%，`B/op` 与 `allocs/op` 最多回退 5%；考虑到 Go benchmark 将 `allocs/op` 报告为整数，该指标额外允许 1 个报告单位的绝对舍入余量。缺失的既有 benchmark 同样会使检查失败。这个门禁用于识别相对回退，实际绝对性能仍应以发布前的目标设备测量为准。
@@ -415,6 +452,7 @@ task bench:all          # 全量基准测试
 ```text
 cmd/server/          进程入口、HTTP/TLS 监听与内部 gRPC Server
 pkg/proxy/           HTTP(S)、WebSocket、认证和策略执行核心
+pkg/staticserve/     根目录约束文件响应、目录分页与 README 安全渲染
 pkg/stream/          TCP/UDP 监听、会话与转发
 pkg/admin/           gRPC 控制面服务实现
 pkg/rpcbridge/       AuthBridge 与内部 token 校验

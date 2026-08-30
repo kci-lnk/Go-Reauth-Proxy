@@ -16,6 +16,24 @@ concurrency:
   cancel-in-progress: ${{ github.event_name != 'schedule' }}
 
 jobs:
+  vulnerability-scan:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+
+      - name: Scan reachable Go vulnerabilities
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.7.0 ./...
+
   test:
     if: github.event_name != 'schedule'
     runs-on: ubuntu-24.04
@@ -37,6 +55,38 @@ jobs:
 
       - name: Test
         run: go test ./...
+
+  static-platform-smoke:
+    if: github.event_name != 'schedule'
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-15, windows-2022]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+
+      - name: Probe and serve static paths on the native filesystem
+        run: go test ./pkg/staticserve -count=1
+
+      - name: Exercise static host routing and policy integration
+        env:
+          # Go's Windows test temp directory lives under LOCALAPPDATA. The
+          # production gateway protects that tree, so isolate test fixtures
+          # from deployment-derived protected roots in this smoke step.
+          APPDATA: ""
+          LOCALAPPDATA: ""
+        run: go test ./pkg/proxy -run '^TestStaticHost' -count=1
 
   hot-benchmarks:
     if: github.event_name == 'pull_request'

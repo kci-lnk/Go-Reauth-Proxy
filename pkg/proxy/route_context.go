@@ -17,11 +17,25 @@ func classifyReverseProxyRouteType(requestPath string, isAuthRoute bool, matched
 	case matchedHostRule != nil && matchedHostLocation != nil:
 		return "host_location"
 	case matchedHostRule != nil:
-		return "host_rule"
+		return hostRuleRouteType(matchedHostRule)
 	case matchedRule != nil:
 		return "path_rule"
 	default:
 		return "not_found"
+	}
+}
+
+func hostRuleRouteType(rule *models.HostRule) string {
+	if rule == nil {
+		return "host_rule"
+	}
+	switch models.NormalizeHostRuleTargetType(rule.TargetType) {
+	case models.HostRuleTargetTypeFile:
+		return "static_file"
+	case models.HostRuleTargetTypeDirectory:
+		return "static_directory"
+	default:
+		return "host_rule"
 	}
 }
 
@@ -47,7 +61,11 @@ func wafRouteContext(r *http.Request, snapshot requestSnapshot, isAuthRoute bool
 		}
 		return routeType, hostLocationRouteKey(matchedHostRule, matchedHostLocation), upstream
 	case matchedHostRule != nil:
-		return routeType, matchedHostRule.Host, matchedHostRule.Target
+		upstream := matchedHostRule.Target
+		if models.NormalizeHostRuleTargetType(matchedHostRule.TargetType) != models.HostRuleTargetTypeProxy {
+			upstream = ""
+		}
+		return routeType, matchedHostRule.Host, upstream
 	case matchedRule != nil:
 		return routeType, matchedRule.Path, matchedRule.Target
 	default:

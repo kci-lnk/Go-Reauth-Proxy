@@ -164,6 +164,31 @@ tasks:
     cmds:
       - go test -race ./...
 
+  security:vuln:
+    desc: "Fail on reachable vulnerabilities in Go or module dependencies"
+    cmds:
+      - go run golang.org/x/vuln/cmd/govulncheck@v1.7.0 ./...
+
+  security:docker-ro-smoke:
+    desc: "Serve a native Linux read-only bind mount through staticserve"
+    platforms: [darwin, linux]
+    preconditions:
+      - sh: command -v docker >/dev/null 2>&1
+        msg: "Docker is required for the read-only static mount smoke test"
+      - sh: docker image inspect alpine:3.23 >/dev/null 2>&1
+        msg: "The alpine:3.23 image is required (run: docker pull alpine:3.23)"
+    cmds:
+      - |
+        smoke_bin="$(mktemp -t fn-knock-staticserve-smoke.XXXXXX)"
+        trap 'rm -f "${smoke_bin}"' EXIT
+        CGO_ENABLED=0 GOOS=linux GOARCH="$(go env GOARCH)" \
+          go test -c -o "${smoke_bin}" ./pkg/staticserve
+        docker run --rm \
+          --mount "type=bind,src=${smoke_bin},dst=/staticserve.test,readonly" \
+          --mount "type=bind,src=${PWD}/pkg/staticserve/testdata/docker-ro,dst=/srv/static,readonly" \
+          -e FN_KNOCK_STATIC_RO_SMOKE_ROOT=/srv/static \
+          alpine:3.23 /staticserve.test -test.run '^TestDockerReadOnlyMountHTTP$' -test.v
+
   bench:hot:
     desc: "Run repeatable hot-path performance benchmarks"
     cmds:

@@ -310,6 +310,77 @@ func hostRulesToProto(rules []models.HostRule) *pb.HostRules {
 	return hostRulesBundleToProto(rules, nil)
 }
 
+func hostRuleTargetTypeToProto(value string) pb.HostRuleTargetType {
+	if strings.TrimSpace(value) == "" {
+		return pb.HostRuleTargetType_HOST_RULE_TARGET_TYPE_UNSPECIFIED
+	}
+	switch models.NormalizeHostRuleTargetType(value) {
+	case models.HostRuleTargetTypeFile:
+		return pb.HostRuleTargetType_HOST_RULE_TARGET_TYPE_FILE
+	case models.HostRuleTargetTypeDirectory:
+		return pb.HostRuleTargetType_HOST_RULE_TARGET_TYPE_DIRECTORY
+	default:
+		return pb.HostRuleTargetType_HOST_RULE_TARGET_TYPE_PROXY
+	}
+}
+
+func protoToHostRuleTargetType(value pb.HostRuleTargetType) string {
+	switch value {
+	case pb.HostRuleTargetType_HOST_RULE_TARGET_TYPE_FILE:
+		return models.HostRuleTargetTypeFile
+	case pb.HostRuleTargetType_HOST_RULE_TARGET_TYPE_DIRECTORY:
+		return models.HostRuleTargetTypeDirectory
+	case pb.HostRuleTargetType_HOST_RULE_TARGET_TYPE_UNSPECIFIED,
+		pb.HostRuleTargetType_HOST_RULE_TARGET_TYPE_PROXY:
+		if value == pb.HostRuleTargetType_HOST_RULE_TARGET_TYPE_UNSPECIFIED {
+			return ""
+		}
+		return models.HostRuleTargetTypeProxy
+	default:
+		return "__invalid__"
+	}
+}
+
+func staticProbeTargetTypeToProto(value string) pb.HostRuleTargetType {
+	switch value {
+	case models.HostRuleTargetTypeFile:
+		return pb.HostRuleTargetType_HOST_RULE_TARGET_TYPE_FILE
+	case models.HostRuleTargetTypeDirectory:
+		return pb.HostRuleTargetType_HOST_RULE_TARGET_TYPE_DIRECTORY
+	default:
+		return pb.HostRuleTargetType_HOST_RULE_TARGET_TYPE_UNSPECIFIED
+	}
+}
+
+func staticServeConfigToProto(value *models.StaticServeConfig) *pb.StaticServeConfig {
+	if value == nil {
+		return nil
+	}
+	return &pb.StaticServeConfig{
+		Path:       value.Path,
+		IndexFiles: append([]string(nil), value.IndexFiles...),
+		DirectoryListing: &pb.StaticDirectoryListingConfig{
+			Enabled:      value.DirectoryListing.Enabled,
+			RenderReadme: value.DirectoryListing.RenderReadme,
+		},
+	}
+}
+
+func protoToStaticServeConfig(value *pb.StaticServeConfig) *models.StaticServeConfig {
+	if value == nil {
+		return nil
+	}
+	listing := value.GetDirectoryListing()
+	return &models.StaticServeConfig{
+		Path:       value.GetPath(),
+		IndexFiles: append([]string(nil), value.GetIndexFiles()...),
+		DirectoryListing: models.StaticDirectoryListingConfig{
+			Enabled:      listing.GetEnabled(),
+			RenderReadme: listing.GetRenderReadme(),
+		},
+	}
+}
+
 func hostRulesBundleToProto(
 	rules []models.HostRule,
 	policies map[string]models.CompiledIPSet,
@@ -319,6 +390,8 @@ func hostRulesBundleToProto(
 		item := &pb.HostRule{
 			Host:            rule.Host,
 			Target:          rule.Target,
+			TargetType:      hostRuleTargetTypeToProto(rule.TargetType),
+			StaticServe:     staticServeConfigToProto(rule.StaticServe),
 			TargetPathMode:  rule.TargetPathMode,
 			ProtocolMode:    rule.ProtocolMode,
 			UseAuth:         rule.UseAuth,
@@ -362,6 +435,8 @@ func protoToHostRules(req *pb.HostRules) []models.HostRule {
 		rules = append(rules, models.HostRule{
 			Host:             rule.GetHost(),
 			Target:           rule.GetTarget(),
+			TargetType:       protoToHostRuleTargetType(rule.GetTargetType()),
+			StaticServe:      protoToStaticServeConfig(rule.GetStaticServe()),
 			TargetPathMode:   rule.GetTargetPathMode(),
 			ProtocolMode:     rule.GetProtocolMode(),
 			GroupID:          rule.GetGroupId(),

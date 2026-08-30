@@ -1,4 +1,18 @@
 **/.DS_Store
-build
-config.json
-logs
+
+# Local runtime state and build outputs.
+/build/
+/config.json
+/logs/
+
+# Local developer-tool state.
+/.codegraph/config.json
+/.codex_ab_diagnostics/
+
+# Local Go test, coverage, and profiling outputs. Fuzz regression corpus under
+# testdata/fuzz is intentionally not ignored and should be committed.
+/*.test
+/coverage.out
+/coverage-*.out
+/*.prof
+/*.pprof

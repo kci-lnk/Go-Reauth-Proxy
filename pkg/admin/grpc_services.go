@@ -3,6 +3,7 @@ package admin
 import (
 	"context"
 	"errors"
+	"os"
 	"strings"
 	"time"
 
@@ -12,8 +13,10 @@ import (
 	"go-reauth-proxy/pkg/i18n"
 	compiledipset "go-reauth-proxy/pkg/ipset"
 	"go-reauth-proxy/pkg/iptables"
+	"go-reauth-proxy/pkg/logger"
 	"go-reauth-proxy/pkg/models"
 	"go-reauth-proxy/pkg/proxy"
+	"go-reauth-proxy/pkg/staticserve"
 	"go-reauth-proxy/pkg/streamprobe"
 
 	"google.golang.org/grpc/codes"
@@ -89,6 +92,36 @@ func (s *GRPCServer) SetHostRules(ctx context.Context, req *pb.HostRules) (*pb.H
 		s.admin.ProxyHandler.GetHostRules(),
 		s.admin.ProxyHandler.GetVisibilityPoliciesForHostRules(),
 	), nil
+}
+
+func (s *GRPCServer) ProbeStaticPath(ctx context.Context, req *pb.StaticPathProbeRequest) (*pb.StaticPathProbeResult, error) {
+	if err := s.checkToken(ctx); err != nil {
+		return nil, err
+	}
+	if req == nil {
+		return nil, grpcBadRequest("request is required")
+	}
+	requestedType := protoToHostRuleTargetType(req.GetRequestedType())
+	if requestedType != models.HostRuleTargetTypeFile && requestedType != models.HostRuleTargetTypeDirectory {
+		return nil, grpcBadRequest("requested_type must be file or directory")
+	}
+	runtimeDir := ""
+	if s.admin != nil && s.admin.ConfigManager != nil {
+		runtimeDir = s.admin.ConfigManager.RuntimeDir()
+	}
+	probe := staticserve.ProbePath(
+		requestedType,
+		req.GetPath(),
+		staticserve.GatewayProtectedPaths(runtimeDir, os.Getenv(logger.DataDirEnv))...,
+	)
+	return &pb.StaticPathProbeResult{
+		RequestedType:  staticProbeTargetTypeToProto(probe.RequestedType),
+		ActualType:     staticProbeTargetTypeToProto(probe.ActualType),
+		NormalizedPath: probe.NormalizedPath,
+		Exists:         probe.Exists,
+		Readable:       probe.Readable,
+		ErrorCode:      probe.ErrorCode,
+	}, nil
 }
 
 func (s *GRPCServer) FlushHostRules(ctx context.Context, _ *emptypb.Empty) (*pb.RpcStatus, error) {

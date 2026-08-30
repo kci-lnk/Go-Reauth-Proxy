@@ -1,17 +1,19 @@
 module go-reauth-proxy
 
-go 1.25.0
+go 1.25.13
 
-toolchain go1.26.5
+toolchain go1.26.7
 
 require (
 	github.com/corazawaf/coraza/v3 v3.7.0
 	github.com/gorilla/mux v1.8.1
 	github.com/gorilla/websocket v1.5.3
 	github.com/medama-io/go-useragent v1.2.3
+	github.com/microcosm-cc/bluemonday v1.0.27
 	github.com/pires/go-proxyproto v0.11.0
 	github.com/rs/zerolog v1.34.0
 	github.com/soheilhy/cmux v0.1.5
+	github.com/yuin/goldmark v1.8.5
 	golang.org/x/net v0.56.0
 	golang.org/x/sync v0.21.0
 	golang.org/x/sys v0.46.0
@@ -21,10 +23,12 @@ require (
 )
 
 require (
+	github.com/aymerick/douceur v0.2.0 // indirect
 	github.com/boyter/go-string v1.0.5 // indirect
 	github.com/corazawaf/libinjection-go v0.3.2 // indirect
 	github.com/goccy/go-json v0.10.5 // indirect
 	github.com/goccy/go-yaml v1.18.0 // indirect
+	github.com/gorilla/css v1.0.1 // indirect
 	github.com/gotnospirit/makeplural v0.0.0-20180622080156-a5f48d94d976 // indirect
 	github.com/gotnospirit/messageformat v0.0.0-20221001023931-dfe49f1eb092 // indirect
 	github.com/kaptinlin/go-i18n v0.1.4 // indirect

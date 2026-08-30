@@ -24,6 +24,7 @@ import (
 	"go-reauth-proxy/pkg/models"
 	"go-reauth-proxy/pkg/response"
 	"go-reauth-proxy/pkg/rpcbridge"
+	"go-reauth-proxy/pkg/staticserve"
 	proxywaf "go-reauth-proxy/pkg/waf"
 	"io"
 	"log"
@@ -340,6 +341,7 @@ func debugHostRuleSummaries(rules []models.HostRule) []map[string]any {
 	for _, rule := range rules {
 		out = append(out, map[string]any{
 			"host":               logger.SanitizeLogString(rule.Host),
+			"target_type":        models.NormalizeHostRuleTargetType(rule.TargetType),
 			"target":             logger.SanitizeURL(rule.Target),
 			"protocol_mode":      models.NormalizeHostProtocolMode(rule.ProtocolMode),
 			"use_auth":           rule.UseAuth,
@@ -389,7 +391,11 @@ func hostRouteIncarnationSignature(rule *models.HostRule) string {
 	if rule == nil {
 		return ""
 	}
+	if signature, ok := staticHostRouteIncarnationSignature(rule); ok {
+		return signature
+	}
 	return strings.TrimSpace(rule.Target) +
+		"\x00type=" + models.HostRuleTargetTypeProxy +
 		"\x00preserve=" + strconv.FormatBool(rule.PreserveHost)
 }
 
@@ -676,6 +682,11 @@ func copyHostRules(rules []models.HostRule) []models.HostRule {
 	copied := make([]models.HostRule, len(rules))
 	for i, rule := range rules {
 		copied[i] = rule
+		if rule.StaticServe != nil {
+			staticConfig := *rule.StaticServe
+			staticConfig.IndexFiles = append([]string(nil), rule.StaticServe.IndexFiles...)
+			copied[i].StaticServe = &staticConfig
+		}
 		copied[i].Availability = copyHostRuleAvailability(rule.Availability)
 		copied[i].Visibility.CIDRs = append([]string(nil), rule.Visibility.CIDRs...)
 		copied[i].AdvancedAuth.Groups = make([]models.AdvancedAuthGroup, len(rule.AdvancedAuth.Groups))
@@ -1785,6 +1796,7 @@ func NewHandler(adminPort int, proxyPort int, cfgManager *config.Manager, initia
 	wafConfig := wafRuntime.Config()
 	initialHostRules := copyHostRules(initialCfg.HostRules)
 	for i := range initialHostRules {
+		initialHostRules[i].TargetType = models.NormalizeHostRuleTargetType(initialHostRules[i].TargetType)
 		initialHostRules[i].TargetPathMode = models.NormalizeHostTargetPathMode(initialHostRules[i].TargetPathMode)
 		initialHostRules[i].ProtocolMode = models.NormalizeHostProtocolMode(initialHostRules[i].ProtocolMode)
 	}
@@ -2883,6 +2895,9 @@ func buildReverseProxyTargetRuntimeMap(rules []models.Rule, hostRules []models.H
 		addTarget(rule.Target)
 	}
 	for _, rule := range hostRules {
+		if models.NormalizeHostRuleTargetType(rule.TargetType) != models.HostRuleTargetTypeProxy {
+			continue
+		}
 		addTarget(rule.Target)
 		for _, location := range rule.Locations {
 			if location.Action == models.HostLocationActionResponse {
@@ -3297,13 +3312,10 @@ func (h *Handler) normalizeHostRule(newRule models.HostRule) (models.HostRule, e
 	if strings.Contains(newRule.Host, "/") || strings.Contains(newRule.Host, "*") {
 		return models.HostRule{}, fmt.Errorf("host rule must be an exact host without path or wildcard")
 	}
-	if newRule.Target == "" {
-		return models.HostRule{}, fmt.Errorf("cannot add host rule with empty target")
+	if err := h.normalizeHostRuleTarget(&newRule); err != nil {
+		return models.HostRule{}, err
 	}
-	if err := h.checkSafeTarget(newRule.Target); err != nil {
-		return models.HostRule{}, fmt.Errorf("invalid target: %v", err)
-	}
-	newRule.TargetPathMode = models.NormalizeHostTargetPathMode(newRule.TargetPathMode)
+	targetType := newRule.TargetType
 	newRule.ProtocolMode = models.NormalizeHostProtocolMode(newRule.ProtocolMode)
 	newRule.GroupID = strings.TrimSpace(newRule.GroupID)
 	newRule.GroupName = strings.TrimSpace(newRule.GroupName)
@@ -3327,16 +3339,21 @@ func (h *Handler) normalizeHostRule(newRule models.HostRule) (models.HostRule, e
 		return models.HostRule{}, err
 	}
 	newRule.Availability = availability
-	basicAuth, err := normalizeBasicAuthConfig(newRule.BasicAuth)
-	if err != nil {
-		return models.HostRule{}, err
+	if targetType == models.HostRuleTargetTypeProxy {
+		basicAuth, err := normalizeBasicAuthConfig(newRule.BasicAuth)
+		if err != nil {
+			return models.HostRule{}, err
+		}
+		newRule.BasicAuth = basicAuth
+		locations, err := h.normalizeHostLocations(newRule.Locations)
+		if err != nil {
+			return models.HostRule{}, err
+		}
+		newRule.Locations = locations
+	} else {
+		newRule.BasicAuth = models.BasicAuthConfig{}
+		newRule.Locations = nil
 	}
-	newRule.BasicAuth = basicAuth
-	locations, err := h.normalizeHostLocations(newRule.Locations)
-	if err != nil {
-		return models.HostRule{}, err
-	}
-	newRule.Locations = locations
 
 	return newRule, nil
 }
@@ -4454,6 +4471,9 @@ func gatewayVisibilityRouteContext(r *http.Request, snapshot requestSnapshot, ru
 		return "wol", requestPath
 	}
 
+	if rule != nil && models.NormalizeHostRuleTargetType(rule.TargetType) != models.HostRuleTargetTypeProxy {
+		return hostRuleRouteType(rule), rule.Host
+	}
 	matchedHostLocation := matchHostLocation(r, rule)
 	if rule != nil {
 		matchedHostLocation, _, _ = enforceReservedFnosShareRoute(
@@ -5109,23 +5129,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		// or availability policy before the header is rebuilt for Rust.
 		r.Header.Del("X-Forwarded-Host")
 	}
-	originalPath := r.URL.Path
-	cleanedPath := path.Clean(r.URL.Path)
-	if strings.HasSuffix(r.URL.Path, "/") && cleanedPath != "/" {
-		cleanedPath += "/"
-	}
-	r.URL.Path = cleanedPath
-	if originalPath != cleanedPath {
-		// RawPath can retain the pre-normalization dot segments and is used by
-		// RequestURI() when constructing the auth-bridge context. Drop it so
-		// Rust evaluates the same canonical path as the gateway rule engine.
-		r.URL.RawPath = ""
-		if event := debugProxyEvent("path_normalized", requestID); event != nil {
-			event.Str("original_path", logger.SanitizeLogString(originalPath)).
-				Str("cleaned_path", logger.SanitizeLogString(cleanedPath)).
-				Send()
-		}
-	}
+	originalPath, originalRawPath, cleanedPath := canonicalizeRequestPathForRouting(r, requestID)
 
 	if fnosConnect != nil {
 		clientIP = fnosConnectClientIP(r)
@@ -5155,13 +5159,14 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if fnosConnect != nil {
 		matchedHostRule = &fnosConnect.hostRule
 	}
-	if fnosConnect == nil && serveWebsiteIconRequest(w, r, matchedHostRule, &accessEntry, requestID) {
+	invalidStaticRequest := isNonCanonicalStaticRequest(matchedHostRule, originalPath, cleanedPath, originalRawPath)
+	if !invalidStaticRequest && fnosConnect == nil && serveWebsiteIconRequest(w, r, matchedHostRule, &accessEntry, requestID) {
 		return
 	}
 
 	crawlerBlocker := snapshot.crawlerBlocker
 	if !trustedClientIP && fnosConnect == nil && crawlerBlocker.Enabled {
-		if isCrawlerBlockerRobotsPath(r.URL.Path) {
+		if !invalidStaticRequest && isCrawlerBlockerRobotsPath(r.URL.Path) {
 			accessEntry.RouteType = "crawler_blocker"
 			accessEntry.RouteKey = crawlerBlockerRobotsPath
 			accessEntry.AuthDecision = "robots_txt_served"
@@ -5242,7 +5247,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if certificateDeploySensitivePath && certificateDeployRouteKind == certificateDeployRouteNone {
+	if !invalidStaticRequest && certificateDeploySensitivePath && certificateDeployRouteKind == certificateDeployRouteNone {
 		accessEntry.RouteType = "certificate_deploy"
 		accessEntry.RouteKey = certificateDeployPathPrefix
 		accessEntry.AuthDecision = "not_found"
@@ -5280,7 +5285,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if fnosConnect == nil && response.IsFaviconPath(r.URL.Path) {
+	if !invalidStaticRequest && fnosConnect == nil && response.IsFaviconPath(r.URL.Path) {
 		accessEntry.RouteType = "favicon"
 		accessEntry.RouteKey = r.URL.Path
 		accessEntry.Matched = true
@@ -5291,14 +5296,14 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if fnosConnect == nil && response.IsToolbarAssetPath(r.URL.Path) {
+	if !invalidStaticRequest && fnosConnect == nil && response.IsToolbarAssetPath(r.URL.Path) {
 		accessEntry.RouteType = "toolbar_asset"
 		accessEntry.RouteKey = r.URL.Path
 		accessEntry.Matched = true
 		response.ServeToolbarAsset(w, r)
 		return
 	}
-	if fnosConnect == nil && response.IsToolbarDataPath(r.URL.Path) {
+	if !invalidStaticRequest && fnosConnect == nil && response.IsToolbarDataPath(r.URL.Path) {
 		accessEntry.RouteType = "toolbar_data"
 		accessEntry.RouteKey = r.URL.Path
 		accessEntry.Matched = true
@@ -5308,13 +5313,16 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	isSelectRoute := fnosConnect == nil && r.URL.Path == "/__select__"
-	isWOLPath := fnosConnect == nil && r.URL.Path == "/__wol__"
+	isSelectRoute := !invalidStaticRequest && fnosConnect == nil && r.URL.Path == "/__select__"
+	isWOLPath := !invalidStaticRequest && fnosConnect == nil && r.URL.Path == "/__wol__"
 	isWOLRoute := isWOLPath && snapshot.gatewayPortal.ShowWOL
-	isCertificateDeployRoute := certificateDeployRouteKind != certificateDeployRouteNone
+	isCertificateDeployRoute := !invalidStaticRequest && certificateDeployRouteKind != certificateDeployRouteNone
 	isBuiltinAuthRoute := isSelectRoute || isWOLRoute || isCertificateDeployRoute
-	isAuthRoute := fnosConnect == nil && strings.HasPrefix(r.URL.Path, "/__auth__/")
+	isAuthRoute := !invalidStaticRequest && fnosConnect == nil && strings.HasPrefix(r.URL.Path, "/__auth__/")
 	matchedHostLocation := matchHostLocation(r, matchedHostRule)
+	if matchedHostRule != nil && models.NormalizeHostRuleTargetType(matchedHostRule.TargetType) != models.HostRuleTargetTypeProxy {
+		matchedHostLocation = nil
+	}
 	if matchedHostRule != nil {
 		metrics.bindHost(h, matchedHostRule.Host)
 		metrics.markActiveIP(clientIP, time.Now())
@@ -5750,9 +5758,13 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if matchedHostRule != nil {
-		accessEntry.RouteType = "host_rule"
+		targetType := models.NormalizeHostRuleTargetType(matchedHostRule.TargetType)
+		staticTarget := targetType == models.HostRuleTargetTypeFile || targetType == models.HostRuleTargetTypeDirectory
+		accessEntry.RouteType = hostRuleRouteType(matchedHostRule)
 		accessEntry.RouteKey = matchedHostRule.Host
-		accessEntry.Upstream = matchedHostRule.Target
+		if !staticTarget {
+			accessEntry.Upstream = matchedHostRule.Target
+		}
 		if fnosConnect != nil {
 			accessEntry.RouteType = fnosConnectRouteKey
 			accessEntry.RouteKey = fnosConnectRouteKey
@@ -5789,7 +5801,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				}
 				return
 			}
-		} else if !matchedHostRule.SuppressToolbar && snapshotReverseProxyTargetSupportsHTMLFeatures(snapshot, toolbarProbeTarget) && shouldProbeAuthForToolbar(r, snapshot.authConfig, snapshot.gatewayPortal) {
+		} else if !staticTarget && !matchedHostRule.SuppressToolbar && snapshotReverseProxyTargetSupportsHTMLFeatures(snapshot, toolbarProbeTarget) && shouldProbeAuthForToolbar(r, snapshot.authConfig, snapshot.gatewayPortal) {
 			if requestAuth == nil {
 				requestAuth = newRequestAuthContext(r, clientIP, "", routedBackend)
 			}
@@ -5823,11 +5835,23 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		if event := debugProxyEvent("host_rule_selected", requestID); event != nil {
 			event.Str("host", logger.SanitizeLogString(matchedHostRule.Host)).
+				Str("target_type", targetType).
 				Str("upstream", logger.SanitizeURL(matchedHostRule.Target)).
 				Bool("auth_required", accessEntry.AuthRequired).
 				Bool("authenticated", authResult.authenticated).
 				Str("auth_decision", authResult.decision).
 				Send()
+		}
+		if staticTarget {
+			if invalidStaticRequest {
+				rejectNonCanonicalStaticRequest(w, r, matchedHostRule, &accessEntry)
+				return
+			}
+			staticserve.Serve(w, r, targetType, matchedHostRule.StaticServe, staticserve.Options{
+				Private:        effectiveHostUseAuth || accessEntry.AuthRequired || authResult.authenticated,
+				ProtectedPaths: h.staticServeProtectedPaths(),
+			})
+			return
 		}
 		h.proxyToHostTarget(w, r, snapshot, *matchedHostRule, clientIP, authResult, requestID)
 		return
@@ -6158,10 +6182,13 @@ func (h *Handler) routedBackendForRequest(
 	routeID := snapshot.routeGeneration
 	if hostRule != nil {
 		if location == nil {
-			target = strings.TrimSpace(hostRule.Target)
 			if selected := snapshot.routeIDs[hostRouteIncarnationKey(hostRule)]; selected != "" {
 				routeID = selected
 			}
+			if models.NormalizeHostRuleTargetType(hostRule.TargetType) != models.HostRuleTargetTypeProxy {
+				return newRoutedBackendWithRouteID("", "", routeID)
+			}
+			target = strings.TrimSpace(hostRule.Target)
 		} else if location.Action == models.HostLocationActionProxy {
 			target = strings.TrimSpace(location.Target)
 			if selected := snapshot.routeIDs[hostLocationRouteIncarnationKey(hostRule, location)]; selected != "" {

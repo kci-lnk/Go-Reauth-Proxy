@@ -716,7 +716,7 @@ func TestSecurityReadmeXSSAndExternalResourcesAreRemoved(t *testing.T) {
 	if response.Code != http.StatusOK {
 		t.Fatalf("listing = %d %q", response.Code, response.Body.String())
 	}
-	body := strings.ToLower(response.Body.String())
+	body := strings.ToLower(renderedReadmeHTML(response.Body.String()))
 	for _, forbidden := range []string{
 		"<script", "<iframe", "<form", "<input", "<svg", "onfocus", "onclick", "xlink:",
 		"evil.example", "data:image", "javascript:", "file:///", "srcset=",
@@ -755,7 +755,7 @@ func TestSecurityInvalidOrOversizedReadmeIsOmitted(t *testing.T) {
 			if response.Code != http.StatusOK {
 				t.Fatalf("listing = %d %q", response.Code, response.Body.String())
 			}
-			if strings.Contains(response.Body.String(), `<article class="readme">`) {
+			if strings.Contains(response.Body.String(), `<article class="readme"`) {
 				t.Fatalf("invalid README was rendered")
 			}
 		})

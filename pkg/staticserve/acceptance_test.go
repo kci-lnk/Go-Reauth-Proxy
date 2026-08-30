@@ -117,7 +117,7 @@ func TestDirectoryPaginationToleratesMutation(t *testing.T) {
 	if second.Code != http.StatusOK {
 		t.Fatalf("page after directory mutation = %d %q", second.Code, second.Body.String())
 	}
-	if strings.Contains(second.Body.String(), root) || !strings.Contains(second.Body.String(), "<table>") {
+	if strings.Contains(second.Body.String(), root) || !strings.Contains(second.Body.String(), `<table class="listing-table">`) {
 		t.Fatalf("mutated page leaked root or was malformed: %s", second.Body.String())
 	}
 }

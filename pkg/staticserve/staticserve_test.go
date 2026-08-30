@@ -130,7 +130,7 @@ func TestDirectoryListingSortEscapingAndHeaders(t *testing.T) {
 	}
 	body := response.Body.String()
 	assertOrdered(t, body, ">ADir/</a>", ">zDir/</a>", ">a.txt</a>", ">a?#%.txt</a>", ">b.txt</a>", ">Z.txt</a>")
-	if strings.Contains(body, ".hidden") || strings.Contains(body, `<script>`) {
+	if strings.Contains(body, `>.hidden</a>`) || strings.Contains(body, `evil"><script>.txt`) {
 		t.Fatalf("unsafe/hidden filename leaked into listing: %s", body)
 	}
 	if !strings.Contains(body, "evil&#34;&gt;&lt;script&gt;.txt") {
@@ -243,7 +243,7 @@ func TestReadmeSanitizationAndSameOriginImages(t *testing.T) {
 	mustWriteFile(t, filepath.Join(directory, "README.md"), readme)
 	cfg := listingConfig(directory, true)
 	response := serveRequest(t, models.HostRuleTargetTypeDirectory, cfg, http.MethodGet, "/", nil, Options{})
-	body := response.Body.String()
+	body := renderedReadmeHTML(response.Body.String())
 	for _, forbidden := range []string{"<script", "onerror", "evil.example/track", "data:image", "javascript:"} {
 		if strings.Contains(strings.ToLower(body), strings.ToLower(forbidden)) {
 			t.Fatalf("README contains forbidden %q: %s", forbidden, body)
@@ -413,4 +413,16 @@ func pageLink(t *testing.T, body, relation string) string {
 		t.Fatal(err)
 	}
 	return "/" + "?" + parsed.RawQuery
+}
+
+func renderedReadmeHTML(body string) string {
+	start := strings.Index(body, `<article class="readme"`)
+	if start < 0 {
+		return ""
+	}
+	end := strings.Index(body[start:], `</article>`)
+	if end < 0 {
+		return body[start:]
+	}
+	return body[start : start+end+len(`</article>`)]
 }

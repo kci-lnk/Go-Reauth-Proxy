@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"container/heap"
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/binary"
 	"errors"
 	"html/template"
 	"io"
@@ -27,6 +29,28 @@ type listingKey struct {
 	folded    string
 }
 
+type listingSortField byte
+
+const (
+	listingSortByName listingSortField = iota
+	listingSortBySize
+	listingSortByModified
+)
+
+type listingSortOrder byte
+
+const (
+	listingSortAscending listingSortOrder = iota
+	listingSortDescending
+)
+
+type listingSort struct {
+	field listingSortField
+	order listingSortOrder
+}
+
+var defaultListingSort = listingSort{field: listingSortByName, order: listingSortAscending}
+
 type cursorDirection byte
 
 const (
@@ -34,9 +58,16 @@ const (
 	cursorBefore
 )
 
+const (
+	listingCursorVersion    = byte(2)
+	listingCursorHeaderSize = 25
+	maxListingCursorBytes   = 512
+)
+
 type listingCursor struct {
 	direction cursorDirection
-	key       listingKey
+	sort      listingSort
+	candidate listingCandidate
 }
 
 type listingCandidate struct {
@@ -45,37 +76,28 @@ type listingCandidate struct {
 	modified time.Time
 }
 
-type listingCandidateHeap []listingCandidate
-
-func (h listingCandidateHeap) Len() int { return len(h) }
-func (h listingCandidateHeap) Less(i, j int) bool {
-	return compareListingKeys(h[i].key, h[j].key) > 0
+type listingCandidateHeap struct {
+	values  []listingCandidate
+	sort    listingSort
+	minimum bool
 }
-func (h listingCandidateHeap) Swap(i, j int) { h[i], h[j] = h[j], h[i] }
+
+func (h listingCandidateHeap) Len() int { return len(h.values) }
+func (h listingCandidateHeap) Less(i, j int) bool {
+	comparison := compareListingCandidates(h.values[i], h.values[j], h.sort)
+	if h.minimum {
+		return comparison < 0
+	}
+	return comparison > 0
+}
+func (h listingCandidateHeap) Swap(i, j int) { h.values[i], h.values[j] = h.values[j], h.values[i] }
 func (h *listingCandidateHeap) Push(value any) {
-	*h = append(*h, value.(listingCandidate))
+	h.values = append(h.values, value.(listingCandidate))
 }
 func (h *listingCandidateHeap) Pop() any {
-	old := *h
+	old := h.values
 	last := old[len(old)-1]
-	*h = old[:len(old)-1]
-	return last
-}
-
-type listingCandidateMinHeap []listingCandidate
-
-func (h listingCandidateMinHeap) Len() int { return len(h) }
-func (h listingCandidateMinHeap) Less(i, j int) bool {
-	return compareListingKeys(h[i].key, h[j].key) < 0
-}
-func (h listingCandidateMinHeap) Swap(i, j int) { h[i], h[j] = h[j], h[i] }
-func (h *listingCandidateMinHeap) Push(value any) {
-	*h = append(*h, value.(listingCandidate))
-}
-func (h *listingCandidateMinHeap) Pop() any {
-	old := *h
-	last := old[len(old)-1]
-	*h = old[:len(old)-1]
+	h.values = old[:len(old)-1]
 	return last
 }
 
@@ -89,13 +111,25 @@ type listingEntryView struct {
 }
 
 type breadcrumbView struct {
-	Name string
-	Href string
+	Name    string
+	Href    string
+	Current bool
+}
+
+type listingSortLinkView struct {
+	FieldClass string
+	Label      string
+	Href       string
+	AriaLabel  string
+	AriaSort   string
+	Indicator  string
+	Active     bool
 }
 
 type listingPageView struct {
 	Title        string
 	Breadcrumbs  []breadcrumbView
+	SortLinks    []listingSortLinkView
 	Entries      []listingEntryView
 	ParentHref   string
 	PreviousHref string
@@ -103,66 +137,309 @@ type listingPageView struct {
 	README       template.HTML
 }
 
-const listingPageCSP = "default-src 'none'; style-src 'unsafe-inline'; img-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+const listingThemeScript = `(function () {
+  "use strict";
+  var root = document.documentElement;
+  var storageKey = "fn-knock-index-theme";
+  var media = window.matchMedia("(prefers-color-scheme: dark)");
+  var stored = "";
+  try {
+    stored = window.localStorage.getItem(storageKey) || "";
+  } catch (_) {}
+  if (stored !== "light" && stored !== "dark") {
+    stored = "";
+  }
+  var manual = stored !== "";
+  function systemTheme() {
+    return media.matches ? "dark" : "light";
+  }
+  function applyTheme(theme, persist) {
+    root.dataset.theme = theme;
+    var toggle = document.getElementById("theme-toggle");
+    if (toggle) {
+      toggle.setAttribute("aria-pressed", theme === "dark" ? "true" : "false");
+    }
+    if (persist) {
+      manual = true;
+      try {
+        window.localStorage.setItem(storageKey, theme);
+      } catch (_) {}
+    }
+  }
+  applyTheme(stored || systemTheme(), false);
+  function initializeThemeToggle() {
+    var toggle = document.getElementById("theme-toggle");
+    if (toggle) {
+      applyTheme(root.dataset.theme || systemTheme(), false);
+      toggle.addEventListener("click", function () {
+        applyTheme(root.dataset.theme === "dark" ? "light" : "dark", true);
+      });
+      toggle.hidden = false;
+    }
+    function followSystem(event) {
+      if (!manual) {
+        applyTheme(event.matches ? "dark" : "light", false);
+      }
+    }
+    if (typeof media.addEventListener === "function") {
+      media.addEventListener("change", followSystem);
+    } else if (typeof media.addListener === "function") {
+      media.addListener(followSystem);
+    }
+    window.requestAnimationFrame(function () {
+      root.classList.add("theme-ready");
+    });
+  }
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", initializeThemeToggle, { once: true });
+  } else {
+    initializeThemeToggle();
+  }
+}());`
 
-var listingPageTemplate = template.Must(template.New("directory-listing").Parse(`<!doctype html>
+const listingPageTemplatePrefix = `<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
   <title>{{.Title}}</title>
+  <script>`
+
+const listingPageTemplateSuffix = `</script>
   <style>
-    :root { color-scheme: light dark; font-family: ui-sans-serif, system-ui, sans-serif; }
-    body { box-sizing: border-box; max-width: 72rem; margin: 0 auto; padding: 2rem 1.25rem 4rem; line-height: 1.5; }
-    a { color: #2563eb; text-decoration: none; } a:hover { text-decoration: underline; }
-    nav { overflow-wrap: anywhere; margin-bottom: 1rem; }
-    table { width: 100%; border-collapse: collapse; }
-    th, td { border-bottom: 1px solid color-mix(in srgb, currentColor 18%, transparent); padding: .65rem .5rem; text-align: left; }
-    th:nth-child(2), td:nth-child(2) { text-align: right; white-space: nowrap; }
-    th:nth-child(3), td:nth-child(3) { white-space: nowrap; }
-    .name { overflow-wrap: anywhere; }
-    .pager { display: flex; justify-content: space-between; gap: 1rem; margin-top: 1rem; }
-    .readme { margin-top: 2.5rem; padding-top: 1.5rem; border-top: 1px solid color-mix(in srgb, currentColor 22%, transparent); overflow-wrap: anywhere; }
-    .readme pre { overflow: auto; padding: 1rem; border-radius: .4rem; background: color-mix(in srgb, currentColor 8%, transparent); }
+    :root {
+      color-scheme: light;
+      font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      --background: #f6f7f9;
+      --surface: #ffffff;
+      --surface-subtle: #f8fafc;
+      --text: #172033;
+      --muted: #667085;
+      --border: #dfe3ea;
+      --border-strong: #cfd5df;
+      --link: #315fc4;
+      --link-hover: #214aa5;
+      --row-hover: #f4f7fc;
+      --focus: #4f7de3;
+    }
+    :root[data-theme="dark"] {
+      color-scheme: dark;
+      --background: #11151c;
+      --surface: #181e27;
+      --surface-subtle: #202733;
+      --text: #edf1f7;
+      --muted: #a8b2c1;
+      --border: #303947;
+      --border-strong: #414c5d;
+      --link: #8fb3ff;
+      --link-hover: #b8cdff;
+      --row-hover: #202937;
+      --focus: #9bbaff;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root:not([data-theme]) {
+        color-scheme: dark;
+        --background: #11151c;
+        --surface: #181e27;
+        --surface-subtle: #202733;
+        --text: #edf1f7;
+        --muted: #a8b2c1;
+        --border: #303947;
+        --border-strong: #414c5d;
+        --link: #8fb3ff;
+        --link-hover: #b8cdff;
+        --row-hover: #202937;
+        --focus: #9bbaff;
+      }
+    }
+    * { box-sizing: border-box; }
+    html { min-width: 0; background: var(--background); }
+    body {
+      max-width: 72rem;
+      min-height: 100vh;
+      margin: 0 auto;
+      padding: clamp(1.25rem, 3vw, 2.5rem) clamp(1rem, 3vw, 2rem) 4rem;
+      background: var(--background);
+      color: var(--text);
+      font-size: 1rem;
+      line-height: 1.5;
+    }
+    a { color: var(--link); text-decoration: none; }
+    a:hover { color: var(--link-hover); text-decoration: underline; }
+    a:focus-visible, button:focus-visible {
+      outline: 3px solid color-mix(in srgb, var(--focus) 65%, transparent);
+      outline-offset: 2px;
+      border-radius: .3rem;
+    }
+    .page-header { margin-bottom: clamp(1.5rem, 4vw, 2.5rem); }
+    .topline { display: flex; align-items: flex-start; justify-content: space-between; gap: 1rem; }
+    .breadcrumbs { min-width: 0; margin: 0; color: var(--muted); overflow-wrap: anywhere; }
+    .breadcrumbs .separator { padding: 0 .35rem; color: var(--border-strong); }
+    .page-header h1 { margin: 1.15rem 0 0; font-size: clamp(2rem, 5vw, 3rem); line-height: 1.12; letter-spacing: -.035em; }
+    .theme-toggle {
+      position: relative;
+      flex: 0 0 auto;
+      width: 2.65rem;
+      height: 2.65rem;
+      border: 1px solid var(--border);
+      border-radius: .7rem;
+      background: var(--surface);
+      color: var(--text);
+      cursor: pointer;
+    }
+    .theme-toggle:hover { border-color: var(--border-strong); background: var(--surface-subtle); }
+    .theme-icon { position: absolute; inset: 0; display: grid; place-items: center; font-size: 1.15rem; line-height: 1; }
+    .theme-icon-sun { opacity: 0; transform: rotate(-35deg) scale(.72); }
+    .theme-icon-moon { opacity: 1; transform: rotate(0) scale(1); }
+    :root[data-theme="dark"] .theme-icon-sun { opacity: 1; transform: rotate(0) scale(1); }
+    :root[data-theme="dark"] .theme-icon-moon { opacity: 0; transform: rotate(35deg) scale(.72); }
+    .mobile-sort { display: none; }
+    .listing-panel { overflow: hidden; border: 1px solid var(--border); border-radius: .75rem; background: var(--surface); }
+    .listing-table { width: 100%; border-collapse: collapse; table-layout: fixed; }
+    .listing-table th, .listing-table td { padding: .78rem .9rem; text-align: left; border-bottom: 1px solid var(--border); }
+    .listing-table th { background: var(--surface-subtle); color: var(--muted); font-size: .875rem; font-weight: 650; }
+    .listing-table th.size, .listing-table td.size { width: 9rem; text-align: right; white-space: nowrap; }
+    .listing-table th.modified, .listing-table td.modified { width: 14.5rem; white-space: nowrap; }
+    .listing-table tbody tr:last-child td { border-bottom: 0; }
+    .listing-table td.name { overflow-wrap: anywhere; }
+    .listing-table td.size, .listing-table td.modified { color: var(--muted); font-variant-numeric: tabular-nums; }
+    .sort-link { display: inline-flex; min-height: 2rem; align-items: center; gap: .35rem; color: inherit; }
+    .sort-link:hover { color: var(--text); }
+    .sort-indicator { width: 1em; color: var(--muted); text-align: center; }
+    .sort-link.is-active { color: var(--text); }
+    .sort-link.is-active .sort-indicator { color: var(--link); }
+    .empty-state { color: var(--muted); text-align: center !important; }
+    .pager { display: flex; flex-wrap: wrap; justify-content: space-between; gap: .75rem; margin-top: 1rem; }
+    .pager a {
+      display: inline-flex;
+      min-height: 2.6rem;
+      align-items: center;
+      padding: .45rem .8rem;
+      border: 1px solid var(--border);
+      border-radius: .6rem;
+      background: var(--surface);
+    }
+    .pager a:hover { border-color: var(--border-strong); background: var(--surface-subtle); text-decoration: none; }
+    .readme { margin-top: 2.5rem; overflow-wrap: anywhere; }
+    .readme h1, .readme h2, .readme h3 { letter-spacing: -.02em; line-height: 1.25; }
+    .readme h1 { font-size: 1.8rem; }
+    .readme h2 { margin-top: 1.8rem; font-size: 1.4rem; }
+    .readme h3 { margin-top: 1.5rem; font-size: 1.15rem; }
+    .readme pre { overflow: auto; padding: 1rem; border: 1px solid var(--border); border-radius: .55rem; background: var(--surface-subtle); }
+    .readme code { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; }
     .readme img { max-width: 100%; height: auto; }
-    .readme table { display: block; overflow-x: auto; }
-    @media (max-width: 42rem) { th:nth-child(2), td:nth-child(2), th:nth-child(3), td:nth-child(3) { display: none; } }
+    .readme table { display: block; width: 100%; overflow-x: auto; border-collapse: collapse; }
+    .readme th, .readme td { padding: .5rem .65rem; border: 1px solid var(--border); text-align: left; }
+    .readme blockquote { margin-left: 0; padding-left: 1rem; border-left: 3px solid var(--border-strong); color: var(--muted); }
+    @media (hover: hover) {
+      .listing-table tbody tr:not(.empty-row):hover { background: var(--row-hover); }
+    }
+    .theme-ready body,
+    .theme-ready a,
+    .theme-ready .theme-toggle,
+    .theme-ready .listing-panel,
+    .theme-ready .listing-table th,
+    .theme-ready .listing-table td,
+    .theme-ready .pager a,
+    .theme-ready .readme pre,
+    .theme-ready .readme th,
+    .theme-ready .readme td {
+      transition: background-color 200ms ease-out, color 200ms ease-out, border-color 200ms ease-out;
+    }
+    .theme-ready .theme-icon { transition: opacity 200ms ease-out, transform 200ms ease-out; }
+    @media (max-width: 42rem) {
+      body { padding: 1rem .8rem 3rem; font-size: .95rem; }
+      .topline { align-items: center; }
+      .page-header h1 { margin-top: 1rem; font-size: clamp(1.8rem, 10vw, 2.35rem); }
+      .mobile-sort { display: flex; flex-wrap: wrap; align-items: center; gap: .45rem; margin-bottom: .7rem; color: var(--muted); font-size: .84rem; }
+      .sort-chip { display: inline-flex; min-height: 2.3rem; align-items: center; gap: .25rem; padding: .3rem .6rem; border: 1px solid var(--border); border-radius: 999px; background: var(--surface); }
+      .sort-chip:hover { text-decoration: none; background: var(--surface-subtle); }
+      .sort-chip.is-active { border-color: var(--border-strong); color: var(--text); }
+      .listing-panel { border-radius: .65rem; }
+      .listing-table, .listing-table tbody { display: block; }
+      .listing-table thead { display: none; }
+      .listing-table tr { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: .35rem .8rem; padding: .75rem; border-bottom: 1px solid var(--border); }
+      .listing-table tbody tr:last-child { border-bottom: 0; }
+      .listing-table td { display: block; width: auto !important; padding: 0; border: 0; text-align: left !important; white-space: normal !important; }
+      .listing-table td.name { grid-column: 1 / -1; font-size: 1rem; }
+      .listing-table td.size, .listing-table td.modified { font-size: .8rem; }
+      .listing-table td.size::before, .listing-table td.modified::before { content: attr(data-label) " "; color: var(--muted); }
+      .listing-table td.modified { justify-self: end; text-align: right !important; }
+      .listing-table .parent-entry td.size, .listing-table .parent-entry td.modified { display: none; }
+      .listing-table .empty-row { display: block; }
+      .listing-table .empty-state { text-align: left !important; }
+      .pager { align-items: stretch; }
+      .pager span { flex: 1 1 auto; }
+      .pager span:last-child { text-align: right; }
+      .readme { margin-top: 2rem; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      .theme-ready *, .theme-ready *::before, .theme-ready *::after { transition: none !important; }
+    }
   </style>
 </head>
 <body>
-  <nav aria-label="Breadcrumb">{{range $index, $part := .Breadcrumbs}}{{if $index}} / {{end}}<a href="{{$part.Href}}">{{$part.Name}}</a>{{end}}</nav>
-  <h1>{{.Title}}</h1>
-  <table>
-    <thead><tr><th>Name</th><th>Size</th><th>Modified</th></tr></thead>
-    <tbody>
-      {{if .ParentHref}}<tr><td class="name"><a href="{{.ParentHref}}">../</a></td><td>—</td><td></td></tr>{{end}}
-      {{range .Entries}}<tr><td class="name"><a href="{{.Href}}">{{.Name}}{{if .Directory}}/{{end}}</a></td><td>{{.Size}}</td><td><time datetime="{{.ModifiedTime}}">{{.Modified}}</time></td></tr>{{end}}
-    </tbody>
-  </table>
-  {{if or .PreviousHref .NextHref}}<div class="pager"><span>{{if .PreviousHref}}<a rel="prev" href="{{.PreviousHref}}">← Previous page</a>{{end}}</span><span>{{if .NextHref}}<a rel="next" href="{{.NextHref}}">Next page →</a>{{end}}</span></div>{{end}}
-  {{if .README}}<article class="readme">{{.README}}</article>{{end}}
+  <main>
+    <header class="page-header">
+      <div class="topline">
+        <nav class="breadcrumbs" aria-label="Breadcrumb">{{range $index, $part := .Breadcrumbs}}{{if $index}}<span class="separator" aria-hidden="true">›</span>{{end}}<a href="{{$part.Href}}"{{if $part.Current}} aria-current="page"{{end}}>{{$part.Name}}</a>{{end}}</nav>
+        <button id="theme-toggle" class="theme-toggle" type="button" hidden aria-label="Dark mode" aria-pressed="false"><span class="theme-icon theme-icon-sun" aria-hidden="true">☀</span><span class="theme-icon theme-icon-moon" aria-hidden="true">☾</span></button>
+      </div>
+      <h1>{{.Title}}</h1>
+    </header>
+    <div class="mobile-sort" aria-label="Sort directory"><span>Sort:</span>{{range .SortLinks}}<a class="sort-chip{{if .Active}} is-active{{end}}" href="{{.Href}}" aria-label="{{.AriaLabel}}">{{.Label}} <span class="sort-indicator" aria-hidden="true">{{.Indicator}}</span></a>{{end}}</div>
+    <div class="listing-panel">
+      <table class="listing-table">
+        <caption hidden>Directory contents</caption>
+        <thead><tr>{{range .SortLinks}}<th class="{{.FieldClass}}" scope="col" aria-sort="{{.AriaSort}}"><a class="sort-link{{if .Active}} is-active{{end}}" href="{{.Href}}" aria-label="{{.AriaLabel}}">{{.Label}} <span class="sort-indicator" aria-hidden="true">{{.Indicator}}</span></a></th>{{end}}</tr></thead>
+        <tbody>
+          {{if .ParentHref}}<tr class="parent-entry"><td class="name"><a href="{{.ParentHref}}" aria-label="Parent directory"><span aria-hidden="true">../</span></a></td><td class="size" data-label="Size">—</td><td class="modified" data-label="Modified"></td></tr>{{end}}
+          {{range .Entries}}<tr><td class="name"><a href="{{.Href}}">{{.Name}}{{if .Directory}}/{{end}}</a></td><td class="size" data-label="Size">{{.Size}}</td><td class="modified" data-label="Modified"><time datetime="{{.ModifiedTime}}" title="Beijing time (UTC+8)">{{.Modified}}</time></td></tr>{{end}}
+          {{if not .Entries}}<tr class="empty-row"><td class="empty-state" colspan="3">This directory is empty.</td></tr>{{end}}
+        </tbody>
+      </table>
+    </div>
+    {{if or .PreviousHref .NextHref}}<div class="pager" aria-label="Directory pages"><span>{{if .PreviousHref}}<a rel="prev" href="{{.PreviousHref}}">← Previous page</a>{{end}}</span><span>{{if .NextHref}}<a rel="next" href="{{.NextHref}}">Next page →</a>{{end}}</span></div>{{end}}
+    {{if .README}}<article class="readme" aria-label="README">{{.README}}</article>{{end}}
+  </main>
 </body>
-</html>`))
+</html>`
+
+var listingPageTemplate = template.Must(template.New("directory-listing").Parse(listingPageTemplatePrefix + listingThemeScript + listingPageTemplateSuffix))
+
+var listingPageCSP = "default-src 'none'; style-src 'unsafe-inline'; script-src 'sha256-" + listingThemeScriptHash() + "'; script-src-attr 'none'; img-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+
+func listingThemeScriptHash() string {
+	hash := sha256.Sum256([]byte(listingThemeScript))
+	return base64.StdEncoding.EncodeToString(hash[:])
+}
 
 func (s *Server) serveDirectoryListing(w http.ResponseWriter, r *http.Request, root rootedFileOpener, directory *os.File, rootName string, cfg *models.StaticServeConfig) {
 	query, err := url.ParseQuery(r.URL.RawQuery)
-	cursorValues, cursorPresent := query["cursor"]
-	invalidCursorValues := len(cursorValues) > 1 ||
-		(cursorPresent && (len(cursorValues) != 1 || cursorValues[0] == ""))
-	if err != nil || invalidCursorValues {
-		writeError(w, r, http.StatusBadRequest, "Invalid directory cursor")
-		return
-	}
-	cursorValue := ""
-	if cursorPresent {
-		cursorValue = cursorValues[0]
-	}
-	cursor, err := decodeListingCursor(cursorValue)
 	if err != nil {
 		writeError(w, r, http.StatusBadRequest, "Invalid directory cursor")
 		return
 	}
-	candidates, previousCursor, nextCursor, err := scanDirectoryPage(r.Context(), root, directory, rootName, cursor)
+	sortSpec, err := parseListingSort(query)
+	if err != nil {
+		writeError(w, r, http.StatusBadRequest, "Invalid directory sort")
+		return
+	}
+	cursorValue, cursorPresent, err := listingQueryValue(query, "cursor")
+	if err != nil {
+		writeError(w, r, http.StatusBadRequest, "Invalid directory cursor")
+		return
+	}
+	if !cursorPresent {
+		cursorValue = ""
+	}
+	cursor, err := decodeListingCursor(cursorValue)
+	if err != nil || (cursor != nil && cursor.sort != sortSpec) {
+		writeError(w, r, http.StatusBadRequest, "Invalid directory cursor")
+		return
+	}
+	candidates, previousCursor, nextCursor, err := scanDirectoryPageWithSort(r.Context(), root, directory, rootName, sortSpec, cursor)
 	if err != nil {
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 			return
@@ -181,35 +458,23 @@ func (s *Server) serveDirectoryListing(w http.ResponseWriter, r *http.Request, r
 		size := formatFileSize(candidate.size)
 		if candidate.key.directory {
 			href += "/"
+			href = listingPageHref(href, sortSpec, "")
 			size = "—"
 		}
 		modified, machineTime := formatModifiedTime(candidate.modified)
-		entries = append(entries, listingEntryView{
-			Name:         candidate.key.name,
-			Href:         href,
-			Directory:    candidate.key.directory,
-			Size:         size,
-			Modified:     modified,
-			ModifiedTime: machineTime,
-		})
+		entries = append(entries, listingEntryView{Name: candidate.key.name, Href: href, Directory: candidate.key.directory, Size: size, Modified: modified, ModifiedTime: machineTime})
 	}
 
 	readme := template.HTML("")
 	if cfg.DirectoryListing.RenderReadme {
 		readme = s.readme.render(root, joinRootName(rootName, "README.md"))
 	}
-	view := listingPageView{
-		Title:       "Index of " + r.URL.Path,
-		Breadcrumbs: listingBreadcrumbs(r.URL.Path),
-		Entries:     entries,
-		ParentHref:  listingParentHref(r.URL.Path),
-		README:      readme,
-	}
+	view := listingPageView{Title: "Index of " + r.URL.Path, Breadcrumbs: listingBreadcrumbs(r.URL.Path, sortSpec), SortLinks: listingSortLinks(sortSpec), Entries: entries, ParentHref: listingParentHref(r.URL.Path, sortSpec), README: readme}
 	if nextCursor != "" {
-		view.NextHref = "?cursor=" + url.QueryEscape(nextCursor)
+		view.NextHref = listingPageHref("", sortSpec, nextCursor)
 	}
 	if previousCursor != "" {
-		view.PreviousHref = "?cursor=" + url.QueryEscape(previousCursor)
+		view.PreviousHref = listingPageHref("", sortSpec, previousCursor)
 	}
 
 	var body bytes.Buffer
@@ -230,19 +495,112 @@ func (s *Server) serveDirectoryListing(w http.ResponseWriter, r *http.Request, r
 	}
 }
 
+func parseListingSort(query url.Values) (listingSort, error) {
+	field := listingSortByName
+	fieldValue, fieldPresent, err := listingQueryValue(query, "sort")
+	if err != nil {
+		return listingSort{}, err
+	}
+	if fieldPresent {
+		switch fieldValue {
+		case "name":
+			field = listingSortByName
+		case "size":
+			field = listingSortBySize
+		case "modified":
+			field = listingSortByModified
+		default:
+			return listingSort{}, errors.New("unknown listing sort field")
+		}
+	}
+
+	order := defaultListingSortOrder(field)
+	orderValue, orderPresent, err := listingQueryValue(query, "order")
+	if err != nil {
+		return listingSort{}, err
+	}
+	if orderPresent {
+		switch orderValue {
+		case "asc":
+			order = listingSortAscending
+		case "desc":
+			order = listingSortDescending
+		default:
+			return listingSort{}, errors.New("unknown listing sort order")
+		}
+	}
+	return listingSort{field: field, order: order}, nil
+}
+
+func listingQueryValue(query url.Values, key string) (string, bool, error) {
+	values, present := query[key]
+	if !present {
+		return "", false, nil
+	}
+	if len(values) != 1 || values[0] == "" {
+		return "", false, errors.New("invalid listing query value")
+	}
+	return values[0], true, nil
+}
+
+func defaultListingSortOrder(field listingSortField) listingSortOrder {
+	if field == listingSortByName {
+		return listingSortAscending
+	}
+	return listingSortDescending
+}
+
+func (spec listingSort) fieldName() string {
+	switch spec.field {
+	case listingSortBySize:
+		return "size"
+	case listingSortByModified:
+		return "modified"
+	default:
+		return "name"
+	}
+}
+
+func (spec listingSort) orderName() string {
+	if spec.order == listingSortDescending {
+		return "desc"
+	}
+	return "asc"
+}
+
 func scanDirectoryPage(ctx context.Context, root rootedFileOpener, directory *os.File, rootName string, cursor *listingCursor) ([]listingCandidate, string, string, error) {
-	return scanDirectoryPageWithLimits(ctx, root, directory, rootName, cursor, MaxDirectoryScannedEntries, MaxDirectoryVisibleEntries)
+	sortSpec := defaultListingSort
+	if cursor != nil {
+		sortSpec = cursor.sort
+	}
+	return scanDirectoryPageWithSort(ctx, root, directory, rootName, sortSpec, cursor)
+}
+
+func scanDirectoryPageWithSort(ctx context.Context, root rootedFileOpener, directory *os.File, rootName string, sortSpec listingSort, cursor *listingCursor) ([]listingCandidate, string, string, error) {
+	return scanDirectoryPageWithLimitsAndSort(ctx, root, directory, rootName, sortSpec, cursor, MaxDirectoryScannedEntries, MaxDirectoryVisibleEntries)
 }
 
 func scanDirectoryPageWithLimit(ctx context.Context, root rootedFileOpener, directory *os.File, rootName string, cursor *listingCursor, maxEntries int) ([]listingCandidate, string, string, error) {
-	return scanDirectoryPageWithLimits(ctx, root, directory, rootName, cursor, maxEntries, maxEntries)
+	sortSpec := defaultListingSort
+	if cursor != nil {
+		sortSpec = cursor.sort
+	}
+	return scanDirectoryPageWithLimitsAndSort(ctx, root, directory, rootName, sortSpec, cursor, maxEntries, maxEntries)
 }
 
 func scanDirectoryPageWithLimits(ctx context.Context, root rootedFileOpener, directory *os.File, rootName string, cursor *listingCursor, maxScannedEntries, maxVisibleEntries int) ([]listingCandidate, string, string, error) {
+	sortSpec := defaultListingSort
+	if cursor != nil {
+		sortSpec = cursor.sort
+	}
+	return scanDirectoryPageWithLimitsAndSort(ctx, root, directory, rootName, sortSpec, cursor, maxScannedEntries, maxVisibleEntries)
+}
+
+func scanDirectoryPageWithLimitsAndSort(ctx context.Context, root rootedFileOpener, directory *os.File, rootName string, sortSpec listingSort, cursor *listingCursor, maxScannedEntries, maxVisibleEntries int) ([]listingCandidate, string, string, error) {
 	const batchSize = 1024
 	forward := cursor == nil || cursor.direction == cursorAfter
-	forwardValues := &listingCandidateHeap{}
-	backwardValues := &listingCandidateMinHeap{}
+	forwardValues := &listingCandidateHeap{sort: sortSpec}
+	backwardValues := &listingCandidateHeap{sort: sortSpec, minimum: true}
 	heap.Init(forwardValues)
 	heap.Init(backwardValues)
 	scanned := 0
@@ -273,7 +631,7 @@ func scanDirectoryPageWithLimits(ctx context.Context, root rootedFileOpener, dir
 				return nil, "", "", errDirectoryTooLarge
 			}
 			if cursor != nil {
-				comparison := compareListingKeys(candidate.key, cursor.key)
+				comparison := compareListingCandidates(candidate, cursor.candidate, sortSpec)
 				if (forward && comparison <= 0) || (!forward && comparison >= 0) {
 					continue
 				}
@@ -281,14 +639,14 @@ func scanDirectoryPageWithLimits(ctx context.Context, root rootedFileOpener, dir
 			if forward {
 				if forwardValues.Len() < DefaultPageSize+1 {
 					heap.Push(forwardValues, candidate)
-				} else if compareListingKeys(candidate.key, (*forwardValues)[0].key) < 0 {
+				} else if compareListingCandidates(candidate, forwardValues.values[0], sortSpec) < 0 {
 					heap.Pop(forwardValues)
 					heap.Push(forwardValues, candidate)
 				}
 			} else {
 				if backwardValues.Len() < DefaultPageSize+1 {
 					heap.Push(backwardValues, candidate)
-				} else if compareListingKeys(candidate.key, (*backwardValues)[0].key) > 0 {
+				} else if compareListingCandidates(candidate, backwardValues.values[0], sortSpec) > 0 {
 					heap.Pop(backwardValues)
 					heap.Push(backwardValues, candidate)
 				}
@@ -304,13 +662,11 @@ func scanDirectoryPageWithLimits(ctx context.Context, root rootedFileOpener, dir
 
 	var result []listingCandidate
 	if forward {
-		result = append(result, (*forwardValues)...)
+		result = append(result, forwardValues.values...)
 	} else {
-		result = append(result, (*backwardValues)...)
+		result = append(result, backwardValues.values...)
 	}
-	sort.Slice(result, func(i, j int) bool {
-		return compareListingKeys(result[i].key, result[j].key) < 0
-	})
+	sort.Slice(result, func(i, j int) bool { return compareListingCandidates(result[i], result[j], sortSpec) < 0 })
 	hasPrevious := forward && cursor != nil
 	hasNext := false
 	if forward && len(result) > DefaultPageSize {
@@ -329,10 +685,10 @@ func scanDirectoryPageWithLimits(ctx context.Context, root rootedFileOpener, dir
 	previousCursor := ""
 	nextCursor := ""
 	if hasPrevious {
-		previousCursor = encodeListingCursor(cursorBefore, result[0].key)
+		previousCursor = encodeListingCursor(cursorBefore, sortSpec, result[0])
 	}
 	if hasNext {
-		nextCursor = encodeListingCursor(cursorAfter, result[len(result)-1].key)
+		nextCursor = encodeListingCursor(cursorAfter, sortSpec, result[len(result)-1])
 	}
 	return result, previousCursor, nextCursor, nil
 }
@@ -360,11 +716,55 @@ func inspectListingCandidate(root rootedFileOpener, rootName string, entry os.Di
 	if !info.IsDir() && !info.Mode().IsRegular() {
 		return listingCandidate{}, false
 	}
-	return listingCandidate{
-		key:      newListingKey(info.IsDir(), name),
-		size:     info.Size(),
-		modified: info.ModTime(),
-	}, true
+	return listingCandidate{key: newListingKey(info.IsDir(), name), size: info.Size(), modified: info.ModTime()}, true
+}
+
+func compareListingCandidates(first, second listingCandidate, sortSpec listingSort) int {
+	if first.key.directory != second.key.directory {
+		if first.key.directory {
+			return -1
+		}
+		return 1
+	}
+	if sortSpec.field == listingSortByName {
+		comparison := compareListingNames(first.key, second.key)
+		if sortSpec.order == listingSortDescending {
+			return -comparison
+		}
+		return comparison
+	}
+	if sortSpec.field == listingSortBySize {
+		if first.key.directory {
+			return compareListingNames(first.key, second.key)
+		}
+		comparison := compareInt64(first.size, second.size)
+		if comparison != 0 {
+			if sortSpec.order == listingSortDescending {
+				return -comparison
+			}
+			return comparison
+		}
+		return compareListingNames(first.key, second.key)
+	}
+	comparison := first.modified.Compare(second.modified)
+	if comparison != 0 {
+		if sortSpec.order == listingSortDescending {
+			return -comparison
+		}
+		return comparison
+	}
+	return compareListingNames(first.key, second.key)
+}
+
+func compareInt64(first, second int64) int {
+	switch {
+	case first < second:
+		return -1
+	case first > second:
+		return 1
+	default:
+		return 0
+	}
 }
 
 func compareListingKeys(first, second listingKey) int {
@@ -374,6 +774,10 @@ func compareListingKeys(first, second listingKey) int {
 		}
 		return 1
 	}
+	return compareListingNames(first, second)
+}
+
+func compareListingNames(first, second listingKey) int {
 	if comparison := strings.Compare(first.folded, second.folded); comparison != 0 {
 		return comparison
 	}
@@ -384,12 +788,21 @@ func newListingKey(directory bool, name string) listingKey {
 	return listingKey{directory: directory, name: name, folded: strings.ToLower(name)}
 }
 
-func encodeListingCursor(direction cursorDirection, key listingKey) string {
+func encodeListingCursor(direction cursorDirection, sortSpec listingSort, candidate listingCandidate) string {
 	typeByte := byte(1)
-	if key.directory {
+	if candidate.key.directory {
 		typeByte = 0
 	}
-	payload := append([]byte{byte(direction), typeByte}, []byte(key.name)...)
+	payload := make([]byte, listingCursorHeaderSize, listingCursorHeaderSize+len(candidate.key.name))
+	payload[0] = listingCursorVersion
+	payload[1] = byte(direction)
+	payload[2] = byte(sortSpec.field)
+	payload[3] = byte(sortSpec.order)
+	payload[4] = typeByte
+	binary.BigEndian.PutUint64(payload[5:13], uint64(candidate.size))
+	binary.BigEndian.PutUint64(payload[13:21], uint64(candidate.modified.Unix()))
+	binary.BigEndian.PutUint32(payload[21:25], uint32(candidate.modified.Nanosecond()))
+	payload = append(payload, candidate.key.name...)
 	return base64.RawURLEncoding.EncodeToString(payload)
 }
 
@@ -397,63 +810,169 @@ func decodeListingCursor(value string) (*listingCursor, error) {
 	if value == "" {
 		return nil, nil
 	}
-	if len(value) > 512 {
+	if len(value) > maxListingCursorBytes {
 		return nil, errors.New("cursor is too long")
 	}
 	payload, err := base64.RawURLEncoding.DecodeString(value)
-	if err != nil || len(payload) < 3 || payload[0] > byte(cursorBefore) || payload[1] > 1 {
+	if err != nil || len(payload) < 3 {
+		return nil, errors.New("cursor is malformed")
+	}
+	if payload[0] != listingCursorVersion {
+		return decodeLegacyListingCursor(payload)
+	}
+	if len(payload) <= listingCursorHeaderSize || payload[1] > byte(cursorBefore) || payload[2] > byte(listingSortByModified) || payload[3] > byte(listingSortDescending) || payload[4] > 1 {
+		return nil, errors.New("cursor is malformed")
+	}
+	name := string(payload[listingCursorHeaderSize:])
+	if !safeVisibleName(name) || len(name) > 255 {
+		return nil, errors.New("cursor name is invalid")
+	}
+	size := int64(binary.BigEndian.Uint64(payload[5:13]))
+	nanosecond := binary.BigEndian.Uint32(payload[21:25])
+	if size < 0 || nanosecond >= 1_000_000_000 {
+		return nil, errors.New("cursor key is invalid")
+	}
+	modified := time.Unix(int64(binary.BigEndian.Uint64(payload[13:21])), int64(nanosecond)).UTC()
+	return &listingCursor{direction: cursorDirection(payload[1]), sort: listingSort{field: listingSortField(payload[2]), order: listingSortOrder(payload[3])}, candidate: listingCandidate{key: newListingKey(payload[4] == 0, name), size: size, modified: modified}}, nil
+}
+
+func decodeLegacyListingCursor(payload []byte) (*listingCursor, error) {
+	if len(payload) < 3 || payload[0] > byte(cursorBefore) || payload[1] > 1 {
 		return nil, errors.New("cursor is malformed")
 	}
 	name := string(payload[2:])
 	if !safeVisibleName(name) || len(name) > 255 {
 		return nil, errors.New("cursor name is invalid")
 	}
-	return &listingCursor{
-		direction: cursorDirection(payload[0]),
-		key:       newListingKey(payload[1] == 0, name),
-	}, nil
+	return &listingCursor{direction: cursorDirection(payload[0]), sort: defaultListingSort, candidate: listingCandidate{key: newListingKey(payload[1] == 0, name)}}, nil
 }
 
-func listingBreadcrumbs(requestPath string) []breadcrumbView {
-	result := []breadcrumbView{{Name: "root", Href: "/"}}
-	trimmed := strings.Trim(requestPath, "/")
-	if trimmed == "" {
-		return result
-	}
-	components := strings.Split(trimmed, "/")
-	var href strings.Builder
-	href.WriteByte('/')
-	for _, component := range components {
-		href.WriteString(url.PathEscape(component))
-		href.WriteByte('/')
-		result = append(result, breadcrumbView{Name: component, Href: href.String()})
+func listingSortLinks(active listingSort) []listingSortLinkView {
+	fields := []struct {
+		field listingSortField
+		label string
+	}{{listingSortByName, "Name"}, {listingSortBySize, "Size"}, {listingSortByModified, "Modified"}}
+	result := make([]listingSortLinkView, 0, len(fields))
+	for _, item := range fields {
+		order := defaultListingSortOrder(item.field)
+		isActive := active.field == item.field
+		if isActive {
+			if active.order == listingSortAscending {
+				order = listingSortDescending
+			} else {
+				order = listingSortAscending
+			}
+		}
+		target := listingSort{field: item.field, order: order}
+		directionLabel := "ascending"
+		if order == listingSortDescending {
+			directionLabel = "descending"
+		}
+		ariaSort := "none"
+		indicator := "↕"
+		if isActive {
+			if active.order == listingSortAscending {
+				ariaSort = "ascending"
+				indicator = "↑"
+			} else {
+				ariaSort = "descending"
+				indicator = "↓"
+			}
+		}
+		result = append(result, listingSortLinkView{FieldClass: activeSortFieldClass(item.field), Label: item.label, Href: listingPageHref("", target, ""), AriaLabel: "Sort by " + item.label + ", " + directionLabel, AriaSort: ariaSort, Indicator: indicator, Active: isActive})
 	}
 	return result
 }
 
-func listingParentHref(requestPath string) string {
+func activeSortFieldClass(field listingSortField) string {
+	switch field {
+	case listingSortBySize:
+		return "size"
+	case listingSortByModified:
+		return "modified"
+	default:
+		return "name"
+	}
+}
+
+func listingPageHref(path string, sortSpec listingSort, cursor string) string {
+	query := url.Values{}
+	query.Set("sort", sortSpec.fieldName())
+	query.Set("order", sortSpec.orderName())
+	if cursor != "" {
+		query.Set("cursor", cursor)
+	}
+	return path + "?" + query.Encode()
+}
+
+func listingBreadcrumbs(requestPath string, sortSpec listingSort) []breadcrumbView {
+	result := []breadcrumbView{{Name: "root", Href: listingPageHref("/", sortSpec, "")}}
+	trimmed := strings.Trim(requestPath, "/")
+	if trimmed != "" {
+		components := strings.Split(trimmed, "/")
+		var href strings.Builder
+		href.WriteByte('/')
+		for _, component := range components {
+			href.WriteString(url.PathEscape(component))
+			href.WriteByte('/')
+			result = append(result, breadcrumbView{Name: component, Href: listingPageHref(href.String(), sortSpec, "")})
+		}
+	}
+	result[len(result)-1].Current = true
+	return result
+}
+
+func listingParentHref(requestPath string, sortSpec listingSort) string {
 	if requestPath == "/" {
 		return ""
 	}
 	trimmed := strings.TrimSuffix(requestPath, "/")
 	index := strings.LastIndexByte(trimmed, '/')
 	if index <= 0 {
+		return listingPageHref("/", sortSpec, "")
+	}
+	return listingPageHref(escapeListingDirectoryPath(trimmed[:index+1]), sortSpec, "")
+}
+
+func escapeListingDirectoryPath(path string) string {
+	trimmed := strings.Trim(path, "/")
+	if trimmed == "" {
 		return "/"
 	}
-	return trimmed[:index+1]
+	var escaped strings.Builder
+	escaped.WriteByte('/')
+	for _, component := range strings.Split(trimmed, "/") {
+		escaped.WriteString(url.PathEscape(component))
+		escaped.WriteByte('/')
+	}
+	return escaped.String()
 }
 
 func formatFileSize(size int64) string {
 	if size < 0 {
 		return "—"
 	}
-	return strconv.FormatInt(size, 10) + " B"
+	units := [...]string{"B", "KB", "MB", "GB", "TB", "PB", "EB"}
+	if size < 1024 {
+		return strconv.FormatInt(size, 10) + " B"
+	}
+	value := float64(size)
+	unit := 0
+	for value >= 1024 && unit < len(units)-1 {
+		value /= 1024
+		unit++
+	}
+	formatted := strconv.FormatFloat(value, 'f', 1, 64)
+	formatted = strings.TrimSuffix(formatted, ".0")
+	return formatted + " " + units[unit]
 }
+
+var beijingTimeZone = time.FixedZone("UTC+8", 8*60*60)
 
 func formatModifiedTime(value time.Time) (string, string) {
 	if value.IsZero() {
 		return "", ""
 	}
-	value = value.UTC()
-	return value.Format("2006-01-02 15:04 UTC"), value.Format(time.RFC3339)
+	value = value.In(beijingTimeZone)
+	return value.Format("2006-01-02 15:04:05"), value.Format(time.RFC3339)
 }

@@ -211,109 +211,154 @@ const listingPageTemplateSuffix = `</script>
     :root {
       color-scheme: light;
       font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-      --background: #f6f7f9;
+      --background: #f7f8fa;
       --surface: #ffffff;
-      --surface-subtle: #f8fafc;
-      --text: #172033;
-      --muted: #667085;
-      --border: #dfe3ea;
-      --border-strong: #cfd5df;
-      --link: #315fc4;
-      --link-hover: #214aa5;
-      --row-hover: #f4f7fc;
-      --focus: #4f7de3;
+      --surface-subtle: #f7f9fb;
+      --text: #171c26;
+      --muted: #697386;
+      --border: #e1e5eb;
+      --border-strong: #cdd3dd;
+      --link: #315ca8;
+      --link-hover: #234983;
+      --row-hover: #f5f7fa;
+      --focus: #426fc5;
+      --alert-note: #0969da;
+      --alert-tip: #1a7f37;
+      --alert-important: #8250df;
+      --alert-warning: #9a6700;
+      --alert-caution: #cf222e;
     }
     :root[data-theme="dark"] {
       color-scheme: dark;
-      --background: #11151c;
-      --surface: #181e27;
-      --surface-subtle: #202733;
-      --text: #edf1f7;
-      --muted: #a8b2c1;
-      --border: #303947;
-      --border-strong: #414c5d;
-      --link: #8fb3ff;
-      --link-hover: #b8cdff;
-      --row-hover: #202937;
-      --focus: #9bbaff;
+      --background: #0e1218;
+      --surface: #151a22;
+      --surface-subtle: #1b212b;
+      --text: #edf0f5;
+      --muted: #a2acba;
+      --border: #2a323e;
+      --border-strong: #3c4655;
+      --link: #91b4f2;
+      --link-hover: #b8cdf5;
+      --row-hover: #1b222c;
+      --focus: #9bbcf5;
+      --alert-note: #58a6ff;
+      --alert-tip: #3fb950;
+      --alert-important: #a371f7;
+      --alert-warning: #d29922;
+      --alert-caution: #f85149;
     }
     @media (prefers-color-scheme: dark) {
       :root:not([data-theme]) {
         color-scheme: dark;
-        --background: #11151c;
-        --surface: #181e27;
-        --surface-subtle: #202733;
-        --text: #edf1f7;
-        --muted: #a8b2c1;
-        --border: #303947;
-        --border-strong: #414c5d;
-        --link: #8fb3ff;
-        --link-hover: #b8cdff;
-        --row-hover: #202937;
-        --focus: #9bbaff;
+        --background: #0e1218;
+        --surface: #151a22;
+        --surface-subtle: #1b212b;
+        --text: #edf0f5;
+        --muted: #a2acba;
+        --border: #2a323e;
+        --border-strong: #3c4655;
+        --link: #91b4f2;
+        --link-hover: #b8cdf5;
+        --row-hover: #1b222c;
+        --focus: #9bbcf5;
+        --alert-note: #58a6ff;
+        --alert-tip: #3fb950;
+        --alert-important: #a371f7;
+        --alert-warning: #d29922;
+        --alert-caution: #f85149;
       }
     }
     * { box-sizing: border-box; }
-    html { min-width: 0; background: var(--background); }
+    html { min-width: 0; background: var(--background); -webkit-font-smoothing: antialiased; text-rendering: optimizeLegibility; }
     body {
-      max-width: 72rem;
+      max-width: 70rem;
       min-height: 100vh;
       margin: 0 auto;
-      padding: clamp(1.25rem, 3vw, 2.5rem) clamp(1rem, 3vw, 2rem) 4rem;
+      padding: clamp(1.5rem, 4vw, 3.25rem) clamp(1rem, 3vw, 2rem) 4.5rem;
       background: var(--background);
       color: var(--text);
-      font-size: 1rem;
-      line-height: 1.5;
+      font-size: .975rem;
+      line-height: 1.55;
     }
-    a { color: var(--link); text-decoration: none; }
+    a { color: var(--link); text-decoration: none; text-decoration-thickness: .08em; text-underline-offset: .18em; }
     a:hover { color: var(--link-hover); text-decoration: underline; }
     a:focus-visible, button:focus-visible {
-      outline: 3px solid color-mix(in srgb, var(--focus) 65%, transparent);
+      outline: 3px solid var(--focus);
       outline-offset: 2px;
       border-radius: .3rem;
     }
-    .page-header { margin-bottom: clamp(1.5rem, 4vw, 2.5rem); }
+    .page-header { margin-bottom: clamp(1.75rem, 4vw, 2.65rem); }
     .topline { display: flex; align-items: flex-start; justify-content: space-between; gap: 1rem; }
-    .breadcrumbs { min-width: 0; margin: 0; color: var(--muted); overflow-wrap: anywhere; }
+    .breadcrumbs { min-width: 0; margin: 0; color: var(--muted); font-size: .84rem; letter-spacing: .01em; overflow-wrap: anywhere; }
+    .breadcrumbs a { color: inherit; }
+    .breadcrumbs a:hover { color: var(--text); }
+    .breadcrumbs a[aria-current="page"] { color: var(--text); font-weight: 600; }
     .breadcrumbs .separator { padding: 0 .35rem; color: var(--border-strong); }
-    .page-header h1 { margin: 1.15rem 0 0; font-size: clamp(2rem, 5vw, 3rem); line-height: 1.12; letter-spacing: -.035em; }
+    .page-header h1 { margin: 1.2rem 0 0; font-size: clamp(2rem, 5vw, 2.7rem); font-weight: 650; line-height: 1.12; letter-spacing: -.035em; overflow-wrap: anywhere; }
     .theme-toggle {
       position: relative;
       flex: 0 0 auto;
-      width: 2.65rem;
-      height: 2.65rem;
-      border: 1px solid var(--border);
-      border-radius: .7rem;
-      background: var(--surface);
+      width: 2.75rem;
+      height: 2.75rem;
+      border: 1px solid transparent;
+      border-radius: 999px;
+      background: transparent;
       color: var(--text);
       cursor: pointer;
     }
     .theme-toggle:hover { border-color: var(--border-strong); background: var(--surface-subtle); }
-    .theme-icon { position: absolute; inset: 0; display: grid; place-items: center; font-size: 1.15rem; line-height: 1; }
-    .theme-icon-sun { opacity: 0; transform: rotate(-35deg) scale(.72); }
-    .theme-icon-moon { opacity: 1; transform: rotate(0) scale(1); }
-    :root[data-theme="dark"] .theme-icon-sun { opacity: 1; transform: rotate(0) scale(1); }
-    :root[data-theme="dark"] .theme-icon-moon { opacity: 0; transform: rotate(35deg) scale(.72); }
+    .theme-icon {
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      width: 1.15rem;
+      height: 1.15rem;
+      fill: none;
+      stroke: currentColor;
+      stroke-width: 1.7;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+      transform-origin: center;
+    }
+    .theme-icon-sun { opacity: 0; transform: translate(-50%, -50%) rotate(-12deg) scale(.88); }
+    .theme-icon-moon { opacity: 1; transform: translate(-50%, -50%) rotate(0) scale(1); }
+    :root[data-theme="dark"] .theme-icon-sun { opacity: 1; transform: translate(-50%, -50%) rotate(0) scale(1); }
+    :root[data-theme="dark"] .theme-icon-moon { opacity: 0; transform: translate(-50%, -50%) rotate(12deg) scale(.88); }
+    .visually-hidden {
+      position: absolute !important;
+      width: 1px;
+      height: 1px;
+      padding: 0;
+      margin: -1px;
+      overflow: hidden;
+      clip: rect(0, 0, 0, 0);
+      clip-path: inset(50%);
+      white-space: nowrap;
+      border: 0;
+    }
+    .mobile-cell-label { display: none; }
     .mobile-sort { display: none; }
-    .listing-panel { overflow: hidden; border: 1px solid var(--border); border-radius: .75rem; background: var(--surface); }
+    .listing-panel { overflow: hidden; border: 1px solid var(--border); border-radius: .8rem; background: var(--surface); }
     .listing-table { width: 100%; border-collapse: collapse; table-layout: fixed; }
-    .listing-table th, .listing-table td { padding: .78rem .9rem; text-align: left; border-bottom: 1px solid var(--border); }
-    .listing-table th { background: var(--surface-subtle); color: var(--muted); font-size: .875rem; font-weight: 650; }
+    .listing-table th, .listing-table td { padding: .82rem 1.05rem; text-align: left; border-bottom: 1px solid var(--border); }
+    .listing-table th { background: var(--surface-subtle); color: var(--muted); font-size: .8rem; font-weight: 650; letter-spacing: .015em; }
     .listing-table th.size, .listing-table td.size { width: 9rem; text-align: right; white-space: nowrap; }
     .listing-table th.modified, .listing-table td.modified { width: 14.5rem; white-space: nowrap; }
     .listing-table tbody tr:last-child td { border-bottom: 0; }
     .listing-table td.name { overflow-wrap: anywhere; }
-    .listing-table td.size, .listing-table td.modified { color: var(--muted); font-variant-numeric: tabular-nums; }
+    .listing-table td.name a { font-weight: 525; }
+    .listing-table .directory-entry td.name a { font-weight: 650; }
+    .listing-table td.size, .listing-table td.modified { color: var(--muted); font-size: .875rem; font-variant-numeric: tabular-nums; }
     .sort-link { display: inline-flex; min-height: 2rem; align-items: center; gap: .35rem; color: inherit; }
     .sort-link:hover { color: var(--text); }
-    .sort-indicator { width: 1em; color: var(--muted); text-align: center; }
+    .sort-indicator { width: 1em; color: var(--muted); font-size: .78rem; text-align: center; opacity: .7; }
     .sort-link.is-active { color: var(--text); }
-    .sort-link.is-active .sort-indicator { color: var(--link); }
+    .sort-link.is-active .sort-indicator { color: var(--link); opacity: 1; }
     .empty-state { color: var(--muted); text-align: center !important; }
     .pager { display: flex; flex-wrap: wrap; justify-content: space-between; gap: .75rem; margin-top: 1rem; }
     .pager a {
       display: inline-flex;
-      min-height: 2.6rem;
+      min-height: 2.75rem;
       align-items: center;
       padding: .45rem .8rem;
       border: 1px solid var(--border);
@@ -332,19 +377,43 @@ const listingPageTemplateSuffix = `</script>
     .readme table { display: block; width: 100%; overflow-x: auto; border-collapse: collapse; }
     .readme th, .readme td { padding: .5rem .65rem; border: 1px solid var(--border); text-align: left; }
     .readme blockquote { margin-left: 0; padding-left: 1rem; border-left: 3px solid var(--border-strong); color: var(--muted); }
+    .readme .markdown-alert {
+      --alert-color: var(--alert-note);
+      margin: 1rem 0;
+      padding: .8rem 1rem;
+      border-left: .25rem solid var(--alert-color);
+      border-radius: 0 .55rem .55rem 0;
+      background: color-mix(in srgb, var(--alert-color) 8%, transparent);
+      color: var(--text);
+    }
+    .readme .markdown-alert-note { --alert-color: var(--alert-note); }
+    .readme .markdown-alert-tip { --alert-color: var(--alert-tip); }
+    .readme .markdown-alert-important { --alert-color: var(--alert-important); }
+    .readme .markdown-alert-warning { --alert-color: var(--alert-warning); }
+    .readme .markdown-alert-caution { --alert-color: var(--alert-caution); }
+    .readme .markdown-alert-title { margin: 0 0 .35rem; color: var(--alert-color); font-weight: 650; }
+    .readme .markdown-alert > .markdown-alert-title + p { margin-top: 0; }
+    .readme .markdown-alert > :last-child { margin-bottom: 0; }
     @media (hover: hover) {
       .listing-table tbody tr:not(.empty-row):hover { background: var(--row-hover); }
     }
+    .theme-ready,
     .theme-ready body,
     .theme-ready a,
     .theme-ready .theme-toggle,
+    .theme-ready .breadcrumbs,
+    .theme-ready .breadcrumbs .separator,
+    .theme-ready .sort-indicator,
     .theme-ready .listing-panel,
+    .theme-ready .listing-table tr,
     .theme-ready .listing-table th,
     .theme-ready .listing-table td,
     .theme-ready .pager a,
     .theme-ready .readme pre,
     .theme-ready .readme th,
-    .theme-ready .readme td {
+    .theme-ready .readme td,
+    .theme-ready .readme blockquote,
+    .theme-ready .markdown-alert-title {
       transition: background-color 200ms ease-out, color 200ms ease-out, border-color 200ms ease-out;
     }
     .theme-ready .theme-icon { transition: opacity 200ms ease-out, transform 200ms ease-out; }
@@ -353,18 +422,18 @@ const listingPageTemplateSuffix = `</script>
       .topline { align-items: center; }
       .page-header h1 { margin-top: 1rem; font-size: clamp(1.8rem, 10vw, 2.35rem); }
       .mobile-sort { display: flex; flex-wrap: wrap; align-items: center; gap: .45rem; margin-bottom: .7rem; color: var(--muted); font-size: .84rem; }
-      .sort-chip { display: inline-flex; min-height: 2.3rem; align-items: center; gap: .25rem; padding: .3rem .6rem; border: 1px solid var(--border); border-radius: 999px; background: var(--surface); }
+      .sort-chip { display: inline-flex; min-height: 2.75rem; align-items: center; gap: .25rem; padding: .35rem .7rem; border: 1px solid var(--border); border-radius: 999px; background: var(--surface); }
       .sort-chip:hover { text-decoration: none; background: var(--surface-subtle); }
       .sort-chip.is-active { border-color: var(--border-strong); color: var(--text); }
-      .listing-panel { border-radius: .65rem; }
+      .listing-panel { border-radius: .75rem; }
       .listing-table, .listing-table tbody { display: block; }
       .listing-table thead { display: none; }
-      .listing-table tr { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: .35rem .8rem; padding: .75rem; border-bottom: 1px solid var(--border); }
+      .listing-table tr { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: .35rem .8rem; padding: .82rem .85rem; border-bottom: 1px solid var(--border); }
       .listing-table tbody tr:last-child { border-bottom: 0; }
       .listing-table td { display: block; width: auto !important; padding: 0; border: 0; text-align: left !important; white-space: normal !important; }
       .listing-table td.name { grid-column: 1 / -1; font-size: 1rem; }
       .listing-table td.size, .listing-table td.modified { font-size: .8rem; }
-      .listing-table td.size::before, .listing-table td.modified::before { content: attr(data-label) " "; color: var(--muted); }
+      .mobile-cell-label { display: inline; margin-right: .3rem; color: var(--muted); }
       .listing-table td.modified { justify-self: end; text-align: right !important; }
       .listing-table .parent-entry td.size, .listing-table .parent-entry td.modified { display: none; }
       .listing-table .empty-row { display: block; }
@@ -374,8 +443,12 @@ const listingPageTemplateSuffix = `</script>
       .pager span:last-child { text-align: right; }
       .readme { margin-top: 2rem; }
     }
+    @media (max-width: 26rem) {
+      .listing-table tr { grid-template-columns: 1fr; }
+      .listing-table td.modified { justify-self: start; text-align: left !important; }
+    }
     @media (prefers-reduced-motion: reduce) {
-      .theme-ready *, .theme-ready *::before, .theme-ready *::after { transition: none !important; }
+      .theme-ready, .theme-ready *, .theme-ready *::before, .theme-ready *::after { transition: none !important; }
     }
   </style>
 </head>
@@ -384,23 +457,23 @@ const listingPageTemplateSuffix = `</script>
     <header class="page-header">
       <div class="topline">
         <nav class="breadcrumbs" aria-label="Breadcrumb">{{range $index, $part := .Breadcrumbs}}{{if $index}}<span class="separator" aria-hidden="true">›</span>{{end}}<a href="{{$part.Href}}"{{if $part.Current}} aria-current="page"{{end}}>{{$part.Name}}</a>{{end}}</nav>
-        <button id="theme-toggle" class="theme-toggle" type="button" hidden aria-label="Dark mode" aria-pressed="false"><span class="theme-icon theme-icon-sun" aria-hidden="true">☀</span><span class="theme-icon theme-icon-moon" aria-hidden="true">☾</span></button>
+        <button id="theme-toggle" class="theme-toggle" type="button" hidden aria-label="Dark mode" aria-pressed="false"><svg class="theme-icon theme-icon-sun" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="4"></circle><path d="M12 2v2M12 20v2M4.93 4.93l1.42 1.42M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.42-1.42M17.66 6.34l1.41-1.41"></path></svg><svg class="theme-icon theme-icon-moon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path></svg></button>
       </div>
       <h1>{{.Title}}</h1>
     </header>
-    <div class="mobile-sort" aria-label="Sort directory"><span>Sort:</span>{{range .SortLinks}}<a class="sort-chip{{if .Active}} is-active{{end}}" href="{{.Href}}" aria-label="{{.AriaLabel}}">{{.Label}} <span class="sort-indicator" aria-hidden="true">{{.Indicator}}</span></a>{{end}}</div>
+    <nav class="mobile-sort" aria-label="Sort directory"><span>Sort:</span>{{range .SortLinks}}<a class="sort-chip{{if .Active}} is-active{{end}}" href="{{.Href}}"{{if .Active}} aria-current="true" aria-label="{{.Label}}, currently sorted {{.AriaSort}}; {{.AriaLabel}}"{{else}} aria-label="{{.AriaLabel}}"{{end}}>{{.Label}} <span class="sort-indicator" aria-hidden="true">{{.Indicator}}</span></a>{{end}}</nav>
     <div class="listing-panel">
       <table class="listing-table">
-        <caption hidden>Directory contents</caption>
-        <thead><tr>{{range .SortLinks}}<th class="{{.FieldClass}}" scope="col" aria-sort="{{.AriaSort}}"><a class="sort-link{{if .Active}} is-active{{end}}" href="{{.Href}}" aria-label="{{.AriaLabel}}">{{.Label}} <span class="sort-indicator" aria-hidden="true">{{.Indicator}}</span></a></th>{{end}}</tr></thead>
+        <caption class="visually-hidden">Directory contents</caption>
+        <thead><tr>{{range .SortLinks}}<th class="{{.FieldClass}}" scope="col"{{if .AriaSort}} aria-sort="{{.AriaSort}}"{{end}}><a class="sort-link{{if .Active}} is-active{{end}}" href="{{.Href}}" aria-label="{{.AriaLabel}}">{{.Label}} <span class="sort-indicator" aria-hidden="true">{{.Indicator}}</span></a></th>{{end}}</tr></thead>
         <tbody>
-          {{if .ParentHref}}<tr class="parent-entry"><td class="name"><a href="{{.ParentHref}}" aria-label="Parent directory"><span aria-hidden="true">../</span></a></td><td class="size" data-label="Size">—</td><td class="modified" data-label="Modified"></td></tr>{{end}}
-          {{range .Entries}}<tr><td class="name"><a href="{{.Href}}">{{.Name}}{{if .Directory}}/{{end}}</a></td><td class="size" data-label="Size">{{.Size}}</td><td class="modified" data-label="Modified"><time datetime="{{.ModifiedTime}}" title="Beijing time (UTC+8)">{{.Modified}}</time></td></tr>{{end}}
+          {{if .ParentHref}}<tr class="parent-entry"><td class="name"><a href="{{.ParentHref}}" aria-label="Parent directory"><span aria-hidden="true">../</span></a></td><td class="size"><span class="mobile-cell-label">Size</span>—</td><td class="modified"><span class="mobile-cell-label">Modified</span></td></tr>{{end}}
+          {{range .Entries}}<tr{{if .Directory}} class="directory-entry"{{end}}><td class="name"><a href="{{.Href}}">{{.Name}}{{if .Directory}}/{{end}}</a></td><td class="size"><span class="mobile-cell-label">Size</span>{{.Size}}</td><td class="modified"><span class="mobile-cell-label">Modified</span><time datetime="{{.ModifiedTime}}" title="Beijing time (UTC+8)">{{.Modified}}</time></td></tr>{{end}}
           {{if not .Entries}}<tr class="empty-row"><td class="empty-state" colspan="3">This directory is empty.</td></tr>{{end}}
         </tbody>
       </table>
     </div>
-    {{if or .PreviousHref .NextHref}}<div class="pager" aria-label="Directory pages"><span>{{if .PreviousHref}}<a rel="prev" href="{{.PreviousHref}}">← Previous page</a>{{end}}</span><span>{{if .NextHref}}<a rel="next" href="{{.NextHref}}">Next page →</a>{{end}}</span></div>{{end}}
+    {{if or .PreviousHref .NextHref}}<nav class="pager" aria-label="Directory pages"><span>{{if .PreviousHref}}<a rel="prev" href="{{.PreviousHref}}">← Previous page</a>{{end}}</span><span>{{if .NextHref}}<a rel="next" href="{{.NextHref}}">Next page →</a>{{end}}</span></nav>{{end}}
     {{if .README}}<article class="readme" aria-label="README">{{.README}}</article>{{end}}
   </main>
 </body>
@@ -454,7 +527,7 @@ func (s *Server) serveDirectoryListing(w http.ResponseWriter, r *http.Request, r
 
 	entries := make([]listingEntryView, 0, len(candidates))
 	for _, candidate := range candidates {
-		href := url.PathEscape(candidate.key.name)
+		href := "./" + url.PathEscape(candidate.key.name)
 		size := formatFileSize(candidate.size)
 		if candidate.key.directory {
 			href += "/"
@@ -868,7 +941,7 @@ func listingSortLinks(active listingSort) []listingSortLinkView {
 		if order == listingSortDescending {
 			directionLabel = "descending"
 		}
-		ariaSort := "none"
+		ariaSort := ""
 		indicator := "↕"
 		if isActive {
 			if active.order == listingSortAscending {
@@ -956,14 +1029,23 @@ func formatFileSize(size int64) string {
 	if size < 1024 {
 		return strconv.FormatInt(size, 10) + " B"
 	}
-	value := float64(size)
+	raw := uint64(size)
 	unit := 0
-	for value >= 1024 && unit < len(units)-1 {
-		value /= 1024
+	scale := uint64(1)
+	for unit < len(units)-1 && raw >= scale*1024 {
+		scale *= 1024
 		unit++
 	}
-	formatted := strconv.FormatFloat(value, 'f', 1, 64)
-	formatted = strings.TrimSuffix(formatted, ".0")
+	whole, remainder := raw/scale, raw%scale
+	tenths := whole*10 + (remainder*10+scale/2)/scale
+	if tenths >= 1024*10 && unit < len(units)-1 {
+		unit++
+		tenths = 10
+	}
+	formatted := strconv.FormatUint(tenths/10, 10)
+	if tenths%10 != 0 {
+		formatted += "." + strconv.FormatUint(tenths%10, 10)
+	}
 	return formatted + " " + units[unit]
 }
 

@@ -99,6 +99,28 @@ func TestDirectoryListingThemePersistenceFallbackAndButtonContract(t *testing.T)
 	if strings.Contains(button, "onclick=") || strings.Count(button, `aria-hidden="true"`) != 2 {
 		t.Fatalf("theme button must use the hashed script and hide both decorative icons: %s", button)
 	}
+	for _, required := range []string{
+		`<svg class="theme-icon theme-icon-sun"`,
+		`<svg class="theme-icon theme-icon-moon"`,
+		`viewBox="0 0 24 24"`,
+		`focusable="false"`,
+		`<circle cx="12" cy="12" r="4"></circle>`,
+	} {
+		if !strings.Contains(button, required) {
+			t.Errorf("theme button is missing SVG contract fragment %q: %s", required, button)
+		}
+	}
+	if strings.Count(button, "<svg ") != 2 || strings.Count(button, "</svg>") != 2 {
+		t.Fatalf("theme button must contain exactly two inline SVG icons: %s", button)
+	}
+	if strings.Contains(button, "☀") || strings.Contains(button, "☾") || strings.Contains(button, " src=") || strings.Contains(button, " href=") {
+		t.Fatalf("theme button must use self-contained SVG geometry, not glyphs or external resources: %s", button)
+	}
+	for _, character := range button {
+		if character > 127 {
+			t.Fatalf("theme button unexpectedly contains a non-ASCII glyph %q: %s", character, button)
+		}
+	}
 
 	style := listingInlineStyleForTest(t, body)
 	for _, required := range []string{
@@ -124,10 +146,16 @@ func TestDirectoryListingThemeMotionContract(t *testing.T) {
 	script := listingInlineScriptForTest(t, body)
 	style := listingInlineStyleForTest(t, body)
 	for _, required := range []string{
+		`.theme-ready,`,
 		`.theme-ready body,`,
+		`.theme-ready .breadcrumbs .separator,`,
+		`.theme-ready .sort-indicator,`,
+		`.theme-ready .listing-table tr,`,
+		`.theme-ready .readme blockquote,`,
 		`transition: background-color 200ms ease-out, color 200ms ease-out, border-color 200ms ease-out;`,
 		`.theme-ready .theme-icon { transition: opacity 200ms ease-out, transform 200ms ease-out; }`,
 		`@media (prefers-reduced-motion: reduce)`,
+		`.theme-ready, .theme-ready *, .theme-ready *::before, .theme-ready *::after { transition: none !important; }`,
 		`transition: none !important;`,
 	} {
 		if !strings.Contains(style, required) {
@@ -157,13 +185,13 @@ func TestDirectoryListingResponsiveSemanticsAndReadmeSeparation(t *testing.T) {
 		`<main>`,
 		`<nav class="breadcrumbs" aria-label="Breadcrumb">`,
 		`aria-current="page"`,
-		`<div class="mobile-sort" aria-label="Sort directory">`,
+		`<nav class="mobile-sort" aria-label="Sort directory">`,
 		`<table class="listing-table">`,
-		`<caption hidden>Directory contents</caption>`,
+		`<caption class="visually-hidden">Directory contents</caption>`,
 		`scope="col"`,
 		`aria-sort="ascending"`,
-		`data-label="Size"`,
-		`data-label="Modified"`,
+		`<span class="mobile-cell-label">Size</span>`,
+		`<span class="mobile-cell-label">Modified</span>`,
 		`<article class="readme" aria-label="README">`,
 		`README marker`,
 	} {
@@ -174,12 +202,18 @@ func TestDirectoryListingResponsiveSemanticsAndReadmeSeparation(t *testing.T) {
 	if got := strings.Count(body, `scope="col"`); got != 3 {
 		t.Errorf("column header count = %d, want 3", got)
 	}
-	if got := strings.Count(body, `aria-sort=`); got != 3 {
-		t.Errorf("aria-sort count = %d, want 3", got)
+	if got := strings.Count(body, `aria-sort=`); got != 1 {
+		t.Errorf("aria-sort count = %d, want only the active column", got)
+	}
+	if strings.Contains(body, `data-label=`) {
+		t.Error("mobile metadata must use real text, not CSS-generated data-label content")
 	}
 
 	style := listingInlineStyleForTest(t, body)
 	for _, required := range []string{
+		`max-width: 70rem;`,
+		`font-size: clamp(2rem, 5vw, 2.7rem); font-weight: 650;`,
+		`.breadcrumbs a[aria-current="page"] { color: var(--text); font-weight: 600; }`,
 		`.listing-table {`,
 		`.listing-table th, .listing-table td {`,
 		`.readme table {`,
@@ -188,13 +222,22 @@ func TestDirectoryListingResponsiveSemanticsAndReadmeSeparation(t *testing.T) {
 		`.listing-table, .listing-table tbody { display: block; }`,
 		`.listing-table thead { display: none; }`,
 		`.listing-table tr { display: grid;`,
-		`.listing-table td.size::before, .listing-table td.modified::before`,
+		`.mobile-cell-label { display: inline;`,
 		`.listing-table td.name { overflow-wrap: anywhere; }`,
+		`.page-header h1 {`,
+		`overflow-wrap: anywhere;`,
 		`.readme pre { overflow: auto;`,
 		`.readme table { display: block; width: 100%; overflow-x: auto;`,
+		`@media (max-width: 26rem)`,
+		`.listing-table td.modified { justify-self: start; text-align: left !important; }`,
 	} {
 		if !strings.Contains(style, required) {
 			t.Errorf("responsive or scoped CSS is missing %q", required)
+		}
+	}
+	for _, forbidden := range []string{"linear-gradient(", "radial-gradient(", "backdrop-filter:", "box-shadow:"} {
+		if strings.Contains(style, forbidden) {
+			t.Errorf("restrained index styling must not introduce %q", forbidden)
 		}
 	}
 	for _, line := range strings.Split(style, "\n") {
@@ -214,6 +257,63 @@ func TestDirectoryListingResponsiveSemanticsAndReadmeSeparation(t *testing.T) {
 	}
 	if !strings.Contains(style, `.listing-table tbody tr:last-child td { border-bottom: 0; }`) {
 		t.Error("last directory row must not duplicate the panel's bottom separator")
+	}
+	if strings.Contains(style, `content: attr(data-label)`) {
+		t.Error("mobile metadata labels must not depend on pseudo-element content")
+	}
+	focusRule := listingCSSRuleForTest(t, style, "a:focus-visible, button:focus-visible")
+	if !strings.Contains(focusRule, "outline: 3px solid var(--focus)") || strings.Contains(focusRule, "transparent") || strings.Contains(focusRule, "color-mix") {
+		t.Fatalf("focus ring must remain opaque in both themes: %q", focusRule)
+	}
+	for selector, minimumHeight := range map[string]string{
+		".theme-toggle": "height: 2.75rem",
+		".pager a":      "min-height: 2.75rem",
+		".sort-chip":    "min-height: 2.75rem",
+	} {
+		rule := listingCSSRuleForTest(t, style, selector)
+		if !strings.Contains(rule, minimumHeight) {
+			t.Errorf("%s must retain a mobile-friendly target: %q", selector, rule)
+		}
+	}
+}
+
+func TestDirectoryListingOnlyActiveSortHeaderHasAriaSort(t *testing.T) {
+	directory := t.TempDir()
+	mustWriteFile(t, filepath.Join(directory, "entry.txt"), "content")
+	testCases := []struct {
+		query string
+		label string
+		want  string
+	}{
+		{query: "sort=name&order=asc", label: "Name", want: "ascending"},
+		{query: "sort=name&order=desc", label: "Name", want: "descending"},
+		{query: "sort=size&order=asc", label: "Size", want: "ascending"},
+		{query: "sort=size&order=desc", label: "Size", want: "descending"},
+		{query: "sort=modified&order=asc", label: "Modified", want: "ascending"},
+		{query: "sort=modified&order=desc", label: "Modified", want: "descending"},
+	}
+
+	for _, testCase := range testCases {
+		t.Run(testCase.query, func(t *testing.T) {
+			response := serveRequest(t, models.HostRuleTargetTypeDirectory, listingConfig(directory, false), http.MethodGet, "/?"+testCase.query, nil, Options{})
+			if response.Code != http.StatusOK {
+				t.Fatalf("listing = %d %q", response.Code, response.Body.String())
+			}
+			body := response.Body.String()
+			if got := strings.Count(body, `aria-sort=`); got != 1 {
+				t.Fatalf("aria-sort count = %d, want 1: %s", got, body)
+			}
+			if !strings.Contains(body, `aria-sort="`+testCase.want+`"`) {
+				t.Fatalf("listing is missing aria-sort=%q: %s", testCase.want, body)
+			}
+			if got := strings.Count(body, `aria-current="true"`); got != 1 {
+				t.Fatalf("mobile current-sort count = %d, want 1: %s", got, body)
+			}
+			currentLabel := `aria-current="true" aria-label="` + testCase.label + `, currently sorted ` + testCase.want + `; Sort by `
+			if !strings.Contains(body, currentLabel) {
+				t.Fatalf("mobile sort is missing current field and direction %q: %s", currentLabel, body)
+			}
+		})
 	}
 }
 

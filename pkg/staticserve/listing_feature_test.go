@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"sort"
 	"strings"
 	"testing"
@@ -31,11 +32,26 @@ func TestListingFeatureFileSizeBoundaries(t *testing.T) {
 		{name: "one kilobyte", size: 1 << 10, want: "1 KB"},
 		{name: "fractional kilobyte", size: 1536, want: "1.5 KB"},
 		{name: "whole kilobytes omit decimal", size: 2 << 10, want: "2 KB"},
+		{name: "last value displayed below one megabyte", size: 1_048_524, want: "1023.9 KB"},
+		{name: "first rounded value promoted to one megabyte", size: 1_048_525, want: "1 MB"},
+		{name: "byte below exact megabyte", size: (1 << 20) - 1, want: "1 MB"},
 		{name: "one megabyte", size: 1 << 20, want: "1 MB"},
 		{name: "fractional megabyte", size: (1 << 20) + (1 << 19), want: "1.5 MB"},
+		{name: "last value displayed below one gigabyte", size: 1_073_689_395, want: "1023.9 MB"},
+		{name: "first rounded value promoted to one gigabyte", size: 1_073_689_396, want: "1 GB"},
+		{name: "byte below exact gigabyte", size: (1 << 30) - 1, want: "1 GB"},
 		{name: "one gigabyte", size: 1 << 30, want: "1 GB"},
+		{name: "last value displayed below one terabyte", size: 1_099_457_940_684, want: "1023.9 GB"},
+		{name: "first rounded value promoted to one terabyte", size: 1_099_457_940_685, want: "1 TB"},
+		{name: "byte below exact terabyte", size: (1 << 40) - 1, want: "1 TB"},
 		{name: "one terabyte", size: 1 << 40, want: "1 TB"},
+		{name: "last value displayed below one petabyte", size: 1_125_844_931_261_235, want: "1023.9 TB"},
+		{name: "first rounded value promoted to one petabyte", size: 1_125_844_931_261_236, want: "1 PB"},
+		{name: "byte below exact petabyte", size: (1 << 50) - 1, want: "1 PB"},
 		{name: "one petabyte", size: 1 << 50, want: "1 PB"},
+		{name: "last value displayed below one exabyte", size: 1_152_865_209_611_504_844, want: "1023.9 PB"},
+		{name: "first rounded value promoted to one exabyte", size: 1_152_865_209_611_504_845, want: "1 EB"},
+		{name: "byte below exact exabyte", size: (1 << 60) - 1, want: "1 EB"},
 		{name: "one exabyte", size: 1 << 60, want: "1 EB"},
 		{name: "largest int64", size: int64(1<<63 - 1), want: "8 EB"},
 	}
@@ -211,8 +227,8 @@ func TestListingFeatureSortDefaultsAndToggleLinks(t *testing.T) {
 				if wantActive && link.AriaSort != testCase.wantAria {
 					t.Errorf("active link %s aria-sort = %q, want %q", link.Label, link.AriaSort, testCase.wantAria)
 				}
-				if !wantActive && link.AriaSort != "none" {
-					t.Errorf("inactive link %s aria-sort = %q, want none", link.Label, link.AriaSort)
+				if !wantActive && link.AriaSort != "" {
+					t.Errorf("inactive link %s aria-sort = %q, want empty", link.Label, link.AriaSort)
 				}
 			}
 		})
@@ -474,8 +490,71 @@ func TestListingFeatureNavigationLinksPreserveSortOnlyForDirectories(t *testing.
 	if parsedFile.RawQuery != "" {
 		t.Fatalf("file href %q unexpectedly retained sort state", fileHref)
 	}
-	if parsedFile.EscapedPath() != url.PathEscape("file?#%.txt") {
-		t.Fatalf("file href escaped path = %q, want %q", parsedFile.EscapedPath(), url.PathEscape("file?#%.txt"))
+	if parsedFile.EscapedPath() != "./"+url.PathEscape("file?#%.txt") {
+		t.Fatalf("file href escaped path = %q, want %q", parsedFile.EscapedPath(), "./"+url.PathEscape("file?#%.txt"))
+	}
+}
+
+func TestListingFeatureColonNamesRemainRelativeSameOriginLinks(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("colon is not a portable Windows filename character")
+	}
+
+	root := t.TempDir()
+	fileName := "report:2026.txt"
+	directoryName := "archive:2026"
+	if err := os.WriteFile(filepath.Join(root, fileName), []byte("body"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(root, directoryName), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cfg := listingConfig(root, false)
+	response := serveRequest(t, models.HostRuleTargetTypeDirectory, cfg, http.MethodGet, "/?sort=size&order=desc", nil, Options{})
+	if response.Code != http.StatusOK {
+		t.Fatalf("listing = %d %q", response.Code, response.Body.String())
+	}
+
+	document, err := html.Parse(strings.NewReader(response.Body.String()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	links := make(map[string]string)
+	listingFeatureWalk(listingFeatureElementByClass(document, "table", "listing-table"), func(node *html.Node) {
+		if node.Type != html.ElementNode || node.Data != "a" {
+			return
+		}
+		links[strings.TrimSuffix(strings.TrimSpace(listingFeatureNodeText(node)), "/")] = listingFeatureAttribute(node, "href")
+	})
+
+	for _, name := range []string{fileName, directoryName} {
+		href := links[name]
+		if !strings.HasPrefix(href, "./") || strings.Contains(href, "#ZgotmplZ") {
+			t.Fatalf("href for %q = %q, want explicit safe relative reference", name, href)
+		}
+		parsed, parseErr := url.Parse(href)
+		if parseErr != nil {
+			t.Fatal(parseErr)
+		}
+		if parsed.Scheme != "" || parsed.Host != "" {
+			t.Fatalf("href for %q escaped the current origin: %q", name, href)
+		}
+	}
+
+	fileHref := links[fileName]
+	if parsed, parseErr := url.Parse(fileHref); parseErr != nil || parsed.RawQuery != "" {
+		t.Fatalf("file href = %q, parse error %v; want no sort query", fileHref, parseErr)
+	}
+	fileResponse := serveRequest(t, models.HostRuleTargetTypeDirectory, cfg, http.MethodGet, "/"+url.PathEscape(fileName), nil, Options{})
+	if fileResponse.Code != http.StatusOK || fileResponse.Body.String() != "body" {
+		t.Fatalf("colon file request = %d %q", fileResponse.Code, fileResponse.Body.String())
+	}
+
+	directoryHref := links[directoryName]
+	listingFeatureAssertDirectorySortState(t, directoryHref, "size", "desc")
+	directoryResponse := serveRequest(t, models.HostRuleTargetTypeDirectory, cfg, http.MethodGet, "/"+url.PathEscape(directoryName)+"/?sort=size&order=desc", nil, Options{})
+	if directoryResponse.Code != http.StatusOK {
+		t.Fatalf("colon directory request = %d %q", directoryResponse.Code, directoryResponse.Body.String())
 	}
 }
 

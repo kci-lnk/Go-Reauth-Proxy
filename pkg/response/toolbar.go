@@ -562,12 +562,12 @@ const toolbarTemplate = `
 	    return /^\/__assets__\/website_icon\.[A-Za-z0-9][A-Za-z0-9._-]{0,486}$/.test(asString(value).trim());
 	}
 
-	function resolveAppIconSrc(value, host) {
+	function resolveAppIconSrc(value) {
 	    value = asString(value).trim();
 	    if (/^data:image\//i.test(value)) return value;
 	    if (!isWebsiteIconPath(value)) return '';
 	    try {
-	        return new URL(value, buildHostHref(host)).href;
+	        return new URL(value, window.location.origin).href;
 	    } catch (err) {
 	        return '';
 	    }
@@ -577,8 +577,8 @@ const toolbarTemplate = `
 	    value = asString(value).trim();
 	    if (/^data:image\//i.test(value)) return true;
 	    try {
-	        var parsed = new URL(value);
-	        return (parsed.protocol === 'http:' || parsed.protocol === 'https:') &&
+	        var parsed = new URL(value, window.location.origin);
+	        return parsed.origin === window.location.origin &&
 	            !parsed.search && !parsed.hash && isWebsiteIconPath(parsed.pathname);
 	    } catch (err) {
 	        return false;
@@ -714,7 +714,7 @@ const toolbarTemplate = `
 	            var item = group.rules[itemIndex];
 	            var host = asString(item.host);
 	            var itemLabel = asString(item.label) || host;
-	            var icon = toolbarData.show_app_icon ? resolveAppIconSrc(item.favicon, host) : '';
+	            var icon = toolbarData.show_app_icon ? resolveAppIconSrc(item.favicon) : '';
 	            var link = createMenuLink(itemLabel, '/', 'host-link', isActiveHost(host, toolbarData.current_host), icon);
 	            link.setAttribute('data-host', host);
 	            itemsInner.appendChild(link);
@@ -751,7 +751,7 @@ const toolbarTemplate = `
 	        for (var i = 0; i < hostRules.length; i++) {
 	            var host = asString(hostRules[i].host);
 	            var label = asString(hostRules[i].label) || host;
-	            var icon = toolbarData.show_app_icon ? resolveAppIconSrc(hostRules[i].favicon, host) : '';
+	            var icon = toolbarData.show_app_icon ? resolveAppIconSrc(hostRules[i].favicon) : '';
 	            var hostLink = createMenuLink(label, '/', 'host-link', isActiveHost(host, toolbarData.current_host), icon);
 	            hostLink.setAttribute('data-host', host);
 	            menuScroll.appendChild(hostLink);

@@ -875,12 +875,12 @@ const toolbarV2Script = `(function(window, document) {
     function isWebsiteIconPath(value) {
         return /^\/__assets__\/website_icon\.[A-Za-z0-9][A-Za-z0-9._-]{0,486}$/.test(asString(value).trim());
     }
-    function resolveAppIconSrc(value, host) {
+    function resolveAppIconSrc(value) {
         value = asString(value).trim();
         if (/^data:image\//i.test(value)) return value;
         if (!isWebsiteIconPath(value)) return '';
         try {
-            return new URL(value, buildHostHref(host)).href;
+            return new URL(value, window.location.origin).href;
         } catch (err) {
             return '';
         }
@@ -889,8 +889,8 @@ const toolbarV2Script = `(function(window, document) {
         value = asString(value).trim();
         if (/^data:image\//i.test(value)) return true;
         try {
-            var parsed = new URL(value);
-            return (parsed.protocol === 'http:' || parsed.protocol === 'https:') &&
+            var parsed = new URL(value, window.location.origin);
+            return parsed.origin === window.location.origin &&
                 !parsed.search && !parsed.hash && isWebsiteIconPath(parsed.pathname);
         } catch (err) {
             return false;
@@ -1117,7 +1117,7 @@ const toolbarV2Script = `(function(window, document) {
             apps.push({
                 label: asString(hostRule.label) || host,
                 href: buildHostHref(host),
-                icon: toolbarData.show_app_icon ? resolveAppIconSrc(hostRule.favicon, host) : '',
+                icon: toolbarData.show_app_icon ? resolveAppIconSrc(hostRule.favicon) : '',
                 groupId: asString(hostRule.group_id).trim(),
                 groupName: asString(hostRule.group_name).trim(),
                 active: isActiveHost(host)

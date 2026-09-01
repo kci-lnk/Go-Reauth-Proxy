@@ -170,18 +170,27 @@ func TestToolbarV2RuntimeKeepsFixedDesktopScaleAndCoversTabletViewport(t *testin
 	}
 }
 
-func TestToolbarRuntimesResolveWebsiteIconPathsPerHost(t *testing.T) {
+func TestToolbarRuntimesKeepWebsiteIconPathsOnCurrentOrigin(t *testing.T) {
 	for name, runtime := range map[string]string{
 		"v1": string(toolbarRuntime),
 		"v2": string(toolbarV2Runtime),
 	} {
 		for _, expected := range []string{
-			"function resolveAppIconSrc(value, host)",
-			"new URL(value, buildHostHref(host)).href",
+			"function resolveAppIconSrc(value)",
+			"new URL(value, window.location.origin).href",
+			"parsed.origin === window.location.origin",
 			"/__assets__\\/website_icon\\.",
 		} {
 			if !strings.Contains(runtime, expected) {
-				t.Fatalf("%s runtime is missing cached website icon support %q", name, expected)
+				t.Fatalf("%s runtime is missing same-origin website icon support %q", name, expected)
+			}
+		}
+		for _, forbidden := range []string{
+			"resolveAppIconSrc(value, host)",
+			"new URL(value, buildHostHref(host)).href",
+		} {
+			if strings.Contains(runtime, forbidden) {
+				t.Fatalf("%s runtime still resolves website icons against a sibling host with %q", name, forbidden)
 			}
 		}
 	}

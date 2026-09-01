@@ -46,6 +46,98 @@ func TestHostRuleServesStableWebsiteIconBeforeAuthentication(t *testing.T) {
 	}
 }
 
+func TestHostRuleServesSiblingWebsiteIconFromCurrentOrigin(t *testing.T) {
+	currentIconPath := "/__assets__/website_icon.11111111-1111-4111-8111-111111111111.png"
+	siblingIconPath := "/__assets__/website_icon.22222222-2222-4222-8222-222222222222.webp"
+	siblingIcon := []byte("sibling-mapped-icon")
+	handler := &Handler{
+		HostRules: []models.HostRule{
+			{
+				Host:            "current.example.com",
+				Target:          "http://127.0.0.1:1",
+				WebsiteIconPath: currentIconPath,
+				Favicon:         "data:image/png;base64," + base64.StdEncoding.EncodeToString([]byte("current-icon")),
+			},
+			{
+				Host:            "sibling.example.com",
+				Target:          "http://127.0.0.1:2",
+				WebsiteIconPath: siblingIconPath,
+				Favicon:         "data:image/webp;base64," + base64.StdEncoding.EncodeToString(siblingIcon),
+			},
+		},
+		authCache:      newAuthStateCache(),
+		preflightCache: newPreflightStateCache(),
+	}
+	handler.publishRequestSnapshotLocked()
+
+	req := httptest.NewRequest(http.MethodGet, "http://current.example.com"+siblingIconPath, nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK || rec.Body.String() != string(siblingIcon) {
+		t.Fatalf("same-origin sibling website icon status=%d body=%q", rec.Code, rec.Body.String())
+	}
+	if got := rec.Header().Get("Content-Type"); got != "image/webp" {
+		t.Fatalf("same-origin sibling website icon Content-Type = %q", got)
+	}
+}
+
+func TestHostRuleServesDerivedSiblingWebsiteIconFromCurrentOrigin(t *testing.T) {
+	siblingIcon := "data:image/png;base64," + base64.StdEncoding.EncodeToString([]byte("derived-sibling-icon"))
+	siblingIconPath := response.EffectiveWebsiteIconPath("", siblingIcon)
+	handler := &Handler{
+		HostRules: []models.HostRule{
+			{Host: "current.example.com", Target: "http://127.0.0.1:1"},
+			{Host: "sibling.example.com", Target: "http://127.0.0.1:2", Favicon: siblingIcon},
+		},
+		authCache:      newAuthStateCache(),
+		preflightCache: newPreflightStateCache(),
+	}
+	handler.publishRequestSnapshotLocked()
+
+	req := httptest.NewRequest(http.MethodGet, "http://current.example.com"+siblingIconPath, nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK || rec.Body.String() != "derived-sibling-icon" {
+		t.Fatalf("same-origin derived sibling website icon status=%d body=%q", rec.Code, rec.Body.String())
+	}
+	if got := rec.Header().Get("Cache-Control"); got != "public, max-age=31536000, immutable" {
+		t.Fatalf("same-origin derived sibling website icon Cache-Control = %q", got)
+	}
+}
+
+func TestHostRuleRejectsAmbiguousWebsiteIconPath(t *testing.T) {
+	iconPath := "/__assets__/website_icon.33333333-3333-4333-8333-333333333333.png"
+	handler := &Handler{
+		HostRules: []models.HostRule{
+			{
+				Host:            "current.example.com",
+				Target:          "http://127.0.0.1:1",
+				WebsiteIconPath: iconPath,
+				Favicon:         "data:image/png;base64," + base64.StdEncoding.EncodeToString([]byte("first-icon")),
+			},
+			{
+				Host:            "sibling.example.com",
+				Target:          "http://127.0.0.1:2",
+				WebsiteIconPath: iconPath,
+				Favicon:         "data:image/png;base64," + base64.StdEncoding.EncodeToString([]byte("second-icon")),
+			},
+		},
+		authCache:      newAuthStateCache(),
+		preflightCache: newPreflightStateCache(),
+	}
+	handler.publishRequestSnapshotLocked()
+
+	req := httptest.NewRequest(http.MethodGet, "http://current.example.com"+iconPath, nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("ambiguous website icon status=%d, want 404", rec.Code)
+	}
+}
+
 func TestHostRuleServesDerivedWebsiteIconPath(t *testing.T) {
 	icon := "data:image/png;base64," + base64.StdEncoding.EncodeToString([]byte("derived-private-icon"))
 	iconPath := response.EffectiveWebsiteIconPath("", icon)

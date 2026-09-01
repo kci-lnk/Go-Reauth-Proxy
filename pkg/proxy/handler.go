@@ -223,6 +223,7 @@ type requestSnapshot struct {
 	rulesByPath        map[string]*models.Rule
 	hostRules          []models.HostRule
 	hostRulesByHost    map[string]*models.HostRule
+	websiteIconsByPath map[string]websiteIconAsset
 	hostVisibility     map[string]*compiledipset.Set
 	advancedAuth       map[string]*compiledAdvancedAuthPolicy
 	defaultHostRule    *models.HostRule
@@ -538,6 +539,7 @@ func (h *Handler) buildRequestSnapshotLocked() *requestSnapshot {
 
 	hostRules := copyHostRules(h.HostRules)
 	hostRulesByHost := make(map[string]*models.HostRule, len(hostRules))
+	websiteIconsByPath := buildWebsiteIconAssets(hostRules)
 	hostVisibility := make(map[string]*compiledipset.Set, len(hostRules))
 	advancedAuth := make(map[string]*compiledAdvancedAuthPolicy, len(hostRules))
 	var defaultHostRule *models.HostRule
@@ -581,6 +583,7 @@ func (h *Handler) buildRequestSnapshotLocked() *requestSnapshot {
 		rulesByPath:              rulesByPath,
 		hostRules:                hostRules,
 		hostRulesByHost:          hostRulesByHost,
+		websiteIconsByPath:       websiteIconsByPath,
 		hostVisibility:           hostVisibility,
 		advancedAuth:             advancedAuth,
 		defaultHostRule:          defaultHostRule,
@@ -5160,7 +5163,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		matchedHostRule = &fnosConnect.hostRule
 	}
 	invalidStaticRequest := isNonCanonicalStaticRequest(matchedHostRule, originalPath, cleanedPath, originalRawPath)
-	if !invalidStaticRequest && fnosConnect == nil && serveWebsiteIconRequest(w, r, matchedHostRule, &accessEntry, requestID) {
+	if !invalidStaticRequest && fnosConnect == nil && serveWebsiteIconRequest(w, r, matchedHostRule, snapshot.websiteIconsByPath, &accessEntry, requestID) {
 		return
 	}
 

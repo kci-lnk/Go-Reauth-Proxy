@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"compress/gzip"
 	"context"
 	"encoding/json"
 	"io"
@@ -558,6 +559,49 @@ func TestToolbarProxyRefreshesHTMLWithoutChangingUpstreamCachePolicy(t *testing.
 	}
 }
 
+func TestToolbarProxyInjectsServiceWorkerHTMLNavigation(t *testing.T) {
+	seenHeaders := make(chan http.Header, 1)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seenHeaders <- r.Header.Clone()
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.Header().Set("Content-Encoding", "gzip")
+		encoder := gzip.NewWriter(w)
+		_, _ = io.WriteString(encoder, "<!doctype html><html><body><main>app</main></body></html>")
+		_ = encoder.Close()
+	}))
+	defer upstream.Close()
+
+	handler := newPublicHostToolbarHandler(upstream.URL, testAuthBridge{})
+	req := httptest.NewRequest(http.MethodGet, "http://public.example.com/", nil)
+	req.AddCookie(&http.Cookie{Name: authSessionCookieName, Value: "ok"})
+	req.Header.Set("Sec-Fetch-Dest", "empty")
+	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+	req.Header.Set("Accept-Encoding", "gzip, deflate, br")
+	req.Header.Set("If-None-Match", `"cached-document"`)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("response status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	upstreamHeaders := <-seenHeaders
+	if got := upstreamHeaders.Get("Sec-Fetch-Dest"); got != "empty" {
+		t.Fatalf("upstream Sec-Fetch-Dest = %q, want empty", got)
+	}
+	if got := upstreamHeaders.Get("Accept-Encoding"); got != "gzip" {
+		t.Fatalf("upstream Accept-Encoding = %q, want transport-managed gzip", got)
+	}
+	if got := upstreamHeaders.Get("If-None-Match"); got != "" {
+		t.Fatalf("upstream If-None-Match = %q, want empty", got)
+	}
+	if got := rec.Header().Get("Content-Encoding"); got != "" {
+		t.Fatalf("response Content-Encoding = %q, want empty", got)
+	}
+	if body := rec.Body.String(); !strings.Contains(body, response.ToolbarBootstrapAssetPath()) {
+		t.Fatalf("service-worker HTML response did not receive toolbar bootstrap: %s", body)
+	}
+}
+
 func TestPrepareToolbarProxyRequestPreservesClearStaticRequests(t *testing.T) {
 	document := httptest.NewRequest(http.MethodGet, "http://example.com/app", nil)
 	document.Header.Set("Sec-Fetch-Dest", "document")
@@ -566,6 +610,65 @@ func TestPrepareToolbarProxyRequestPreservesClearStaticRequests(t *testing.T) {
 	prepareToolbarProxyRequest(document)
 	if document.Header.Get("Accept-Encoding") != "" || document.Header.Get("If-None-Match") != "" {
 		t.Fatalf("document conditionals were not removed: %#v", document.Header)
+	}
+
+	serviceWorkerDocument := httptest.NewRequest(http.MethodGet, "http://example.com/app", nil)
+	serviceWorkerDocument.Header.Set("Sec-Fetch-Dest", "empty")
+	serviceWorkerDocument.Header.Set("Accept", "text/html,application/xhtml+xml,*/*;q=0.8")
+	serviceWorkerDocument.Header.Set("Accept-Encoding", "gzip, deflate, br")
+	serviceWorkerDocument.Header.Set("If-None-Match", `"service-worker-document"`)
+	prepareToolbarProxyRequest(serviceWorkerDocument)
+	if serviceWorkerDocument.Header.Get("Accept-Encoding") != "" || serviceWorkerDocument.Header.Get("If-None-Match") != "" {
+		t.Fatalf("service-worker document headers were not cleared: %#v", serviceWorkerDocument.Header)
+	}
+
+	serviceWorkerAPI := httptest.NewRequest(http.MethodGet, "http://example.com/api/status", nil)
+	serviceWorkerAPI.Header.Set("Sec-Fetch-Dest", "empty")
+	serviceWorkerAPI.Header.Set("Accept", "*/*")
+	serviceWorkerAPI.Header.Set("Accept-Encoding", "gzip")
+	serviceWorkerAPI.Header.Set("If-None-Match", `"service-worker-api"`)
+	prepareToolbarProxyRequest(serviceWorkerAPI)
+	if serviceWorkerAPI.Header.Get("Accept-Encoding") != "gzip" || serviceWorkerAPI.Header.Get("If-None-Match") != `"service-worker-api"` {
+		t.Fatalf("service-worker API headers changed: %#v", serviceWorkerAPI.Header)
+	}
+
+	serviceWorkerRejectedHTML := httptest.NewRequest(http.MethodGet, "http://example.com/app", nil)
+	serviceWorkerRejectedHTML.Header.Set("Sec-Fetch-Dest", "empty")
+	serviceWorkerRejectedHTML.Header.Set("Accept", "text/html;q=0,application/xhtml+xml;q=0,*/*;q=1")
+	serviceWorkerRejectedHTML.Header.Set("Accept-Encoding", "gzip")
+	serviceWorkerRejectedHTML.Header.Set("If-None-Match", `"rejected-html"`)
+	prepareToolbarProxyRequest(serviceWorkerRejectedHTML)
+	if serviceWorkerRejectedHTML.Header.Get("Accept-Encoding") != "gzip" || serviceWorkerRejectedHTML.Header.Get("If-None-Match") != `"rejected-html"` {
+		t.Fatalf("service-worker request rejecting HTML changed: %#v", serviceWorkerRejectedHTML.Header)
+	}
+
+	serviceWorkerInvalidQuality := httptest.NewRequest(http.MethodGet, "http://example.com/app", nil)
+	serviceWorkerInvalidQuality.Header.Set("Sec-Fetch-Dest", "empty")
+	serviceWorkerInvalidQuality.Header.Set("Accept", "text/html;q=NaN,application/json")
+	serviceWorkerInvalidQuality.Header.Set("Accept-Encoding", "gzip")
+	serviceWorkerInvalidQuality.Header.Set("If-None-Match", `"invalid-quality"`)
+	prepareToolbarProxyRequest(serviceWorkerInvalidQuality)
+	if serviceWorkerInvalidQuality.Header.Get("Accept-Encoding") != "gzip" || serviceWorkerInvalidQuality.Header.Get("If-None-Match") != `"invalid-quality"` {
+		t.Fatalf("service-worker request with invalid HTML quality changed: %#v", serviceWorkerInvalidQuality.Header)
+	}
+
+	serviceWorkerXHTML := httptest.NewRequest(http.MethodGet, "http://example.com/app", nil)
+	serviceWorkerXHTML.Header.Set("Sec-Fetch-Dest", "empty")
+	serviceWorkerXHTML.Header.Set("Accept", "application/xhtml+xml;q=0.5,application/json;q=1")
+	serviceWorkerXHTML.Header.Set("Accept-Encoding", "gzip")
+	serviceWorkerXHTML.Header.Set("If-None-Match", `"xhtml-document"`)
+	prepareToolbarProxyRequest(serviceWorkerXHTML)
+	if serviceWorkerXHTML.Header.Get("Accept-Encoding") != "" || serviceWorkerXHTML.Header.Get("If-None-Match") != "" {
+		t.Fatalf("service-worker XHTML headers were not cleared: %#v", serviceWorkerXHTML.Header)
+	}
+
+	metadataFreeWildcard := httptest.NewRequest(http.MethodGet, "http://example.com/app", nil)
+	metadataFreeWildcard.Header.Set("Accept", "*/*")
+	metadataFreeWildcard.Header.Set("Accept-Encoding", "gzip")
+	metadataFreeWildcard.Header.Set("If-None-Match", `"metadata-free-document"`)
+	prepareToolbarProxyRequest(metadataFreeWildcard)
+	if metadataFreeWildcard.Header.Get("Accept-Encoding") != "" || metadataFreeWildcard.Header.Get("If-None-Match") != "" {
+		t.Fatalf("metadata-free wildcard document headers were not cleared: %#v", metadataFreeWildcard.Header)
 	}
 
 	static := httptest.NewRequest(http.MethodGet, "http://example.com/app.css", nil)

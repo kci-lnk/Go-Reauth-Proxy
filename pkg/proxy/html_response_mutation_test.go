@@ -2,11 +2,14 @@ package proxy
 
 import (
 	"bytes"
+	"compress/gzip"
+	"compress/zlib"
 	"context"
 	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -159,6 +162,165 @@ func TestMaybeMutateHTMLProxyResponseToolbarOnlyStreamsBeforeBodyClose(t *testin
 	}
 }
 
+func TestMaybeMutateHTMLProxyResponseInjectsFullHTMLAcrossStatusClasses(t *testing.T) {
+	for _, status := range []int{
+		http.StatusUnauthorized,
+		http.StatusForbidden,
+		http.StatusNotFound,
+		http.StatusInternalServerError,
+	} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			body := []byte(`<html><body><main>status page</main></body></html>`)
+			resp, _ := newHTMLMutationResponse(body, "text/html", int64(len(body)))
+			resp.StatusCode = status
+
+			err := maybeMutateHTMLProxyResponse(resp, htmlResponseMutationOptions{
+				toolbar: true,
+				toolbarHTML: func() string {
+					return `<script>toolbar()</script>`
+				},
+			})
+			if err != nil {
+				t.Fatalf("maybeMutateHTMLProxyResponse returned error: %v", err)
+			}
+			mutated, err := io.ReadAll(resp.Body)
+			if err != nil {
+				t.Fatalf("read mutated response: %v", err)
+			}
+			if bodyText := string(mutated); !strings.Contains(bodyText, `<main>status page</main><script>toolbar()</script></body>`) {
+				t.Fatalf("status %d HTML did not receive toolbar: %s", status, bodyText)
+			}
+		})
+	}
+}
+
+func TestMaybeMutateHTMLProxyResponseDecodesSupportedContentEncodings(t *testing.T) {
+	tests := []struct {
+		name       string
+		encoding   string
+		newEncoder func(io.Writer) io.WriteCloser
+	}{
+		{
+			name:     "gzip",
+			encoding: "gzip",
+			newEncoder: func(w io.Writer) io.WriteCloser {
+				return gzip.NewWriter(w)
+			},
+		},
+		{
+			name:     "deflate",
+			encoding: "deflate",
+			newEncoder: func(w io.Writer) io.WriteCloser {
+				return zlib.NewWriter(w)
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			body := []byte(`<!doctype html><html><body><main>encoded</main></body></html>`)
+			var encoded bytes.Buffer
+			encoder := tc.newEncoder(&encoded)
+			if _, err := encoder.Write(body); err != nil {
+				t.Fatalf("encode body: %v", err)
+			}
+			if err := encoder.Close(); err != nil {
+				t.Fatalf("close encoder: %v", err)
+			}
+
+			source := newTrackingReadCloser(encoded.Bytes())
+			resp := &http.Response{
+				StatusCode:    http.StatusOK,
+				Header:        make(http.Header),
+				Body:          source,
+				ContentLength: int64(encoded.Len()),
+			}
+			resp.Header.Set("Content-Type", "text/html; charset=utf-8")
+			resp.Header.Set("Content-Encoding", tc.encoding)
+			resp.Header.Set("Content-Length", strconv.Itoa(encoded.Len()))
+			resp.Header.Set("ETag", `"encoded"`)
+			resp.Header.Set("Last-Modified", "Wed, 21 Oct 2015 07:28:00 GMT")
+			resp.Header.Set("Accept-Ranges", "bytes")
+
+			err := maybeMutateHTMLProxyResponse(resp, htmlResponseMutationOptions{
+				toolbar: true,
+				toolbarHTML: func() string {
+					return `<script>toolbar()</script>`
+				},
+			})
+			if err != nil {
+				t.Fatalf("maybeMutateHTMLProxyResponse returned error: %v", err)
+			}
+			mutated, err := io.ReadAll(resp.Body)
+			if err != nil {
+				t.Fatalf("read decoded response: %v", err)
+			}
+			if bodyText := string(mutated); !strings.Contains(bodyText, `<main>encoded</main><script>toolbar()</script></body>`) {
+				t.Fatalf("decoded HTML did not receive toolbar: %s", bodyText)
+			}
+			if got := resp.Header.Get("Content-Encoding"); got != "" {
+				t.Fatalf("Content-Encoding = %q, want empty", got)
+			}
+			if !resp.Uncompressed || resp.ContentLength != -1 || resp.Header.Get("Content-Length") != "" {
+				t.Fatalf("decoded response metadata = uncompressed:%v length:%d headers:%#v", resp.Uncompressed, resp.ContentLength, resp.Header)
+			}
+			for _, name := range []string{"ETag", "Last-Modified", "Accept-Ranges"} {
+				if got := resp.Header.Get(name); got != "" {
+					t.Fatalf("decoded response retained %s: %q", name, got)
+				}
+			}
+			if err := resp.Body.Close(); err != nil {
+				t.Fatalf("close decoded response: %v", err)
+			}
+			if !source.closed {
+				t.Fatal("encoded source was not closed")
+			}
+		})
+	}
+}
+
+func TestMaybeMutateHTMLProxyResponsePreservesUnsupportedContentEncoding(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		encodings []string
+	}{
+		{name: "brotli", encodings: []string{"br"}},
+		{name: "combined field", encodings: []string{"gzip, br"}},
+		{name: "separate fields", encodings: []string{"gzip", "br"}},
+		{name: "identity plus encoding", encodings: []string{"identity", "gzip"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			body := []byte("opaque encoded response")
+			resp, source := newHTMLMutationResponse(body, "text/html", int64(len(body)))
+			resp.StatusCode = http.StatusOK
+			for _, encoding := range tc.encodings {
+				resp.Header.Add("Content-Encoding", encoding)
+			}
+			resp.Header.Set("ETag", `"encoded"`)
+
+			err := maybeMutateHTMLProxyResponse(resp, htmlResponseMutationOptions{
+				toolbar: true,
+				toolbarHTML: func() string {
+					return `<script>toolbar()</script>`
+				},
+			})
+			if err != nil {
+				t.Fatalf("maybeMutateHTMLProxyResponse returned error: %v", err)
+			}
+			if source.readCount != 0 {
+				t.Fatalf("unsupported encoding was read %d times", source.readCount)
+			}
+			got, err := io.ReadAll(resp.Body)
+			if err != nil {
+				t.Fatalf("read preserved response: %v", err)
+			}
+			if !bytes.Equal(got, body) || !slices.Equal(resp.Header.Values("Content-Encoding"), tc.encodings) || resp.Header.Get("ETag") != `"encoded"` {
+				t.Fatalf("unsupported response was mutated: body=%q headers=%#v", got, resp.Header)
+			}
+		})
+	}
+}
+
 func TestMaybeMutateHTMLProxyResponseInvalidatesRepresentationValidators(t *testing.T) {
 	body := []byte(`<html><body><main>app</main></body></html>`)
 	resp, _ := newHTMLMutationResponse(body, "text/html", int64(len(body)))
@@ -199,8 +361,14 @@ func TestMaybeMutateHTMLProxyResponseInvalidatesRepresentationValidators(t *test
 	}
 }
 
-func TestMaybeMutateHTMLProxyResponseSkipsNotModifiedAndPartialToolbarResponses(t *testing.T) {
-	for _, status := range []int{http.StatusNotModified, http.StatusPartialContent} {
+func TestMaybeMutateHTMLProxyResponseSkipsResponsesWithoutFullRepresentations(t *testing.T) {
+	for _, status := range []int{
+		http.StatusNoContent,
+		http.StatusResetContent,
+		http.StatusFound,
+		http.StatusNotModified,
+		http.StatusPartialContent,
+	} {
 		t.Run(http.StatusText(status), func(t *testing.T) {
 			body := []byte(`<html><body>cached</body></html>`)
 			resp, _ := newHTMLMutationResponse(body, "text/html", int64(len(body)))
@@ -224,6 +392,25 @@ func TestMaybeMutateHTMLProxyResponseSkipsNotModifiedAndPartialToolbarResponses(
 				t.Fatalf("status %d response was mutated: body=%q headers=%#v", status, got, resp.Header)
 			}
 		})
+	}
+}
+
+func TestMaybeMutateHTMLProxyResponsePreservesExplicitlyEmptyHTML(t *testing.T) {
+	resp, source := newHTMLMutationResponse(nil, "text/html", 0)
+	resp.StatusCode = http.StatusOK
+	resp.Header.Set("ETag", `"empty"`)
+
+	err := maybeMutateHTMLProxyResponse(resp, htmlResponseMutationOptions{
+		toolbar: true,
+		toolbarHTML: func() string {
+			return `<script>toolbar()</script>`
+		},
+	})
+	if err != nil {
+		t.Fatalf("maybeMutateHTMLProxyResponse returned error: %v", err)
+	}
+	if source.readCount != 0 || resp.ContentLength != 0 || resp.Header.Get("Content-Length") != "0" || resp.Header.Get("ETag") != `"empty"` {
+		t.Fatalf("empty HTML response was mutated: reads=%d length=%d headers=%#v", source.readCount, resp.ContentLength, resp.Header)
 	}
 }
 

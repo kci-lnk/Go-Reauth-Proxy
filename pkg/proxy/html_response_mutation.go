@@ -70,7 +70,7 @@ func maybeMutateHTMLProxyResponse(resp *http.Response, opts htmlResponseMutation
 		logHTMLProxyMutation(opts, resp, "skipped", "no_response_body", 0, 0)
 		return nil
 	}
-	if opts.toolbar && resp.StatusCode != 0 && resp.StatusCode != http.StatusOK {
+	if opts.toolbar && !toolbarResponseStatusAllowsInjection(resp.StatusCode) {
 		opts.toolbar = false
 		if !opts.rewrite {
 			logHTMLProxyMutation(opts, resp, "skipped", "toolbar_status_not_ok", 0, 0)
@@ -83,6 +83,12 @@ func maybeMutateHTMLProxyResponse(resp *http.Response, opts htmlResponseMutation
 	}
 	if resp.Body == nil {
 		logHTMLProxyMutation(opts, resp, "skipped", "no_body", 0, 0)
+		return nil
+	}
+	if skipReason, err := decodeHTMLProxyResponseBody(resp); err != nil {
+		return err
+	} else if skipReason != "" {
+		logHTMLProxyMutation(opts, resp, "skipped", skipReason, 0, 0)
 		return nil
 	}
 	if opts.toolbar && !opts.rewrite {
@@ -126,18 +132,6 @@ func maybeMutateHTMLProxyResponse(resp *http.Response, opts htmlResponseMutation
 	invalidateMutatedHTMLRepresentationHeaders(resp.Header)
 	logHTMLProxyMutation(opts, resp, "applied", "", originalLen, len(bodyBytes))
 	return nil
-}
-
-func htmlProxyResponseMustNotHaveBody(resp *http.Response) bool {
-	if resp == nil {
-		return true
-	}
-	if resp.Request != nil && resp.Request.Method == http.MethodHead {
-		return true
-	}
-	return resp.StatusCode >= 100 && resp.StatusCode <= 199 ||
-		resp.StatusCode == http.StatusNoContent ||
-		resp.StatusCode == http.StatusNotModified
 }
 
 func invalidateMutatedHTMLRepresentationHeaders(headers http.Header) {

@@ -1,6 +1,8 @@
 package proxy
 
 import (
+	"math"
+	"mime"
 	"net/http"
 	"net/url"
 	"path"
@@ -205,14 +207,24 @@ func toolbarRequestMayBeDocument(r *http.Request) bool {
 		return false
 	}
 	if destination := strings.ToLower(strings.TrimSpace(r.Header.Get("Sec-Fetch-Dest"))); destination != "" {
-		return destination == "document" || destination == "iframe" || destination == "frame"
+		switch destination {
+		case "document", "iframe", "frame":
+			return true
+		case "empty":
+			// Service workers can re-issue a navigation request with an empty
+			// Fetch Metadata destination. Only fall through to the content
+			// negotiation check when the request explicitly accepts HTML; this
+			// avoids treating ordinary extensionless API fetches as documents.
+			if !toolbarAcceptsHTML(r.Header.Get("Accept"), false) {
+				return false
+			}
+		default:
+			return false
+		}
 	}
 
-	accept := strings.ToLower(r.Header.Get("Accept"))
-	if accept != "" &&
-		!strings.Contains(accept, "text/html") &&
-		!strings.Contains(accept, "application/xhtml+xml") &&
-		!strings.Contains(accept, "*/*") {
+	accept := r.Header.Get("Accept")
+	if accept != "" && !toolbarAcceptsHTML(accept, true) {
 		return false
 	}
 
@@ -225,4 +237,49 @@ func toolbarRequestMayBeDocument(r *http.Request) bool {
 	default:
 		return true
 	}
+}
+
+func toolbarAcceptsHTML(accept string, allowWildcards bool) bool {
+	return toolbarAcceptedMediaQuality(accept, "text/html", allowWildcards) > 0 ||
+		toolbarAcceptedMediaQuality(accept, "application/xhtml+xml", allowWildcards) > 0
+}
+
+func toolbarAcceptedMediaQuality(accept string, target string, allowWildcards bool) float64 {
+	bestSpecificity := -1
+	bestQuality := 0.0
+	targetType, _, _ := strings.Cut(target, "/")
+
+	for _, rawRange := range strings.Split(accept, ",") {
+		mediaType, params, err := mime.ParseMediaType(strings.TrimSpace(rawRange))
+		if err != nil {
+			continue
+		}
+		mediaType = strings.ToLower(mediaType)
+
+		specificity := -1
+		switch {
+		case mediaType == target:
+			specificity = 2
+		case allowWildcards && mediaType == targetType+"/*":
+			specificity = 1
+		case allowWildcards && mediaType == "*/*":
+			specificity = 0
+		default:
+			continue
+		}
+
+		quality := 1.0
+		if rawQuality, ok := params["q"]; ok {
+			quality, err = strconv.ParseFloat(rawQuality, 64)
+			if err != nil || math.IsNaN(quality) || math.IsInf(quality, 0) || quality < 0 || quality > 1 {
+				continue
+			}
+		}
+		if specificity > bestSpecificity || (specificity == bestSpecificity && quality > bestQuality) {
+			bestSpecificity = specificity
+			bestQuality = quality
+		}
+	}
+
+	return bestQuality
 }

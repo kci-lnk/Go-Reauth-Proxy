@@ -66,7 +66,11 @@ func hasFoldASCIIPrefixString(value string, prefix string) bool {
 }
 
 func isHTMLContentType(contentType string) bool {
-	return containsFoldASCIIString(contentType, "text/html")
+	mediaType := strings.TrimSpace(contentType)
+	if separator := strings.IndexByte(mediaType, ';'); separator >= 0 {
+		mediaType = strings.TrimSpace(mediaType[:separator])
+	}
+	return equalFoldASCIIString(mediaType, "text/html")
 }
 
 func lowerASCIIString(value string) string {

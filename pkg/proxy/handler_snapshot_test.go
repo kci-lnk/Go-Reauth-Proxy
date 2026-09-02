@@ -604,6 +604,8 @@ func TestIsHTMLContentType(t *testing.T) {
 		{contentType: "text/html", want: true},
 		{contentType: "Text/HTML; charset=utf-8", want: true},
 		{contentType: "application/xhtml+xml", want: false},
+		{contentType: "application/not-text/html", want: false},
+		{contentType: "text/html-example", want: false},
 		{contentType: "application/json", want: false},
 		{contentType: "", want: false},
 	}

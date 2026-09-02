@@ -41,7 +41,7 @@ func WAFBlocked(w http.ResponseWriter, r *http.Request, opts WAFBlockPageOptions
 		status = http.StatusForbidden
 	}
 	w.Header().Set("X-Fn-Knock-WAF-Blocked", "1")
-	w.Header().Set("X-Fn-Knock-WAF-Trace-ID", opts.TraceID)
+	w.Header().Del("X-Fn-Knock-WAF-Trace-ID")
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Content-Language", locale)
 

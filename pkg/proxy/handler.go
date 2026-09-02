@@ -4996,7 +4996,6 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	r.Header.Del(traceIDHeader)
 	r.Header.Set(traceIDHeader, traceID)
-	w.Header().Set(traceIDHeader, traceID)
 	r = withRequestTraceID(r, traceID)
 	var deepMonitorTrace *deepMonitorRequest
 	if !certificateDeploySensitivePath {
@@ -5010,7 +5009,6 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	tw := &trafficResponseWriter{
 		ResponseWriter: w,
 		handler:        h,
-		traceID:        traceID,
 		deepMonitor:    deepMonitorTrace,
 	}
 	tw.metrics.statusCode = http.StatusOK

@@ -37,11 +37,15 @@ func TestNewRequestTraceIDFormatAndConcurrentUniqueness(t *testing.T) {
 	}
 }
 
-func TestServeHTTPOverwritesClientTraceAndForwardsGatewayTrace(t *testing.T) {
+func TestServeHTTPForwardsGatewayTraceWithoutExposingTraceResponseHeaders(t *testing.T) {
 	upstreamTrace := make(chan string, 1)
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		upstreamTrace <- r.Header.Get(traceIDHeader)
 		w.Header().Set(traceIDHeader, "upstream-supplied")
+		w.Header().Set("Traceparent", "00-upstream-parent")
+		w.Header().Set("X-B3-SpanId", "upstream-span")
+		w.Header().Set("X-Custom-Trace-Token", "upstream-token")
+		w.Header().Set("X-Application-ID", "application-id")
 		w.WriteHeader(http.StatusNoContent)
 	}))
 	defer upstream.Close()
@@ -57,19 +61,24 @@ func TestServeHTTPOverwritesClientTraceAndForwardsGatewayTrace(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	handler.ServeHTTP(recorder, request)
 
-	responseTrace := recorder.Header().Get(traceIDHeader)
-	if responseTrace == "" || responseTrace == "trc_00000000-0000-4000-8000-000000000000" {
-		t.Fatalf("response trace id was not securely replaced: %q", responseTrace)
+	forwardedTrace := <-upstreamTrace
+	if forwardedTrace == "" || forwardedTrace == "trc_00000000-0000-4000-8000-000000000000" {
+		t.Fatalf("upstream trace id was not securely replaced: %q", forwardedTrace)
 	}
-	if forwarded := <-upstreamTrace; forwarded != responseTrace {
-		t.Fatalf("upstream trace id = %q, response trace id = %q", forwarded, responseTrace)
+	if values := recorder.Header().Values(traceIDHeader); len(values) != 0 {
+		t.Fatalf("gateway trace response headers = %q, want none", values)
 	}
-	if values := recorder.Header().Values(traceIDHeader); len(values) != 1 || values[0] != responseTrace {
-		t.Fatalf("response trace headers = %q, want only gateway trace %q", values, responseTrace)
+	for _, name := range []string{"Traceparent", "X-B3-SpanId", "X-Custom-Trace-Token"} {
+		if values := recorder.Header().Values(name); len(values) != 0 {
+			t.Fatalf("%s response headers = %q, want none", name, values)
+		}
+	}
+	if got := recorder.Header().Get("X-Application-ID"); got != "application-id" {
+		t.Fatalf("unrelated response header = %q, want application-id", got)
 	}
 }
 
-func TestServeHTTPErrorResponseStillReturnsGatewayTrace(t *testing.T) {
+func TestServeHTTPErrorResponseDoesNotExposeGatewayTrace(t *testing.T) {
 	handler := &Handler{
 		authCache:      newAuthStateCache(),
 		preflightCache: newPreflightStateCache(),
@@ -84,8 +93,31 @@ func TestServeHTTPErrorResponseStillReturnsGatewayTrace(t *testing.T) {
 	if recorder.Code < http.StatusBadRequest {
 		t.Fatalf("status = %d, want an error response", recorder.Code)
 	}
-	traceID := recorder.Header().Get(traceIDHeader)
-	if traceID == "" || traceID == "client-supplied" {
-		t.Fatalf("error response trace id was not securely replaced: %q", traceID)
+	if values := recorder.Header().Values(traceIDHeader); len(values) != 0 {
+		t.Fatalf("error response trace headers = %q, want none", values)
+	}
+}
+
+func TestStripTraceResponseHeadersRemovesTracingTrailers(t *testing.T) {
+	header := http.Header{
+		"trailer":                 {"Digest, Traceparent", "X-B3-SpanId"},
+		"traceparent":             {"00-upstream-parent"},
+		http.TrailerPrefix + "B3": {"upstream-b3"},
+		"Digest":                  {"sha-256=value"},
+	}
+
+	stripTraceResponseHeaders(header)
+
+	if values := header["traceparent"]; len(values) != 0 {
+		t.Fatalf("Traceparent headers = %q, want none", values)
+	}
+	if got := header["trailer"]; len(got) != 1 || got[0] != "Digest" {
+		t.Fatalf("Trailer headers = %q, want [Digest]", got)
+	}
+	if values := header[http.TrailerPrefix+"B3"]; len(values) != 0 {
+		t.Fatalf("B3 trailer values = %q, want none", values)
+	}
+	if got := header.Get("Digest"); got != "sha-256=value" {
+		t.Fatalf("unrelated digest header = %q", got)
 	}
 }

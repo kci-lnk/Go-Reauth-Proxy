@@ -28,8 +28,8 @@ func TestWAFBlockedJSONResponse(t *testing.T) {
 	if rec.Header().Get("X-Fn-Knock-WAF-Blocked") != "1" {
 		t.Fatalf("missing WAF blocked header")
 	}
-	if rec.Header().Get("X-Fn-Knock-WAF-Trace-ID") != "waf_test_trace" {
-		t.Fatalf("missing trace header")
+	if values := rec.Header().Values("X-Fn-Knock-WAF-Trace-ID"); len(values) != 0 {
+		t.Fatalf("WAF trace response headers = %q, want none", values)
 	}
 	var body struct {
 		Success bool   `json:"success"`

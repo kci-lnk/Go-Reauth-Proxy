@@ -39,6 +39,7 @@ func newWebSocketEchoServer(t *testing.T, tls bool) (*httptest.Server, <-chan we
 
 		upstreamResponseHeaders := http.Header{}
 		upstreamResponseHeaders.Set(traceIDHeader, "upstream-supplied")
+		upstreamResponseHeaders.Set("Traceparent", "00-upstream-parent")
 		conn, err := upgrader.Upgrade(w, r, upstreamResponseHeaders)
 		if err != nil {
 			t.Errorf("upstream upgrade failed: %v", err)
@@ -151,12 +152,11 @@ func TestPathRuleProxiesWebSocketTargets(t *testing.T) {
 				t.Fatalf("dial proxy websocket: %v", err)
 			}
 			defer conn.Close()
-			responseTraceID := response.Header.Get(traceIDHeader)
-			if responseTraceID == "" || responseTraceID == forgedTraceID {
-				t.Fatalf("websocket response trace id was not securely replaced: %q", responseTraceID)
+			if values := response.Header.Values(traceIDHeader); len(values) != 0 {
+				t.Fatalf("websocket gateway trace response headers = %q, want none", values)
 			}
-			if values := response.Header.Values(traceIDHeader); len(values) != 1 || values[0] != responseTraceID {
-				t.Fatalf("websocket response trace headers = %q, want only gateway trace %q", values, responseTraceID)
+			if values := response.Header.Values("Traceparent"); len(values) != 0 {
+				t.Fatalf("websocket upstream trace response headers = %q, want none", values)
 			}
 
 			deadline := time.Now().Add(2 * time.Second)
@@ -184,8 +184,8 @@ func TestPathRuleProxiesWebSocketTargets(t *testing.T) {
 				if got.path != tt.wantUpstream.path || got.query != tt.wantUpstream.query {
 					t.Fatalf("upstream request = %+v, want %+v", got, tt.wantUpstream)
 				}
-				if got.traceID != responseTraceID {
-					t.Fatalf("upstream trace id = %q, response trace id = %q", got.traceID, responseTraceID)
+				if got.traceID == "" || got.traceID == forgedTraceID {
+					t.Fatalf("upstream trace id was not securely replaced: %q", got.traceID)
 				}
 			case <-time.After(2 * time.Second):
 				t.Fatal("timed out waiting for upstream websocket request")

@@ -24,7 +24,6 @@ func (trc *trafficReadCloser) Read(p []byte) (int, error) {
 type trafficResponseWriter struct {
 	http.ResponseWriter
 	handler            *Handler
-	traceID            string
 	metrics            requestTrafficMetrics
 	deepMonitor        *deepMonitorRequest
 	skipAccessLog      bool
@@ -32,9 +31,7 @@ type trafficResponseWriter struct {
 }
 
 func (tw *trafficResponseWriter) WriteHeader(statusCode int) {
-	if tw.traceID != "" {
-		tw.Header().Set(traceIDHeader, tw.traceID)
-	}
+	stripTraceResponseHeaders(tw.Header())
 	if !tw.metrics.wroteHeader {
 		tw.metrics.wroteHeader = true
 		tw.metrics.statusCode = statusCode

@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"net/http"
+	"strings"
 	"sync/atomic"
 	"time"
 )
@@ -52,4 +53,51 @@ func requestTraceID(r *http.Request) string {
 	}
 	traceID, _ := r.Context().Value(requestTraceIDContextKey{}).(string)
 	return traceID
+}
+
+func stripTraceResponseHeaders(header http.Header) {
+	for name, values := range header {
+		if isTraceResponseHeader(name) {
+			delete(header, name)
+			continue
+		}
+		if strings.EqualFold(name, "Trailer") {
+			values = stripTraceTrailerNames(values)
+			if len(values) == 0 {
+				delete(header, name)
+			} else {
+				header[name] = values
+			}
+		}
+	}
+}
+
+func isTraceResponseHeader(name string) bool {
+	name = strings.ToLower(strings.TrimSpace(name))
+	name = strings.TrimSpace(strings.TrimPrefix(name, strings.ToLower(http.TrailerPrefix)))
+	if strings.Contains(name, "trace") {
+		return true
+	}
+
+	// B3 and OpenTracing also use span-only header names that belong to the
+	// same distributed-tracing context as their trace ID.
+	switch name {
+	case "b3", "x-b3-spanid", "x-b3-parentspanid", "x-b3-sampled", "x-b3-flags", "x-ot-span-context":
+		return true
+	default:
+		return false
+	}
+}
+
+func stripTraceTrailerNames(values []string) []string {
+	kept := values[:0]
+	for _, value := range values {
+		for _, name := range strings.Split(value, ",") {
+			name = strings.TrimSpace(name)
+			if name != "" && !isTraceResponseHeader(name) {
+				kept = append(kept, name)
+			}
+		}
+	}
+	return kept
 }

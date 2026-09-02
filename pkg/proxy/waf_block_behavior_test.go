@@ -174,8 +174,8 @@ func TestWAFErrorPageBehaviorKeepsExistingResponseProtocol(t *testing.T) {
 	if rec.Header().Get("X-Fn-Knock-WAF-Blocked") != "1" {
 		t.Fatal("missing WAF blocked response header")
 	}
-	if rec.Header().Get("X-Fn-Knock-WAF-Trace-ID") == "" {
-		t.Fatal("missing WAF trace response header")
+	if values := rec.Header().Values("X-Fn-Knock-WAF-Trace-ID"); len(values) != 0 {
+		t.Fatalf("WAF trace response headers = %q, want none", values)
 	}
 	if contentType := rec.Header().Get("Content-Type"); contentType != "application/json" {
 		t.Fatalf("content type = %q", contentType)

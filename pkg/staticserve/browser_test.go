@@ -59,7 +59,11 @@ func TestBrowsePathFiltersUnsafeEntriesAndAppliesProtectedPathStates(t *testing.
 	if result.SelectedPath != nil || result.Platform != browsePlatform() {
 		t.Fatalf("unexpected selected path/platform: %#v %q", result.SelectedPath, result.Platform)
 	}
-	if len(result.Breadcrumbs) == 0 || result.Breadcrumbs[0].Name != string(filepath.Separator) || result.Breadcrumbs[len(result.Breadcrumbs)-1].Path != filepath.Clean(root) {
+	wantBreadcrumbRoot := string(filepath.Separator)
+	if volume := filepath.VolumeName(root); volume != "" {
+		wantBreadcrumbRoot = volume
+	}
+	if len(result.Breadcrumbs) == 0 || result.Breadcrumbs[0].Name != wantBreadcrumbRoot || result.Breadcrumbs[len(result.Breadcrumbs)-1].Path != filepath.Clean(root) {
 		t.Fatalf("breadcrumbs = %#v", result.Breadcrumbs)
 	}
 

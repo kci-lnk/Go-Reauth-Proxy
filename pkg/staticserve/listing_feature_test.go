@@ -330,7 +330,7 @@ func TestListingFeatureLegacyCursorCompatibilityAndNewCursorSortBinding(t *testi
 func TestListingFeatureVersionedCursorRoundTripsRawComparisonKeys(t *testing.T) {
 	sortSpec := listingSort{field: listingSortByModified, order: listingSortDescending}
 	candidate := listingCandidate{
-		key:      newListingKey(true, "archive?#%.data"),
+		key:      newListingKey(true, "archive#%.data"),
 		size:     (1 << 40) + 37,
 		modified: time.Date(2026, time.August, 30, 5, 48, 7, 987_654_321, time.UTC),
 	}
@@ -399,8 +399,8 @@ func TestListingFeatureRejectsMalformedVersionedCursorFields(t *testing.T) {
 
 func TestListingFeatureParentHrefEscapesSpecialPathSegmentsAndPreservesSort(t *testing.T) {
 	root := t.TempDir()
-	parentName := "parent?#%"
-	childName := "child?#%"
+	parentName := "parent#%"
+	childName := "child#%"
 	if err := os.MkdirAll(filepath.Join(root, parentName, childName), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -430,13 +430,15 @@ func TestListingFeatureParentHrefEscapesSpecialPathSegmentsAndPreservesSort(t *t
 
 func TestListingFeatureNavigationLinksPreserveSortOnlyForDirectories(t *testing.T) {
 	root := t.TempDir()
-	parentName := "parent?#%"
+	parentName := "parent#%"
 	currentName := "current"
+	nestedName := "nested#%"
+	fileName := "file#%.txt"
 	currentPath := filepath.Join(root, parentName, currentName)
-	if err := os.MkdirAll(filepath.Join(currentPath, "nested?#%"), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(currentPath, nestedName), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(currentPath, "file?#%.txt"), []byte("body"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(currentPath, fileName), []byte("body"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	requestPath := "/" + url.PathEscape(parentName) + "/" + url.PathEscape(currentName) + "/?sort=modified&order=asc"
@@ -480,9 +482,9 @@ func TestListingFeatureNavigationLinksPreserveSortOnlyForDirectories(t *testing.
 		}
 		text := strings.TrimSpace(listingFeatureNodeText(node))
 		switch text {
-		case "nested?#%/":
+		case nestedName + "/":
 			directoryHref = listingFeatureAttribute(node, "href")
-		case "file?#%.txt":
+		case fileName:
 			fileHref = listingFeatureAttribute(node, "href")
 		}
 	})
@@ -497,8 +499,8 @@ func TestListingFeatureNavigationLinksPreserveSortOnlyForDirectories(t *testing.
 	if parsedFile.RawQuery != "" {
 		t.Fatalf("file href %q unexpectedly retained sort state", fileHref)
 	}
-	if parsedFile.EscapedPath() != "./"+url.PathEscape("file?#%.txt") {
-		t.Fatalf("file href escaped path = %q, want %q", parsedFile.EscapedPath(), "./"+url.PathEscape("file?#%.txt"))
+	if parsedFile.EscapedPath() != "./"+url.PathEscape(fileName) {
+		t.Fatalf("file href escaped path = %q, want %q", parsedFile.EscapedPath(), "./"+url.PathEscape(fileName))
 	}
 }
 

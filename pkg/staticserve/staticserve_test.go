@@ -115,12 +115,20 @@ func TestDirectoryRedirectIndexAndListingDisabled(t *testing.T) {
 
 func TestDirectoryListingSortEscapingAndHeaders(t *testing.T) {
 	directory := t.TempDir()
+	renderSensitiveName := `evil"><script>.txt`
+	specialName := "a?#%.txt"
+	if runtime.GOOS == "windows" {
+		// Use names accepted by Win32 while retaining HTML- and URL-escaping
+		// coverage. The stronger markup-delimiter case remains covered on Unix.
+		renderSensitiveName = "evil&markup.txt"
+		specialName = "a~#%.txt"
+	}
 	for _, name := range []string{"zDir", "ADir"} {
 		if err := os.Mkdir(filepath.Join(directory, name), 0o755); err != nil {
 			t.Fatal(err)
 		}
 	}
-	for _, name := range []string{"b.txt", "a.txt", "Z.txt", `.hidden`, "evil\"><script>.txt", "a?#%.txt"} {
+	for _, name := range []string{"b.txt", "a.txt", "Z.txt", `.hidden`, renderSensitiveName, specialName} {
 		mustWriteFile(t, filepath.Join(directory, name), name)
 	}
 	cfg := listingConfig(directory, false)
@@ -129,14 +137,14 @@ func TestDirectoryListingSortEscapingAndHeaders(t *testing.T) {
 		t.Fatalf("listing = %d %q", response.Code, response.Body.String())
 	}
 	body := response.Body.String()
-	assertOrdered(t, body, ">ADir/</a>", ">zDir/</a>", ">a.txt</a>", ">a?#%.txt</a>", ">b.txt</a>", ">Z.txt</a>")
-	if strings.Contains(body, `>.hidden</a>`) || strings.Contains(body, `evil"><script>.txt`) {
+	assertOrdered(t, body, ">ADir/</a>", ">zDir/</a>", ">a.txt</a>", ">"+specialName+"</a>", ">b.txt</a>", ">Z.txt</a>")
+	if strings.Contains(body, `>.hidden</a>`) || strings.Contains(body, renderSensitiveName) {
 		t.Fatalf("unsafe/hidden filename leaked into listing: %s", body)
 	}
-	if !strings.Contains(body, "evil&#34;&gt;&lt;script&gt;.txt") {
+	if !strings.Contains(body, html.EscapeString(renderSensitiveName)) {
 		t.Fatalf("escaped filename missing: %s", body)
 	}
-	if !strings.Contains(body, "a%3F%23%25.txt") {
+	if !strings.Contains(body, url.PathEscape(specialName)) {
 		t.Fatalf("URL-escaped filename missing: %s", body)
 	}
 	if got := response.Header().Get("Content-Security-Policy"); got != listingPageCSP || strings.Contains(got, "data:") {

@@ -644,13 +644,21 @@ func TestSecuritySymlinkSwapRaceNeverExposesHiddenTarget(t *testing.T) {
 func TestSecurityMaliciousFilenamesAreEscapedOrHidden(t *testing.T) {
 	rootPath := t.TempDir()
 	visibleAttackName := `"><img src=x onerror=alert(1)>.txt`
-	mustWriteFile(t, filepath.Join(rootPath, visibleAttackName), "safe-file-body")
-	for _, hiddenName := range []string{
+	hiddenNames := []string{
 		"line\nbreak.txt",
 		"tab\tbreak.txt",
 		"bidi-\u202ehtml.txt",
 		"zero-\u200bwidth.txt",
-	} {
+	}
+	if runtime.GOOS == "windows" {
+		// Win32 rejects markup delimiters and ASCII control characters before
+		// the listing code sees them. Keep coverage for HTML escaping and
+		// Unicode format-character filtering with valid NTFS names.
+		visibleAttackName = "visible&markup.txt"
+		hiddenNames = hiddenNames[2:]
+	}
+	mustWriteFile(t, filepath.Join(rootPath, visibleAttackName), "safe-file-body")
+	for _, hiddenName := range hiddenNames {
 		mustWriteFile(t, filepath.Join(rootPath, hiddenName), "control-name")
 	}
 
@@ -660,11 +668,17 @@ func TestSecurityMaliciousFilenamesAreEscapedOrHidden(t *testing.T) {
 		t.Fatalf("listing = %d %q", listing.Code, listing.Body.String())
 	}
 	body := listing.Body.String()
-	if strings.Contains(body, `<img src=x`) || strings.Contains(body, `href=\"\"><img`) {
-		t.Fatalf("malicious filename became markup: %s", body)
-	}
-	if !strings.Contains(body, "&lt;img") {
-		t.Fatalf("escaped malicious filename missing: %s", body)
+	if runtime.GOOS == "windows" {
+		if strings.Contains(body, visibleAttackName) || !strings.Contains(body, "visible&amp;markup.txt") {
+			t.Fatalf("render-sensitive filename was not escaped: %s", body)
+		}
+	} else {
+		if strings.Contains(body, `<img src=x`) || strings.Contains(body, `href=\"\"><img`) {
+			t.Fatalf("malicious filename became markup: %s", body)
+		}
+		if !strings.Contains(body, "&lt;img") {
+			t.Fatalf("escaped malicious filename missing: %s", body)
+		}
 	}
 	for _, forbidden := range []string{"line\nbreak", "tab\tbreak", "\u202e", "\u200b"} {
 		if strings.Contains(body, forbidden) {

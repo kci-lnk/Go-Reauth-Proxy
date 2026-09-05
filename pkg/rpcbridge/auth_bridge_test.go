@@ -768,6 +768,9 @@ func TestAuthBridgeBoundedWriterQueue(t *testing.T) {
 	if got := len(active.sendQueue); got != authBridgeSendQueueSize {
 		t.Fatalf("queue length = %d, want %d", got, authBridgeSendQueueSize)
 	}
+	if got := manager.inFlight.Load(); got != authBridgeSendQueueSize+1 {
+		t.Fatalf("queue overflow leaked an admission slot: in flight = %d", got)
+	}
 
 	cancel()
 	for range authBridgeSendQueueSize + 1 {
@@ -783,6 +786,9 @@ func TestAuthBridgeBoundedWriterQueue(t *testing.T) {
 	waitForPendingCount(t, manager, 0)
 	stream.release()
 	waitForAuthBridgeQueueDepth(t, 0)
+	if got := manager.inFlight.Load(); got != 0 {
+		t.Fatalf("canceled queue retained %d admission slots", got)
+	}
 }
 
 func TestAuthBridgeReconnectFailsOnlyOldPendingRequests(t *testing.T) {

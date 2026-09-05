@@ -4,7 +4,6 @@ import (
 	"go-reauth-proxy/pkg/models"
 	"net"
 	"net/netip"
-	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -27,6 +26,8 @@ type reverseProxyThrottleShard struct {
 	mu          sync.Mutex
 	entries     map[string]*reverseProxyThrottleEntry
 	nextCleanup time.Time
+	oldest      *reverseProxyThrottleEntry
+	newest      *reverseProxyThrottleEntry
 }
 
 type reverseProxyThrottleDecision struct {
@@ -37,6 +38,9 @@ type reverseProxyThrottleDecision struct {
 }
 
 type reverseProxyThrottleEntry struct {
+	identity     string
+	previous     *reverseProxyThrottleEntry
+	next         *reverseProxyThrottleEntry
 	tokens       float64
 	lastSeen     time.Time
 	blockedUntil time.Time
@@ -81,6 +85,7 @@ func (t *reverseProxyThrottle) updateConfig(cfg models.ReverseProxyThrottleConfi
 		shard := &t.shards[i]
 		shard.mu.Lock()
 		shard.entries = make(map[string]*reverseProxyThrottleEntry)
+		shard.oldest, shard.newest = nil, nil
 		shard.nextCleanup = time.Time{}
 		shard.mu.Unlock()
 	}
@@ -130,9 +135,13 @@ func (t *reverseProxyThrottle) evaluate(clientIP string, now time.Time) reverseP
 	entry := shard.entries[identity]
 	if entry == nil {
 		entry = &reverseProxyThrottleEntry{
-			tokens: float64(cfg.Burst),
+			identity: identity,
+			tokens:   float64(cfg.Burst),
 		}
 		shard.entries[identity] = entry
+		shard.appendNewest(entry)
+	} else {
+		shard.touchEntry(entry)
 	}
 
 	if entry.blockedUntil.After(now) {
@@ -198,14 +207,14 @@ func (s *reverseProxyThrottleShard) cleanupLocked(now time.Time, cfg models.Reve
 	entryTTL := reverseProxyThrottleEntryTTL(cfg)
 	for identity, entry := range s.entries {
 		if entry == nil {
-			delete(s.entries, identity)
+			s.deleteEntry(identity)
 			continue
 		}
 		if entry.blockedUntil.After(now) {
 			continue
 		}
 		if entry.lastSeen.IsZero() || now.Sub(entry.lastSeen) > entryTTL {
-			delete(s.entries, identity)
+			s.deleteEntry(identity)
 		}
 	}
 	s.nextCleanup = now.Add(reverseProxyThrottleCleanupInterval)
@@ -213,33 +222,52 @@ func (s *reverseProxyThrottleShard) cleanupLocked(now time.Time, cfg models.Reve
 }
 
 func (s *reverseProxyThrottleShard) enforceMaxEntriesLocked() {
-	if s == nil || len(s.entries) <= reverseProxyThrottleMaxEntriesPerShard {
+	if s == nil {
 		return
 	}
-	type throttleCandidate struct {
-		identity string
-		lastSeen time.Time
+	for len(s.entries) > reverseProxyThrottleMaxEntriesPerShard && s.oldest != nil {
+		s.deleteEntry(s.oldest.identity)
 	}
-	candidates := make([]throttleCandidate, 0, len(s.entries))
-	for identity, entry := range s.entries {
-		if entry == nil {
-			delete(s.entries, identity)
-			continue
-		}
-		candidates = append(candidates, throttleCandidate{
-			identity: identity,
-			lastSeen: entry.lastSeen,
-		})
+}
+
+// The existing shard lock protects this intrusive LRU. Admissions and recent
+// activity cost O(1), including when the shard is full of distinct clients.
+func (s *reverseProxyThrottleShard) appendNewest(entry *reverseProxyThrottleEntry) {
+	entry.previous, entry.next = s.newest, nil
+	if s.newest != nil {
+		s.newest.next = entry
+	} else {
+		s.oldest = entry
 	}
-	sort.Slice(candidates, func(i, j int) bool {
-		return candidates[i].lastSeen.Before(candidates[j].lastSeen)
-	})
-	for _, candidate := range candidates {
-		if len(s.entries) <= reverseProxyThrottleMaxEntriesPerShard {
-			return
-		}
-		delete(s.entries, candidate.identity)
+	s.newest = entry
+}
+
+func (s *reverseProxyThrottleShard) unlinkEntry(entry *reverseProxyThrottleEntry) {
+	if entry.previous != nil {
+		entry.previous.next = entry.next
+	} else {
+		s.oldest = entry.next
 	}
+	if entry.next != nil {
+		entry.next.previous = entry.previous
+	} else {
+		s.newest = entry.previous
+	}
+	entry.previous, entry.next = nil, nil
+}
+
+func (s *reverseProxyThrottleShard) touchEntry(entry *reverseProxyThrottleEntry) {
+	if s.newest != entry {
+		s.unlinkEntry(entry)
+		s.appendNewest(entry)
+	}
+}
+
+func (s *reverseProxyThrottleShard) deleteEntry(identity string) {
+	if entry := s.entries[identity]; entry != nil {
+		s.unlinkEntry(entry)
+	}
+	delete(s.entries, identity)
 }
 
 func reverseProxyThrottleEntryTTL(cfg models.ReverseProxyThrottleConfig) time.Duration {

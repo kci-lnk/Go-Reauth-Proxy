@@ -1219,7 +1219,8 @@ func (s *Server) handleGetLoggingEntries(w http.ResponseWriter, r *http.Request)
 		limit = value
 	}
 
-	result, err := s.ProxyHandler.QueryLogEntries(
+	result, err := s.ProxyHandler.QueryLogEntriesContext(
+		r.Context(),
 		r.URL.Query().Get("date"),
 		page,
 		limit,

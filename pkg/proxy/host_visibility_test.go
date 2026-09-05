@@ -3,9 +3,9 @@ package proxy
 import (
 	"context"
 	"encoding/json"
+	"net"
 	"net/http"
 	"net/http/httptest"
-	"net/url"
 	"reflect"
 	"strconv"
 	"testing"
@@ -799,16 +799,6 @@ func TestUnavailableSystemEventEndpointDoesNotBlockVisibilityDenial(t *testing.T
 	defer server.Close()
 	defer close(releasePublish)
 
-	serverURL, err := url.Parse(server.URL)
-	if err != nil {
-		t.Fatalf("parse server URL: %v", err)
-	}
-	port, err := strconv.Atoi(serverURL.Port())
-	if err != nil {
-		t.Fatalf("parse server port: %v", err)
-	}
-	t.Setenv("BACKEND_PORT", strconv.Itoa(port))
-
 	handler, _ := newAdditionalProxyTestHandler(t)
 	if err := handler.SetGatewayVisibility(models.GatewayVisibilityConfig{
 		Enabled: true,
@@ -816,7 +806,7 @@ func TestUnavailableSystemEventEndpointDoesNotBlockVisibilityDenial(t *testing.T
 	}); err != nil {
 		t.Fatalf("SetGatewayVisibility() returned error: %v", err)
 	}
-	handler.systemEventClient = events.NewClient(server.Client())
+	handler.systemEventClient = events.NewClient(newVisibilityEventTestClient(t, server))
 	handler.visibilityEventQueue = make(chan gatewayVisibilityBlockedEvent, gatewayVisibilityEventQueueSize)
 	handler.startGatewayVisibilityEventWorker()
 	handler.enqueueGatewayVisibilityBlockedEvent(gatewayVisibilityBlockedEvent{
@@ -940,6 +930,22 @@ func TestAllowedVisibilityRequestDoesNotEnqueueAuditEvent(t *testing.T) {
 	}
 }
 
+// Route only this client's requests to its test server. A global backend port
+// would also redirect visibility workers still draining other tests' queues.
+func newVisibilityEventTestClient(t *testing.T, server *httptest.Server) *http.Client {
+	t.Helper()
+	client := server.Client()
+	transport := client.Transport.(*http.Transport).Clone()
+	address := server.Listener.Addr().String()
+	dialer := &net.Dialer{}
+	transport.DialContext = func(ctx context.Context, network, _ string) (net.Conn, error) {
+		return dialer.DialContext(ctx, network, address)
+	}
+	client.Transport = transport
+	t.Cleanup(client.CloseIdleConnections)
+	return client
+}
+
 func TestEmitGatewayVisibilityBlockedEventPublishesSafePayload(t *testing.T) {
 	published := make(chan events.SystemEventPublishInput, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -952,21 +958,18 @@ func TestEmitGatewayVisibilityBlockedEventPublishesSafePayload(t *testing.T) {
 			w.WriteHeader(http.StatusBadRequest)
 			return
 		}
-		published <- input
+		select {
+		case published <- input:
+		case <-r.Context().Done():
+			return
+		case <-t.Context().Done():
+			return
+		}
 		w.WriteHeader(http.StatusOK)
 	}))
-	defer server.Close()
-	serverURL, err := url.Parse(server.URL)
-	if err != nil {
-		t.Fatalf("parse server URL: %v", err)
-	}
-	port, err := strconv.Atoi(serverURL.Port())
-	if err != nil {
-		t.Fatalf("parse server port: %v", err)
-	}
-	t.Setenv("BACKEND_PORT", strconv.Itoa(port))
+	t.Cleanup(server.Close)
 
-	handler := &Handler{systemEventClient: events.NewClient(server.Client())}
+	handler := &Handler{systemEventClient: events.NewClient(newVisibilityEventTestClient(t, server))}
 	blockedAt := time.Date(2026, 7, 27, 10, 11, 12, 0, time.UTC)
 	handler.emitGatewayVisibilityBlockedEvent(gatewayVisibilityBlockedEvent{
 		ClientIP:        "203.0.113.8:54321",

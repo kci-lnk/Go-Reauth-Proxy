@@ -20,6 +20,7 @@ type coalescingTestResponseWriter struct {
 	flushCh    chan struct{}
 	delay      time.Duration
 	delayAfter int
+	delays     []time.Duration
 }
 
 type proxyCopyTestRoundTripper func(*http.Request) (*http.Response, error)
@@ -50,7 +51,9 @@ func (w *coalescingTestResponseWriter) WriteHeader(statusCode int) {
 func (w *coalescingTestResponseWriter) Write(p []byte) (int, error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	if w.delay > 0 && len(w.writes) >= w.delayAfter {
+	if len(w.writes) < len(w.delays) {
+		time.Sleep(w.delays[len(w.writes)])
+	} else if w.delay > 0 && len(w.writes) >= w.delayAfter {
 		time.Sleep(w.delay)
 	}
 	w.writes = append(w.writes, bytes.Clone(p))
@@ -385,6 +388,60 @@ func TestProxyResponseCoalescerHonorsFlushAfterAdaptivePromotion(t *testing.T) {
 	writer.finish(true)
 }
 
+func TestProxyResponseCoalescerRetainsBackpressureAcrossFastFlushes(t *testing.T) {
+	dst := newCoalescingTestResponseWriter()
+	dst.delays = []time.Duration{2 * proxyResponseCoalesceSlowWrite, 0, 2 * proxyResponseCoalesceSlowWrite, 0}
+	writer := newProxyResponseCoalescer(dst)
+	writer.maxLatency = time.Hour
+	defer writer.finish(false)
+	before := proxyResponseCoalesceActiveBytes.Load()
+	probe := bytes.Repeat([]byte{0x31}, proxyResponseDirectWriteSize)
+	small := bytes.Repeat([]byte{0x62}, proxyResponseCoalesceSmallBufferSize)
+	bulk := bytes.Repeat([]byte{0x93}, 2*proxyResponseCoalesceMediumBufferSize)
+	response := proxyResponseForCoalescing("application/octet-stream")
+	response.ContentLength = int64(len(probe) + 2*(len(small)+len(bulk)))
+	writer.configure(response)
+	if _, err := writer.Write(probe); err != nil {
+		t.Fatal(err)
+	}
+	if !writer.preferMax || writer.buffer != nil {
+		t.Fatal("first slow write should enable coalescing without reserving a buffer")
+	}
+	expected := bytes.Clone(probe)
+	for range 2 {
+		if _, err := writer.Write(small); err != nil {
+			t.Fatal(err)
+		}
+		if err := writer.FlushError(); err != nil {
+			t.Fatal(err)
+		}
+		if !writer.preferMax {
+			t.Fatal("a fast flush revoked the response's backpressure preference")
+		}
+		writesBefore, _ := dst.snapshot()
+		if _, err := writer.Write(bulk); err != nil {
+			t.Fatal(err)
+		}
+		writesAfter, _ := dst.snapshot()
+		if len(writesAfter) != len(writesBefore) || cap(writer.buffer) != proxyResponseCoalesceBufferSize {
+			t.Fatal("bulk data stopped coalescing after a fast write")
+		}
+		if err := writer.FlushError(); err != nil {
+			t.Fatal(err)
+		}
+		if writer.buffer != nil || proxyResponseCoalesceActiveBytes.Load() != before {
+			t.Fatal("explicit flush retained an idle bulk reservation")
+		}
+		expected = append(expected, small...)
+		expected = append(expected, bulk...)
+	}
+	writer.finish(true)
+	writes, _ := dst.snapshot()
+	if len(writes) != 5 || !bytes.Equal(bytes.Join(writes, nil), expected) {
+		t.Fatal("alternating backpressure changed or fragmented the response")
+	}
+}
+
 func TestProxyResponseCoalescerPassesLargeWritesThrough(t *testing.T) {
 	dst := newCoalescingTestResponseWriter()
 	writer := newProxyResponseCoalescer(dst)
@@ -593,5 +650,313 @@ func TestServeReverseProxyWithResponseCoalescingPreservesUnknownLengthOnWire(t *
 	}
 	if response.ContentLength > 0 && response.ContentLength != int64(len(payload)) {
 		t.Fatalf("ContentLength = %d, want unknown or %d", response.ContentLength, len(payload))
+	}
+}
+
+func TestProxyResponseCoalescerDoesNotAllocateBulkBufferAfterOneSlowWrite(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		length int64
+	}{
+		{"known short tail", 2 * proxyResponseDirectWriteSize},
+		{"known bulk tail", 2 * proxyResponseCoalesceBufferSize},
+		{"unknown body", -1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dst := newCoalescingTestResponseWriter()
+			dst.delays = []time.Duration{2 * proxyResponseCoalesceSlowWrite}
+			writer := newProxyResponseCoalescer(dst)
+			writer.maxLatency = time.Hour
+			response := proxyResponseForCoalescing("application/octet-stream")
+			response.ContentLength = tc.length
+			writer.configure(response)
+			before := proxyResponseCoalesceActiveBytes.Load()
+			t.Cleanup(func() {
+				writer.finish(false)
+				if used := proxyResponseCoalesceActiveBytes.Load(); used != before {
+					t.Fatalf("finish retained %d bytes of active bulk capacity", used-before)
+				}
+			})
+
+			if _, err := writer.Write(make([]byte, proxyResponseDirectWriteSize)); err != nil {
+				t.Fatal(err)
+			}
+			if !writer.preferMax || writer.buffer != nil {
+				t.Fatalf("one slow write: preference=%t, reserved=%d bytes", writer.preferMax, cap(writer.buffer))
+			}
+			if _, err := writer.Write([]byte{1}); err != nil {
+				t.Fatal(err)
+			}
+			if cap(writer.buffer) != proxyResponseCoalesceSmallBufferSize || proxyResponseCoalesceActiveBytes.Load() != before {
+				t.Fatalf("one buffered byte reserved %d bytes or acquired a bulk reservation", cap(writer.buffer))
+			}
+			if _, err := writer.Write(make([]byte, 17*1024-1)); err != nil {
+				t.Fatal(err)
+			}
+			if cap(writer.buffer) != proxyResponseCoalesceMediumBufferSize {
+				t.Fatalf("17KiB buffered burst reserved %d bytes", cap(writer.buffer))
+			}
+		})
+	}
+}
+
+func TestProxyResponseCoalescerSkipsMediumTierForReadyBulkData(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		ready    int
+		length   int64
+		capacity int
+	}{
+		{"below medium", proxyResponseCoalesceMediumBufferSize - 1, 2 * proxyResponseCoalesceBufferSize, proxyResponseCoalesceMediumBufferSize},
+		{"ready medium", proxyResponseCoalesceMediumBufferSize, 2 * proxyResponseCoalesceBufferSize, proxyResponseCoalesceBufferSize},
+		{"above medium", proxyResponseCoalesceMediumBufferSize + 1, 2 * proxyResponseCoalesceBufferSize, proxyResponseCoalesceBufferSize},
+		{"complete medium tail", proxyResponseCoalesceMediumBufferSize, 2 * proxyResponseDirectWriteSize, proxyResponseCoalesceMediumBufferSize},
+		{"unknown body", proxyResponseCoalesceMediumBufferSize, -1, proxyResponseCoalesceBufferSize},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dst := newCoalescingTestResponseWriter()
+			dst.delays = []time.Duration{2 * proxyResponseCoalesceSlowWrite}
+			writer := newProxyResponseCoalescer(dst)
+			writer.maxLatency = time.Hour
+			defer writer.finish(false)
+			response := proxyResponseForCoalescing("application/octet-stream")
+			response.ContentLength = tc.length
+			writer.configure(response)
+			before := proxyResponseCoalesceActiveBytes.Load()
+			probe := bytes.Repeat([]byte{0x36}, proxyResponseDirectWriteSize)
+			ready := bytes.Repeat([]byte{0x7c}, tc.ready)
+			if _, err := writer.Write(probe); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := writer.Write(ready); err != nil {
+				t.Fatal(err)
+			}
+			if cap(writer.buffer) != tc.capacity || proxyResponseCoalesceActiveBytes.Load() != before+int64(tc.capacity) {
+				t.Fatalf("ready payload of %d bytes reserved capacity %d, want %d", tc.ready, cap(writer.buffer), tc.capacity)
+			}
+			writes, _ := dst.snapshot()
+			if len(writes) != 1 {
+				t.Fatal("growing the ready payload unexpectedly flushed it")
+			}
+			writer.finish(true)
+			writes, _ = dst.snapshot()
+			if len(writes) != 2 || !bytes.Equal(bytes.Join(writes, nil), append(probe, ready...)) {
+				t.Fatal("direct promotion changed or fragmented the response")
+			}
+			if used := proxyResponseCoalesceActiveBytes.Load(); used != before {
+				t.Fatalf("finish retained %d bytes of bulk reservation", used-before)
+			}
+		})
+	}
+}
+
+func TestProxyResponseCoalescerReadyBulkFallsBackToAvailableMediumBudget(t *testing.T) {
+	before := proxyResponseCoalesceActiveBytes.Load()
+	var held [][]byte
+	t.Cleanup(func() {
+		for _, buf := range held {
+			releaseProxyResponseCoalesceBuffer(buf)
+		}
+		if used := proxyResponseCoalesceActiveBytes.Load(); used != before {
+			t.Fatalf("test retained %d bytes of active bulk capacity", used-before)
+		}
+	})
+	// Leave room for precisely one medium buffer. A failed direct promotion
+	// must still be able to reserve that tier and forward the entire body.
+	target := int64(proxyResponseCoalesceBudgetBytes - proxyResponseCoalesceMediumBufferSize)
+	for used := proxyResponseCoalesceActiveBytes.Load(); used < target; used = proxyResponseCoalesceActiveBytes.Load() {
+		size := proxyResponseCoalesceBufferSize
+		if int64(size) > target-used {
+			size = proxyResponseCoalesceMediumBufferSize
+		}
+		buf := tryAcquireProxyResponseCoalesceBuffer(size)
+		if buf == nil {
+			t.Fatal("could not reserve the background test budget")
+		}
+		held = append(held, buf)
+	}
+	dst := newCoalescingTestResponseWriter()
+	dst.delays = []time.Duration{2 * proxyResponseCoalesceSlowWrite}
+	writer := newProxyResponseCoalescer(dst)
+	writer.maxLatency = time.Hour
+	defer writer.finish(false)
+	probe := bytes.Repeat([]byte{0x3c}, proxyResponseDirectWriteSize)
+	ready := bytes.Repeat([]byte{0x8a}, 2*proxyResponseCoalesceMediumBufferSize)
+	response := proxyResponseForCoalescing("application/octet-stream")
+	response.ContentLength = int64(len(probe) + len(ready))
+	writer.configure(response)
+	if _, err := writer.Write(probe); err != nil {
+		t.Fatal(err)
+	}
+	if n, err := writer.Write(ready); err != nil || n != len(ready) {
+		t.Fatalf("Write = %d, %v", n, err)
+	}
+	if cap(writer.buffer) != proxyResponseCoalesceMediumBufferSize || proxyResponseCoalesceActiveBytes.Load() != proxyResponseCoalesceBudgetBytes {
+		t.Fatalf("bulk fallback reserved %d bytes, want the available medium tier", cap(writer.buffer))
+	}
+	writer.finish(true)
+	writes, _ := dst.snapshot()
+	if len(writes) != 3 || !bytes.Equal(bytes.Join(writes, nil), append(probe, ready...)) {
+		t.Fatal("medium-budget fallback lost or reordered response bytes")
+	}
+	if used := proxyResponseCoalesceActiveBytes.Load(); used != target {
+		t.Fatalf("finish retained %d bytes of response reservation", used-target)
+	}
+}
+
+func TestProxyResponseCoalescerGlobalBudgetFallsBackWithoutLosingBytes(t *testing.T) {
+	var held [][]byte
+	for {
+		buf := tryAcquireProxyResponseCoalesceBuffer(proxyResponseCoalesceBufferSize)
+		if buf == nil {
+			break
+		}
+		held = append(held, buf)
+	}
+	defer func() {
+		for _, buf := range held {
+			releaseProxyResponseCoalesceBuffer(buf)
+		}
+	}()
+	if used := proxyResponseCoalesceActiveBytes.Load(); used > proxyResponseCoalesceBudgetBytes {
+		t.Fatalf("active coalescing capacity %d exceeds budget", used)
+	}
+	dst := newCoalescingTestResponseWriter()
+	writer := newProxyResponseCoalescer(dst)
+	writer.maxLatency = time.Hour
+	writer.configure(proxyResponseForCoalescing("application/octet-stream"))
+	payload := bytes.Repeat([]byte{0xc5}, 3*proxyResponseCoalesceSmallBufferSize)
+	if n, err := writer.Write(payload); err != nil || n != len(payload) {
+		t.Fatalf("Write = %d, %v", n, err)
+	}
+	if cap(writer.buffer) != proxyResponseCoalesceSmallBufferSize {
+		t.Fatalf("budget exhaustion allocated %d bytes", cap(writer.buffer))
+	}
+	writer.finish(true)
+	writes, _ := dst.snapshot()
+	if !bytes.Equal(bytes.Join(writes, nil), payload) {
+		t.Fatal("budget fallback lost or reordered bytes")
+	}
+}
+
+func TestProxyResponseCoalescerReleasesBulkReservationAfterLatencyFlush(t *testing.T) {
+	dst := newCoalescingTestResponseWriter()
+	writer := newProxyResponseCoalescer(dst)
+	writer.maxLatency = time.Millisecond
+	writer.configure(proxyResponseForCoalescing("application/octet-stream"))
+	defer writer.finish(false)
+	before := proxyResponseCoalesceActiveBytes.Load()
+	if _, err := writer.Write(make([]byte, 32*1024)); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-dst.flushCh:
+	case <-time.After(time.Second):
+		t.Fatal("latency flush did not complete")
+	}
+	writer.mu.Lock()
+	capacity := cap(writer.buffer)
+	writer.mu.Unlock()
+	if capacity != 0 || proxyResponseCoalesceActiveBytes.Load() != before {
+		t.Fatalf("idle response retained %d-byte bulk buffer", capacity)
+	}
+}
+
+type responseCopyBufferProbe struct {
+	io.Reader
+	maxReadSize int
+}
+
+func (p *responseCopyBufferProbe) Read(buf []byte) (int, error) {
+	p.maxReadSize = max(p.maxReadSize, len(buf))
+	return p.Reader.Read(buf)
+}
+
+func TestReverseProxySelectsCopyBufferPerResponse(t *testing.T) {
+	for _, tc := range []struct {
+		name, contentType string
+		length            int64
+		customPool        bool
+		want              int
+	}{
+		{name: "SSE", contentType: "text/event-stream", length: -1, want: proxySmallCopyBufferSize},
+		{name: "known SSE", contentType: "text/event-stream", length: 2 * 1024 * 1024, want: proxySmallCopyBufferSize},
+		{name: "gRPC", contentType: "application/grpc+proto", length: -1, want: proxySmallCopyBufferSize},
+		{name: "small HTML", contentType: "text/html", length: 1024, want: proxySmallCopyBufferSize},
+		{name: "streaming HTML", contentType: "text/html", length: -1, want: proxySmallCopyBufferSize},
+		{name: "download", contentType: "application/octet-stream", length: 2 * 1024 * 1024, want: proxyCopyBufferSize},
+		{name: "unknown download", contentType: "application/octet-stream", length: -1, want: proxyCopyBufferSize},
+		{name: "custom", contentType: "text/event-stream", length: -1, customPool: true, want: 8 * 1024},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			body := &responseCopyBufferProbe{Reader: bytes.NewReader(make([]byte, 1024))}
+			proxy := &httputil.ReverseProxy{
+				Rewrite:    func(*httputil.ProxyRequest) {},
+				BufferPool: sharedProxyBufferPool,
+				Transport: coalescingTestRoundTripper(func(request *http.Request) (*http.Response, error) {
+					return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {tc.contentType}}, ContentLength: tc.length, Body: io.NopCloser(body), Request: request}, nil
+				}),
+			}
+			if tc.customPool {
+				proxy.BufferPool = newProxyBufferPool(tc.want)
+			}
+			originalPool := proxy.BufferPool
+			serveReverseProxyWithResponseCoalescing(proxy, newCoalescingTestResponseWriter(), httptest.NewRequest(http.MethodGet, "http://proxy.test/", nil))
+			if body.maxReadSize != tc.want || proxy.BufferPool != originalPool {
+				t.Fatalf("copy buffer = %d, want %d; shared proxy pool changed: %t", body.maxReadSize, tc.want, proxy.BufferPool != originalPool)
+			}
+		})
+	}
+}
+
+type coalescingBlockedResponseWriter struct {
+	header       http.Header
+	writeStarted chan struct{}
+	allowWrite   chan struct{}
+	flushCalled  chan struct{}
+}
+
+func (w *coalescingBlockedResponseWriter) Header() http.Header { return w.header }
+func (w *coalescingBlockedResponseWriter) WriteHeader(int)     {}
+func (w *coalescingBlockedResponseWriter) Write(p []byte) (int, error) {
+	close(w.writeStarted)
+	<-w.allowWrite
+	return len(p), nil
+}
+func (w *coalescingBlockedResponseWriter) FlushError() error {
+	close(w.flushCalled)
+	return nil
+}
+
+func TestProxyResponseCoalescerSerializesAdaptiveFlushAndFinish(t *testing.T) {
+	dst := &coalescingBlockedResponseWriter{header: make(http.Header), writeStarted: make(chan struct{}), allowWrite: make(chan struct{}), flushCalled: make(chan struct{})}
+	writer := newProxyResponseCoalescer(dst)
+	response := proxyResponseForCoalescing("application/octet-stream")
+	response.ContentLength = 1024 * 1024
+	writer.configure(response)
+	writeDone := make(chan error, 1)
+	go func() { _, err := writer.Write([]byte("body")); writeDone <- err }()
+	<-dst.writeStarted
+	flushDone := make(chan error, 1)
+	go func() { flushDone <- writer.FlushError() }()
+	overlapped := false
+	select {
+	case <-dst.flushCalled:
+		overlapped = true
+	case <-time.After(20 * time.Millisecond):
+	}
+	close(dst.allowWrite)
+	if err := <-writeDone; err != nil {
+		t.Fatal(err)
+	}
+	if err := <-flushDone; err != nil {
+		t.Fatal(err)
+	}
+	if overlapped {
+		t.Fatal("adaptive Flush overlapped an underlying Write")
+	}
+	writer.finish(false)
+	if _, err := writer.Write([]byte("late")); err != io.ErrClosedPipe {
+		t.Fatalf("Write after adaptive finish = %v, want closed pipe", err)
 	}
 }

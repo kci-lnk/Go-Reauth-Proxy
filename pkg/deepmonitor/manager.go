@@ -2,7 +2,6 @@ package deepmonitor
 
 import (
 	"archive/zip"
-	"bufio"
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
@@ -38,8 +37,10 @@ const (
 	// A single exchange can contain a capped request body plus distinct
 	// upstream and downstream response bodies. This remains globally bounded
 	// while accepting that worst-case event.
-	MaxQueuedBytes    = int64(64 << 20)
-	PayloadChunkBytes = 512 << 10
+	MaxCachedEvents       = 1024
+	MaxCachedSummaryBytes = 1 << 20
+	MaxQueuedBytes        = int64(64 << 20)
+	PayloadChunkBytes     = 512 << 10
 )
 
 var (
@@ -76,16 +77,24 @@ type sessionState struct {
 	metaDirty    bool
 	metaRevision uint64
 	exporting    uint32
-	events       []*pb.DeepMonitorEvent
-	byID         map[string]*pb.DeepMonitorEvent
+	cachedBytes  int
+	lastSequence uint64
+	events       []*pb.DeepMonitorEventSummary
+	byID         map[string]eventLocation
 	watchers     map[uint64]chan *pb.DeepMonitorEventSummary
 }
 
+type eventLocation struct {
+	offset int64
+	length uint32
+}
+
 type writeJob struct {
-	sessionID string
-	event     *pb.DeepMonitorEvent
-	payloads  map[string][]byte
-	bytes     int64
+	sessionID    string
+	event        *pb.DeepMonitorEvent
+	payloads     map[string][]byte
+	bytes        int64
+	storageBytes int64
 }
 
 type activeSessionSnapshot struct {
@@ -106,6 +115,9 @@ type Manager struct {
 	queue          chan writeJob
 	metaWake       chan struct{}
 	queuedBytes    atomic.Int64
+	bufferedBytes  atomic.Int64
+	captureMu      sync.Mutex
+	captures       map[string]map[*Capture]struct{}
 	closed         chan struct{}
 	closeOnce      sync.Once
 	closing        bool
@@ -155,7 +167,11 @@ func (m *Manager) Close() {
 	m.closeOnce.Do(func() {
 		m.mu.Lock()
 		m.closing = true
+		for _, s := range m.sessions {
+			s.clearEventCache()
+		}
 		m.active.Store(activeSessionSnapshot{byHost: map[string]string{}, byID: map[string]struct{}{}})
+		m.releaseCaptures("")
 		m.mu.Unlock()
 		close(m.closed)
 		m.wg.Wait()
@@ -205,7 +221,7 @@ func (m *Manager) Start(host string, duration time.Duration) (*pb.DeepMonitorSes
 			DeadlineAt: now.Add(duration), QuotaBytes: SessionQuotaBytes,
 			PayloadLimit: PayloadLimitBytes, NextSequence: 1,
 		},
-		byID:     make(map[string]*pb.DeepMonitorEvent),
+		byID:     make(map[string]eventLocation),
 		watchers: make(map[uint64]chan *pb.DeepMonitorEventSummary),
 	}
 
@@ -363,59 +379,138 @@ func (m *Manager) GetSession(id string) (*pb.DeepMonitorSession, error) {
 // Record is the data-plane entry point. It only copies into a bounded queue;
 // all filesystem I/O caused by captured traffic runs in writerLoop.
 func (m *Manager) Record(sessionID string, event *pb.DeepMonitorEvent, payloads map[string][]byte) bool {
-	if m == nil || event == nil || event.Summary == nil || !m.IsActive(sessionID) {
+	return m.record(sessionID, event, payloads, 0, false)
+}
+
+// RecordCaptured consumes captures, including on rejection. Their allocated
+// capacities remain charged until the writer completes, without a payload copy.
+func (m *Manager) RecordCaptured(sessionID string, event *pb.DeepMonitorEvent, captures map[string]*Capture) bool {
+	payloads := make(map[string][]byte, len(captures))
+	var reserved int64
+	for _, capture := range captures {
+		if capture == nil {
+			continue
+		}
+		if capture.manager != m { // Only transfer this manager's reservations.
+			for _, c := range captures {
+				c.Release()
+			}
+			return false
+		}
+	}
+	for part, capture := range captures {
+		data, size := capture.take()
+		payloads[part] = data
+		reserved += size
+	}
+	return m.record(sessionID, event, payloads, reserved, true)
+}
+
+func reserveBytes(counter *atomic.Int64, size, limit int64) bool {
+	if size < 0 || size > limit {
 		return false
 	}
-	copyEvent := proto.Clone(event).(*pb.DeepMonitorEvent)
-	copyPayloads := make(map[string][]byte, len(payloads))
-	jobBytes := int64(proto.Size(copyEvent) + 4)
-	for part, data := range payloads {
-		copied := append([]byte(nil), data...)
-		copyPayloads[part] = copied
-		jobBytes += int64(len(copied))
+	for {
+		current := counter.Load()
+		if current > limit-size {
+			return false
+		}
+		if counter.CompareAndSwap(current, current+size) {
+			return true
+		}
 	}
-	if jobBytes <= 0 || m.queuedBytes.Add(jobBytes) > MaxQueuedBytes {
-		m.queuedBytes.Add(-jobBytes)
+}
+
+func (m *Manager) record(sessionID string, event *pb.DeepMonitorEvent, payloads map[string][]byte, ownedBytes int64, owned bool) bool {
+	if m == nil {
+		return false
+	}
+	accepted := false
+	reservedBytes := ownedBytes
+	defer func() {
+		if !accepted {
+			m.bufferedBytes.Add(-reservedBytes)
+		}
+	}()
+	if event == nil || event.Summary == nil || !m.IsActive(sessionID) {
+		return false
+	}
+	// Include protobuf objects, their serialization buffer, and generated IDs.
+	// Reserve before cloning either metadata or caller-owned payloads.
+	storageBytes := int64(proto.Size(event)) + 4
+	jobBytes := int64(proto.Size(event))*2 + 1024
+	for part, data := range payloads {
+		jobBytes += int64(len(part)) + 32
+		storageBytes += int64(len(data))
+		if owned {
+			jobBytes += int64(cap(data))
+		} else {
+			jobBytes += int64(len(data))
+		}
+	}
+	if !reserveBytes(&m.queuedBytes, jobBytes, MaxQueuedBytes) {
 		m.stopForFailure(sessionID, "overload")
 		return false
 	}
-	job := writeJob{sessionID: sessionID, event: copyEvent, payloads: copyPayloads, bytes: jobBytes}
+	defer func() {
+		if !accepted {
+			m.queuedBytes.Add(-jobBytes)
+		}
+	}()
+	if !reserveBytes(&m.bufferedBytes, jobBytes-ownedBytes, MaxQueuedBytes) {
+		m.stopForFailure(sessionID, "overload")
+		return false
+	}
+	reservedBytes = jobBytes
 	m.mu.Lock()
+	defer m.mu.Unlock()
 	s := m.sessions[sessionID]
 	if m.closing || s == nil || s.meta.State != "active" {
-		m.mu.Unlock()
-		m.queuedBytes.Add(-jobBytes)
 		return false
 	}
-	if s.meta.BytesStored+s.meta.QueuedBytes+uint64(jobBytes) > s.meta.QuotaBytes {
+	if s.meta.BytesStored+s.meta.QueuedBytes+uint64(storageBytes) > s.meta.QuotaBytes {
 		s.meta.DroppedEvents++
 		m.stopLocked(s, "quota_exceeded", "quota_exceeded")
-		m.mu.Unlock()
-		m.queuedBytes.Add(-jobBytes)
 		return false
 	}
+	// Check the slot before allocating. The manager lock serializes producers;
+	// the sole consumer can only make additional room while we copy.
+	if len(m.queue) == cap(m.queue) {
+		s.meta.DroppedEvents++
+		m.stopLocked(s, "overload", "queue_full")
+		return false
+	}
+	copyEvent := cloneOwnedProto(event).(*pb.DeepMonitorEvent)
+	copyPayloads := make(map[string][]byte, len(payloads))
+	for part, data := range payloads {
+		if !owned {
+			data = append([]byte(nil), data...)
+		}
+		copyPayloads[strings.Clone(part)] = data
+	}
+	sessionID = s.meta.ID
 	copyEvent.Summary.SessionId = sessionID
 	copyEvent.Summary.Sequence = s.meta.NextSequence
-	s.meta.NextSequence++
 	copyEvent.Summary.Id = newID()
 	if copyEvent.Summary.Time == "" {
 		copyEvent.Summary.Time = m.now().UTC().Format(time.RFC3339Nano)
 	}
-	s.meta.QueuedBytes += uint64(jobBytes)
-	select {
-	case m.queue <- job:
-		m.mu.Unlock()
-		return true
-	default:
-		if s.meta.QueuedBytes >= uint64(jobBytes) {
-			s.meta.QueuedBytes -= uint64(jobBytes)
-		}
+	// Generated IDs, sequence and timestamp are part of the stored frame too.
+	// Recheck the quota with the final metadata size before committing the job.
+	storageBytes = int64(proto.Size(copyEvent)) + 4
+	for _, data := range copyPayloads {
+		storageBytes += int64(len(data))
+	}
+	if s.meta.BytesStored+s.meta.QueuedBytes+uint64(storageBytes) > s.meta.QuotaBytes {
 		s.meta.DroppedEvents++
-		m.stopLocked(s, "overload", "queue_full")
-		m.mu.Unlock()
-		m.queuedBytes.Add(-jobBytes)
+		m.stopLocked(s, "quota_exceeded", "quota_exceeded")
 		return false
 	}
+	s.meta.NextSequence++
+	s.meta.QueuedBytes += uint64(storageBytes)
+	m.queue <- writeJob{sessionID: sessionID, event: copyEvent, payloads: copyPayloads, bytes: jobBytes, storageBytes: storageBytes}
+	accepted = true
+	return true
 }
 
 type QueryFilter struct {
@@ -452,8 +547,7 @@ func (m *Manager) QueryFiltered(sessionID, cursor string, limit int, filter Quer
 		return nil, "", false, ErrNotFound
 	}
 	items := make([]*pb.DeepMonitorEventSummary, 0, limit+1)
-	for _, event := range s.events {
-		summary := event.GetSummary()
+	matches := func(summary *pb.DeepMonitorEventSummary) bool {
 		if summary.GetSequence() <= after ||
 			(filter.Type != "" && summary.GetType() != filter.Type) ||
 			(filter.Direction != "" && summary.GetDirection() != filter.Direction) ||
@@ -462,17 +556,37 @@ func (m *Manager) QueryFiltered(sessionID, cursor string, limit int, filter Quer
 			(filter.ClientIP != "" && !strings.Contains(strings.ToLower(summary.GetClientIp()), filter.ClientIP)) ||
 			(filter.Identity != "" && !strings.Contains(strings.ToLower(summary.GetIdentity()), filter.Identity)) ||
 			(filter.Path != "" && !strings.Contains(strings.ToLower(summary.GetPath()), filter.Path)) {
-			continue
+			return false
 		}
 		if filter.Search != "" && !strings.Contains(strings.ToLower(summary.GetHost()+" "+summary.GetMethod()+" "+summary.GetPath()+" "+summary.GetClientIp()+" "+summary.GetIdentity()+" "+summary.GetNotice()), filter.Search) {
-			continue
+			return false
 		}
-		items = append(items, proto.Clone(summary).(*pb.DeepMonitorEventSummary))
-		if len(items) > limit {
-			break
+		return true
+	}
+	cached := after >= s.lastSequence || (len(s.events) > 0 && after >= s.events[0].Sequence-1)
+	lastSequence := s.lastSequence
+	if cached {
+		for _, summary := range s.events {
+			if matches(summary) {
+				items = append(items, proto.Clone(summary).(*pb.DeepMonitorEventSummary))
+				if len(items) > limit {
+					break
+				}
+			}
 		}
 	}
 	m.mu.RUnlock()
+	if !cached {
+		err := m.scanEvents(sessionID, lastSequence, func(event *pb.DeepMonitorEvent) bool {
+			if matches(event.Summary) {
+				items = append(items, event.Summary)
+			}
+			return len(items) <= limit
+		})
+		if err != nil {
+			return nil, "", false, err
+		}
+	}
 	hasMore := len(items) > limit
 	if hasMore {
 		items = items[:limit]
@@ -491,13 +605,35 @@ func (m *Manager) GetEvent(sessionID, eventID string) (*pb.DeepMonitorEvent, err
 		m.mu.RUnlock()
 		return nil, ErrNotFound
 	}
-	event := s.byID[eventID]
-	if event == nil {
-		m.mu.RUnlock()
+	location, ok := s.byID[eventID]
+	through := s.lastSequence
+	m.mu.RUnlock()
+	if !ok {
+		var err error
+		location, err = m.findEventLocation(sessionID, eventID, through)
+		if err != nil {
+			return nil, err
+		}
+	}
+	file, err := os.Open(filepath.Join(m.sessionDir(sessionID), "events.pb"))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, ErrEventNotFound
+		}
+		return nil, err
+	}
+	defer file.Close()
+	data := make([]byte, location.length)
+	if _, err := file.ReadAt(data, location.offset+4); err != nil {
+		return nil, err
+	}
+	result := &pb.DeepMonitorEvent{}
+	if err := proto.Unmarshal(data, result); err != nil {
+		return nil, err
+	}
+	if result.GetSummary().GetId() != eventID || result.GetSummary().GetSequence() > through {
 		return nil, ErrEventNotFound
 	}
-	result := proto.Clone(event).(*pb.DeepMonitorEvent)
-	m.mu.RUnlock()
 	return result, nil
 }
 
@@ -572,7 +708,7 @@ func (m *Manager) OpenArchive(sessionID string) (io.ReadCloser, error) {
 		return nil, ErrNotFound
 	}
 	meta := s.meta
-	events := append([]*pb.DeepMonitorEvent(nil), s.events...)
+	lastSequence := s.lastSequence
 	m.mu.RUnlock()
 
 	entries, err := os.ReadDir(m.sessionDir(sessionID))
@@ -607,7 +743,14 @@ func (m *Manager) OpenArchive(sessionID string) (io.ReadCloser, error) {
 
 	reader, writer := io.Pipe()
 	go func() {
-		writeErr := writeArchive(writer, meta, events, files)
+		writeErr := writeArchive(writer, meta, files, func(visit func(*pb.DeepMonitorEvent) error) error {
+			var visitErr error
+			err := m.scanEvents(sessionID, lastSequence, func(event *pb.DeepMonitorEvent) bool { visitErr = visit(event); return visitErr == nil })
+			if err != nil {
+				return err
+			}
+			return visitErr
+		})
 		m.finishExport(sessionID)
 		if writeErr != nil {
 			_ = writer.CloseWithError(writeErr)
@@ -626,7 +769,7 @@ func (m *Manager) finishExport(sessionID string) {
 	m.mu.Unlock()
 }
 
-func writeArchive(output io.Writer, meta sessionMeta, events []*pb.DeepMonitorEvent, files []archiveFile) error {
+func writeArchive(output io.Writer, meta sessionMeta, files []archiveFile, scan func(func(*pb.DeepMonitorEvent) error) error) error {
 	archive := zip.NewWriter(output)
 	closeWithError := func(err error) error {
 		_ = archive.Close()
@@ -651,14 +794,15 @@ func writeArchive(output io.Writer, meta sessionMeta, events []*pb.DeepMonitorEv
 		return closeWithError(err)
 	}
 	jsonOptions := protojson.MarshalOptions{UseProtoNames: true}
-	for _, event := range events {
-		data, marshalErr := jsonOptions.Marshal(event)
-		if marshalErr != nil {
-			return closeWithError(marshalErr)
+	if err := scan(func(event *pb.DeepMonitorEvent) error {
+		data, err := jsonOptions.Marshal(event)
+		if err != nil {
+			return err
 		}
-		if _, err := eventWriter.Write(append(data, '\n')); err != nil {
-			return closeWithError(err)
-		}
+		_, err = eventWriter.Write(append(data, '\n'))
+		return err
+	}); err != nil {
+		return closeWithError(err)
 	}
 
 	manifestHeader := &zip.FileHeader{Name: "payloads.jsonl", Method: zip.Store}
@@ -667,7 +811,7 @@ func writeArchive(output io.Writer, meta sessionMeta, events []*pb.DeepMonitorEv
 	if err != nil {
 		return closeWithError(err)
 	}
-	for _, event := range events {
+	if err := scan(func(event *pb.DeepMonitorEvent) error {
 		for _, ref := range event.GetPayloads() {
 			hash := sha256.Sum256([]byte(ref.GetPart()))
 			filename := event.GetSummary().GetId() + "-" + hex.EncodeToString(hash[:8]) + ".payload"
@@ -680,12 +824,15 @@ func writeArchive(output io.Writer, meta sessionMeta, events []*pb.DeepMonitorEv
 			}
 			data, marshalErr := json.Marshal(entry)
 			if marshalErr != nil {
-				return closeWithError(marshalErr)
+				return marshalErr
 			}
 			if _, err := manifestWriter.Write(append(data, '\n')); err != nil {
-				return closeWithError(err)
+				return err
 			}
 		}
+		return nil
+	}); err != nil {
+		return closeWithError(err)
 	}
 
 	for _, file := range files {
@@ -757,36 +904,102 @@ func writeZipBytes(archive *zip.Writer, name string, data []byte, modified time.
 	return err
 }
 
+// Subscribe streams historical replay through the same bounded channel as live
+// updates. Register live delivery before reading the journal to avoid gaps; if
+// replay is too slow, the live queue closes and callers can resume by sequence.
 func (m *Manager) Subscribe(ctx context.Context, sessionID string, after uint64) ([]*pb.DeepMonitorEventSummary, <-chan *pb.DeepMonitorEventSummary, error) {
 	m.mu.Lock()
+	if m.closing {
+		m.mu.Unlock()
+		return nil, nil, errors.New("deep monitor manager is closed")
+	}
 	s := m.sessions[sessionID]
 	if s == nil {
 		m.mu.Unlock()
 		return nil, nil, ErrNotFound
 	}
-	backlog := make([]*pb.DeepMonitorEventSummary, 0)
-	for _, event := range s.events {
-		if event.GetSummary().GetSequence() > after {
-			backlog = append(backlog, proto.Clone(event.GetSummary()).(*pb.DeepMonitorEventSummary))
+	cached := after >= s.lastSequence || (len(s.events) > 0 && after >= s.events[0].Sequence-1)
+	through := s.lastSequence
+	var recent []*pb.DeepMonitorEventSummary
+	if cached {
+		for _, summary := range s.events {
+			if summary.Sequence > after {
+				recent = append(recent, summary)
+			}
 		}
 	}
 	m.nextWatcher++
 	id := m.nextWatcher
-	ch := make(chan *pb.DeepMonitorEventSummary, 128)
-	s.watchers[id] = ch
+	live := make(chan *pb.DeepMonitorEventSummary, 128)
+	s.watchers[id] = live
+	m.wg.Add(1)
 	m.mu.Unlock()
+	output := make(chan *pb.DeepMonitorEventSummary, 128)
 	go func() {
-		<-ctx.Done()
-		m.mu.Lock()
-		if current := m.sessions[sessionID]; current != nil {
-			if existing, ok := current.watchers[id]; ok {
-				delete(current.watchers, id)
-				close(existing)
+		defer m.wg.Done()
+		defer close(output)
+		defer func() {
+			m.mu.Lock()
+			if current := m.sessions[sessionID]; current != nil {
+				if existing, ok := current.watchers[id]; ok {
+					delete(current.watchers, id)
+					close(existing)
+				}
+			}
+			m.mu.Unlock()
+		}()
+		send := func(summary *pb.DeepMonitorEventSummary) bool {
+			select {
+			case <-m.closed:
+				return false
+			default:
+			}
+			select {
+			case output <- summary:
+				return true
+			case <-ctx.Done():
+				return false
+			case <-m.closed:
+				return false
 			}
 		}
-		m.mu.Unlock()
+		if cached {
+			for _, summary := range recent {
+				if !send(proto.Clone(summary).(*pb.DeepMonitorEventSummary)) {
+					return
+				}
+			}
+			recent = nil
+		} else {
+			err := m.scanEvents(sessionID, through, func(event *pb.DeepMonitorEvent) bool {
+				if ctx.Err() != nil {
+					return false
+				}
+				select {
+				case <-m.closed:
+					return false
+				default:
+				}
+				return event.Summary.Sequence <= after || send(event.Summary)
+			})
+			if err != nil || ctx.Err() != nil {
+				return
+			}
+		}
+		for {
+			select {
+			case summary, ok := <-live:
+				if !ok || !send(summary) {
+					return
+				}
+			case <-ctx.Done():
+				return
+			case <-m.closed:
+				return
+			}
+		}
 	}()
-	return backlog, ch, nil
+	return nil, output, nil
 }
 
 func (m *Manager) writerLoop() {
@@ -817,8 +1030,24 @@ func (m *Manager) writerLoop() {
 
 func (m *Manager) writeJob(job writeJob) {
 	defer m.queuedBytes.Add(-job.bytes)
+	defer m.bufferedBytes.Add(-job.bytes)
+	var location eventLocation
 	m.diskMu.Lock()
 	data, err := proto.Marshal(job.event)
+	// Payloads must exist before the event becomes part of the readable journal.
+	// A failed payload must not appear later merely because another queued event
+	// succeeded and advanced the session's committed sequence.
+	var payloadPaths []string
+	if err == nil {
+		for part, payload := range job.payloads {
+			path := m.payloadPath(job.sessionID, job.event.GetSummary().GetId(), part)
+			payloadPaths = append(payloadPaths, path)
+			if err = os.WriteFile(path, payload, 0o600); err != nil {
+				break
+			}
+			_ = os.Chmod(path, 0o600)
+		}
+	}
 	if err == nil {
 		eventsPath := filepath.Join(m.sessionDir(job.sessionID), "events.pb")
 		file, openErr := os.OpenFile(eventsPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
@@ -826,34 +1055,39 @@ func (m *Manager) writeJob(job writeJob) {
 			err = openErr
 		} else {
 			_ = os.Chmod(eventsPath, 0o600)
-			offset, _ := file.Seek(0, io.SeekEnd)
-			var header [4]byte
-			binary.BigEndian.PutUint32(header[:], uint32(len(data)))
-			if _, err = file.Write(header[:]); err == nil {
-				_, err = file.Write(data)
+			offset, seekErr := file.Seek(0, io.SeekEnd)
+			err = seekErr
+			if err == nil {
+				location = eventLocation{offset: offset, length: uint32(len(data))}
+				var header [4]byte
+				binary.BigEndian.PutUint32(header[:], uint32(len(data)))
+				if _, err = file.Write(header[:]); err == nil {
+					_, err = file.Write(data)
+				}
+				if err != nil {
+					_ = file.Truncate(offset)
+				}
 			}
 			_ = file.Close()
 			if err == nil {
 				index := fmt.Sprintf("%d\t%d\t%d\t%s\n", job.event.GetSummary().GetSequence(), offset, len(data)+4, job.event.GetSummary().GetId())
-				err = appendSecureFile(filepath.Join(m.sessionDir(job.sessionID), "events.idx"), []byte(index))
+				// The sidecar is an acceleration index. A committed journal event stays
+				// readable through scan fallback even if updating the index fails.
+				_ = appendSecureFile(filepath.Join(m.sessionDir(job.sessionID), "events.idx"), []byte(index))
 			}
 		}
 	}
-	if err == nil {
-		for part, payload := range job.payloads {
-			path := m.payloadPath(job.sessionID, job.event.GetSummary().GetId(), part)
-			if err = os.WriteFile(path, payload, 0o600); err != nil {
-				break
-			}
-			_ = os.Chmod(path, 0o600)
+	if err != nil {
+		for _, path := range payloadPaths {
+			_ = os.Remove(path)
 		}
 	}
 	m.diskMu.Unlock()
 	m.mu.Lock()
 	s := m.sessions[job.sessionID]
 	if s != nil {
-		if s.meta.QueuedBytes >= uint64(job.bytes) {
-			s.meta.QueuedBytes -= uint64(job.bytes)
+		if s.meta.QueuedBytes >= uint64(job.storageBytes) {
+			s.meta.QueuedBytes -= uint64(job.storageBytes)
 		}
 		if err != nil {
 			s.meta.DroppedEvents++
@@ -863,13 +1097,16 @@ func (m *Manager) writeJob(job writeJob) {
 				m.markMetaDirtyLocked(s)
 			}
 		} else {
-			s.meta.BytesStored += uint64(job.bytes)
+			s.meta.BytesStored += uint64(job.storageBytes)
 			s.meta.EventCount++
-			s.events = append(s.events, job.event)
-			s.byID[job.event.GetSummary().GetId()] = job.event
+			if m.closing {
+				s.lastSequence = job.event.Summary.Sequence
+			} else {
+				s.cacheEvent(job.event.Summary, location)
+			}
 			for id, watcher := range s.watchers {
 				select {
-				case watcher <- proto.Clone(job.event.GetSummary()).(*pb.DeepMonitorEventSummary):
+				case watcher <- cloneOwnedSummary(job.event.GetSummary()):
 				default:
 					close(watcher)
 					delete(s.watchers, id)
@@ -958,19 +1195,31 @@ func (m *Manager) maintain() {
 	m.mu.Unlock()
 	for _, id := range remove {
 		m.diskMu.Lock()
-		if err := os.RemoveAll(m.sessionDir(id)); err != nil {
+		// An archive may have registered protection after the candidate scan but
+		// before diskMu was available. Recheck and remove atomically with respect
+		// to OpenArchive's registration before touching the directory.
+		m.mu.Lock()
+		state := m.sessions[id]
+		if state == nil || state.meta.State == "active" || state.exporting != 0 || state.meta.StoppedAt.IsZero() || now.Sub(state.meta.StoppedAt) < Retention {
+			m.mu.Unlock()
 			m.diskMu.Unlock()
 			continue
 		}
-		m.diskMu.Unlock()
-		m.mu.Lock()
-		if s := m.sessions[id]; s != nil && s.meta.State != "active" && !s.meta.StoppedAt.IsZero() && now.Sub(s.meta.StoppedAt) >= Retention {
-			for _, watcher := range s.watchers {
-				close(watcher)
-			}
-			delete(m.sessions, id)
+		delete(m.sessions, id)
+		for _, watcher := range state.watchers {
+			close(watcher)
 		}
+		state.watchers = make(map[uint64]chan *pb.DeepMonitorEventSummary)
 		m.mu.Unlock()
+		err := os.RemoveAll(m.sessionDir(id))
+		m.diskMu.Unlock()
+		if err != nil {
+			m.mu.Lock()
+			if _, exists := m.sessions[id]; !exists {
+				m.sessions[id] = state
+			}
+			m.mu.Unlock()
+		}
 	}
 }
 
@@ -988,10 +1237,12 @@ func (m *Manager) stopLocked(s *sessionState, state, reason string) {
 		return
 	}
 	s.meta.State = state
+	s.clearEventCache()
 	s.meta.StopReason = reason
 	s.meta.StoppedAt = m.now().UTC()
 	delete(m.activeByHost, s.meta.Host)
 	m.publishActiveHostsLocked()
+	m.releaseCaptures(s.meta.ID)
 	m.markMetaDirtyLocked(s)
 }
 
@@ -1000,10 +1251,12 @@ func (m *Manager) stopWithoutMetadataWakeLocked(s *sessionState, state, reason s
 		return
 	}
 	s.meta.State = state
+	s.clearEventCache()
 	s.meta.StopReason = reason
 	s.meta.StoppedAt = m.now().UTC()
 	delete(m.activeByHost, s.meta.Host)
 	m.publishActiveHostsLocked()
+	m.releaseCaptures(s.meta.ID)
 	s.metaRevision++
 }
 
@@ -1053,7 +1306,16 @@ func (m *Manager) load() error {
 		if json.Unmarshal(data, &meta) != nil || meta.ID != entry.Name() {
 			continue
 		}
-		state := &sessionState{meta: meta, byID: make(map[string]*pb.DeepMonitorEvent), watchers: make(map[uint64]chan *pb.DeepMonitorEventSummary)}
+		if meta.State != "active" && !meta.StoppedAt.IsZero() && m.now().Sub(meta.StoppedAt) >= Retention {
+			if err := os.RemoveAll(m.sessionDir(meta.ID)); err != nil {
+				// Keep only metadata so maintenance can retry removal without
+				// retaining expired event contents or disabling other sessions.
+				m.sessions[meta.ID] = &sessionState{meta: meta, watchers: make(map[uint64]chan *pb.DeepMonitorEventSummary)}
+			}
+			continue
+		}
+		meta.QueuedBytes = 0
+		state := &sessionState{meta: meta, byID: make(map[string]eventLocation), watchers: make(map[uint64]chan *pb.DeepMonitorEventSummary)}
 		if state.meta.State == "active" {
 			state.meta.State = "aborted_restart"
 			state.meta.StopReason = "gateway_restart"
@@ -1061,7 +1323,7 @@ func (m *Manager) load() error {
 		}
 		_ = m.loadEvents(state)
 		if state.meta.NextSequence == 0 {
-			state.meta.NextSequence = uint64(len(state.events)) + 1
+			state.meta.NextSequence = state.lastSequence + 1
 		}
 		m.sessions[meta.ID] = state
 		_ = m.writeMeta(m.dir, state.meta)
@@ -1071,35 +1333,11 @@ func (m *Manager) load() error {
 }
 
 func (m *Manager) loadEvents(s *sessionState) error {
-	file, err := os.Open(filepath.Join(m.sessionDir(s.meta.ID), "events.pb"))
-	if err != nil {
-		return err
-	}
-	defer file.Close()
-	reader := bufio.NewReader(file)
-	for {
-		var header [4]byte
-		if _, err := io.ReadFull(reader, header[:]); err != nil {
-			if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
-				return nil
-			}
-			return err
-		}
-		length := binary.BigEndian.Uint32(header[:])
-		if length == 0 || length > 64<<20 {
-			return errors.New("invalid deep monitor journal frame")
-		}
-		data := make([]byte, length)
-		if _, err := io.ReadFull(reader, data); err != nil {
-			return err
-		}
-		event := &pb.DeepMonitorEvent{}
-		if err := proto.Unmarshal(data, event); err != nil {
-			return err
-		}
-		s.events = append(s.events, event)
-		s.byID[event.GetSummary().GetId()] = event
-	}
+	return m.scanJournal(s.meta.ID, func(event *pb.DeepMonitorEvent, location eventLocation) bool {
+		s.cacheEvent(event.Summary, location)
+		s.meta.NextSequence = max(s.meta.NextSequence, event.Summary.Sequence+1)
+		return true
+	})
 }
 
 func writeSessionMeta(root string, meta sessionMeta) error {

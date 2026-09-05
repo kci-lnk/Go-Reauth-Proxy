@@ -250,8 +250,8 @@ func benchmarkHandlerScenario(b *testing.B, scenario handlerEndToEndBenchmarkSce
 	if warmRecorder.Code != http.StatusOK {
 		b.Fatalf("warm-up status = %d; body=%s", warmRecorder.Code, warmRecorder.Body.String())
 	}
-	if scenario.portalEnabled && !bytes.Contains(warmRecorder.Body.Bytes(), []byte("reauth-proxy-toolbar-loader")) {
-		b.Fatal("portal-enabled warm-up response did not include the toolbar loader")
+	if scenario.portalEnabled && !bytes.Contains(warmRecorder.Body.Bytes(), []byte("reauth-proxy-toolbar-bootstrap")) {
+		b.Fatal("portal-enabled warm-up response did not include the toolbar bootstrap")
 	}
 	reuseRecorder := httptest.NewRecorder()
 	fixture.handler.ServeHTTP(reuseRecorder, fixture.newRequest())
@@ -313,7 +313,7 @@ func benchmarkHandlerScenario(b *testing.B, scenario handlerEndToEndBenchmarkSce
 	}
 }
 
-func newHandlerEndToEndBenchmarkFixture(b *testing.B, scenario handlerEndToEndBenchmarkScenario, isolated bool) *handlerEndToEndBenchmarkFixture {
+func newHandlerEndToEndBenchmarkFixture(b testing.TB, scenario handlerEndToEndBenchmarkScenario, isolated bool) *handlerEndToEndBenchmarkFixture {
 	b.Helper()
 	payload := handlerBenchmarkResponseBody(scenario.responseBytes, scenario.htmlResponse)
 	contentLength := strconv.Itoa(len(payload))
@@ -385,6 +385,9 @@ func newHandlerEndToEndBenchmarkFixture(b *testing.B, scenario handlerEndToEndBe
 		cacheTTL := 0
 		if scenario.authMode == handlerBenchmarkAuthHit {
 			cacheTTL = 3600
+			// Preflight uses the smaller positive auth TTL. Keep both caches
+			// warm throughout the benchmark, including runs longer than 1s.
+			initialConfig.AuthConfig.AuthCacheFailTTL = cacheTTL
 		}
 		initialConfig.AuthConfig.AuthCacheTTL = cacheTTL
 	}
@@ -465,7 +468,7 @@ func handlerBenchmarkResponseBody(size int, htmlResponse bool) []byte {
 	return body
 }
 
-func benchmarkGatewayPortalConfig(b *testing.B, enabled bool) models.GatewayPortalConfig {
+func benchmarkGatewayPortalConfig(b testing.TB, enabled bool) models.GatewayPortalConfig {
 	b.Helper()
 	value := []byte(`{"enabled":false}`)
 	if enabled {
@@ -487,7 +490,7 @@ func handlerBenchmarkCombinedAuthResponse(mode pb.HttpAuthMode, preflightScope p
 		response.Preflight = &pb.PreflightAuthResponse{}
 	}
 	if mode != pb.HttpAuthMode_HTTP_AUTH_MODE_PREFLIGHT_ONLY {
-		response.Verify = &pb.VerifyAuthResponse{Success: true, Status: http.StatusOK}
+		response.Verify = &pb.VerifyAuthResponse{Success: true, Status: http.StatusOK, LoginAuthenticated: true}
 	}
 	return response
 }

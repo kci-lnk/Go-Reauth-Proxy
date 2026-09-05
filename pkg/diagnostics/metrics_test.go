@@ -50,6 +50,34 @@ func TestObserveAuthBridgeQueueDepthTracksCurrentAndPeak(t *testing.T) {
 	}
 }
 
+func TestResourceAdmissionMetricsTrackCompletionAndRejection(t *testing.T) {
+	global.authBridgeInFlight.Store(0)
+	global.authBridgeInFlightPeak.Store(0)
+	beforeAuthDrops := global.authBridgeInFlightDrops.Load()
+	beforeUDPDrops := global.udpBufferBudgetDrops.Load()
+	t.Cleanup(func() {
+		global.authBridgeInFlight.Store(0)
+		global.authBridgeInFlightPeak.Store(0)
+		global.authBridgeInFlightDrops.Store(beforeAuthDrops)
+		global.udpBufferBudgetDrops.Store(beforeUDPDrops)
+	})
+	AddAuthBridgeInFlight(1)
+	AddAuthBridgeInFlight(1)
+	AddAuthBridgeInFlight(-1)
+	RecordAuthBridgeInFlightDrop()
+	RecordUDPBufferBudgetDrop()
+	got := Snapshot().(snapshot)
+	if got.Auth.BridgeInFlight != 1 || got.Auth.BridgeInFlightPeak != 2 || got.Auth.BridgeInFlightDrops != beforeAuthDrops+1 || got.UDP.BufferBudgetDrops != beforeUDPDrops+1 {
+		t.Fatalf("unexpected admission metrics: auth=%+v UDP=%+v", got.Auth, got.UDP)
+	}
+	AddAuthBridgeInFlight(-1)
+	AddAuthBridgeInFlight(0)
+	got = Snapshot().(snapshot)
+	if got.Auth.BridgeInFlight != 0 || got.Auth.BridgeInFlightPeak != 2 {
+		t.Fatalf("finished requests changed current/peak to %d/%d, want 0/2", got.Auth.BridgeInFlight, got.Auth.BridgeInFlightPeak)
+	}
+}
+
 func TestSubdomainGrantTransientStateIsObservable(t *testing.T) {
 	SetEnabled(true)
 	t.Cleanup(func() { SetEnabled(false) })

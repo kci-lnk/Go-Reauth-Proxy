@@ -22,6 +22,10 @@ type counters struct {
 	authBridgeQueueDrops     atomic.Uint64
 	authBridgeQueueDepth     atomic.Uint64
 	authBridgeQueuePeak      atomic.Uint64
+	authBridgeInFlight       atomic.Int64
+	authBridgeInFlightPeak   atomic.Int64
+	authBridgeInFlightDrops  atomic.Uint64
+	udpBufferBudgetDrops     atomic.Uint64
 	authCacheHits            atomic.Uint64
 	authCacheMisses          atomic.Uint64
 	ruleEvaluations          atomic.Uint64
@@ -191,6 +195,28 @@ func RecordAuthBridgeQueueDrop() {
 	}
 }
 
+func AddAuthBridgeInFlight(delta int64) {
+	current := global.authBridgeInFlight.Add(delta)
+	// Only admissions can establish a new peak. Completion still updates the
+	// current gauge, but does not need to read or contend on the peak counter.
+	if delta <= 0 {
+		return
+	}
+	for peak := global.authBridgeInFlightPeak.Load(); current > peak; peak = global.authBridgeInFlightPeak.Load() {
+		if global.authBridgeInFlightPeak.CompareAndSwap(peak, current) {
+			break
+		}
+	}
+}
+
+func RecordAuthBridgeInFlightDrop() {
+	global.authBridgeInFlightDrops.Add(1)
+}
+
+func RecordUDPBufferBudgetDrop() {
+	global.udpBufferBudgetDrops.Add(1)
+}
+
 // ObserveAuthBridgeQueueDepth records the current depth of the active auth
 // bridge writer queue and retains the highest observed depth. Queue depth is a
 // process-level gauge, so it intentionally has no labels.
@@ -313,6 +339,9 @@ type snapshot struct {
 		BridgeQueueDrops              uint64 `json:"bridge_queue_drops"`
 		BridgeQueueDepth              uint64 `json:"bridge_queue_depth"`
 		BridgeQueueDepthPeak          uint64 `json:"bridge_queue_depth_peak"`
+		BridgeInFlight                int64  `json:"bridge_in_flight"`
+		BridgeInFlightPeak            int64  `json:"bridge_in_flight_peak"`
+		BridgeInFlightDrops           uint64 `json:"bridge_in_flight_drops"`
 		CacheHits                     uint64 `json:"cache_hits"`
 		CacheMisses                   uint64 `json:"cache_misses"`
 		SubdomainRuleEvaluations      uint64 `json:"subdomain_rule_evaluations"`
@@ -326,7 +355,8 @@ type snapshot struct {
 		SubdomainGrantStorageErrors   uint64 `json:"subdomain_grant_storage_errors"`
 	} `json:"auth"`
 	UDP struct {
-		QueueDrops uint64 `json:"queue_drops"`
+		QueueDrops        uint64 `json:"queue_drops"`
+		BufferBudgetDrops uint64 `json:"buffer_budget_drops"`
 	} `json:"udp"`
 	GatewayLog struct {
 		QueueDrops uint64 `json:"queue_drops"`
@@ -371,6 +401,9 @@ func Snapshot() any {
 	result.Auth.BridgeQueueDrops = global.authBridgeQueueDrops.Load()
 	result.Auth.BridgeQueueDepth = global.authBridgeQueueDepth.Load()
 	result.Auth.BridgeQueueDepthPeak = global.authBridgeQueuePeak.Load()
+	result.Auth.BridgeInFlight = global.authBridgeInFlight.Load()
+	result.Auth.BridgeInFlightPeak = global.authBridgeInFlightPeak.Load()
+	result.Auth.BridgeInFlightDrops = global.authBridgeInFlightDrops.Load()
 	result.Auth.CacheHits = global.authCacheHits.Load()
 	result.Auth.CacheMisses = global.authCacheMisses.Load()
 	result.Auth.SubdomainRuleEvaluations = global.ruleEvaluations.Load()
@@ -383,6 +416,7 @@ func Snapshot() any {
 	result.Auth.SubdomainGrantRateLimited = global.grantRateLimited.Load()
 	result.Auth.SubdomainGrantStorageErrors = global.grantStorageErrors.Load()
 	result.UDP.QueueDrops = global.udpQueueDrops.Load()
+	result.UDP.BufferBudgetDrops = global.udpBufferBudgetDrops.Load()
 	result.GatewayLog.QueueDrops = global.gatewayLogDrops.Load()
 	result.Stream.ProbeVerified = global.streamProbeVerified.Load()
 	result.Stream.ProbeFailed = global.streamProbeFailed.Load()

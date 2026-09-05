@@ -402,6 +402,9 @@ fn-knock 托管的 Cloudflare Tunnel 使用专用 loopback 入口作为请求头
 | `GO_REPROXY_PORT` | `-proxy-port` 的环境变量默认值 |
 | `FN_KNOCK_GATEWAY_LOGS_DIR` | 访问日志绝对目录 |
 | `FN_KNOCK_GATEWAY_WAF_DIR` | WAF 规则与状态绝对目录 |
+| `FN_KNOCK_AUTH_BRIDGE_MAX_IN_FLIGHT` | AuthBridge 排队及等待回复的总调用上限，默认 `1024`；超出时快速返回现有的队列满错误 |
+| `FN_KNOCK_UDP_BUFFER_BUDGET_BYTES` | UDP 全进程转发报文缓冲预算，包括监听器读区、上游读区、队列及正在写入的报文；默认 `0` 保留现有会话和队列限制，可按设备内存主动设置 |
+| `FN_KNOCK_UDP_SESSION_IDLE_SECONDS` | UDP 会话空闲期限，默认 `120` 秒，可设 `1`–`86400` 秒；每 `10` 秒回收过期会话 |
 | `GO_REPROXY_LOG=1` | 开启常规控制台日志 |
 | `GO_REPROXY_DEBUG_LOG=1` | 开启结构化调试日志 |
 | `GO_REPROXY_DEBUG_LOG_DIR` | 调试日志目录 |
@@ -410,6 +413,16 @@ fn-knock 托管的 Cloudflare Tunnel 使用专用 loopback 入口作为请求头
 | `FN_KNOCK_IPTABLES_USE_SUDO` | 控制 iptables 命令是否通过 `sudo` 执行 |
 
 访问日志由 `logging.enabled` 控制，默认关闭。`TrafficService` 提供总入站/出站字节、活跃身份、5xx、Host 活跃 IP 等运行统计。
+
+上述资源环境变量需在进程启动前设置。Linux/macOS 的 UDP 上游使用 Go netpoll 等待就绪，空闲会话不持有 64 KiB 接收区；其他平台保留完整接收区，均不会通过缩小接收区截断大报文。UDP 字节预算不包含 socket 内核内存、会话元数据和已归还的池缓存。启用预算后，空间不足会丢弃新报文；无法取得上游接收区时结束相应会话；连监听器读区都无法预留时监听器创建返回错误。单监听器仍最多 `8192` 个会话、`64 MiB` 队列。诊断增加 `auth.bridge_in_flight`、`auth.bridge_in_flight_peak`、`auth.bridge_in_flight_drops` 和 `udp.buffer_budget_drops`。
+
+普通访问日志查询最多同时执行 `4` 个扫描，并响应请求取消；页码模式保留精确总数，游标模式按需倒序读取。每次查询的分页尾部缓存最多 `8 MiB`，超出后改为有界扫描；返回结果的估算预算为 `16 MiB`，超限会明确报错，可减小 `limit` 或收窄筛选条件。单行读取上限为 `8 MiB`。
+
+HTTP 的 SSE、小响应和普通未知长度响应使用 `32 KiB` 复制缓冲，大下载保留 `256 KiB`。合并写入的中、大档活跃缓冲共用 `64 MiB` 预算，不足时继续使用较小档位；HTML 路径重写另有 `4 MiB` 输出预算，超出时跳过路径重写。Deep Monitor 的在途捕获与写队列共用 `64 MiB` 预算，捕获容量不足时保留前缀和已观察字节的哈希；写队列或事件元数据预算不足会停止该监控会话并拒绝事件，HTTP 转发继续。活动会话摘要缓存最多每会话 `1024` 条 / 约 `1 MiB`，历史详情按需读盘。这些预算不等于进程 RSS 上限，已归还的池缓存、Go 运行时和内核 socket 内存需另行观察。
+
+WAF 事件存储的估算总预算为 `16 MiB`，单事件预算为 `256 KiB`；超大事件保留安全决定，精简规则与匹配详情并标记 `event_details_truncated`，总量超限时淘汰最旧事件。
+
+Host 活跃 IP 和登录活跃身份属于有界近似统计，达到容量后优先淘汰较旧记录并批量腾出空间；高基数时统计可能少于实际身份数，不会因此关闭转发连接。
 
 诊断监听提供 `/debug/pprof/*` 与 `/debug/metrics`，只接受 loopback 地址，并要求请求携带：
 

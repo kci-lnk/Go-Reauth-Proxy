@@ -31,6 +31,9 @@ const (
 	maxScanToken                  = 8 * 1024 * 1024
 	cursorChunkSize               = 64 * 1024
 	pageQueryTailWindowMaxEntries = 10000
+	pageQueryTailWindowMaxBytes   = 8 << 20
+	queryResultMaxBytes           = 16 << 20
+	maxConcurrentLogQueries       = 4
 	unrecordedCredentialFilter    = "__unrecorded__"
 	asyncLogQueueSize             = 13200
 	asyncLogDropWarnInterval      = 30 * time.Second
@@ -39,6 +42,8 @@ const (
 )
 
 var errStopScan = errors.New("stop scan")
+
+var ErrQueryResultTooLarge = errors.New("log query result exceeds 16 MiB; reduce the limit or narrow the filters")
 
 type Entry struct {
 	TraceID                 string `json:"trace_id,omitempty"`
@@ -140,12 +145,20 @@ type TraceResult struct {
 }
 
 type queryFilter struct {
+	ctx           context.Context
 	search        string
 	searchASCII   bool
 	exactStatuses map[int]struct{}
 	statusClasses map[int]struct{}
 	loggedIn      *bool
 	credential    string
+}
+
+func (f queryFilter) contextErr() error {
+	if f.ctx != nil {
+		return f.ctx.Err()
+	}
+	return nil
 }
 
 type DeleteResult struct {
@@ -385,6 +398,7 @@ type Manager struct {
 	analyticsMu       sync.Mutex
 	analyticsCache    map[string]cachedDailyAnalytics
 	analyticsScan     chan struct{}
+	querySlots        chan struct{}
 }
 
 func NormalizeConfig(cfg models.LoggingConfig) models.LoggingConfig {
@@ -410,6 +424,7 @@ func NewManager(logsDir string, cfg models.LoggingConfig) *Manager {
 		done:           make(chan struct{}),
 		analyticsCache: make(map[string]cachedDailyAnalytics),
 		analyticsScan:  make(chan struct{}, 1),
+		querySlots:     make(chan struct{}, maxConcurrentLogQueries),
 	}
 	m.entryPool.New = func() any { return new(Entry) }
 	m.recordLocalhost.Store(normalized.RecordLocalhost)
@@ -728,7 +743,38 @@ func (m *Manager) GetDates() (DatesResult, error) {
 }
 
 func (m *Manager) Query(date string, page int, limit int, search string, status string, loggedIn string, credential string, cursor string, pagination string) (QueryResult, error) {
-	m.Flush()
+	return m.QueryContext(context.Background(), date, page, limit, search, status, loggedIn, credential, cursor, pagination)
+}
+
+func (m *Manager) acquireQuery(ctx context.Context) (func(), error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if m.querySlots == nil {
+		return func() {}, nil
+	}
+	select {
+	case m.querySlots <- struct{}{}:
+		return func() { <-m.querySlots }, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
+// QueryContext bounds simultaneous disk scans and propagates cancellation
+// through log flushing, forward scans and reverse cursor scans.
+func (m *Manager) QueryContext(ctx context.Context, date string, page int, limit int, search string, status string, loggedIn string, credential string, cursor string, pagination string) (QueryResult, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	release, err := m.acquireQuery(ctx)
+	if err != nil {
+		return QueryResult{}, err
+	}
+	defer release()
+	if err := m.FlushContext(ctx); err != nil {
+		return QueryResult{}, err
+	}
 	selectedDate, err := normalizeDate(date)
 	if err != nil {
 		return QueryResult{}, err
@@ -749,6 +795,7 @@ func (m *Manager) Query(date string, page int, limit int, search string, status 
 	if err != nil {
 		return QueryResult{}, err
 	}
+	filter.ctx = ctx
 
 	dates, err := m.listDates(true)
 	if err != nil {
@@ -796,12 +843,26 @@ func (m *Manager) Query(date string, page int, limit int, search string, status 
 }
 
 func (m *Manager) FindByTraceID(traceID string) (TraceResult, error) {
+	return m.FindByTraceIDContext(context.Background(), traceID)
+}
+
+func (m *Manager) FindByTraceIDContext(ctx context.Context, traceID string) (TraceResult, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	traceID = strings.TrimSpace(traceID)
 	result := TraceResult{TraceID: traceID}
+	release, err := m.acquireQuery(ctx)
+	if err != nil {
+		return result, err
+	}
+	defer release()
 	if traceID == "" {
 		return result, nil
 	}
-	m.Flush()
+	if err := m.FlushContext(ctx); err != nil {
+		return result, err
+	}
 	dates, err := m.listDates(false)
 	if err != nil {
 		return result, err
@@ -812,6 +873,9 @@ func (m *Manager) FindByTraceID(traceID string) (TraceResult, error) {
 	oldestRetainedDay := dayStart(time.Now()).AddDate(0, 0, -(maxDays - 1))
 	needle := []byte(traceID)
 	for _, date := range dates {
+		if err := ctx.Err(); err != nil {
+			return result, err
+		}
 		parsedDate, parseErr := time.ParseInLocation(dateLayout, date, time.Local)
 		if parseErr != nil || parsedDate.Before(oldestRetainedDay) {
 			continue
@@ -831,7 +895,7 @@ func (m *Manager) FindByTraceID(traceID string) (TraceResult, error) {
 		}
 		var matched Entry
 		found := false
-		scanErr := scanLinesBackward(file, stat.Size(), func(line []byte, _ int64) (bool, error) {
+		scanErr := scanLinesBackwardContext(ctx, file, stat.Size(), func(line []byte, _ int64) (bool, error) {
 			if !bytes.Contains(line, needle) || !jsonLogLineLooksLikeEntryObject(line) {
 				return true, nil
 			}
@@ -1347,6 +1411,12 @@ func queryEntriesStreamingRawTail(logPath string, filter queryFilter, page int, 
 	if err != nil {
 		return nil, 0, false, err
 	}
+	if tail.overflowed {
+		// Raw JSON validity does not guarantee an Entry can be decoded (for
+		// example, status may have the wrong type). Recount decoded entries
+		// before selecting the window, just as on other raw-tail fallbacks.
+		return queryEntriesStreamingTwoPass(logPath, filter, page, limit)
+	}
 
 	forwardStart, forwardEnd := resolveForwardWindow(total, page, limit)
 	if forwardStart == forwardEnd {
@@ -1358,8 +1428,11 @@ func queryEntriesStreamingRawTail(logPath string, filter queryFilter, page int, 
 		return queryEntriesStreamingTwoPass(logPath, filter, page, limit)
 	}
 
-	items, ok := tail.DecodeEntriesDescending(forwardStart-tailStart, forwardEnd-tailStart)
-	if !ok {
+	items, err := tail.DecodeEntriesDescending(forwardStart-tailStart, forwardEnd-tailStart)
+	if errors.Is(err, ErrQueryResultTooLarge) {
+		return nil, 0, false, err
+	}
+	if err != nil {
 		return queryEntriesStreamingTwoPass(logPath, filter, page, limit)
 	}
 	return items, total, forwardStart > 0, nil
@@ -1370,15 +1443,24 @@ func queryEntriesStreamingTwoPass(logPath string, filter queryFilter, page int, 
 	if err != nil {
 		return nil, 0, false, err
 	}
+	return collectQueryWindow(logPath, filter, page, limit, total)
+}
 
+func collectQueryWindow(logPath string, filter queryFilter, page int, limit int, total int) ([]Entry, int, bool, error) {
 	forwardStart, forwardEnd := resolveForwardWindow(total, page, limit)
 	if forwardStart == forwardEnd {
 		return []Entry{}, total, false, nil
 	}
 
 	items := make([]Entry, 0, forwardEnd-forwardStart)
-	err = collectMatchingEntries(logPath, filter, forwardStart, forwardEnd, func(entry Entry) {
+	resultBytes := 0
+	err := collectMatchingEntries(logPath, filter, forwardStart, forwardEnd, func(entry Entry, rawBytes int) error {
+		resultBytes += queryEntryFootprint(entry, rawBytes)
+		if resultBytes > queryResultMaxBytes {
+			return ErrQueryResultTooLarge
+		}
 		items = append(items, entry)
+		return nil
 	})
 	if err != nil {
 		return nil, 0, false, err
@@ -1389,9 +1471,11 @@ func queryEntriesStreamingTwoPass(logPath string, filter queryFilter, page int, 
 }
 
 type rawLineTailWindow struct {
-	lines [][]byte
-	start int
-	count int
+	lines      [][]byte
+	start      int
+	count      int
+	allocated  int
+	overflowed bool
 }
 
 func newRawLineTailWindow(capacity int) *rawLineTailWindow {
@@ -1402,7 +1486,7 @@ func newRawLineTailWindow(capacity int) *rawLineTailWindow {
 }
 
 func (w *rawLineTailWindow) Add(line []byte) {
-	if w == nil || len(w.lines) == 0 {
+	if w == nil || len(w.lines) == 0 || w.overflowed {
 		return
 	}
 	index := (w.start + w.count) % len(w.lines)
@@ -1412,7 +1496,25 @@ func (w *rawLineTailWindow) Add(line []byte) {
 	} else {
 		w.count++
 	}
-	w.lines[index] = append(w.lines[index][:0], line...)
+	if len(line) > cap(w.lines[index]) {
+		retained := w.allocated - cap(w.lines[index])
+		available := pageQueryTailWindowMaxBytes - retained
+		if len(line) > available {
+			clear(w.lines)
+			w.count, w.start, w.allocated = 0, 0, 0
+			w.overflowed = true
+			return
+		}
+		// Reuse headroom when timestamps, IDs or counters grow by a few bytes.
+		// Exact-length allocation here repeatedly copied the same ring slot.
+		capacity := max(len(line), cap(w.lines[index])+cap(w.lines[index])/2)
+		capacity = min((capacity+63)&^63, available)
+		w.lines[index] = make([]byte, len(line), capacity)
+		w.allocated = retained + capacity
+	} else {
+		w.lines[index] = w.lines[index][:len(line)]
+	}
+	copy(w.lines[index], line)
 }
 
 func (w *rawLineTailWindow) Len() int {
@@ -1422,19 +1524,32 @@ func (w *rawLineTailWindow) Len() int {
 	return w.count
 }
 
-func (w *rawLineTailWindow) DecodeEntriesDescending(start int, end int) ([]Entry, bool) {
+func (w *rawLineTailWindow) DecodeEntriesDescending(start int, end int) ([]Entry, error) {
 	if w == nil || len(w.lines) == 0 || start < 0 || end < start || end > w.count {
-		return []Entry{}, true
+		return []Entry{}, nil
 	}
 	items := make([]Entry, end-start)
+	resultBytes := 0
 	for i := start; i < end; i++ {
 		var entry Entry
-		if err := json.Unmarshal(w.lines[(w.start+i)%len(w.lines)], &entry); err != nil {
-			return nil, false
+		line := w.lines[(w.start+i)%len(w.lines)]
+		if err := json.Unmarshal(line, &entry); err != nil {
+			return nil, err
+		}
+		resultBytes += queryEntryFootprint(entry, len(line))
+		if resultBytes > queryResultMaxBytes {
+			return nil, ErrQueryResultTooLarge
 		}
 		items[end-i-1] = entry
 	}
-	return items, true
+	return items, nil
+}
+
+// Serialized bytes conservatively cover decoded strings. Account separately
+// for Entry's fixed fields and the only variable-size numeric slice. This is
+// a retained-result estimate, not a process RSS limit or a serialization cap.
+func queryEntryFootprint(entry Entry, rawBytes int) int {
+	return rawBytes + 1024 + cap(entry.WAFRuleIDs)*8
 }
 
 func queryEntriesByCursor(logPath string, filter queryFilter, cursor string, limit int) ([]Entry, string, bool, string, error) {
@@ -1461,10 +1576,11 @@ func queryEntriesByCursor(logPath string, filter queryFilter, cursor string, lim
 	}
 
 	items := make([]Entry, 0, limit)
+	resultBytes := 0
 	oldestReturnedStart := int64(0)
 	hasMore := false
 
-	err = scanLinesBackward(file, endOffset, func(line []byte, lineStart int64) (bool, error) {
+	err = scanLinesBackwardContext(filter.ctx, file, endOffset, func(line []byte, lineStart int64) (bool, error) {
 		if !filter.matchLineBytes(line) {
 			return true, nil
 		}
@@ -1484,6 +1600,10 @@ func queryEntriesByCursor(logPath string, filter queryFilter, cursor string, lim
 			hasMore = true
 			return false, nil
 		}
+		resultBytes += queryEntryFootprint(entry, len(line))
+		if resultBytes > queryResultMaxBytes {
+			return false, ErrQueryResultTooLarge
+		}
 
 		items = append(items, entry)
 		oldestReturnedStart = lineStart
@@ -1502,15 +1622,15 @@ func queryEntriesByCursor(logPath string, filter queryFilter, cursor string, lim
 }
 
 func resolveForwardWindow(total int, page int, limit int) (int, int) {
+	if total <= 0 || page <= 0 || limit <= 0 || page-1 > total/limit {
+		return total, total
+	}
 	startDesc := (page - 1) * limit
 	if startDesc >= total {
 		return total, total
 	}
 
-	endDesc := startDesc + limit
-	if endDesc > total {
-		endDesc = total
-	}
+	endDesc := startDesc + min(limit, total-startDesc)
 
 	return total - endDesc, total - startDesc
 }
@@ -1530,6 +1650,9 @@ func scanMatchingRawLinesToTail(logPath string, filter queryFilter, tail *rawLin
 
 	total := 0
 	for scanner.Scan() {
+		if err := filter.contextErr(); err != nil {
+			return total, err
+		}
 		line := scanner.Bytes()
 		if !filter.matchLineBytes(line) {
 			continue
@@ -1553,6 +1676,9 @@ func scanMatchingRawLinesToTail(logPath string, filter queryFilter, tail *rawLin
 		total++
 	}
 
+	if err := filter.contextErr(); err != nil {
+		return total, err
+	}
 	if err := scanner.Err(); err != nil {
 		return 0, err
 	}
@@ -1564,7 +1690,7 @@ func jsonLogLineLooksLikeEntryObject(line []byte) bool {
 	return len(line) > 0 && line[0] == '{'
 }
 
-func scanMatchingEntries(logPath string, filter queryFilter, onMatch func(entry Entry, matchIndex int) error) (int, error) {
+func scanMatchingEntries(logPath string, filter queryFilter, onMatch func(entry Entry, matchIndex int, rawBytes int) error) (int, error) {
 	file, err := os.Open(logPath)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -1579,6 +1705,9 @@ func scanMatchingEntries(logPath string, filter queryFilter, onMatch func(entry 
 
 	total := 0
 	for scanner.Scan() {
+		if err := filter.contextErr(); err != nil {
+			return total, err
+		}
 		line := scanner.Bytes()
 		if !filter.matchLineBytes(line) {
 			continue
@@ -1596,29 +1725,31 @@ func scanMatchingEntries(logPath string, filter queryFilter, onMatch func(entry 
 		}
 
 		if onMatch != nil {
-			if err := onMatch(entry, total); err != nil {
+			if err := onMatch(entry, total, len(line)); err != nil {
 				return total, err
 			}
 		}
 		total++
 	}
 
+	if err := filter.contextErr(); err != nil {
+		return total, err
+	}
 	if err := scanner.Err(); err != nil {
 		return 0, err
 	}
 	return total, nil
 }
 
-func collectMatchingEntries(logPath string, filter queryFilter, start int, end int, onCollect func(entry Entry)) error {
-	_, err := scanMatchingEntries(logPath, filter, func(entry Entry, matchIndex int) error {
+func collectMatchingEntries(logPath string, filter queryFilter, start int, end int, onCollect func(entry Entry, rawBytes int) error) error {
+	_, err := scanMatchingEntries(logPath, filter, func(entry Entry, matchIndex int, rawBytes int) error {
 		if matchIndex < start {
 			return nil
 		}
 		if matchIndex >= end {
 			return errStopScan
 		}
-		onCollect(entry)
-		return nil
+		return onCollect(entry, rawBytes)
 	})
 	if err != nil && !errors.Is(err, errStopScan) {
 		return err
@@ -1643,6 +1774,13 @@ func resolveCursorOffset(fileSize int64, cursor string) (int64, string, error) {
 }
 
 func scanLinesBackward(file *os.File, endOffset int64, onLine func(line []byte, lineStart int64) (bool, error)) error {
+	return scanLinesBackwardContext(context.Background(), file, endOffset, onLine)
+}
+
+func scanLinesBackwardContext(ctx context.Context, file *os.File, endOffset int64, onLine func(line []byte, lineStart int64) (bool, error)) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	position := endOffset
 	var remainder []byte
 	readBufferSize := cursorChunkSize
@@ -1654,6 +1792,9 @@ func scanLinesBackward(file *os.File, endOffset int64, onLine func(line []byte, 
 	firstPass := true
 
 	for position > 0 {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		readSize := int64(cursorChunkSize)
 		if readSize > position {
 			readSize = position
@@ -1684,6 +1825,9 @@ func scanLinesBackward(file *os.File, endOffset int64, onLine func(line []byte, 
 		}
 
 		for scanEnd > 0 {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
 			index := bytes.LastIndexByte(combined[:scanEnd], '\n')
 			if index == -1 {
 				break
@@ -1696,6 +1840,9 @@ func scanLinesBackward(file *os.File, endOffset int64, onLine func(line []byte, 
 			if len(line) == 0 {
 				continue
 			}
+			if len(line) > maxScanToken {
+				return fmt.Errorf("log line exceeds %d bytes", maxScanToken)
+			}
 
 			keepScanning, err := onLine(line, lineStart)
 			if err != nil {
@@ -1706,11 +1853,17 @@ func scanLinesBackward(file *os.File, endOffset int64, onLine func(line []byte, 
 			}
 		}
 
+		if scanEnd > maxScanToken {
+			return fmt.Errorf("log line exceeds %d bytes", maxScanToken)
+		}
 		remainder = append(remainder[:0], combined[:scanEnd]...)
 		position = start
 	}
 
 	line := bytes.TrimRight(remainder, "\r\n")
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if len(line) == 0 {
 		return nil
 	}

@@ -820,7 +820,7 @@ func collectMatchedVariables(matches []types.MatchData) []MatchedVariable {
 		}
 		out = append(out, MatchedVariable{
 			Variable:     fmt.Sprint(match.Variable()),
-			Key:          key,
+			Key:          truncate(key, 512),
 			ValuePreview: truncate(value, 256),
 		})
 	}
@@ -950,7 +950,7 @@ func formatTraceID(uuid [16]byte) string {
 
 func truncate(value string, limit int) string {
 	if limit <= 0 || len(value) <= limit {
-		return value
+		return strings.Clone(value)
 	}
-	return value[:limit]
+	return strings.Clone(value[:limit])
 }

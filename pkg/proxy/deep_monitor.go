@@ -7,7 +7,6 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"errors"
-	"hash"
 	"io"
 	"net/http"
 	"net/http/httptrace"
@@ -47,55 +46,21 @@ func (h *Handler) StartDeepMonitor(host string, duration time.Duration) (*pb.Dee
 
 type deepMonitorContextKey struct{}
 
-type cappedCapture struct {
-	mu        sync.Mutex
-	data      []byte
-	observed  uint64
-	hash      hash.Hash
-	truncated bool
-}
+type cappedCapture struct{ *deepmonitor.Capture }
 
-func newCappedCapture() *cappedCapture {
-	return &cappedCapture{hash: sha256.New()}
-}
-
-func (c *cappedCapture) Write(data []byte) (int, error) {
-	if c == nil || len(data) == 0 {
-		return len(data), nil
+func newCappedCapture(managers ...*deepmonitor.Manager) *cappedCapture {
+	var manager *deepmonitor.Manager
+	if len(managers) > 0 {
+		manager = managers[0]
 	}
-	c.mu.Lock()
-	c.observed += uint64(len(data))
-	_, _ = c.hash.Write(data)
-	remaining := int64(deepmonitor.PayloadLimitBytes) - int64(len(c.data))
-	if remaining > 0 {
-		n := len(data)
-		if int64(n) > remaining {
-			n = int(remaining)
-		}
-		c.data = append(c.data, data[:n]...)
-	}
-	if c.observed > deepmonitor.PayloadLimitBytes {
-		c.truncated = true
-	}
-	c.mu.Unlock()
-	return len(data), nil
+	return &cappedCapture{Capture: manager.NewCapture()}
 }
 
 func (c *cappedCapture) snapshot(part, contentType string) (*pb.DeepMonitorPayloadRef, []byte) {
 	if c == nil {
 		return nil, nil
 	}
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.observed == 0 {
-		return nil, nil
-	}
-	data := append([]byte(nil), c.data...)
-	return &pb.DeepMonitorPayloadRef{
-		Part: part, ObservedBytes: c.observed, CapturedBytes: uint64(len(data)),
-		Truncated: c.truncated, Sha256: hex.EncodeToString(c.hash.Sum(nil)),
-		ContentType: contentType,
-	}, data
+	return c.Reference(part, contentType), c.Snapshot()
 }
 
 type deepMonitorReadCloser struct {
@@ -120,6 +85,7 @@ type deepMonitorRequest struct {
 	path      string
 
 	mu                      sync.Mutex
+	finished                bool
 	clientRequestHeaders    http.Header
 	upstreamRequestHeaders  http.Header
 	upstreamResponseHeaders http.Header
@@ -162,8 +128,8 @@ func (h *Handler) beginDeepMonitor(r *http.Request, start time.Time) *deepMonito
 		manager: h.deepMonitorManager, sessionID: sessionID, start: start,
 		exchange: newDeepMonitorExchangeID(), host: requestHostForRouting(r), path: r.URL.Path,
 		clientRequestHeaders: r.Header.Clone(),
-		requestBody:          newCappedCapture(), upstreamResponseBody: newCappedCapture(),
-		clientResponseBody: newCappedCapture(),
+		requestBody:          &cappedCapture{h.deepMonitorManager.NewCapture(sessionID)}, upstreamResponseBody: &cappedCapture{h.deepMonitorManager.NewCapture(sessionID)},
+		clientResponseBody: &cappedCapture{h.deepMonitorManager.NewCapture(sessionID)},
 		websocket:          strings.EqualFold(strings.TrimSpace(r.Header.Get("Upgrade")), "websocket"),
 	}
 	event := trace.baseEvent(r, "http_started")
@@ -341,7 +307,20 @@ func (t *deepMonitorRequest) captureClientBody(data []byte) {
 }
 
 func (t *deepMonitorRequest) finish(r *http.Request, entry gatewaylog.Entry) {
-	if t == nil || !t.manager.IsActive(t.sessionID) {
+	if t == nil {
+		return
+	}
+	t.mu.Lock()
+	if t.finished {
+		t.mu.Unlock()
+		return
+	}
+	t.finished = true
+	t.mu.Unlock()
+	defer t.requestBody.Release()
+	defer t.upstreamResponseBody.Release()
+	defer t.clientResponseBody.Release()
+	if !t.manager.IsActive(t.sessionID) {
 		return
 	}
 	t.mu.Lock()
@@ -395,26 +374,28 @@ func (t *deepMonitorRequest) finish(r *http.Request, entry gatewaylog.Entry) {
 	event.ClientResponseHeaders = headerList(clientRespHeaders)
 	event.Timing = timing
 	event.Error = errorText
-	payloads := make(map[string][]byte)
-	if ref, data := t.requestBody.snapshot("request_body", r.Header.Get("Content-Type")); ref != nil {
+	payloads := make(map[string]*deepmonitor.Capture)
+	if ref := t.requestBody.Seal("request_body", r.Header.Get("Content-Type")); ref != nil {
 		event.Payloads = append(event.Payloads, ref)
-		payloads[ref.Part] = data
+		payloads[ref.Part] = t.requestBody.Capture
 	}
-	upstreamRef, upstreamData := t.upstreamResponseBody.snapshot("upstream_response_body", upstreamRespHeaders.Get("Content-Type"))
-	clientRef, clientData := t.clientResponseBody.snapshot("client_response_body", clientRespHeaders.Get("Content-Type"))
+	upstreamRef := t.upstreamResponseBody.Seal("upstream_response_body", upstreamRespHeaders.Get("Content-Type"))
+	clientRef := t.clientResponseBody.Seal("client_response_body", clientRespHeaders.Get("Content-Type"))
 	if upstreamRef != nil {
 		event.Payloads = append(event.Payloads, upstreamRef)
-		payloads[upstreamRef.Part] = upstreamData
+		payloads[upstreamRef.Part] = t.upstreamResponseBody.Capture
 	}
-	if clientRef != nil && (upstreamRef == nil || clientRef.Sha256 != upstreamRef.Sha256 || clientRef.ObservedBytes != upstreamRef.ObservedBytes) {
+	if clientRef != nil && (upstreamRef == nil || clientRef.Sha256 != upstreamRef.Sha256 || clientRef.ObservedBytes != upstreamRef.ObservedBytes || clientRef.CapturedBytes != upstreamRef.CapturedBytes) {
 		event.Payloads = append(event.Payloads, clientRef)
-		payloads[clientRef.Part] = clientData
+		payloads[clientRef.Part] = t.clientResponseBody.Capture
+	} else {
+		t.clientResponseBody.Release()
 	}
 	for _, ref := range event.Payloads {
 		event.Summary.PayloadBytes += ref.CapturedBytes
 		event.Summary.Truncated = event.Summary.Truncated || ref.Truncated
 	}
-	t.manager.Record(t.sessionID, event, payloads)
+	t.manager.RecordCaptured(t.sessionID, event, payloads)
 	if websocket && websocketOpened {
 		closeEvent := t.baseEvent(r, "ws_close")
 		closeEvent.Summary.Status = http.StatusSwitchingProtocols
@@ -529,20 +510,19 @@ func (t *deepMonitorRequest) recordWebSocketMessage(direction string, messageTyp
 	if t == nil || !t.manager.IsActive(t.sessionID) {
 		return
 	}
-	captured := payload
-	if uint64(len(captured)) > deepmonitor.PayloadLimitBytes {
-		captured = captured[:deepmonitor.PayloadLimitBytes]
-	}
-	digest := sha256.Sum256(payload)
-	frame := websocketFrameCapture{
-		fin: true, opcode: byte(messageType), payloadLength: uint64(len(payload)),
-		payload: append([]byte(nil), captured...), hash: digest[:],
-		truncated: len(captured) != len(payload),
-	}
+	capture := t.manager.NewCapture(t.sessionID)
+	_, _ = capture.Write(payload)
+	frame := websocketFrameCapture{fin: true, opcode: byte(messageType),
+		payloadLength: uint64(len(payload)), capture: capture}
 	t.recordWebSocketFrame(direction, frame)
 }
 
 func (t *deepMonitorRequest) recordWebSocketFrame(direction string, frame websocketFrameCapture) {
+	defer frame.capture.Release()
+	ref := frame.capture.Seal("ws_"+direction+"_payload", "application/octet-stream")
+	if ref == nil {
+		ref = &pb.DeepMonitorPayloadRef{Part: "ws_" + direction + "_payload", ContentType: "application/octet-stream", Sha256: hex.EncodeToString(sha256.New().Sum(nil))}
+	}
 	t.mu.Lock()
 	host, path, clientIP, identity := t.host, t.path, t.clientIP, t.identity
 	t.mu.Unlock()
@@ -550,7 +530,7 @@ func (t *deepMonitorRequest) recordWebSocketFrame(direction string, frame websoc
 		Summary: &pb.DeepMonitorEventSummary{
 			Type: "ws_frame", ExchangeId: t.exchange, ConnectionId: t.exchange,
 			Host: host, Path: path, ClientIp: clientIP, Identity: identity, Direction: direction,
-			PayloadBytes: uint64(len(frame.payload)), Truncated: frame.truncated,
+			PayloadBytes: ref.CapturedBytes, Truncated: ref.Truncated,
 		},
 		WebsocketFrame: &pb.DeepMonitorWebSocketFrame{
 			Direction: direction, Fin: frame.fin, Rsv1: frame.rsv1, Rsv2: frame.rsv2,
@@ -565,13 +545,9 @@ func (t *deepMonitorRequest) recordWebSocketFrame(direction string, frame websoc
 	if frame.opcode == 1 && !frame.rsv1 {
 		contentType = "text/plain; charset=utf-8"
 	}
-	ref := &pb.DeepMonitorPayloadRef{
-		Part: part, ObservedBytes: frame.payloadLength, CapturedBytes: uint64(len(frame.payload)),
-		Truncated: frame.truncated, Sha256: hex.EncodeToString(frame.hash),
-		ContentType: contentType,
-	}
+	ref.ContentType = contentType
 	event.Payloads = []*pb.DeepMonitorPayloadRef{ref}
-	t.manager.Record(t.sessionID, event, map[string][]byte{part: frame.payload})
+	t.manager.RecordCaptured(t.sessionID, event, map[string]*deepmonitor.Capture{part: frame.capture})
 }
 
 func (t *deepMonitorRequest) recordNotice(direction, notice string) {
@@ -695,19 +671,25 @@ func (b *deepMonitorWebSocketBody) Write(data []byte) (int, error) {
 	return n, err
 }
 
+func (b *deepMonitorWebSocketBody) Close() error {
+	err := b.ReadWriteCloser.Close()
+	b.upstreamToClient.release()
+	b.clientToUpstream.release()
+	return err
+}
+
 type websocketFrameCapture struct {
 	fin, rsv1, rsv2, rsv3, masked bool
 	opcode                        byte
 	maskKey                       [4]byte
 	payloadLength                 uint64
-	payload                       []byte
-	hash                          []byte
-	truncated                     bool
+	capture                       *deepmonitor.Capture
 	closeCode                     int
 	closeReason                   string
 }
 
 type websocketFrameParser struct {
+	mu         sync.Mutex
 	trace      *deepMonitorRequest
 	direction  string
 	expectMask bool
@@ -716,20 +698,29 @@ type websocketFrameParser struct {
 	frame      websocketFrameCapture
 	remaining  uint64
 	position   uint64
-	hash       hash.Hash
 }
 
 func newWebSocketFrameParser(trace *deepMonitorRequest, direction string, expectMask bool) *websocketFrameParser {
 	return &websocketFrameParser{trace: trace, direction: direction, expectMask: expectMask, header: make([]byte, 0, 14)}
 }
 
+func (p *websocketFrameParser) release() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.disabled = true
+	p.frame.capture.Release()
+}
+
 func (p *websocketFrameParser) Feed(data []byte) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
 	if p.disabled || !p.trace.manager.IsActive(p.trace.sessionID) {
 		p.disabled = true
+		p.frame.capture.Release()
 		return
 	}
 	for len(data) > 0 {
-		if p.remaining == 0 && p.hash == nil {
+		if p.remaining == 0 && p.frame.capture == nil {
 			needed := 2
 			if len(p.header) >= 2 {
 				lengthCode := p.header[1] & 0x7f
@@ -779,20 +770,20 @@ func (p *websocketFrameParser) Feed(data []byte) {
 			take = p.remaining
 		}
 		chunk := data[:int(take)]
-		decoded := chunk
 		if p.frame.masked {
-			decoded = append([]byte(nil), chunk...)
-			for i := range decoded {
-				decoded[i] ^= p.frame.maskKey[(p.position+uint64(i))%4]
+			// Decode bounded chunks; a large Feed must not allocate a second frame.
+			var decoded [4096]byte
+			for offset := 0; offset < len(chunk); {
+				n := min(len(decoded), len(chunk)-offset)
+				copy(decoded[:n], chunk[offset:offset+n])
+				for i := 0; i < n; i++ {
+					decoded[i] ^= p.frame.maskKey[(p.position+uint64(offset+i))%4]
+				}
+				_, _ = p.frame.capture.Write(decoded[:n])
+				offset += n
 			}
-		}
-		_, _ = p.hash.Write(decoded)
-		if uint64(len(p.frame.payload)) < deepmonitor.PayloadLimitBytes {
-			allowed := int(deepmonitor.PayloadLimitBytes - uint64(len(p.frame.payload)))
-			if allowed > len(decoded) {
-				allowed = len(decoded)
-			}
-			p.frame.payload = append(p.frame.payload, decoded[:allowed]...)
+		} else {
+			_, _ = p.frame.capture.Write(chunk)
 		}
 		p.position += take
 		p.remaining -= take
@@ -840,20 +831,20 @@ func (p *websocketFrameParser) startFrame() bool {
 	}
 	p.remaining = p.frame.payloadLength
 	p.position = 0
-	p.hash = sha256.New()
+	p.frame.capture = p.trace.manager.NewCapture(p.trace.sessionID)
 	p.header = p.header[:0]
 	return true
 }
 
 func (p *websocketFrameParser) finishFrame() {
-	p.frame.hash = p.hash.Sum(nil)
-	p.frame.truncated = p.frame.payloadLength > deepmonitor.PayloadLimitBytes
-	if p.frame.opcode == 8 && len(p.frame.payload) >= 2 {
-		p.frame.closeCode = int(binary.BigEndian.Uint16(p.frame.payload[:2]))
-		p.frame.closeReason = string(p.frame.payload[2:])
+	if p.frame.opcode == 8 {
+		payload := p.frame.capture.Snapshot()
+		if len(payload) >= 2 {
+			p.frame.closeCode = int(binary.BigEndian.Uint16(payload[:2]))
+			p.frame.closeReason = string(payload[2:])
+		}
 	}
 	p.trace.recordWebSocketFrame(p.direction, p.frame)
-	p.hash = nil
 	p.frame = websocketFrameCapture{}
 	p.remaining = 0
 	p.position = 0

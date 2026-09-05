@@ -34,7 +34,10 @@ func TestUDPPacketBufferPoolsUseSizeClasses(t *testing.T) {
 		{size: 1, wantClass: udpSmallPacketBufferSize},
 		{size: udpSmallPacketBufferSize, wantClass: udpSmallPacketBufferSize},
 		{size: udpSmallPacketBufferSize + 1, wantClass: udpMediumPacketBufferSize},
-		{size: udpMediumPacketBufferSize + 1, wantClass: udpLargePacketBufferSize},
+		{size: udpMediumPacketBufferSize + 1, wantClass: udp16KPacketBufferSize},
+		{size: udp16KPacketBufferSize + 1, wantClass: udp32KPacketBufferSize},
+		{size: udp32KPacketBufferSize + 1, wantClass: udpLargePacketBufferSize},
+		{size: udpLargePacketBufferSize, wantClass: udpLargePacketBufferSize},
 	}
 
 	for _, tt := range tests {

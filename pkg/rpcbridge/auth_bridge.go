@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -28,6 +29,7 @@ const (
 	CapabilityAuthorizeHTTPV1       = "authorize_http_v1"
 	CapabilitySubdomainRuleGrantV1  = "subdomain_rule_grant_v1"
 	authBridgeSendQueueSize         = 256
+	authBridgeInFlightLimit         = 1024
 	authBridgePendingShardCount     = 64
 	authBridgeRoundTripTimeout      = 5 * time.Second
 	authBridgeCanceledSendGrace     = 100 * time.Millisecond
@@ -53,6 +55,8 @@ type AuthBridgeManager struct {
 	readyNotify   chan struct{}
 	nextID        atomic.Uint64
 	pending       [authBridgePendingShardCount]authBridgePendingShard
+	inFlight      atomic.Int64
+	inFlightLimit int64
 }
 
 type authBridgeStream struct {
@@ -82,6 +86,7 @@ type authBridgeSending struct {
 
 // authBridgePendingCall must only be passed by pointer after construction:
 // newAuthBridgePendingCall initializes done before the call is published.
+// stream is immutable; a non-nil stream also identifies an admitted call.
 type authBridgePendingCall struct {
 	stream   *authBridgeStream
 	response *pb.AuthBridgeEnvelope
@@ -89,6 +94,10 @@ type authBridgePendingCall struct {
 	done     sync.WaitGroup
 }
 
+// A non-nil stream requires a successful reserveInFlight before construction.
+// Production calls always have a stream. A nil stream is reserved for isolated
+// completion tests/benchmarks that do not exercise admission. Reusing this
+// immutable pointer avoids a separate flag that grows every pending allocation.
 func newAuthBridgePendingCall(stream *authBridgeStream) *authBridgePendingCall {
 	call := &authBridgePendingCall{stream: stream}
 	// Add before the call is published in a pending shard. Every successful
@@ -118,8 +127,9 @@ type authBridgeRecvResult struct {
 
 func NewAuthBridgeManager(token string) *AuthBridgeManager {
 	m := &AuthBridgeManager{
-		token:       strings.TrimSpace(token),
-		readyNotify: make(chan struct{}, 1),
+		token:         strings.TrimSpace(token),
+		readyNotify:   make(chan struct{}, 1),
+		inFlightLimit: authBridgeConfiguredInFlightLimit(),
 	}
 	var emptyReadyHook func(bool)
 	m.readyOnChange.Store(emptyReadyHook)
@@ -341,6 +351,13 @@ func (m *AuthBridgeManager) roundTripOnStream(ctx context.Context, expected *aut
 		return nil, ErrAuthBridgeUnavailable
 	}
 	diagnostics.RecordAuthBridgeRequest()
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if !m.reserveInFlight() {
+		diagnostics.RecordAuthBridgeInFlightDrop()
+		return nil, ErrAuthBridgeQueueFull
+	}
 
 	requestID := strconv.FormatUint(m.nextID.Add(1), 10)
 	msg.RequestId = requestID
@@ -383,6 +400,7 @@ func (m *AuthBridgeManager) roundTripOnStream(ctx context.Context, expected *aut
 			operationallog.Diagnostic("WARN", "auth_bridge", "round_trip_timeout", "response_timeout", map[string]any{
 				"duration_ms": time.Since(started).Milliseconds(),
 				"queue_depth": len(active.sendQueue),
+				"in_flight":   m.inFlight.Load(),
 			})
 		}
 		return nil, err
@@ -549,6 +567,7 @@ func (m *AuthBridgeManager) dispatchResponse(stream *authBridgeStream, msg *pb.A
 	if call != nil && call.stream == stream {
 		delete(shard.calls, msg.RequestId)
 		call.response = msg
+		m.releaseInFlight(call)
 		call.signal()
 	}
 	shard.Unlock()
@@ -627,6 +646,7 @@ func (m *AuthBridgeManager) completePending(requestID string, want *authBridgePe
 		delete(shard.calls, requestID)
 		want.response = response
 		want.err = err
+		m.releaseInFlight(want)
 		want.signal()
 	}
 	shard.Unlock()
@@ -640,11 +660,63 @@ func (m *AuthBridgeManager) failPendingForStream(stream *authBridgeStream, err e
 			if call.stream == stream {
 				delete(shard.calls, requestID)
 				call.err = err
+				m.releaseInFlight(call)
 				call.signal()
 			}
 		}
 		shard.Unlock()
 	}
+}
+
+func authBridgeConfiguredInFlightLimit() int64 {
+	const name = "FN_KNOCK_AUTH_BRIDGE_MAX_IN_FLIGHT"
+	value := strings.TrimSpace(os.Getenv(name))
+	if value == "" {
+		return authBridgeInFlightLimit
+	}
+	limit, err := strconv.ParseInt(value, 10, 64)
+	if err != nil || limit < 1 {
+		operationallog.Diagnostic("WARN", "auth_bridge", "invalid_config", name, nil)
+		return authBridgeInFlightLimit
+	}
+	return limit
+}
+
+func (m *AuthBridgeManager) reserveInFlight() bool {
+	limit := m.inFlightLimit
+	if limit <= 0 {
+		limit = authBridgeInFlightLimit
+	}
+	for {
+		current := m.inFlight.Load()
+		if current >= limit {
+			return false
+		}
+		if m.inFlight.CompareAndSwap(current, current+1) {
+			diagnostics.AddAuthBridgeInFlight(1)
+			return true
+		}
+	}
+}
+
+// The successful pending-shard removal is the sole owner of releasing a slot.
+// Late responses, cancellation and reconnects therefore cannot double-release.
+// The immutable stream distinguishes admitted calls from nil-stream completion
+// fixtures; it is not the once guard, which is the shard-locked map deletion.
+func (m *AuthBridgeManager) releaseInFlight(call *authBridgePendingCall) {
+	if call.stream != nil {
+		m.releaseAdmittedInFlight()
+	}
+}
+
+// Share the platform-specific atomic instruction sequences across response,
+// cancellation and disconnect completion paths instead of expanding them in
+// each caller. The caller still owns the shard lock and the unique map removal.
+//
+//go:noinline
+func (m *AuthBridgeManager) releaseAdmittedInFlight() {
+	m.inFlight.Add(-1)
+	diagnostics.AddAuthBridgeInFlight(-1)
 }
 
 func CheckInternalToken(ctx context.Context, token string) error {

@@ -160,6 +160,7 @@ type Handler struct {
 	preflightCache             preflightStateCache
 	loggedInActiveCount        atomic.Int64
 	loggedInActiveCleanupNano  atomic.Int64
+	loggedInActiveMu           sync.Mutex
 	reverseProxyThrottle       *reverseProxyThrottle
 	reverseProxyThrottleExempt *reverseProxyThrottleExemptIPsRuntime
 	trustedClientIPs           *gatewayTrustedClientIPsRuntime
@@ -2182,11 +2183,14 @@ func (h *Handler) ResetAllData(resetConfig *config.AppConfig) error {
 		h.gatewayLogManager.UpdateConfig(loggingConfig)
 	}
 	h.clearAuthCache()
+	h.loggedInActiveMu.Lock()
 	h.loggedInActive.Range(func(key, _ any) bool {
 		h.loggedInActive.Delete(key)
 		return true
 	})
 	h.loggedInActiveCount.Store(0)
+	h.loggedInActiveCleanupNano.Store(0)
+	h.loggedInActiveMu.Unlock()
 	h.trafficTotalIn.Store(0)
 	h.trafficTotalOut.Store(0)
 	h.trafficError5xx.Store(0)
@@ -3967,10 +3971,14 @@ func (h *Handler) GetLogDates() (gatewaylog.DatesResult, error) {
 }
 
 func (h *Handler) QueryLogEntries(date string, page int, limit int, search string, status string, loggedIn string, credential string, cursor string, pagination string) (gatewaylog.QueryResult, error) {
+	return h.QueryLogEntriesContext(context.Background(), date, page, limit, search, status, loggedIn, credential, cursor, pagination)
+}
+
+func (h *Handler) QueryLogEntriesContext(ctx context.Context, date string, page int, limit int, search string, status string, loggedIn string, credential string, cursor string, pagination string) (gatewaylog.QueryResult, error) {
 	if h.gatewayLogManager == nil {
 		return gatewaylog.QueryResult{}, nil
 	}
-	return h.gatewayLogManager.Query(date, page, limit, search, status, loggedIn, credential, cursor, pagination)
+	return h.gatewayLogManager.QueryContext(ctx, date, page, limit, search, status, loggedIn, credential, cursor, pagination)
 }
 
 func (h *Handler) AnalyzeLogEntries(fromDate string, toDate string) (gatewaylog.AnalyticsResult, error) {
@@ -4770,111 +4778,6 @@ func (h *Handler) LogGatewayEntry(entry gatewaylog.Entry) {
 	}
 }
 
-const loggedInActiveWindow = 2 * time.Minute
-const loggedInActiveCleanupInterval = 30 * time.Second
-const loggedInActiveMaxEntries = 8192
-
-func (h *Handler) storeLoggedInActive(key string, now time.Time) {
-	if key == "" {
-		return
-	}
-	nowUnixNano := now.UnixNano()
-	if _, loaded := h.loggedInActive.LoadOrStore(key, nowUnixNano); loaded {
-		h.loggedInActive.Store(key, nowUnixNano)
-	} else if h.loggedInActiveCount.Add(1) > loggedInActiveMaxEntries {
-		h.cleanupLoggedInActive(now)
-	}
-	h.cleanupLoggedInActiveIfNeeded(now)
-}
-
-func (h *Handler) markLoggedInActive(r *http.Request, clientIP string, now time.Time) {
-	h.storeLoggedInActive(activeIdentityKey(r, clientIP), now)
-}
-
-func (h *Handler) MarkLoggedInActiveByClientIP(clientIP string, now time.Time) {
-	h.storeLoggedInActive(activeIdentityKeyFromClientIP(clientIP), now)
-}
-
-func (h *Handler) hasRecentLoggedInActive(r *http.Request, clientIP string, now time.Time) bool {
-	key := activeIdentityKey(r, clientIP)
-	if key == "" {
-		return false
-	}
-	value, ok := h.loggedInActive.Load(key)
-	lastSeen, valid := value.(int64)
-	if !ok || !valid || lastSeen < now.Add(-loggedInActiveWindow).UnixNano() {
-		if ok {
-			h.deleteLoggedInActive(key)
-		}
-		return false
-	}
-	h.cleanupLoggedInActiveIfNeeded(now)
-	return true
-}
-
-func (h *Handler) activeLoggedInCount(now time.Time) int64 {
-	h.cleanupLoggedInActive(now)
-	return h.loggedInActiveCount.Load()
-}
-
-func (h *Handler) cleanupLoggedInActiveIfNeeded(now time.Time) {
-	nowUnixNano := now.UnixNano()
-	lastCleanup := h.loggedInActiveCleanupNano.Load()
-	if lastCleanup > 0 && nowUnixNano-lastCleanup < int64(loggedInActiveCleanupInterval) {
-		return
-	}
-	if !h.loggedInActiveCleanupNano.CompareAndSwap(lastCleanup, nowUnixNano) {
-		return
-	}
-	h.cleanupLoggedInActive(now)
-}
-
-func (h *Handler) cleanupLoggedInActive(now time.Time) {
-	cutoff := now.Add(-loggedInActiveWindow).UnixNano()
-	h.loggedInActive.Range(func(key, value any) bool {
-		ts, ok := value.(int64)
-		if !ok || ts < cutoff {
-			h.deleteLoggedInActive(key)
-			return true
-		}
-		return true
-	})
-	h.enforceLoggedInActiveLimit()
-}
-
-func (h *Handler) deleteLoggedInActive(key any) {
-	if _, loaded := h.loggedInActive.LoadAndDelete(key); loaded {
-		if h.loggedInActiveCount.Add(-1) < 0 {
-			h.loggedInActiveCount.Store(0)
-		}
-	}
-}
-
-func (h *Handler) enforceLoggedInActiveLimit() {
-	if h.loggedInActiveCount.Load() <= loggedInActiveMaxEntries {
-		return
-	}
-	type loggedInActiveCandidate struct {
-		key any
-		ts  int64
-	}
-	candidates := make([]loggedInActiveCandidate, 0)
-	h.loggedInActive.Range(func(key, value any) bool {
-		ts, _ := value.(int64)
-		candidates = append(candidates, loggedInActiveCandidate{key: key, ts: ts})
-		return true
-	})
-	sort.Slice(candidates, func(i, j int) bool {
-		return candidates[i].ts < candidates[j].ts
-	})
-	for _, candidate := range candidates {
-		if h.loggedInActiveCount.Load() <= loggedInActiveMaxEntries {
-			return
-		}
-		h.deleteLoggedInActive(candidate.key)
-	}
-}
-
 type requestTrafficMetrics struct {
 	inBytes         uint64
 	outBytes        uint64
@@ -5040,8 +4943,8 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	loggedStatusCode := 0
 
 	w = tw
-	debugHeaderField, debugHeaderValue := requestDebugHeaders(certificateDeploySensitivePath, r.Header)
 	if event := debugProxyEvent("request_start", requestID); event != nil {
+		debugHeaderField, debugHeaderValue := requestDebugHeaders(certificateDeploySensitivePath, r.Header)
 		event.Str("trace_id", traceID).
 			Str("method", r.Method).
 			Str("scheme", requestScheme(r)).
@@ -5143,8 +5046,8 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if deepMonitorTrace != nil {
 		deepMonitorTrace.setClientIP(clientIP)
 	}
-	debugXFF, debugRealIP, debugAliIP, debugEOIP := requestDebugClientHeaders(certificateDeploySensitivePath, r)
 	if event := debugProxyEvent("client_ip_resolved", requestID); event != nil {
+		debugXFF, debugRealIP, debugAliIP, debugEOIP := requestDebugClientHeaders(certificateDeploySensitivePath, r)
 		event.Str("client_ip", logger.SanitizeLogString(clientIP)).
 			Bool("trusted_client_ip", trustedClientIP).
 			Bool("proxy_protocol_force", snapshot.proxyProtocolForce).

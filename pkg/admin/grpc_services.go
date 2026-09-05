@@ -9,6 +9,7 @@ import (
 
 	"go-reauth-proxy/pkg/config"
 	"go-reauth-proxy/pkg/diagnostics"
+	"go-reauth-proxy/pkg/gatewaylog"
 	"go-reauth-proxy/pkg/grpc/pb"
 	"go-reauth-proxy/pkg/i18n"
 	compiledipset "go-reauth-proxy/pkg/ipset"
@@ -710,7 +711,8 @@ func (s *GRPCServer) QueryLogEntries(ctx context.Context, req *pb.GatewayLogQuer
 	if limit <= 0 {
 		limit = 20
 	}
-	result, err := s.admin.ProxyHandler.QueryLogEntries(
+	result, err := s.admin.ProxyHandler.QueryLogEntriesContext(
+		ctx,
 		req.GetDate(),
 		page,
 		limit,
@@ -722,6 +724,12 @@ func (s *GRPCServer) QueryLogEntries(ctx context.Context, req *pb.GatewayLogQuer
 		paginationMode,
 	)
 	if err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return nil, status.FromContextError(err).Err()
+		}
+		if errors.Is(err, gatewaylog.ErrQueryResultTooLarge) {
+			return nil, status.Error(codes.ResourceExhausted, err.Error())
+		}
 		return nil, grpcBadRequest("%v", err)
 	}
 	return logQueryResultToProto(result), nil
@@ -734,8 +742,11 @@ func (s *GRPCServer) FindLogEntryByTraceId(ctx context.Context, req *pb.GatewayL
 	if req == nil || strings.TrimSpace(req.GetTraceId()) == "" {
 		return nil, grpcBadRequest("trace_id is required")
 	}
-	result, err := s.admin.ProxyHandler.FindLogEntryByTraceID(req.GetTraceId())
+	result, err := s.admin.ProxyHandler.FindLogEntryByTraceIDContext(ctx, req.GetTraceId())
 	if err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return nil, status.FromContextError(err).Err()
+		}
 		return nil, grpcInternal("failed to find log entry: %v", err)
 	}
 	response := &pb.GatewayLogTraceResult{TraceId: result.TraceID, Found: result.Found}

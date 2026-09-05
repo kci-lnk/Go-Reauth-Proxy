@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"strconv"
+	"sync"
 
 	"go-reauth-proxy/pkg/logger"
 )
@@ -15,6 +16,7 @@ var (
 	htmlRewriteActionPattern = []byte(`action="/`)
 	htmlRewriteBasePattern   = []byte(`<base href="/">`)
 	htmlRewriteSlashTail     = []byte(`/`)
+	htmlRewritePathCandidate = []byte(`="/`)
 	htmlRewriteBaseTail      = []byte(`/">`)
 	htmlBodyCloseMarker      = []byte(`</body>`)
 	htmlStartMarker          = []byte(`<html`)
@@ -25,9 +27,14 @@ var (
 
 const (
 	htmlProxyMutationBodyLimitBytes int64 = 2 * 1024 * 1024
-	htmlToolbarStreamChunkSize            = 32 * 1024
-	htmlToolbarStreamTailBytes            = len("<!doctype") - 1
-	htmlToolbarStreamMaxSegments          = 5
+	// Bound expansion independently of the input limit. If rewriting would
+	// exceed this budget, preserve the original paths and only add the toolbar.
+	htmlProxyMutationOutputLimitBytes = 4 * 1024 * 1024
+	htmlSmallRewriteInputLimitBytes   = 64 * 1024
+	htmlSmallRewriteOutputLimitBytes  = 256 * 1024
+	htmlToolbarStreamChunkSize        = 32 * 1024
+	htmlToolbarStreamTailBytes        = 16
+	htmlToolbarStreamMaxSegments      = 5
 )
 
 var htmlToolbarStreamBufferPool = newProxyBufferPool(htmlToolbarStreamChunkSize)
@@ -205,9 +212,12 @@ type toolbarStreamSegment struct {
 }
 
 type streamingToolbarReadCloser struct {
-	source  io.ReadCloser
-	toolbar string
-	scratch []byte
+	mu        sync.Mutex
+	closeOnce sync.Once
+	closeErr  error
+	source    io.ReadCloser
+	toolbar   string
+	scratch   []byte
 
 	pending     [htmlToolbarStreamTailBytes]byte
 	emitPrefix  [htmlToolbarStreamTailBytes]byte
@@ -217,7 +227,7 @@ type streamingToolbarReadCloser struct {
 	segmentLen  int
 
 	injected        bool
-	sawHTML         bool
+	lexer           htmlToolbarLexer
 	readError       error
 	scratchReleased bool
 }
@@ -238,6 +248,8 @@ func (rc *streamingToolbarReadCloser) Read(p []byte) (int, error) {
 	if len(p) == 0 {
 		return 0, nil
 	}
+	rc.mu.Lock()
+	defer rc.mu.Unlock()
 	for {
 		if n := rc.readSegments(p); n > 0 {
 			return n, nil
@@ -254,13 +266,21 @@ func (rc *streamingToolbarReadCloser) Close() error {
 	if rc == nil {
 		return nil
 	}
-	rc.releaseScratch()
-	if rc.source == nil {
-		return nil
-	}
-	source := rc.source
-	rc.source = nil
-	return source.Close()
+	// Close the source before waiting for Read's lock so a blocked upstream
+	// read is interrupted. Return the scratch buffer only after that read has
+	// stopped using it; otherwise another response can acquire it too early.
+	rc.closeOnce.Do(func() {
+		if rc.source != nil {
+			rc.closeErr = rc.source.Close()
+		}
+		rc.mu.Lock()
+		defer rc.mu.Unlock()
+		rc.readError = io.ErrClosedPipe
+		clear(rc.segments[:])
+		rc.segmentNext, rc.segmentLen, rc.pendingLen = 0, 0, 0
+		rc.releaseScratch()
+	})
+	return rc.closeErr
 }
 
 func (rc *streamingToolbarReadCloser) releaseScratch() {
@@ -275,29 +295,28 @@ func (rc *streamingToolbarReadCloser) releaseScratch() {
 }
 
 func (rc *streamingToolbarReadCloser) readSegments(p []byte) int {
-	for rc.segmentNext < rc.segmentLen {
+	total := 0
+	for rc.segmentNext < rc.segmentLen && len(p) > 0 {
 		segment := &rc.segments[rc.segmentNext]
 		var n int
+		length := len(segment.text)
 		if segment.data != nil {
 			n = copy(p, segment.data[segment.offset:])
-			if segment.offset+n == len(segment.data) {
-				rc.segmentNext++
-			} else {
-				segment.offset += n
-			}
+			length = len(segment.data)
 		} else {
 			n = copy(p, segment.text[segment.offset:])
-			if segment.offset+n == len(segment.text) {
-				rc.segmentNext++
-			} else {
-				segment.offset += n
-			}
 		}
-		if n > 0 {
-			return n
+		segment.offset += n
+		if segment.offset == length {
+			*segment = toolbarStreamSegment{}
+			rc.segmentNext++
 		}
+		total += n
+		p = p[n:]
 	}
-	return 0
+	// Return all already prepared segments, but do not read upstream again
+	// just to fill p: an upstream stream may pause indefinitely at this point.
+	return total
 }
 
 func (rc *streamingToolbarReadCloser) readMore() {
@@ -333,11 +352,10 @@ func (rc *streamingToolbarReadCloser) process(chunk []byte) {
 	oldPendingLen := rc.pendingLen
 	copy(rc.emitPrefix[:oldPendingLen], rc.pending[:oldPendingLen])
 	oldPending := rc.emitPrefix[:oldPendingLen]
-	if !rc.sawHTML && containsAnyHTMLMarkerAcrossChunks(oldPending, chunk) {
-		rc.sawHTML = true
-	}
-
-	if idx := indexFoldASCIIChunks(oldPending, chunk, htmlBodyCloseMarker); idx >= 0 {
+	totalLen := len(oldPending) + len(chunk)
+	keepLen := min(totalLen, htmlToolbarStreamTailBytes)
+	flushLen := totalLen - keepLen
+	if idx := rc.lexer.scan(oldPending, chunk, flushLen); idx >= 0 {
 		rc.appendLogicalRange(oldPending, chunk, 0, idx)
 		rc.appendString(rc.toolbar)
 		rc.appendLogicalRange(oldPending, chunk, idx, len(oldPending)+len(chunk))
@@ -346,9 +364,6 @@ func (rc *streamingToolbarReadCloser) process(chunk []byte) {
 		return
 	}
 
-	totalLen := len(oldPending) + len(chunk)
-	keepLen := min(totalLen, htmlToolbarStreamTailBytes)
-	flushLen := totalLen - keepLen
 	rc.appendLogicalRange(oldPending, chunk, 0, flushLen)
 	rc.copyLogicalRangeToPending(oldPending, chunk, flushLen, totalLen)
 }
@@ -402,8 +417,16 @@ func (rc *streamingToolbarReadCloser) finish() {
 	if rc.injected {
 		return
 	}
+	if idx := rc.lexer.scan(nil, rc.pending[:rc.pendingLen], rc.pendingLen); idx >= 0 {
+		rc.appendBytes(rc.pending[:idx])
+		rc.appendString(rc.toolbar)
+		rc.appendBytes(rc.pending[idx:rc.pendingLen])
+		rc.pendingLen = 0
+		rc.injected = true
+		return
+	}
 	rc.flushPending()
-	if rc.sawHTML && rc.toolbar != "" {
+	if rc.lexer.canAppend() && rc.toolbar != "" {
 		rc.appendString(rc.toolbar)
 		rc.injected = true
 	}
@@ -417,92 +440,70 @@ func (rc *streamingToolbarReadCloser) flushPending() {
 	rc.pendingLen = 0
 }
 
-func containsAnyHTMLMarkerAcrossChunks(prefix []byte, chunk []byte) bool {
-	if containsAnyHTMLMarkerFoldASCII(chunk) {
-		return true
-	}
-	if len(prefix) == 0 {
-		return false
-	}
-
-	var boundary [htmlToolbarStreamTailBytes * 2]byte
-	n := copy(boundary[:], prefix)
-	n += copy(boundary[n:], chunk[:min(len(chunk), htmlToolbarStreamTailBytes)])
-	return containsAnyHTMLMarkerFoldASCII(boundary[:n])
-}
-
-func indexFoldASCIIChunks(prefix []byte, chunk []byte, marker []byte) int {
-	if idx := indexFoldASCII(prefix, marker); idx >= 0 {
-		return idx
-	}
-	if len(prefix) > 0 && len(marker) > 1 {
-		start := max(0, len(prefix)-len(marker)+1)
-		totalLen := len(prefix) + len(chunk)
-		for i := start; i < len(prefix) && i+len(marker) <= totalLen; i++ {
-			matched := true
-			for j := range marker {
-				position := i + j
-				var value byte
-				if position < len(prefix) {
-					value = prefix[position]
-				} else {
-					value = chunk[position-len(prefix)]
-				}
-				if lowerASCII(value) != lowerASCII(marker[j]) {
-					matched = false
-					break
-				}
-			}
-			if matched {
-				return i
-			}
-		}
-	}
-	if idx := indexFoldASCII(chunk, marker); idx >= 0 {
-		return len(prefix) + idx
-	}
-	return -1
-}
-
 func mutateHTMLProxyBody(body []byte, rewrite bool, prefix string, toolbarHTML string) []byte {
 	if len(body) == 0 {
 		return body
 	}
-	if !rewrite || prefix == "" {
-		return injectToolbarIntoHTMLBytes(body, toolbarHTML)
+	insertAt := -1
+	if toolbarHTML != "" {
+		insertAt = htmlToolbarInsertionOffset(body)
+	}
+	outputLen := len(body)
+	if insertAt >= 0 {
+		if len(toolbarHTML) > htmlProxyMutationOutputLimitBytes-outputLen {
+			return body
+		}
+		outputLen += len(toolbarHTML)
 	}
 
-	insertAt := -1
-	appendToolbarAtEnd := false
-	if toolbarHTML != "" {
-		if idx := lastIndexFoldASCII(body, htmlBodyCloseMarker); idx >= 0 {
-			insertAt = idx
+	// Count before allocating: repeated absolute paths can amplify a bounded
+	// input many times when the route prefix is long. Skip the whole rewrite
+	// on overflow so a page never contains a mixture of rewritten paths.
+	rewrite = rewrite && prefix != ""
+	if rewrite {
+		// Every match consumes at least len(`src="/`) input bytes. For small
+		// pages this upper bound proves safety without counting every match
+		// first. Keep the common short-prefix path a single lazy-copy pass.
+		maxMatches := len(body) / len(htmlRewriteSrcPattern)
+		if len(body) <= htmlSmallRewriteInputLimitBytes && maxMatches > 0 &&
+			outputLen <= htmlSmallRewriteOutputLimitBytes &&
+			len(prefix) <= (htmlSmallRewriteOutputLimitBytes-outputLen)/maxMatches {
+			return mutateSmallHTMLProxyBody(body, prefix, toolbarHTML, insertAt, outputLen, outputLen+maxMatches*len(prefix))
+		}
+		// Each replacement adds exactly len(prefix), including <base>, whose
+		// href also occurs in this non-overlapping count. bytes.Count avoids
+		// a second byte-by-byte rewrite pass solely to size the allocation.
+		matches := bytes.Count(body, htmlRewriteHrefPattern) + bytes.Count(body, htmlRewriteSrcPattern) + bytes.Count(body, htmlRewriteActionPattern)
+		if matches == 0 || matches > (htmlProxyMutationOutputLimitBytes-outputLen)/len(prefix) {
+			rewrite = false
 		} else {
-			appendToolbarAtEnd = containsAnyHTMLMarkerFoldASCII(body)
+			outputLen += matches * len(prefix)
 		}
 	}
+	if outputLen == len(body) {
+		return body
+	}
 
-	var out []byte
+	out := make([]byte, 0, outputLen)
+	if !rewrite {
+		out = append(out, body[:insertAt]...)
+		out = append(out, toolbarHTML...)
+		return append(out, body[insertAt:]...)
+	}
 	last := 0
 	for i := 0; i < len(body); {
 		if i == insertAt {
-			if out == nil {
-				out = make([]byte, 0, len(body)+len(toolbarHTML)+htmlRewriteExtraCapacity(len(body), len(prefix)))
-			}
 			out = append(out, body[last:i]...)
 			out = append(out, toolbarHTML...)
 			last = i
-			insertAt = -1
-			continue
 		}
-
-		oldLen, headLen, tail := htmlAbsolutePathReplacement(body[i:])
+		oldLen, headLen, tail := 0, 0, []byte(nil)
+		if rewrite {
+			oldLen, headLen, tail = htmlAbsolutePathReplacement(body[i:])
+		}
 		if oldLen == 0 {
 			i++
 			continue
-		}
-		if out == nil {
-			out = make([]byte, 0, len(body)+len(toolbarHTML)+htmlRewriteExtraCapacity(len(body), len(prefix)))
 		}
 		out = append(out, body[last:i]...)
 		out = append(out, body[i:i+headLen]...)
@@ -511,68 +512,86 @@ func mutateHTMLProxyBody(body []byte, rewrite bool, prefix string, toolbarHTML s
 		i += oldLen
 		last = i
 	}
-
-	if out == nil {
-		if appendToolbarAtEnd {
-			out = make([]byte, 0, len(body)+len(toolbarHTML))
-			out = append(out, body...)
-			out = append(out, toolbarHTML...)
-			return out
-		}
-		return body
-	}
 	out = append(out, body[last:]...)
-	if insertAt >= 0 {
-		out = append(out, toolbarHTML...)
-	}
-	if appendToolbarAtEnd {
+	if insertAt == len(body) {
 		out = append(out, toolbarHTML...)
 	}
 	return out
+}
+
+// mutateSmallHTMLProxyBody is used only after a worst-case bound proves its
+// output fits the small-page budget. If the initial estimate is insufficient,
+// count the unprocessed suffix once and resize exactly; subsequent appends
+// cannot trigger repeated geometric growth.
+func mutateSmallHTMLProxyBody(body []byte, prefix, toolbarHTML string, insertAt, outputLen, maxOutputLen int) []byte {
+	extra := min(max(len(prefix)*16, len(body)/4), len(prefix)*1024)
+	initialCapacity := min(outputLen+extra, maxOutputLen)
+	var out []byte
+	last := 0
+	for cursor := 0; ; {
+		slash := nextHTMLAbsolutePathSlash(body, cursor)
+		if slash < 0 {
+			break
+		}
+		if out == nil {
+			out = make([]byte, 0, initialCapacity)
+		}
+		if outputLen+len(prefix) > cap(out) {
+			// The current insertion is already known; count only later ones.
+			suffix := body[slash+1:]
+			remaining := bytes.Count(suffix, htmlRewriteHrefPattern) + bytes.Count(suffix, htmlRewriteSrcPattern) + bytes.Count(suffix, htmlRewriteActionPattern)
+			next := make([]byte, len(out), outputLen+(remaining+1)*len(prefix))
+			copy(next, out)
+			out = next
+		}
+		outputLen += len(prefix)
+		if insertAt >= last && insertAt <= slash {
+			out = append(out, body[last:insertAt]...)
+			out = append(out, toolbarHTML...)
+			last = insertAt
+			insertAt = -1
+		}
+		out = append(out, body[last:slash]...)
+		out = append(out, prefix...)
+		last = slash
+		cursor = slash + 1
+	}
+	if out == nil {
+		if insertAt < 0 {
+			return body
+		}
+		out = make([]byte, 0, outputLen)
+	}
+	if insertAt >= last {
+		out = append(out, body[last:insertAt]...)
+		out = append(out, toolbarHTML...)
+		last = insertAt
+	}
+	return append(out, body[last:]...)
+}
+
+// All supported replacements, including <base href="/">, insert the prefix
+// immediately before a slash following =". Search that common suffix directly
+// so ordinary text and unrelated markup need no per-byte rewrite dispatch.
+func nextHTMLAbsolutePathSlash(body []byte, cursor int) int {
+	for cursor < len(body) {
+		index := bytes.Index(body[cursor:], htmlRewritePathCandidate)
+		if index < 0 {
+			return -1
+		}
+		equal := cursor + index
+		if equal >= 4 && string(body[equal-4:equal]) == "href" ||
+			equal >= 3 && string(body[equal-3:equal]) == "src" ||
+			equal >= 6 && string(body[equal-6:equal]) == "action" {
+			return equal + 2
+		}
+		cursor = equal + len(htmlRewritePathCandidate)
+	}
+	return -1
 }
 
 func rewriteHTMLAbsolutePaths(body []byte, prefix string) []byte {
-	if len(body) == 0 || prefix == "" {
-		return body
-	}
-
-	var out []byte
-	last := 0
-	for i := 0; i < len(body); {
-		oldLen, headLen, tail := htmlAbsolutePathReplacement(body[i:])
-		if oldLen == 0 {
-			i++
-			continue
-		}
-		if out == nil {
-			out = make([]byte, 0, len(body)+htmlRewriteExtraCapacity(len(body), len(prefix)))
-		}
-		out = append(out, body[last:i]...)
-		out = append(out, body[i:i+headLen]...)
-		out = append(out, prefix...)
-		out = append(out, tail...)
-		i += oldLen
-		last = i
-	}
-	if out == nil {
-		return body
-	}
-	out = append(out, body[last:]...)
-	return out
-}
-
-func htmlRewriteExtraCapacity(bodyLen int, prefixLen int) int {
-	if prefixLen <= 0 {
-		return 0
-	}
-	extra := prefixLen * 16
-	if quarter := bodyLen / 4; quarter > extra {
-		extra = quarter
-	}
-	if maxExtra := prefixLen * 1024; extra > maxExtra {
-		extra = maxExtra
-	}
-	return extra
+	return mutateHTMLProxyBody(body, true, prefix, "")
 }
 
 func htmlAbsolutePathReplacement(s []byte) (oldLen int, headLen int, tail []byte) {
@@ -601,43 +620,7 @@ func htmlAbsolutePathReplacement(s []byte) (oldLen int, headLen int, tail []byte
 }
 
 func injectToolbarIntoHTMLBytes(body []byte, toolbarHTML string) []byte {
-	if toolbarHTML == "" || len(body) == 0 {
-		return body
-	}
-
-	if idx := lastIndexFoldASCII(body, htmlBodyCloseMarker); idx != -1 {
-		out := make([]byte, 0, len(body)+len(toolbarHTML))
-		out = append(out, body[:idx]...)
-		out = append(out, toolbarHTML...)
-		out = append(out, body[idx:]...)
-		return out
-	}
-
-	if containsAnyHTMLMarkerFoldASCII(body) {
-		return append(body, toolbarHTML...)
-	}
-
-	return body
-}
-
-func containsAnyHTMLMarkerFoldASCII(s []byte) bool {
-	for i := 0; i < len(s); i++ {
-		if s[i] != '<' {
-			continue
-		}
-		remaining := s[i:]
-		if equalFoldASCIIPrefix(remaining, htmlStartMarker) ||
-			equalFoldASCIIPrefix(remaining, htmlHeadMarker) ||
-			equalFoldASCIIPrefix(remaining, htmlBodyStartMarker) ||
-			equalFoldASCIIPrefix(remaining, htmlDoctypeMarker) {
-			return true
-		}
-	}
-	return false
-}
-
-func equalFoldASCIIPrefix(s []byte, prefix []byte) bool {
-	return len(s) >= len(prefix) && equalFoldASCIIBytes(s[:len(prefix)], prefix)
+	return mutateHTMLProxyBody(body, false, "", toolbarHTML)
 }
 
 func lastIndexFoldASCII(s []byte, substr []byte) int {
@@ -648,22 +631,6 @@ func lastIndexFoldASCII(s []byte, substr []byte) int {
 		return -1
 	}
 	for i := len(s) - len(substr); i >= 0; i-- {
-		if equalFoldASCIIBytes(s[i:i+len(substr)], substr) {
-			return i
-		}
-	}
-	return -1
-}
-
-func indexFoldASCII(s []byte, substr []byte) int {
-	if len(substr) == 0 {
-		return 0
-	}
-	if len(substr) > len(s) {
-		return -1
-	}
-	last := len(s) - len(substr)
-	for i := 0; i <= last; i++ {
 		if equalFoldASCIIBytes(s[i:i+len(substr)], substr) {
 			return i
 		}

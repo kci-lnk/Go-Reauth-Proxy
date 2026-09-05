@@ -33,6 +33,8 @@ const (
 	udpSessionReaperInterval   = 10 * time.Second
 	udpSmallPacketBufferSize   = 2 * 1024
 	udpMediumPacketBufferSize  = 8 * 1024
+	udp16KPacketBufferSize     = 16 * 1024
+	udp32KPacketBufferSize     = 32 * 1024
 	udpLargePacketBufferSize   = 64 * 1024
 	udpSessionQueuePacketLimit = 32
 	udpSessionQueueByteLimit   = 256 * 1024
@@ -43,6 +45,8 @@ const (
 
 type udpSmallPacketBuffer [udpSmallPacketBufferSize]byte
 type udpMediumPacketBuffer [udpMediumPacketBufferSize]byte
+type udp16KPacketBuffer [udp16KPacketBufferSize]byte
+type udp32KPacketBuffer [udp32KPacketBufferSize]byte
 type udpLargePacketBuffer [udpLargePacketBufferSize]byte
 
 var (
@@ -55,6 +59,8 @@ var (
 	udpLargePacketBufferPool = sync.Pool{New: func() any {
 		return new(udpLargePacketBuffer)
 	}}
+	udp16KPacketBufferPool = sync.Pool{New: func() any { return new(udp16KPacketBuffer) }}
+	udp32KPacketBufferPool = sync.Pool{New: func() any { return new(udp32KPacketBuffer) }}
 )
 
 type Manager struct {
@@ -145,6 +151,8 @@ type udpListenerState struct {
 	queuedBytes    atomic.Int64
 	droppedPackets atomic.Uint64
 	droppedBytes   atomic.Uint64
+	bufferBudget   *udpBufferBudget
+	idleTimeout    time.Duration
 }
 
 type udpSession struct {
@@ -188,6 +196,7 @@ type udpPacket struct {
 	payload   []byte
 	poolClass int
 	pooled    any
+	budget    *udpBufferBudget
 }
 
 func acquireUDPPacket(size int) udpPacket {
@@ -198,6 +207,12 @@ func acquireUDPPacket(size int) udpPacket {
 	case size <= udpMediumPacketBufferSize:
 		buffer := udpMediumPacketBufferPool.Get().(*udpMediumPacketBuffer)
 		return udpPacket{payload: buffer[:size], poolClass: udpMediumPacketBufferSize, pooled: buffer}
+	case size <= udp16KPacketBufferSize:
+		buffer := udp16KPacketBufferPool.Get().(*udp16KPacketBuffer)
+		return udpPacket{payload: buffer[:size], poolClass: udp16KPacketBufferSize, pooled: buffer}
+	case size <= udp32KPacketBufferSize:
+		buffer := udp32KPacketBufferPool.Get().(*udp32KPacketBuffer)
+		return udpPacket{payload: buffer[:size], poolClass: udp32KPacketBufferSize, pooled: buffer}
 	case size <= udpLargePacketBufferSize:
 		buffer := udpLargePacketBufferPool.Get().(*udpLargePacketBuffer)
 		return udpPacket{payload: buffer[:size], poolClass: udpLargePacketBufferSize, pooled: buffer}
@@ -207,6 +222,9 @@ func acquireUDPPacket(size int) udpPacket {
 }
 
 func releaseUDPPacket(packet udpPacket) {
+	if packet.budget != nil {
+		packet.budget.used.Add(-int64(udpPacketQueueFootprint(packet)))
+	}
 	if packet.pooled == nil {
 		return
 	}
@@ -215,6 +233,10 @@ func releaseUDPPacket(packet udpPacket) {
 		udpSmallPacketBufferPool.Put(packet.pooled)
 	case udpMediumPacketBufferSize:
 		udpMediumPacketBufferPool.Put(packet.pooled)
+	case udp16KPacketBufferSize:
+		udp16KPacketBufferPool.Put(packet.pooled)
+	case udp32KPacketBufferSize:
+		udp32KPacketBufferPool.Put(packet.pooled)
 	case udpLargePacketBufferSize:
 		udpLargePacketBufferPool.Put(packet.pooled)
 	}
@@ -807,20 +829,36 @@ func newUDPListenerState(key streamRuleKey, handler func(*udpListenerState, net.
 	if len(packetConns) == 0 {
 		return nil, fmt.Errorf("no stream listeners started for %s", key.String())
 	}
+	readPackets := make([]udpPacket, 0, len(packetConns))
+	for range packetConns {
+		packet, ok := acquireUDPPacketWithBudget(udpLargePacketBufferSize, processUDPBufferBudget)
+		if !ok {
+			for _, pc := range packetConns {
+				_ = pc.Close()
+			}
+			for _, allocated := range readPackets {
+				releaseUDPPacket(allocated)
+			}
+			return nil, fmt.Errorf("start UDP listener %s: %w", key.String(), errUDPBufferBudgetExhausted)
+		}
+		readPackets = append(readPackets, packet)
+	}
 
 	state := &udpListenerState{
-		key:         key,
-		packetConns: packetConns,
-		stop:        make(chan struct{}),
-		initSlots:   make(chan struct{}, udpSessionInitLimit),
-		sessions:    make(map[string]*udpSession),
+		key:          key,
+		packetConns:  packetConns,
+		stop:         make(chan struct{}),
+		initSlots:    make(chan struct{}, udpSessionInitLimit),
+		sessions:     make(map[string]*udpSession),
+		bufferBudget: processUDPBufferBudget,
+		idleTimeout:  configuredUDPIdleTimeout,
 	}
 
 	state.wg.Add(1)
 	go state.reaperLoop()
-	for _, pc := range packetConns {
+	for i, pc := range packetConns {
 		state.wg.Add(1)
-		go state.readLoop(pc, handler)
+		go state.readLoop(pc, readPackets[i], handler)
 	}
 
 	log.Printf("Stream listener started for %s on %s", key.String(), strings.Join(listenAddrs, ", "))
@@ -833,10 +871,9 @@ func newUDPListenerState(key streamRuleKey, handler func(*udpListenerState, net.
 	return state, nil
 }
 
-func (s *udpListenerState) readLoop(pc net.PacketConn, handler func(*udpListenerState, net.PacketConn, net.Addr, udpPacket, streamRuleKey)) {
+func (s *udpListenerState) readLoop(pc net.PacketConn, readPacket udpPacket, handler func(*udpListenerState, net.PacketConn, net.Addr, udpPacket, streamRuleKey)) {
 	defer s.wg.Done()
 
-	readPacket := acquireUDPPacket(udpLargePacketBufferSize)
 	defer releaseUDPPacket(readPacket)
 	buffer := readPacket.payload[:cap(readPacket.payload)]
 	for {
@@ -875,7 +912,12 @@ func (s *udpListenerState) readLoop(pc net.PacketConn, handler func(*udpListener
 			continue
 		}
 
-		packet := acquireUDPPacket(n)
+		packet, ok := acquireUDPPacketWithBudget(n, s.bufferBudget)
+		if !ok {
+			s.droppedPackets.Add(1)
+			s.droppedBytes.Add(uint64(n))
+			continue
+		}
 		copy(packet.payload, buffer[:n])
 		handler(s, pc, clientAddr, packet, s.key)
 	}
@@ -897,7 +939,11 @@ func (s *udpListenerState) reaperLoop() {
 }
 
 func (s *udpListenerState) reapIdleSessions(now time.Time) {
-	cutoff := now.Add(-udpSessionIdleTimeout).UnixNano()
+	timeout := s.idleTimeout
+	if timeout <= 0 {
+		timeout = udpSessionIdleTimeout
+	}
+	cutoff := now.Add(-timeout).UnixNano()
 	s.mu.Lock()
 	sessions := make([]*udpSession, 0, len(s.sessions))
 	for _, session := range s.sessions {
@@ -1734,6 +1780,9 @@ func (m *Manager) relayUDPSession(session *udpSession) {
 	readerDone := make(chan struct{}, 1)
 	go func() {
 		m.readUDPUpstream(session, upstream)
+		// The writer may be blocked inside upstream.Write and unable to select
+		// readerDone. Closing the session here also interrupts that direction.
+		session.close()
 		readerDone <- struct{}{}
 	}()
 	readerFinished := false
@@ -1810,16 +1859,21 @@ func (m *Manager) relayUDPSession(session *udpSession) {
 }
 
 func (m *Manager) readUDPUpstream(session *udpSession, upstream net.Conn) {
-	packet := acquireUDPPacket(udpLargePacketBufferSize)
-	defer releaseUDPPacket(packet)
-	buffer := packet.payload[:cap(packet.payload)]
+	readPacket, err := newUDPPacketReader(upstream, session.listener.bufferBudget)
+	if err != nil {
+		session.setStatus(http.StatusBadGateway)
+		return
+	}
 	for {
-		n, err := upstream.Read(buffer)
-		if n > 0 {
+		packet, err := readPacket()
+		n := len(packet.payload)
+		if packet.pooled != nil && (n > 0 || err == nil) {
 			if !session.touch(time.Now()) {
+				releaseUDPPacket(packet)
 				return
 			}
-			written, writeErr := session.packetConn.WriteTo(buffer[:n], session.clientAddr)
+			written, writeErr := session.packetConn.WriteTo(packet.payload, session.clientAddr)
+			releaseUDPPacket(packet)
 			if written > 0 {
 				session.addBytesOut(written)
 			}
@@ -1855,6 +1909,8 @@ func (m *Manager) readUDPUpstream(session *udpSession, upstream net.Conn) {
 				log.Printf("UDP downstream short write on %s to %s for %s: wrote %d of %d bytes", routeKey, target, addrString(session.clientAddr), written, n)
 				return
 			}
+		} else {
+			releaseUDPPacket(packet)
 		}
 		if err == nil {
 			continue
@@ -2007,12 +2063,12 @@ func relayBidirectional(client net.Conn, upstream net.Conn, meter *streamTraffic
 
 	go func() {
 		bytes, err := copyStream(upstream, client, recordIn)
-		closeWrite(upstream)
+		finishRelayDirection(upstream, client, err)
 		clientToUpstream <- relayResult{bytes: bytes, err: err}
 	}()
 
 	bytesOut, upstreamToClientErr := copyStream(client, upstream, recordOut)
-	closeWrite(client)
+	finishRelayDirection(client, upstream, upstreamToClientErr)
 	inResult := <-clientToUpstream
 
 	firstErr := normalizeRelayError(upstreamToClientErr)
@@ -2020,6 +2076,18 @@ func relayBidirectional(client net.Conn, upstream net.Conn, meter *streamTraffic
 		firstErr = err
 	}
 	return inResult.bytes, bytesOut, firstErr
+}
+
+func finishRelayDirection(dst, src net.Conn, err error) {
+	// Only EOF permits the peer to finish its reply through the other direction.
+	// Inspect the raw error: resets and broken pipes are intentionally normalized
+	// for logging, but must still unblock the other copy and release its resources.
+	if err == nil || errors.Is(err, io.EOF) {
+		closeWrite(dst)
+		return
+	}
+	_ = dst.Close()
+	_ = src.Close()
 }
 
 type countedConn struct {
@@ -2048,6 +2116,9 @@ func copyStream(dst net.Conn, src net.Conn, onWrite func(int)) (uint64, error) {
 			}
 			if werr != nil {
 				return written, werr
+			}
+			if wn != n {
+				return written, io.ErrShortWrite
 			}
 		}
 		if rerr != nil {

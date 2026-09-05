@@ -91,9 +91,13 @@ func TestReverseProxyThrottleShardEnforcesMaxEntries(t *testing.T) {
 	})
 	shard := &throttle.shards[0]
 	for i := 0; i < reverseProxyThrottleMaxEntriesPerShard+25; i++ {
-		shard.entries[fmt.Sprintf("identity-%d", i)] = &reverseProxyThrottleEntry{
+		identity := fmt.Sprintf("identity-%d", i)
+		entry := &reverseProxyThrottleEntry{
+			identity: identity,
 			lastSeen: time.Unix(int64(i), 0),
 		}
+		shard.entries[identity] = entry
+		shard.appendNewest(entry)
 	}
 
 	shard.enforceMaxEntriesLocked()

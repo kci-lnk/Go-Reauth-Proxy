@@ -6,24 +6,41 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 )
 
 type decodedHTMLReadCloser struct {
-	decoder io.ReadCloser
-	source  io.Closer
+	mu        sync.Mutex
+	closeOnce sync.Once
+	closeErr  error
+	closed    bool
+	decoder   io.ReadCloser
+	source    io.Closer
 }
 
 func (rc *decodedHTMLReadCloser) Read(p []byte) (int, error) {
+	rc.mu.Lock()
+	defer rc.mu.Unlock()
+	if rc.closed {
+		return 0, io.ErrClosedPipe
+	}
 	return rc.decoder.Read(p)
 }
 
 func (rc *decodedHTMLReadCloser) Close() error {
-	decoderErr := rc.decoder.Close()
-	sourceErr := rc.source.Close()
-	if decoderErr != nil {
-		return decoderErr
-	}
-	return sourceErr
+	rc.closeOnce.Do(func() {
+		// gzip/zlib Close is not safe alongside Read. Closing the upstream
+		// source first wakes a blocked decoder without mutating its state.
+		sourceErr := rc.source.Close()
+		rc.mu.Lock()
+		defer rc.mu.Unlock()
+		rc.closed = true
+		rc.closeErr = rc.decoder.Close()
+		if rc.closeErr == nil {
+			rc.closeErr = sourceErr
+		}
+	})
+	return rc.closeErr
 }
 
 func decodeHTMLProxyResponseBody(resp *http.Response) (string, error) {

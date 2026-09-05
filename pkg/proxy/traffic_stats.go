@@ -78,6 +78,9 @@ type StreamActiveIPsStats struct {
 }
 
 type activeIPTracker struct {
+	// Membership changes are serialized; existing records remain lock-free.
+	// This also makes the entry count exact during concurrent admissions.
+	activeIPMu                  sync.Mutex
 	activeIPs                   sync.Map
 	activeIPEntries             atomic.Int64
 	activeIPLastCleanupUnixNano atomic.Int64
@@ -111,6 +114,12 @@ func (c *activeIPTracker) deleteActiveIP(key any) {
 	if c == nil {
 		return
 	}
+	c.activeIPMu.Lock()
+	defer c.activeIPMu.Unlock()
+	c.deleteActiveIPLocked(key)
+}
+
+func (c *activeIPTracker) deleteActiveIPLocked(key any) {
 	if _, loaded := c.activeIPs.LoadAndDelete(key); loaded {
 		if c.activeIPEntries.Add(-1) < 0 {
 			c.activeIPEntries.Store(0)
@@ -122,21 +131,23 @@ func (c *activeIPTracker) cleanupActiveIPs(now time.Time) {
 	if c == nil {
 		return
 	}
+	c.activeIPMu.Lock()
+	defer c.activeIPMu.Unlock()
 	cutoff := now.Add(-hostActiveIPWindow).UnixNano()
 	c.activeIPs.Range(func(key, value any) bool {
 		record, ok := value.(*hostActiveIPRecord)
 		if !ok || record == nil {
-			c.deleteActiveIP(key)
+			c.deleteActiveIPLocked(key)
 			return true
 		}
 		lastSeen := record.lastSeenUnixNano.Load()
 		activeConns := record.activeConns.Load()
 		if activeConns <= 0 && lastSeen < cutoff {
-			c.deleteActiveIP(key)
+			c.deleteActiveIPLocked(key)
 		}
 		return true
 	})
-	c.enforceActiveIPLimit()
+	c.enforceActiveIPLimitLocked()
 }
 
 func (c *activeIPTracker) cleanupActiveIPsIfNeeded(now time.Time) {
@@ -154,7 +165,7 @@ func (c *activeIPTracker) cleanupActiveIPsIfNeeded(now time.Time) {
 	c.cleanupActiveIPs(now)
 }
 
-func (c *activeIPTracker) enforceActiveIPLimit() {
+func (c *activeIPTracker) enforceActiveIPLimitLocked() {
 	if c == nil || c.activeIPEntries.Load() <= hostActiveIPHardLimit {
 		return
 	}
@@ -163,7 +174,7 @@ func (c *activeIPTracker) enforceActiveIPLimit() {
 		lastSeen    int64
 		activeConns int64
 	}
-	candidates := make([]activeIPCandidate, 0)
+	candidates := make([]activeIPCandidate, 0, c.activeIPEntries.Load())
 	c.activeIPs.Range(func(key, value any) bool {
 		record, ok := value.(*hostActiveIPRecord)
 		if !ok || record == nil {
@@ -183,11 +194,16 @@ func (c *activeIPTracker) enforceActiveIPLimit() {
 		}
 		return candidates[i].lastSeen < candidates[j].lastSeen
 	})
+	// Leave headroom for a burst of new identities. Evicting only one entry
+	// would repeat a full scan and sort on every request under cardinality churn.
+	// Prefer inactive records as before; these statistics are best-effort at
+	// capacity and evicting a record never closes its underlying connection.
+	target := int64(hostActiveIPHardLimit - hostActiveIPHardLimit/16)
 	for _, candidate := range candidates {
-		if c.activeIPEntries.Load() <= hostActiveIPHardLimit {
+		if c.activeIPEntries.Load() <= target {
 			return
 		}
-		c.deleteActiveIP(candidate.key)
+		c.deleteActiveIPLocked(candidate.key)
 	}
 }
 
@@ -201,26 +217,29 @@ func (c *activeIPTracker) markActiveIP(clientIP string, now time.Time) *hostActi
 	}
 
 	c.cleanupActiveIPsIfNeeded(now)
-	record, loaded := c.activeIPs.Load(ip)
-	activeRecord, ok := record.(*hostActiveIPRecord)
-	if !loaded || !ok || activeRecord == nil {
-		candidate := &hostActiveIPRecord{ip: ip}
-		actual, wasLoaded := c.activeIPs.LoadOrStore(ip, candidate)
-		loaded = wasLoaded
-		if existing, valid := actual.(*hostActiveIPRecord); valid && existing != nil {
-			activeRecord = existing
-		} else {
-			activeRecord = candidate
+	if record, ok := c.activeIPs.Load(ip); ok {
+		if activeRecord, valid := record.(*hostActiveIPRecord); valid && activeRecord != nil {
+			activeRecord.lastSeenUnixNano.Store(now.UnixNano())
+			activeRecord.activeConns.Add(1)
+			return activeRecord
 		}
 	}
 
-	activeRecord.lastSeenUnixNano.Store(now.UnixNano())
-	activeRecord.activeConns.Add(1)
-	if !loaded {
-		if c.activeIPEntries.Add(1) > hostActiveIPHardLimit {
-			c.cleanupActiveIPs(now)
+	c.activeIPMu.Lock()
+	defer c.activeIPMu.Unlock()
+	// Recheck after locking: another request may have admitted this IP.
+	record, loaded := c.activeIPs.Load(ip)
+	activeRecord, valid := record.(*hostActiveIPRecord)
+	if !valid || activeRecord == nil {
+		activeRecord = &hostActiveIPRecord{ip: ip}
+		c.activeIPs.Store(ip, activeRecord)
+		if !loaded {
+			c.activeIPEntries.Add(1)
 		}
 	}
+	activeRecord.lastSeenUnixNano.Store(now.UnixNano())
+	activeRecord.activeConns.Add(1)
+	c.enforceActiveIPLimitLocked()
 
 	return activeRecord
 }

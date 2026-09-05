@@ -104,6 +104,34 @@ type tlsConnectionStateProvider interface {
 	ConnectionState() tls.ConnectionState
 }
 
+type proxyConnStateContextKey struct{}
+
+func (t *proxyConnTracker) connContext(ctx context.Context, c net.Conn) context.Context {
+	ctx = proxyProtocolConnContext(ctx, c)
+	tracked, _ := t.m.LoadOrStore(c, &trackedProxyConnState{state: http.StateNew, metrics: true})
+	return context.WithValue(ctx, proxyConnStateContextKey{}, tracked)
+}
+
+func proxyConnectionRetirementHandler(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.ProtoMajor == 2 {
+			if tracked, ok := r.Context().Value(proxyConnStateContextKey{}).(*trackedProxyConnState); ok {
+				tracked.mu.Lock()
+				retiring := tracked.retiring
+				tracked.mu.Unlock()
+				if retiring {
+					// net/http consumes this internal signal, omits it from HTTP/2
+					// headers, and sends GOAWAY while draining accepted streams.
+					// A handler may replace the header; then a later request or
+					// the idle timeout retires the connection without truncating it.
+					w.Header().Set("Connection", "close")
+				}
+			}
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
 func (t *proxyConnTracker) update(c net.Conn, state http.ConnState) {
 	if t == nil || c == nil {
 		return
@@ -129,8 +157,11 @@ func (t *proxyConnTracker) update(c net.Conn, state http.ConnState) {
 		return
 	}
 	serverName := ""
+	isHTTP2 := false
 	if tlsConn, ok := c.(tlsConnectionStateProvider); ok && (state == http.StateActive || state == http.StateIdle) {
-		if current := strings.TrimSpace(tlsConn.ConnectionState().ServerName); current != "" {
+		tlsState := tlsConn.ConnectionState()
+		isHTTP2 = tlsState.NegotiatedProtocol == "h2"
+		if current := strings.TrimSpace(tlsState.ServerName); current != "" {
 			serverName = strings.ToLower(current)
 		}
 	}
@@ -140,7 +171,10 @@ func (t *proxyConnTracker) update(c net.Conn, state http.ConnState) {
 	if serverName != "" {
 		tracked.serverName = serverName
 	}
-	shouldClose := state == http.StateIdle && tracked.retiring && !tracked.closing
+	// HTTP/2 reports StateIdle before its final buffered END_STREAM is flushed.
+	// Let the next request signal graceful GOAWAY, or the server idle timeout
+	// retire it; a raw Close here can truncate an otherwise complete response.
+	shouldClose := state == http.StateIdle && !isHTTP2 && tracked.retiring && !tracked.closing
 	if shouldClose {
 		tracked.closing = true
 	}
@@ -187,7 +221,8 @@ func (t *proxyConnTracker) retireForServerNames(serverNames []string) {
 		// Do not close an observed-idle connection here: a new request can race
 		// between observing StateIdle and Close. Mark it instead. ConnState calls
 		// update synchronously before a handler starts, so the connection is closed
-		// safely the next time it transitions back to StateIdle. The request-level
+		// safely the next time HTTP/1 transitions back to StateIdle. HTTP/2 asks
+		// net/http to drain gracefully on the next request instead. The request-level
 		// 421 guard remains the fallback for that one reuse.
 		tracked.retiring = true
 		tracked.mu.Unlock()
@@ -849,12 +884,14 @@ func run(options runOptions) error {
 		grpcServer.SetServingStatus(healthGatewayAuthBridge, ready)
 	})
 
+	httpsConns := &proxyConnTracker{}
+	httpConns := &proxyConnTracker{}
 	httpsServer = &http.Server{
-		Handler:           proxyHandler,
+		Handler:           proxyConnectionRetirementHandler(proxyHandler),
 		ReadHeaderTimeout: 10 * time.Second,
 		IdleTimeout:       120 * time.Second,
 		TLSConfig:         newProxyTLSConfig(proxyHandler),
-		ConnContext:       proxyProtocolConnContext,
+		ConnContext:       httpsConns.connContext,
 	}
 	httpServer = &http.Server{
 		ReadHeaderTimeout: 10 * time.Second,
@@ -873,8 +910,6 @@ func run(options runOptions) error {
 		}),
 	}
 
-	httpsConns := &proxyConnTracker{}
-	httpConns := &proxyConnTracker{}
 	httpsServer.ConnState = httpsConns.update
 	httpServer.ConnState = httpConns.update
 	proxyHandler.SetSSLChangeHook(func() {

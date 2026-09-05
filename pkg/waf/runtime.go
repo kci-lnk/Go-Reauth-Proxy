@@ -18,6 +18,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 
 	"github.com/corazawaf/coraza/v3/types"
 
@@ -951,6 +952,11 @@ func formatTraceID(uuid [16]byte) string {
 func truncate(value string, limit int) string {
 	if limit <= 0 || len(value) <= limit {
 		return strings.Clone(value)
+	}
+	// A byte budget may split a multi-byte character. Keep the complete prefix
+	// so valid event strings remain serializable by the protobuf handoff.
+	for limit > 0 && !utf8.RuneStart(value[limit]) {
+		limit--
 	}
 	return strings.Clone(value[:limit])
 }

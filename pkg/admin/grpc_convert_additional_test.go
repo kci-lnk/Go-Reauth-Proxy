@@ -2,6 +2,7 @@ package admin
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -11,6 +12,7 @@ import (
 	"go-reauth-proxy/pkg/models"
 	"go-reauth-proxy/pkg/proxy"
 	proxywaf "go-reauth-proxy/pkg/waf"
+	"google.golang.org/protobuf/proto"
 )
 
 func TestRpcOKUsesSuccessEnvelope(t *testing.T) {
@@ -332,6 +334,33 @@ func TestWAFDrainToProtoIncludesLeaseCompletionFields(t *testing.T) {
 	})
 	if got.GetLeaseId() != "lease-1" || got.GetAcknowledged() != 2 {
 		t.Fatalf("waf drain proto = %#v", got)
+	}
+}
+
+func TestWAFLeaseOversizedUTF8EventCanMarshal(t *testing.T) {
+	for _, character := range []string{"界", "🙂"} {
+		t.Run(character, func(t *testing.T) {
+			event := proxywaf.Event{TraceID: "unicode", Action: "deny", Status: 403,
+				Path: "/" + strings.Repeat(character, 1000), UserAgent: strings.Repeat("x", 256<<10)}
+			if _, err := proto.Marshal(wafEventToProto(event)); err != nil {
+				t.Fatalf("valid input could not marshal: %v", err)
+			}
+			store := proxywaf.NewEventStore(10, time.Minute)
+			store.Add(event)
+			lease := store.Lease(1)
+			defer store.Acknowledge(lease.LeaseID)
+			if len(lease.Events) != 1 || !strings.Contains(lease.Events[0].Error, "event_details_truncated") {
+				t.Fatalf("missing compacted security event: %#v", lease)
+			}
+			result := wafDrainToProto(lease)
+			if _, err := proto.Marshal(result); err != nil {
+				t.Fatalf("compaction made WAF lease undeliverable: %v", err)
+			}
+			got := result.Events[0]
+			if len(got.Path) > 2048 || !strings.HasPrefix(event.Path, got.Path) || got.Action != "deny" || got.Status != 403 {
+				t.Fatalf("compaction lost payload bounds or security decision: %#v", got)
+			}
+		})
 	}
 }
 

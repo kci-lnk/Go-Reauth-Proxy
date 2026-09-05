@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 	"unsafe"
 )
 
@@ -19,6 +20,29 @@ func TestTruncateOwnsPreviewStorage(t *testing.T) {
 		start := uintptr(unsafe.Pointer(unsafe.StringData(source)))
 		if pointer >= start && pointer < start+uintptr(len(source)) {
 			t.Fatal("preview retains the source allocation")
+		}
+	}
+}
+
+func TestTruncatePreservesUTF8BoundariesAndOwnedStorage(t *testing.T) {
+	source := strings.Repeat("中🙂a", 4)
+	start := uintptr(unsafe.Pointer(unsafe.StringData(source)))
+	for limit := 1; limit <= len(source)+1; limit++ {
+		preview := truncate(source, limit)
+		if len(preview) > limit || !utf8.ValidString(preview) || !strings.HasPrefix(source, preview) {
+			t.Fatalf("limit=%d produced invalid or oversized prefix %q", limit, preview)
+		}
+		if len(preview) < len(source) {
+			_, nextBytes := utf8.DecodeRuneInString(source[len(preview):])
+			if len(preview)+nextBytes <= limit {
+				t.Fatalf("limit=%d unnecessarily dropped a complete character", limit)
+			}
+		}
+		if len(preview) != 0 {
+			pointer := uintptr(unsafe.Pointer(unsafe.StringData(preview)))
+			if pointer >= start && pointer < start+uintptr(len(source)) {
+				t.Fatalf("limit=%d retained source allocation", limit)
+			}
 		}
 	}
 }

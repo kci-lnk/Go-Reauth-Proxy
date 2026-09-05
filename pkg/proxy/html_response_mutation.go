@@ -73,6 +73,13 @@ func maybeMutateHTMLProxyResponse(resp *http.Response, opts htmlResponseMutation
 		logHTMLProxyMutation(opts, nil, "skipped", "no_response", 0, 0)
 		return nil
 	}
+	// A range describes bytes in the original representation, including any
+	// content encoding. Neither decoding nor rewriting a partial body can
+	// preserve its Content-Range offsets.
+	if resp.StatusCode == http.StatusPartialContent {
+		logHTMLProxyMutation(opts, resp, "skipped", "partial_content", 0, 0)
+		return nil
+	}
 	if htmlProxyResponseMustNotHaveBody(resp) {
 		logHTMLProxyMutation(opts, resp, "skipped", "no_response_body", 0, 0)
 		return nil
@@ -288,6 +295,7 @@ func (rc *streamingToolbarReadCloser) releaseScratch() {
 		return
 	}
 	rc.scratchReleased = true
+	rc.lexer.foreign = nil
 	if rc.scratch != nil {
 		htmlToolbarStreamBufferPool.Put(rc.scratch)
 		rc.scratch = nil

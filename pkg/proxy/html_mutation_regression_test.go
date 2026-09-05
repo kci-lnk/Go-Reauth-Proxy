@@ -7,10 +7,52 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
+
+	htmlparser "golang.org/x/net/html"
 )
+
+func TestHTMLMutationPreservesPartialRepresentationsBeforeReading(t *testing.T) {
+	for _, encoding := range []string{"", "gzip", "deflate"} {
+		for _, toolbar := range []bool{false, true} {
+			t.Run(encoding+"/toolbar="+strconv.FormatBool(toolbar), func(t *testing.T) {
+				body := []byte(`<a href="/x">link</a>`)
+				if encoding != "" {
+					// A compressed byte range need not contain a decoder header.
+					body = []byte{0x01, 0x02, 0x03}
+				}
+				resp, source := newHTMLMutationResponse(body, "text/html", int64(len(body)))
+				resp.StatusCode = http.StatusPartialContent
+				resp.Header.Set("Content-Range", "bytes 10-"+strconv.Itoa(9+len(body))+"/100")
+				if encoding != "" {
+					resp.Header.Set("Content-Encoding", encoding)
+				}
+				for _, name := range []string{"ETag", "Last-Modified", "Digest", "Content-Digest", "Repr-Digest", "Content-MD5", "Accept-Ranges"} {
+					resp.Header.Set(name, "original")
+				}
+				headers := resp.Header.Clone()
+				originalBody := resp.Body
+				err := maybeMutateHTMLProxyResponse(resp, htmlResponseMutationOptions{
+					rewrite: true, rewritePrefix: "/proxy", toolbar: toolbar,
+					toolbarHTML: func() string { t.Fatal("partial response constructed a toolbar"); return "" },
+				})
+				if err != nil || resp.Body != originalBody || source.readCount != 0 || source.closed ||
+					resp.ContentLength != int64(len(body)) || resp.Uncompressed || !reflect.DeepEqual(resp.Header, headers) {
+					t.Fatalf("partial representation changed before forwarding: err=%v reads=%d closed=%t length=%d headers=%v", err, source.readCount, source.closed, resp.ContentLength, resp.Header)
+				}
+				got, err := io.ReadAll(resp.Body)
+				_ = resp.Body.Close()
+				if err != nil || !bytes.Equal(got, body) {
+					t.Fatalf("partial representation bytes changed: got=%x err=%v", got, err)
+				}
+			})
+		}
+	}
+}
 
 func TestToolbarInjectionRespectsHTMLContextsAcrossChunks(t *testing.T) {
 	const toolbar = `<script>toolbar()</script>`
@@ -21,7 +63,6 @@ func TestToolbarInjectionRespectsHTMLContextsAcrossChunks(t *testing.T) {
 		`<svg><![CDATA[ </body> </body> ]]></svg>`,
 		`<svg><script><![CDATA[ const marker="</script></body>"; ]]></script></svg>`,
 		`<svg/><script>const marker="<![CDATA[";</script>`,
-		`<math><mtext><![CDATA[ </body> ]]></mtext></math>`,
 		`<!DOCTYPE html PUBLIC "</body> </body>" "</body>">`,
 		`<!-- </body><html> --><div>ok</div>`,
 		`<!-- </body> --!><div>ok</div>`,
@@ -71,6 +112,154 @@ func TestToolbarInjectionDoesNotAppendInsideUnterminatedContexts(t *testing.T) {
 		if got := string(injectToolbarIntoHTMLBytes([]byte(body), "TOOLBAR")); got != body {
 			t.Fatalf("buffered %q: got %q", body, got)
 		}
+	}
+}
+
+func toolbarScriptText(t *testing.T, body string) string {
+	t.Helper()
+	doc, err := htmlparser.Parse(strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var text string
+	var visit func(*htmlparser.Node)
+	visit = func(n *htmlparser.Node) {
+		if n.Type == htmlparser.ElementNode && n.Data == "script" {
+			for _, attr := range n.Attr {
+				if attr.Key == "id" && attr.Val == "app" {
+					for child := n.FirstChild; child != nil; child = child.NextSibling {
+						if child.Type == htmlparser.TextNode {
+							text += child.Data
+						}
+					}
+				}
+			}
+		}
+		for child := n.FirstChild; child != nil; child = child.NextSibling {
+			visit(child)
+		}
+	}
+	visit(doc)
+	return text
+}
+
+func TestToolbarForeignContextsPreserveScriptSemantics(t *testing.T) {
+	const toolbar = `<script id="toolbar">toolbar()</script>`
+	const foreignScript = `<script id="app"><![CDATA[const s="</script></body>";]]></script>`
+	const htmlScript = `<script id="app"/>const s="</svg></body>";</script>`
+	for _, tt := range []struct {
+		name   string
+		middle string
+		inject bool
+	}{
+		{"unmatched_math_end_in_svg", `<svg></math>` + foreignScript + `</svg>`, true},
+		{"unmatched_svg_end_in_math", `<math></svg>` + foreignScript + `</math>`, true},
+		{"mixed_nested_roots", `<svg><math></math>` + foreignScript + `</svg>`, true},
+		{"outer_end_pops_nested_root", `<svg><math></svg>` + htmlScript, true},
+		{"self_closing_svg_script", `<svg><script href="asset.js"/></svg>`, true},
+		{"self_closing_nested_svg_scripts", `<svg><g><script/></g><script/></svg>` + htmlScript, true},
+		{"self_closing_math_script", `<math><script/></math>` + htmlScript, true},
+		{"self_closing_svg_raw_names", `<svg><title/><style/><textarea/><script/></svg>`, true},
+		{"svg_accessible_icon", `<svg><title>Icon</title><desc>Icon description</desc><path d="M0 0"/></svg>` + htmlScript, true},
+		{"svg_title_cdata", `<svg><title><![CDATA[ <script/></body> ]]></title></svg>` + htmlScript, true},
+		{"svg_title_mismatched_end", `<svg><title>Icon</svg>` + htmlScript, false},
+		{"svg_title_child_element", `<svg><title><span>Icon</span></title></svg>` + htmlScript, false},
+		{"html_script_is_not_self_closing", htmlScript, true},
+		{"svg_html_integration", `<svg><foreignObject>` + htmlScript + `</foreignObject></svg>`, false},
+		{"math_html_integration", `<math><mtext>` + htmlScript + `</mtext></math>`, false},
+		{"math_text_integration_cdata", `<math><mtext><![CDATA[ </body> ]]></mtext></math>`, false},
+		{"foreign_html_breakout", `<svg><div>` + htmlScript + `</div></svg>`, false},
+		{"foreign_breakout_cdata_script", `<svg><div><![CDATA[</div></svg><script id="app">const s="]]></svg></body>";</script>`, false},
+		{"html_bogus_cdata_comment", `<![CDATA[><script id="app">const s="]]></body>";</script>`, false},
+		{"html_processing_instruction", `<?x a="><script id="app">const s="</body>";</script>`, false},
+		{"html_unknown_declaration", `<!unknown a="><script id="app">const s="</body>";</script>`, false},
+		{"html_invalid_end_tag", `</ x a="><script id="app">const s="</body>";</script>`, false},
+		{"foreign_noncanonical_cdata", `<svg><![cdata[><div></svg><script id="app">const s="]]></svg></body>";</script>`, false},
+		{"foreign_raw_noncanonical_cdata", `<svg><script><![cDaTa[><div></svg><script id="app">const s="]]></svg></body>";</script>`, false},
+		{"self_closing_foreign_html_breakout", `<svg><div/>` + htmlScript + `</div></svg>`, false},
+		{"foreign_html_ancestor_end", `<div><svg></div>` + htmlScript + `</svg>`, false},
+		{"svg_ignored_by_select", `<select><svg></select>` + htmlScript, false},
+		{"foreign_stack_overflow", strings.Repeat(`<svg>`, 33) + strings.Repeat(`</svg>`, 33) + htmlScript, false},
+		{"foreign_name_overflow", `<svg><` + strings.Repeat("x", 33) + `></svg>` + htmlScript, false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			body := `<html><body>` + tt.middle + `<p>OK</p></body></html>`
+			want := body
+			if tt.inject {
+				want = `<html><body>` + tt.middle + `<p>OK</p>` + toolbar + `</body></html>`
+			}
+			originalScript := toolbarScriptText(t, body)
+			if strings.Contains(body, `id="app"`) && originalScript == "" {
+				t.Fatal("fixture did not produce the original application script")
+			}
+			for chunkSize := 0; chunkSize <= 32; chunkSize++ {
+				var got []byte
+				if chunkSize == 0 {
+					got = injectToolbarIntoHTMLBytes([]byte(body), toolbar)
+				} else {
+					rc := newStreamingToolbarReadCloser(&limitedReadCloser{reader: bytes.NewReader([]byte(body)), limit: chunkSize}, toolbar)
+					var err error
+					got, err = io.ReadAll(rc)
+					_ = rc.Close()
+					if err != nil {
+						t.Fatalf("chunk %d: %v", chunkSize, err)
+					}
+				}
+				if gotScript := toolbarScriptText(t, string(got)); gotScript != originalScript {
+					t.Fatalf("chunk %d changed browser script text: %q -> %q; body=%q", chunkSize, originalScript, gotScript, got)
+				}
+				if string(got) != want {
+					t.Fatalf("chunk %d: got %q, want %q", chunkSize, got, want)
+				}
+			}
+		})
+	}
+}
+
+func TestToolbarForeignTrackingIsLazyAndBounded(t *testing.T) {
+	var lexer htmlToolbarLexer
+	ordinary := []byte(`<html><body><script>const x="</body>";</script>`)
+	if lexer.scan(nil, ordinary, len(ordinary)) != -1 || lexer.foreign != nil {
+		t.Fatal("ordinary HTML allocated foreign tracking")
+	}
+	foreign := []byte(strings.Repeat(`<svg>`, 33))
+	if lexer.scan(nil, foreign, len(foreign)) != -1 || !lexer.injectionDisabled || lexer.foreign.depth != len(lexer.foreign.tags) {
+		t.Fatal("foreign nesting did not stop at its fixed depth")
+	}
+	rest := []byte(strings.Repeat(`</svg>`, 33) + `</body></html>`)
+	if lexer.scan(nil, rest, len(rest)) != -1 || lexer.canAppend() {
+		t.Fatal("overflow allowed a later or EOF injection")
+	}
+}
+
+func TestStreamingToolbarReleasesForeignTracking(t *testing.T) {
+	for _, finish := range []string{"eof", "error", "close"} {
+		t.Run(finish, func(t *testing.T) {
+			body := []byte(`<html><body><svg><path/>` + strings.Repeat("x", 64))
+			readErr := errors.New("upstream failed")
+			var source io.ReadCloser = io.NopCloser(bytes.NewReader(body))
+			if finish == "error" {
+				source = &failingReadCloser{body: body, err: readErr}
+			}
+			rc := newStreamingToolbarReadCloser(source, "TOOLBAR").(*streamingToolbarReadCloser)
+			defer rc.Close()
+			if _, err := rc.Read(make([]byte, 1)); err != nil || rc.lexer.foreign == nil {
+				t.Fatalf("foreign tracking not initialized: err=%v", err)
+			}
+			if finish == "close" {
+				if err := rc.Close(); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				_, err := io.ReadAll(rc)
+				if finish == "error" && !errors.Is(err, readErr) || finish == "eof" && err != nil {
+					t.Fatalf("terminal read error = %v", err)
+				}
+			}
+			if rc.lexer.foreign != nil || rc.scratch != nil || !rc.scratchReleased {
+				t.Fatal("terminal response retained foreign state or scratch storage")
+			}
+		})
 	}
 }
 

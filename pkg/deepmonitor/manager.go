@@ -1280,6 +1280,11 @@ func (m *Manager) cancelStart(host string) {
 }
 
 func (m *Manager) publishActiveHostsLocked() {
+	// Close already published an empty snapshot. A late stop, expiry, or queued
+	// write failure must not reactivate other sessions and admit new captures.
+	if m.closing {
+		return
+	}
 	byHost := make(map[string]string, len(m.activeByHost))
 	byID := make(map[string]struct{}, len(m.activeByHost))
 	for host, id := range m.activeByHost {
@@ -1333,11 +1338,53 @@ func (m *Manager) load() error {
 }
 
 func (m *Manager) loadEvents(s *sessionState) error {
-	return m.scanJournal(s.meta.ID, func(event *pb.DeepMonitorEvent, location eventLocation) bool {
+	var eventCount uint64
+	journalErr := m.scanJournal(s.meta.ID, func(event *pb.DeepMonitorEvent, location eventLocation) bool {
+		eventCount++
 		s.cacheEvent(event.Summary, location)
 		s.meta.NextSequence = max(s.meta.NextSequence, event.Summary.Sequence+1)
 		return true
 	})
+	// A filesystem read failure, even after some frames, cannot establish the
+	// complete count: preserve prior statistics but keep the readable cache and
+	// sequence progress. Missing files and truncated/corrupt frames are recoverable.
+	var fileErr *os.PathError
+	if errors.As(journalErr, &fileErr) && !errors.Is(journalErr, os.ErrNotExist) {
+		return journalErr
+	}
+	s.meta.EventCount = eventCount
+	storedBytes, storageErr := m.recoveredStorageBytes(s.meta.ID)
+	if storageErr == nil {
+		s.meta.BytesStored = storedBytes
+	}
+	return errors.Join(journalErr, storageErr)
+}
+
+func (m *Manager) recoveredStorageBytes(sessionID string) (uint64, error) {
+	directory, err := os.Open(m.sessionDir(sessionID))
+	if err != nil {
+		return 0, err
+	}
+	defer directory.Close()
+	var storedBytes uint64
+	for {
+		// Count actual occupied data files, including an incomplete journal tail
+		// or orphan payload left by a crash. This also includes historical Record
+		// payload maps without PayloadRefs, without retaining an event-ID index or
+		// repeatedly scanning the journal. Metadata and sidecar indices are excluded.
+		entries, readErr := directory.Readdir(128)
+		for _, entry := range entries {
+			if entry.Mode().IsRegular() && (entry.Name() == "events.pb" || strings.HasSuffix(entry.Name(), ".payload")) {
+				storedBytes += uint64(entry.Size())
+			}
+		}
+		if readErr != nil {
+			if errors.Is(readErr, io.EOF) {
+				return storedBytes, nil
+			}
+			return 0, readErr
+		}
+	}
 }
 
 func writeSessionMeta(root string, meta sessionMeta) error {

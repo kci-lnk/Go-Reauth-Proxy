@@ -57,6 +57,7 @@ type AuthBridgeManager struct {
 	pending       [authBridgePendingShardCount]authBridgePendingShard
 	inFlight      atomic.Int64
 	inFlightLimit int64
+	readyMu       sync.Mutex
 }
 
 type authBridgeStream struct {
@@ -128,7 +129,7 @@ type authBridgeRecvResult struct {
 func NewAuthBridgeManager(token string) *AuthBridgeManager {
 	m := &AuthBridgeManager{
 		token:         strings.TrimSpace(token),
-		readyNotify:   make(chan struct{}, 1),
+		readyNotify:   make(chan struct{}),
 		inFlightLimit: authBridgeConfiguredInFlightLimit(),
 	}
 	var emptyReadyHook func(bool)
@@ -158,10 +159,12 @@ func (m *AuthBridgeManager) SetReadyChangeHook(hook func(bool)) {
 }
 
 func (m *AuthBridgeManager) notifyReadyChange(ready bool) {
-	select {
-	case m.readyNotify <- struct{}{}:
-	default:
-	}
+	// Each transition wakes every waiter on the current generation. A single
+	// queued notification can strand concurrent callers after readiness changes.
+	m.readyMu.Lock()
+	close(m.readyNotify)
+	m.readyNotify = make(chan struct{})
+	m.readyMu.Unlock()
 	value := m.readyOnChange.Load()
 	if hook, ok := value.(func(bool)); ok && hook != nil {
 		hook(ready)
@@ -176,10 +179,18 @@ func (m *AuthBridgeManager) WaitReady(ctx context.Context) error {
 		ctx = context.Background()
 	}
 	for !m.IsReady() {
+		m.readyMu.Lock()
+		notify := m.readyNotify
+		m.readyMu.Unlock()
+		// Snapshot the generation before rechecking readiness, so a transition
+		// between the fast check and subscription cannot become a missed wakeup.
+		if m.IsReady() {
+			return nil
+		}
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		case <-m.readyNotify:
+		case <-notify:
 		}
 	}
 	return nil

@@ -98,6 +98,49 @@ func TestManagerCloseReleasesIdleCaptures(t *testing.T) {
 	}
 }
 
+func TestManagerCloseKeepsOtherSessionsInactiveAfterLateStop(t *testing.T) {
+	for _, operation := range []string{"stop", "maintenance"} {
+		t.Run(operation, func(t *testing.T) {
+			m, err := NewManager(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(m.Close)
+			first, err := m.Start("first.example", MinDuration)
+			if err != nil {
+				t.Fatal(err)
+			}
+			second, err := m.Start("second.example", MinDuration)
+			if err != nil {
+				t.Fatal(err)
+			}
+			m.Close()
+			switch operation {
+			case "stop":
+				if _, err := m.Stop(first.Id, "manual"); err != nil {
+					t.Fatal(err)
+				}
+			case "maintenance":
+				// A maintenance tick already selected before Close may reach
+				// its locked expiry check after the active snapshot was cleared.
+				m.mu.Lock()
+				m.sessions[first.Id].meta.DeadlineAt = time.Now().Add(-time.Second)
+				m.mu.Unlock()
+				m.maintain()
+			}
+			if id, active := m.ActiveSession(second.Host); active || m.IsActive(second.Id) {
+				t.Errorf("closed manager republished active session %q", id)
+			}
+			late := m.NewCapture(second.Id)
+			defer late.Release()
+			late.Write(make([]byte, 8192))
+			if m.BufferedBytes() != 0 || late.Reference("body", "") != nil {
+				t.Errorf("closed manager admitted late capture: bytes=%d", m.BufferedBytes())
+			}
+		})
+	}
+}
+
 func TestCaptureWriteStopAndHandoffRace(t *testing.T) {
 	for iteration := 0; iteration < 100; iteration++ {
 		m := memoryTestManager()

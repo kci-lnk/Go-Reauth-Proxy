@@ -29,18 +29,20 @@ const (
 )
 
 type internalGRPCServer struct {
-	server    *grpc.Server
-	health    *health.Server
-	listeners []net.Listener
-	wg        sync.WaitGroup
-	stopOnce  sync.Once
+	server         *grpc.Server
+	health         *health.Server
+	listeners      []net.Listener
+	wg             sync.WaitGroup
+	stopOnce       sync.Once
+	cancelWafWaits context.CancelFunc
 }
 
 func startInternalGRPCServer(port int, token string, control pb.GatewayControlServiceServer, bridge pb.AuthBridgeServiceServer) (*internalGRPCServer, error) {
+	waitShutdown, cancelWafWaits := context.WithCancel(context.Background())
 	server := grpc.NewServer(
 		grpc.MaxRecvMsgSize(internalGRPCMaxMessageSize),
 		grpc.MaxSendMsgSize(internalGRPCMaxMessageSize),
-		grpc.UnaryInterceptor(newInternalUnaryInterceptor(token)),
+		grpc.ChainUnaryInterceptor(newInternalUnaryInterceptor(token), newWafWaitShutdownInterceptor(waitShutdown)),
 		grpc.StreamInterceptor(func(srv any, stream grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler) error {
 			if err := rpcbridge.CheckInternalToken(stream.Context(), token); err != nil {
 				return err
@@ -96,19 +98,22 @@ func startInternalGRPCServer(port int, token string, control pb.GatewayControlSe
 			for _, openListener := range listeners {
 				_ = openListener.Close()
 			}
+			cancelWafWaits()
 			return nil, err
 		}
 		listeners = append(listeners, listener)
 		listenAddrs = append(listenAddrs, listener.Addr().String())
 	}
 	if len(listeners) == 0 {
+		cancelWafWaits()
 		return nil, fmt.Errorf("no internal gRPC listeners started on port %d", port)
 	}
 
 	runtimeServer := &internalGRPCServer{
-		server:    server,
-		health:    healthServer,
-		listeners: listeners,
+		server:         server,
+		health:         healthServer,
+		listeners:      listeners,
+		cancelWafWaits: cancelWafWaits,
 	}
 	for _, listener := range listeners {
 		runtimeServer.wg.Add(1)
@@ -123,6 +128,22 @@ func startInternalGRPCServer(port int, token string, control pb.GatewayControlSe
 	healthServer.SetServingStatus(healthGatewayProcess, healthpb.HealthCheckResponse_SERVING)
 	logger.Diagnostic("INFO", "gateway_process", "ready", "grpc_serving", nil)
 	return runtimeServer, nil
+}
+
+// Idle long polls must not extend GracefulStop to the 15-second forced-stop
+// deadline. Cancel only availability waits; durable mutations keep their
+// existing shutdown behavior. The callback is detached when each RPC ends.
+func newWafWaitShutdownInterceptor(shutdown context.Context) grpc.UnaryServerInterceptor {
+	return func(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
+		if info.FullMethod != pb.WafService_WaitWafEvents_FullMethodName {
+			return handler(ctx, req)
+		}
+		waitCtx, cancel := context.WithCancel(ctx)
+		stop := context.AfterFunc(shutdown, cancel)
+		defer stop()
+		defer cancel()
+		return handler(waitCtx, req)
+	}
 }
 
 func newInternalUnaryInterceptor(token string) grpc.UnaryServerInterceptor {
@@ -258,6 +279,9 @@ func (s *internalGRPCServer) Stop(ctx context.Context) {
 		return
 	}
 	s.stopOnce.Do(func() {
+		if s.cancelWafWaits != nil {
+			s.cancelWafWaits()
+		}
 		logger.Diagnostic("INFO", "gateway_process", "stopping", "graceful_shutdown", nil)
 		for _, service := range []string{healthGatewayProcess, healthGatewayDataplane, healthGatewayAuthBridge} {
 			s.health.SetServingStatus(service, healthpb.HealthCheckResponse_NOT_SERVING)

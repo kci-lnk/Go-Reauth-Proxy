@@ -20,6 +20,50 @@ type internalGRPCTestControl struct {
 	pb.UnimplementedGatewayControlServiceServer
 }
 
+type waitingWafControl struct {
+	pb.UnimplementedGatewayControlServiceServer
+	pb.UnimplementedWafServiceServer
+	started chan struct{}
+}
+
+func (s *waitingWafControl) WaitWafEvents(ctx context.Context, _ *pb.WafWaitRequest) (*pb.WafWaitResult, error) {
+	close(s.started)
+	<-ctx.Done()
+	return nil, status.FromContextError(ctx.Err()).Err()
+}
+
+func TestInternalGRPCStopCancelsIdleWafWaitBeforeGracefulStop(t *testing.T) {
+	control := &waitingWafControl{started: make(chan struct{})}
+	server, err := startInternalGRPCServer(0, "secret", control, rpcbridge.NewAuthBridgeManager("secret"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer server.Stop(context.Background())
+	conn, err := grpc.NewClient(server.listeners[0].Addr().String(), grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	ctx = metadata.NewOutgoingContext(ctx, metadata.Pairs(rpcbridge.InternalTokenMetadataKey, "secret"))
+	done := make(chan error, 1)
+	go func() { _, err := pb.NewWafServiceClient(conn).WaitWafEvents(ctx, &pb.WafWaitRequest{}); done <- err }()
+	select {
+	case <-control.started:
+	case <-time.After(time.Second):
+		t.Fatal("wait not started")
+	}
+	started := time.Now()
+	server.Stop(context.Background())
+	if time.Since(started) > time.Second {
+		t.Fatal("idle WAF wait delayed graceful shutdown")
+	}
+	if err := <-done; status.Code(err) != codes.Canceled {
+		t.Fatalf("wait status = %v", err)
+	}
+}
+
 func TestInternalGRPCHealthIsNamedAndTokenProtected(t *testing.T) {
 	server, err := startInternalGRPCServer(
 		0,

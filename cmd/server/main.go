@@ -443,7 +443,7 @@ func proxyListenTargets(host string, proxyPort int, useProxyProtocol bool) []pro
 	if host == "127.0.0.1" {
 		targets = append(targets, proxyListenTarget{host: "::1", port: proxyPort, proxyProtocol: useProxyProtocol})
 	}
-	managedCloudflarePort := proxy.ManagedCloudflareIngressPort
+	managedCloudflarePort := proxy.ManagedCloudflarePort()
 	if proxyPort == 0 {
 		managedCloudflarePort = 0
 	}

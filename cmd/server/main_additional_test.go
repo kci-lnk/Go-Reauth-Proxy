@@ -572,3 +572,12 @@ func newServerTestProxyHandler(t *testing.T) *proxy.Handler {
 	}
 	return proxy.NewHandler(7996, 7999, manager, cfg, filepath.Join(t.TempDir(), "logs"), nil)
 }
+
+func TestLiteManagedCloudflareListenerUsesSeparatePort(t *testing.T) {
+	t.Setenv("FN_KNOCK_RUNTIME_TARGET", "fpk-lite")
+	targets := proxyListenTargets("0.0.0.0", 8999, true)
+	managed := targets[len(targets)-1]
+	if managed.host != "127.0.0.1" || managed.port != 18999 || managed.proxyProtocol {
+		t.Fatalf("Lite managed Cloudflare target = %#v", managed)
+	}
+}

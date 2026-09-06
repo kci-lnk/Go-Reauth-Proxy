@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"strconv"
 	"strings"
 )
@@ -15,6 +16,15 @@ import (
 // ingress gives security-sensitive client IP resolution a transport-level
 // trust boundary instead of trusting request headers alone.
 const ManagedCloudflareIngressPort = 17999
+const ManagedCloudflareLiteIngressPort = 18999
+
+// ManagedCloudflarePort selects the private ingress for this runtime instance.
+func ManagedCloudflarePort() int {
+	if os.Getenv("FN_KNOCK_RUNTIME_TARGET") == "fpk-lite" {
+		return ManagedCloudflareLiteIngressPort
+	}
+	return ManagedCloudflareIngressPort
+}
 
 func BuildHTTPSRedirectURL(r *http.Request, authConfig models.AuthConfig) string {
 	target := buildPublicRequestURL(r, authConfig, "https")
@@ -201,13 +211,13 @@ func isManagedCloudflareTunnelIngress(r *http.Request) bool {
 
 	switch value := localAddr.(type) {
 	case *net.TCPAddr:
-		return value.IP.IsLoopback() && value.Port == ManagedCloudflareIngressPort
+		return value.IP.IsLoopback() && value.Port == ManagedCloudflarePort()
 	case *net.UDPAddr:
-		return value.IP.IsLoopback() && value.Port == ManagedCloudflareIngressPort
+		return value.IP.IsLoopback() && value.Port == ManagedCloudflarePort()
 	default:
 		host, port, err := net.SplitHostPort(localAddr.String())
 		return err == nil && net.ParseIP(strings.Trim(host, "[]")).IsLoopback() &&
-			port == strconv.Itoa(ManagedCloudflareIngressPort)
+			port == strconv.Itoa(ManagedCloudflarePort())
 	}
 }
 

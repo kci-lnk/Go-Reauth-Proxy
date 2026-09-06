@@ -915,3 +915,22 @@ func TestResolveClientIPOrdinaryIngressDoesNotTrustCloudflareConnectingIPv6(t *t
 		t.Fatalf("resolveClientIP() = %q, want transport address %q", got, want)
 	}
 }
+
+func TestLiteManagedCloudflareIngressTrustBoundary(t *testing.T) {
+	t.Setenv("FN_KNOCK_RUNTIME_TARGET", "fpk-lite")
+	for _, tc := range []struct {
+		ip   string
+		port int
+		want bool
+	}{
+		{"127.0.0.1", 18999, true},
+		{"127.0.0.1", 17999, false},
+		{"127.0.0.1", 8999, false},
+		{"192.168.1.10", 18999, false},
+	} {
+		req := requestWithLocalAddress(httptest.NewRequest(http.MethodGet, "http://app.example/", nil), tc.ip, tc.port)
+		if got := isManagedCloudflareTunnelIngress(req); got != tc.want {
+			t.Fatalf("ingress %s:%d trusted = %v, want %v", tc.ip, tc.port, got, tc.want)
+		}
+	}
+}

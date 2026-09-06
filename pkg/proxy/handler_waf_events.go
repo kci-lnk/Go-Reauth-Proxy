@@ -1,6 +1,14 @@
 package proxy
 
-import proxywaf "go-reauth-proxy/pkg/waf"
+import (
+	"context"
+	proxywaf "go-reauth-proxy/pkg/waf"
+	"time"
+)
+
+func (h *Handler) WaitWAFEvents(ctx context.Context, timeout time.Duration) (bool, error) {
+	return h.wafRuntime.WaitEvents(ctx, timeout)
+}
 
 func (h *Handler) LeaseWAFEvents(limit int) proxywaf.DrainResult {
 	if h.wafRuntime == nil {

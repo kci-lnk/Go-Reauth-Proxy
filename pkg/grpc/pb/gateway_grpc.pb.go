@@ -3411,6 +3411,7 @@ const (
 	WafService_ValidateWafBundle_FullMethodName = "/fnknock.v1.WafService/ValidateWafBundle"
 	WafService_ReloadWafBundle_FullMethodName   = "/fnknock.v1.WafService/ReloadWafBundle"
 	WafService_DrainWafEvents_FullMethodName    = "/fnknock.v1.WafService/DrainWafEvents"
+	WafService_WaitWafEvents_FullMethodName     = "/fnknock.v1.WafService/WaitWafEvents"
 )
 
 // WafServiceClient is the client API for WafService service.
@@ -3422,6 +3423,7 @@ type WafServiceClient interface {
 	ValidateWafBundle(ctx context.Context, in *WafBundleRequest, opts ...grpc.CallOption) (*WafValidationResult, error)
 	ReloadWafBundle(ctx context.Context, in *WafBundleRequest, opts ...grpc.CallOption) (*WafStatus, error)
 	DrainWafEvents(ctx context.Context, in *WafDrainRequest, opts ...grpc.CallOption) (*WafDrainResult, error)
+	WaitWafEvents(ctx context.Context, in *WafWaitRequest, opts ...grpc.CallOption) (*WafWaitResult, error)
 }
 
 type wafServiceClient struct {
@@ -3482,6 +3484,16 @@ func (c *wafServiceClient) DrainWafEvents(ctx context.Context, in *WafDrainReque
 	return out, nil
 }
 
+func (c *wafServiceClient) WaitWafEvents(ctx context.Context, in *WafWaitRequest, opts ...grpc.CallOption) (*WafWaitResult, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(WafWaitResult)
+	err := c.cc.Invoke(ctx, WafService_WaitWafEvents_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // WafServiceServer is the server API for WafService service.
 // All implementations must embed UnimplementedWafServiceServer
 // for forward compatibility.
@@ -3491,6 +3503,7 @@ type WafServiceServer interface {
 	ValidateWafBundle(context.Context, *WafBundleRequest) (*WafValidationResult, error)
 	ReloadWafBundle(context.Context, *WafBundleRequest) (*WafStatus, error)
 	DrainWafEvents(context.Context, *WafDrainRequest) (*WafDrainResult, error)
+	WaitWafEvents(context.Context, *WafWaitRequest) (*WafWaitResult, error)
 	mustEmbedUnimplementedWafServiceServer()
 }
 
@@ -3515,6 +3528,9 @@ func (UnimplementedWafServiceServer) ReloadWafBundle(context.Context, *WafBundle
 }
 func (UnimplementedWafServiceServer) DrainWafEvents(context.Context, *WafDrainRequest) (*WafDrainResult, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method DrainWafEvents not implemented")
+}
+func (UnimplementedWafServiceServer) WaitWafEvents(context.Context, *WafWaitRequest) (*WafWaitResult, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method WaitWafEvents not implemented")
 }
 func (UnimplementedWafServiceServer) mustEmbedUnimplementedWafServiceServer() {}
 func (UnimplementedWafServiceServer) testEmbeddedByValue()                    {}
@@ -3627,6 +3643,24 @@ func _WafService_DrainWafEvents_Handler(srv interface{}, ctx context.Context, de
 	return interceptor(ctx, in, info, handler)
 }
 
+func _WafService_WaitWafEvents_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(WafWaitRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(WafServiceServer).WaitWafEvents(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: WafService_WaitWafEvents_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(WafServiceServer).WaitWafEvents(ctx, req.(*WafWaitRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // WafService_ServiceDesc is the grpc.ServiceDesc for WafService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -3653,6 +3687,10 @@ var WafService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "DrainWafEvents",
 			Handler:    _WafService_DrainWafEvents_Handler,
+		},
+		{
+			MethodName: "WaitWafEvents",
+			Handler:    _WafService_WaitWafEvents_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

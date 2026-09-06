@@ -1,6 +1,7 @@
 package waf
 
 import (
+	"context"
 	"strings"
 	"sync"
 	"time"
@@ -23,6 +24,8 @@ type EventStore struct {
 	bytes       int
 	nextExpiry  time.Time
 	expiryTimer *time.Timer
+	changed     chan struct{}
+	notified    bool
 }
 
 type storedEvent struct {
@@ -51,6 +54,7 @@ func NewEventStore(maxEntries int, ttl time.Duration) *EventStore {
 		maxEntries: maxEntries,
 		ttl:        ttl,
 		leaseTTL:   DefaultLeaseTTL,
+		changed:    make(chan struct{}),
 	}
 }
 
@@ -88,6 +92,47 @@ func (s *EventStore) Add(event Event) {
 		s.order = s.order[1:]
 		s.deleteItemLocked(oldest)
 		delete(s.leased, oldest)
+	}
+	s.notifyLocked()
+}
+
+// Wait observes availability without acquiring a delivery lease. Registering
+// and checking share the mutation lock, so an Add cannot race past a waiter.
+func (s *EventStore) Wait(ctx context.Context, timeout time.Duration) (bool, error) {
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	for {
+		if err := ctx.Err(); err != nil {
+			return false, err
+		}
+		s.mu.Lock()
+		s.cleanupLocked(time.Now())
+		if s.availableLocked() > 0 {
+			s.mu.Unlock()
+			return true, nil
+		}
+		if s.notified {
+			s.changed = make(chan struct{})
+			s.notified = false
+		}
+		changed := s.changed
+		s.mu.Unlock()
+		select {
+		case <-ctx.Done():
+			return false, ctx.Err()
+		case <-timer.C:
+			return false, nil
+		case <-changed:
+		}
+	}
+}
+
+// Coalesce broadcasts until the next empty wait registers. In particular, Add
+// does not allocate a goroutine, timer or notification channel for each event.
+func (s *EventStore) notifyLocked() {
+	if !s.notified {
+		close(s.changed)
+		s.notified = true
 	}
 }
 
@@ -287,6 +332,7 @@ func (s *EventStore) releaseLeaseLocked(leaseID string) {
 		}
 	}
 	delete(s.leases, leaseID)
+	s.notifyLocked()
 }
 
 func (s *EventStore) compactOrderLocked() {

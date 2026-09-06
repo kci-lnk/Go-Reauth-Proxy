@@ -935,6 +935,27 @@ func (s *GRPCServer) ReloadWafBundle(ctx context.Context, req *pb.WafBundleReque
 	return wafStatusToProto(result), nil
 }
 
+func (s *GRPCServer) WaitWafEvents(ctx context.Context, req *pb.WafWaitRequest) (*pb.WafWaitResult, error) {
+	if err := s.checkToken(ctx); err != nil {
+		return nil, err
+	}
+	if req == nil || req.GetTimeoutMs() > 60000 {
+		return nil, grpcBadRequest("timeout_ms must be between 0 and 60000")
+	}
+	timeout := req.GetTimeoutMs()
+	if timeout == 0 {
+		timeout = 60000
+	}
+	available, err := s.admin.ProxyHandler.WaitWAFEvents(ctx, time.Duration(timeout)*time.Millisecond)
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return nil, status.FromContextError(err).Err()
+	}
+	if err != nil {
+		return nil, status.Error(codes.FailedPrecondition, "WAF event runtime is unavailable")
+	}
+	return &pb.WafWaitResult{Available: available}, nil
+}
+
 func (s *GRPCServer) DrainWafEvents(ctx context.Context, req *pb.WafDrainRequest) (*pb.WafDrainResult, error) {
 	if err := s.checkToken(ctx); err != nil {
 		return nil, err

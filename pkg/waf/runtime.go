@@ -2,6 +2,7 @@ package waf
 
 import (
 	"bytes"
+	"context"
 	"crypto/rand"
 	"encoding/binary"
 	"encoding/hex"
@@ -349,6 +350,13 @@ func (rt *Runtime) Lease(limit int) DrainResult {
 		return DrainResult{Events: []Event{}}
 	}
 	return rt.events.Lease(limit)
+}
+
+func (rt *Runtime) WaitEvents(ctx context.Context, timeout time.Duration) (bool, error) {
+	if rt == nil || rt.events == nil {
+		return false, errors.New("WAF event runtime is unavailable")
+	}
+	return rt.events.Wait(ctx, timeout)
 }
 
 func (rt *Runtime) AcknowledgeLease(leaseID string) DrainResult {

@@ -67,6 +67,36 @@ func TestWAFDrainOperations(t *testing.T) {
 	}
 }
 
+func TestWAFWaitValidationAndCancellation(t *testing.T) {
+	server := newGatewayControlTestServer(t, "secret")
+	if _, err := server.WaitWafEvents(context.Background(), &pb.WafWaitRequest{}); status.Code(err) != codes.Unauthenticated {
+		t.Fatalf("auth: %v", err)
+	}
+	for _, req := range []*pb.WafWaitRequest{nil, {TimeoutMs: 60001}} {
+		if _, err := server.WaitWafEvents(authTestContext(), req); status.Code(err) != codes.InvalidArgument {
+			t.Fatalf("validation: %v", err)
+		}
+	}
+	result, err := server.WaitWafEvents(authTestContext(), &pb.WafWaitRequest{TimeoutMs: 1})
+	if err != nil || result.GetAvailable() {
+		t.Fatalf("empty timeout: %v %v", result, err)
+	}
+	ctx, cancel := context.WithCancel(authTestContext())
+	time.AfterFunc(10*time.Millisecond, cancel)
+	started := time.Now()
+	if _, err := server.WaitWafEvents(ctx, &pb.WafWaitRequest{}); status.Code(err) != codes.Canceled {
+		t.Fatalf("cancel: %v", err)
+	}
+	if time.Since(started) > time.Second {
+		t.Fatal("cancellation did not terminate wait")
+	}
+	// An absent runtime must fail, never return empty success in a tight loop.
+	server.admin.ProxyHandler = &proxy.Handler{}
+	if _, err := server.WaitWafEvents(authTestContext(), &pb.WafWaitRequest{}); status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("missing runtime: %v", err)
+	}
+}
+
 func TestGatewayControlTypedProxyProtocolRoundTrip(t *testing.T) {
 	server := newGatewayControlTestServer(t, "secret")
 	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs(rpcbridge.InternalTokenMetadataKey, "secret"))

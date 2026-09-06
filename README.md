@@ -436,6 +436,10 @@ x-fn-knock-internal-rpc-token: <FN_KNOCK_INTERNAL_RPC_TOKEN>
 
 也可使用同值的 Bearer token。未设置 `GO_REPROXY_DIAGNOSTICS_ADDR` 时不会启动诊断服务。
 
+`/debug/metrics` 的 `runtime` 还提供 `heap_idle_bytes`、`heap_released_bytes`、`stack_inuse_bytes`、`heap_objects`、`next_gc_bytes` 和 `total_alloc_bytes`，用于区分堆对象、空闲页及分配速率。读取指标不会触发 GC。
+
+`coalescing_buffers` 按 `capacity_bytes` 区分 `256 KiB` 和 `2 MiB` 档位，提供 `active_bytes`、累计 `reuse_hits` 和 `allocations`。当前 `cache_policy` 为 `gc_managed`，保留原有 `sync.Pool` 复用行为；由于 GC 可以静默清空池，`idle_bytes` 和 `discards` 返回 `null`，表示无法精确统计，并非零。计数器为独立读取的进程累计值。独立进程的内存与性能对比方法见 [memorycheck](tools/memorycheck/README.md)。
+
 ## 开发与构建
 
 ```bash

@@ -62,6 +62,7 @@ var errAuthProxyRequestBodyTooLarge = stderrors.New("authentication request body
 
 type proxyBufferPool struct {
 	pool sync.Pool
+	size int
 }
 
 func newProxyBufferPool(size int) *proxyBufferPool {
@@ -69,6 +70,7 @@ func newProxyBufferPool(size int) *proxyBufferPool {
 		size = proxyCopyBufferSize
 	}
 	return &proxyBufferPool{
+		size: size,
 		pool: sync.Pool{
 			New: func() any {
 				buf := make([]byte, size)
@@ -84,16 +86,13 @@ func (p *proxyBufferPool) Get() []byte {
 	}
 	bufp, ok := p.pool.Get().(*[]byte)
 	if !ok || bufp == nil || len(*bufp) == 0 {
-		return make([]byte, proxyCopyBufferSize)
+		return make([]byte, p.size)
 	}
 	return *bufp
 }
 
 func (p *proxyBufferPool) Put(buf []byte) {
-	if p == nil || cap(buf) == 0 {
-		return
-	}
-	if cap(buf) > proxyCopyBufferSize*4 {
+	if p == nil || cap(buf) != p.size {
 		return
 	}
 	buf = buf[:cap(buf)]

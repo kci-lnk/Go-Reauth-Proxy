@@ -24,16 +24,14 @@ const (
 
 var (
 	proxyResponseCoalesceSmallBufferPool  = newExactSizeBufferPool(proxyResponseCoalesceSmallBufferSize)
-	proxyResponseCoalesceMediumBufferPool = newExactSizeBufferPool(proxyResponseCoalesceMediumBufferSize)
-	proxyResponseCoalesceBufferPool       = newExactSizeBufferPool(proxyResponseCoalesceBufferSize)
+	proxyResponseCoalesceMediumBufferPool = newCoalescingBufferPool(proxyResponseCoalesceMediumBufferSize)
+	proxyResponseCoalesceBufferPool       = newCoalescingBufferPool(proxyResponseCoalesceBufferSize)
 	proxyResponseCoalesceActiveBytes      atomic.Int64
 	sharedProxySmallBufferPool            = newProxyBufferPool(proxySmallCopyBufferSize)
 )
 
 // newExactSizeBufferPool returns a pool whose Get always yields a buffer with
-// exactly the requested capacity. Unlike proxyBufferPool (whose empty-pool
-// fallback allocates proxyCopyBufferSize), tiered coalescing buffers must keep
-// their declared size so growth can reliably move to the next tier.
+// exactly the requested capacity for the small coalescing tier.
 func newExactSizeBufferPool(size int) sync.Pool {
 	return sync.Pool{
 		New: func() any {
@@ -60,6 +58,9 @@ func acquireProxyResponseCoalesceBuffer() []byte {
 // Reserve before obtaining a large buffer. Exhaustion keeps the smaller tier
 // usable, so concurrent downloads share a process budget without being rejected.
 func tryAcquireProxyResponseCoalesceBuffer(size int) []byte {
+	if size != proxyResponseCoalesceMediumBufferSize && size != proxyResponseCoalesceBufferSize {
+		return nil
+	}
 	for {
 		used := proxyResponseCoalesceActiveBytes.Load()
 		if int64(size) > proxyResponseCoalesceBudgetBytes-used {
@@ -70,9 +71,9 @@ func tryAcquireProxyResponseCoalesceBuffer(size int) []byte {
 		}
 	}
 	if size == proxyResponseCoalesceMediumBufferSize {
-		return acquireExactSizeBuffer(&proxyResponseCoalesceMediumBufferPool)
+		return proxyResponseCoalesceMediumBufferPool.get()
 	}
-	return acquireExactSizeBuffer(&proxyResponseCoalesceBufferPool)
+	return proxyResponseCoalesceBufferPool.get()
 }
 
 func releaseProxyResponseCoalesceBuffer(buf []byte) {
@@ -84,10 +85,10 @@ func releaseProxyResponseCoalesceBuffer(buf []byte) {
 		releaseExactSizeBuffer(&proxyResponseCoalesceSmallBufferPool, buf)
 	case proxyResponseCoalesceMediumBufferSize:
 		proxyResponseCoalesceActiveBytes.Add(-int64(cap(buf)))
-		releaseExactSizeBuffer(&proxyResponseCoalesceMediumBufferPool, buf)
+		proxyResponseCoalesceMediumBufferPool.put(buf)
 	case proxyResponseCoalesceBufferSize:
 		proxyResponseCoalesceActiveBytes.Add(-int64(cap(buf)))
-		releaseExactSizeBuffer(&proxyResponseCoalesceBufferPool, buf)
+		proxyResponseCoalesceBufferPool.put(buf)
 	}
 }
 

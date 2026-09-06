@@ -147,9 +147,9 @@ func RuntimeMetrics() RuntimeSnapshot {
 	}
 }
 
-// SetEnabled controls hot-path metric collection. The diagnostics listener is
-// disabled by default, so production requests pay only one atomic load unless
-// the explicitly configured loopback endpoint is running.
+// SetEnabled controls optional request/event counters. The diagnostics
+// listener is disabled by default; resource gauges and pool lifetime counters
+// remain available independently so admissions and completions stay balanced.
 func SetEnabled(value bool) {
 	enabled.Store(value)
 }
@@ -369,12 +369,19 @@ type snapshot struct {
 		BypassHits         uint64 `json:"bypass_hits"`
 	} `json:"stream"`
 	Runtime struct {
+		HeapIdle     uint64 `json:"heap_idle_bytes"`
+		HeapReleased uint64 `json:"heap_released_bytes"`
+		StackInUse   uint64 `json:"stack_inuse_bytes"`
+		HeapObjects  uint64 `json:"heap_objects"`
+		NextGC       uint64 `json:"next_gc_bytes"`
+		TotalAlloc   uint64 `json:"total_alloc_bytes"`
 		Goroutines   int    `json:"goroutines"`
 		HeapAlloc    uint64 `json:"heap_alloc_bytes"`
 		HeapInUse    uint64 `json:"heap_inuse_bytes"`
 		SystemMemory uint64 `json:"system_memory_bytes"`
 		NumGC        uint32 `json:"num_gc"`
 	} `json:"runtime"`
+	CoalescingBuffers []BufferPoolSnapshot `json:"coalescing_buffers"`
 }
 
 func Snapshot() any {
@@ -430,6 +437,15 @@ func Snapshot() any {
 	result.Runtime.HeapInUse = memory.HeapInuse
 	result.Runtime.SystemMemory = memory.Sys
 	result.Runtime.NumGC = memory.NumGC
+	result.Runtime.HeapIdle = memory.HeapIdle
+	result.Runtime.HeapReleased = memory.HeapReleased
+	result.Runtime.StackInUse = memory.StackInuse
+	result.Runtime.HeapObjects = memory.HeapObjects
+	result.Runtime.NextGC = memory.NextGC
+	result.Runtime.TotalAlloc = memory.TotalAlloc
+	if source, ok := bufferPoolSnapshotSource.Load().(func() []BufferPoolSnapshot); ok {
+		result.CoalescingBuffers = source()
+	}
 	return result
 }
 

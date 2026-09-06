@@ -127,3 +127,17 @@ func TestClientConnectionTransitionsTrackActiveAndIdleGauges(t *testing.T) {
 		t.Fatalf("closed transition = %#v", got)
 	}
 }
+
+func TestMemoryBreakdownFields(t *testing.T) {
+	recorder := httptest.NewRecorder()
+	Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/debug/metrics", nil))
+	for _, key := range []string{"heap_idle_bytes", "heap_released_bytes", "stack_inuse_bytes", "heap_objects", "next_gc_bytes", "total_alloc_bytes", "coalescing_buffers"} {
+		if !strings.Contains(recorder.Body.String(), `"`+key+`"`) {
+			t.Fatalf("missing %s", key)
+		}
+	}
+	s := Snapshot().(snapshot)
+	if s.Runtime.HeapReleased > s.Runtime.HeapIdle || s.Runtime.TotalAlloc < s.Runtime.HeapAlloc {
+		t.Fatal("inconsistent memory snapshot")
+	}
+}

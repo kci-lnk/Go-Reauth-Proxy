@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"go-reauth-proxy/pkg/models"
@@ -651,72 +652,114 @@ func TestFnosPortIconHijackWebSocketRelaysTimerMessagesWithoutRewrite(t *testing
 	}
 }
 
-func TestFnosPortIconHijackWebSocketMaxLifetimeClosesClientAndUpstream(t *testing.T) {
-	upgrader := websocket.Upgrader{
-		CheckOrigin: func(_ *http.Request) bool {
-			return true
-		},
-	}
-	upstreamClosed := make(chan error, 1)
+func TestFnosPortIconHijackWebSocketIdleRelayAndTermination(t *testing.T) {
+	for _, closingPeer := range []string{"client", "upstream", "request_cancel"} {
+		t.Run(closingPeer, func(t *testing.T) {
+			upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+			upstreamReady := make(chan *websocket.Conn, 1)
+			releaseUpstream := make(chan struct{})
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				conn, err := upgrader.Upgrade(w, r, nil)
+				if err != nil {
+					t.Errorf("upstream upgrade failed: %v", err)
+					return
+				}
+				defer conn.Close()
+				upstreamReady <- conn
+				<-releaseUpstream
+			}))
+			defer upstream.Close()
+			defer close(releaseUpstream)
+			targetURL, err := url.Parse(upstream.URL)
+			if err != nil {
+				t.Fatal(err)
+			}
+			proxyDone := make(chan error, 1)
+			cancelReady := make(chan context.CancelFunc, 1)
+			handler := &Handler{}
+			proxyServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				ctx, cancel := context.WithCancel(r.Context())
+				defer cancel()
+				cancelReady <- cancel
+				proxyDone <- handler.proxyFnosPortIconHijackWebSocket(w, r.WithContext(ctx),
+					fnosPortIconHijackWebSocketOptions{targetURL: targetURL}, nil)
+			}))
+			defer proxyServer.Close()
+			client, _, err := websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(proxyServer.URL, "http")+"/websocket?type=main", nil)
+			if err != nil {
+				t.Fatalf("dial proxy websocket: %v", err)
+			}
+			defer client.Close()
+			cancelRequest := <-cancelReady
+			defer cancelRequest()
+			var server *websocket.Conn
+			select {
+			case server = <-upstreamReady:
+			case <-time.After(2 * time.Second):
+				t.Fatal("upstream connection was not ready")
+			}
+			defer server.Close()
+			for _, conn := range []*websocket.Conn{client, server} {
+				if err := conn.SetReadDeadline(time.Now().Add(5 * time.Second)); err != nil {
+					t.Fatal(err)
+				}
+				if err := conn.SetWriteDeadline(time.Now().Add(5 * time.Second)); err != nil {
+					t.Fatal(err)
+				}
+			}
 
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		conn, err := upgrader.Upgrade(w, r, nil)
-		if err != nil {
-			t.Errorf("upstream upgrade failed: %v", err)
-			return
-		}
-		defer conn.Close()
+			// Exercise resumption after idle, not a simulated 55-minute lifetime.
+			select {
+			case err := <-proxyDone:
+				t.Fatalf("proxy ended while idle: %v", err)
+			case <-time.After(50 * time.Millisecond):
+			}
+			for _, messageType := range []int{websocket.TextMessage, websocket.BinaryMessage} {
+				for _, pair := range [][2]*websocket.Conn{{client, server}, {server, client}} {
+					payload := []byte("still connected")
+					if err := pair[0].WriteMessage(messageType, payload); err != nil {
+						t.Fatalf("write after idle: %v", err)
+					}
+					gotType, got, err := pair[1].ReadMessage()
+					if err != nil || gotType != messageType || !bytes.Equal(got, payload) {
+						t.Fatalf("read after idle = (%d, %q, %v), want (%d, %q, nil)", gotType, got, err, messageType, payload)
+					}
+				}
+			}
 
-		_, _, err = conn.ReadMessage()
-		upstreamClosed <- err
-	}))
-	defer upstream.Close()
-
-	targetURL, err := url.Parse(upstream.URL)
-	if err != nil {
-		t.Fatalf("parse upstream URL: %v", err)
-	}
-
-	handler := &Handler{}
-	proxyServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		err := handler.proxyFnosPortIconHijackWebSocket(
-			w,
-			r,
-			fnosPortIconHijackWebSocketOptions{
-				targetURL:            targetURL,
-				webSocketMaxLifetime: 25 * time.Millisecond,
-			},
-			nil,
-		)
-		if err != nil && !isFNAppConnectionTermination(err) {
-			t.Errorf("proxy websocket failed: %v", err)
-		}
-	}))
-	defer proxyServer.Close()
-
-	wsURL := "ws" + strings.TrimPrefix(proxyServer.URL, "http") + "/websocket?type=main"
-	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
-	if err != nil {
-		t.Fatalf("dial proxy websocket: %v", err)
-	}
-	defer conn.Close()
-
-	if err := conn.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
-		t.Fatalf("set client read deadline: %v", err)
-	}
-	_, _, err = conn.ReadMessage()
-	var closeErr *websocket.CloseError
-	if !errors.As(err, &closeErr) || closeErr.Code != websocket.CloseNormalClosure {
-		t.Fatalf("client read error = %v, want normal websocket close", err)
-	}
-
-	select {
-	case err := <-upstreamClosed:
-		if !websocket.IsCloseError(err, websocket.CloseNormalClosure) {
-			t.Fatalf("upstream read error = %v, want normal websocket close", err)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for upstream websocket to close")
+			closing, remaining := client, server
+			if closingPeer == "upstream" {
+				closing, remaining = server, client
+			}
+			peersToCheck := []*websocket.Conn{remaining}
+			if closingPeer == "request_cancel" {
+				cancelRequest()
+				peersToCheck = []*websocket.Conn{client, server}
+			} else {
+				_ = closing.Close()
+			}
+			for _, peer := range peersToCheck {
+				if err := peer.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
+					t.Fatal(err)
+				}
+				_, _, err = peer.ReadMessage()
+				var timeout interface{ Timeout() bool }
+				if err == nil || (errors.As(err, &timeout) && timeout.Timeout()) {
+					t.Fatalf("peer was not closed promptly: %v", err)
+				}
+			}
+			select {
+			case err := <-proxyDone:
+				if closingPeer == "request_cancel" && !errors.Is(err, context.Canceled) {
+					t.Fatalf("proxy error = %v, want context.Canceled", err)
+				}
+				if err != nil && !errors.Is(err, context.Canceled) && !isFNAppConnectionTermination(err) {
+					t.Fatalf("proxy returned unexpected error: %v", err)
+				}
+			case <-time.After(2 * time.Second):
+				t.Fatal("proxy did not finish after peer disconnected")
+			}
+		})
 	}
 }
 

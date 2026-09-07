@@ -19,8 +19,6 @@ import (
 )
 
 const defaultFnosPortIconHijackGatewayPort = 7999
-const defaultFnosPortIconHijackWebSocketMaxLifetime = 55 * time.Minute
-const fnosPortIconHijackWebSocketCloseTimeout = 2 * time.Second
 const fnosPortIconHijackWebSocketPath = "/websocket"
 const fnosPortIconHijackServiceListPath = "/app-center/v1/service/list"
 const fnosPortIconHijackHTTPBodyLimitBytes int64 = 2 * 1024 * 1024
@@ -42,7 +40,6 @@ type fnosPortIconHijackWebSocketOptions struct {
 	stripPath            bool
 	pathPrefix           string
 	hostTargetPathMode   string
-	webSocketMaxLifetime time.Duration
 }
 
 func (h *Handler) maybeProxyFnosPortIconHijackWebSocket(w http.ResponseWriter, r *http.Request, options fnosPortIconHijackWebSocketOptions) bool {
@@ -131,11 +128,6 @@ func (h *Handler) proxyFnosPortIconHijackWebSocket(w http.ResponseWriter, r *htt
 		monitorTrace.recordCustomWebSocketOpen(r, upstreamURL.String(), requestHeader, responseHeaders, upstreamConn.Subprotocol())
 	}
 
-	maxLifetime := options.webSocketMaxLifetime
-	if maxLifetime <= 0 {
-		maxLifetime = defaultFnosPortIconHijackWebSocketMaxLifetime
-	}
-
 	var upstreamTransform func(int, []byte) (int, []byte, error)
 	upstreamObservedDirection := "upstream_to_client"
 	if shouldRewriteFnosPortIconHijackWebSocketPayload(r) {
@@ -161,8 +153,6 @@ func (h *Handler) proxyFnosPortIconHijackWebSocket(w http.ResponseWriter, r *htt
 		}
 	}
 
-	lifetimeTimer := time.NewTimer(maxLifetime)
-	defer lifetimeTimer.Stop()
 	errCh := make(chan error, 2)
 	go func() {
 		errCh <- relayWebSocketMessages(clientConn, upstreamConn, upstreamTransform, func(messageType int, payload []byte) {
@@ -179,14 +169,21 @@ func (h *Handler) proxyFnosPortIconHijackWebSocket(w http.ResponseWriter, r *htt
 		})
 	}()
 
+	// Keep relaying until a peer disconnects, forwarding fails, or the request
+	// is canceled. Close both sockets and join every remaining relay before
+	// the request's monitor is finalized.
+	pendingRelays := 2
 	select {
 	case err = <-errCh:
-	case <-lifetimeTimer.C:
-		closeFnosPortIconHijackWebSocketPair(clientConn, upstreamConn)
-		err = <-errCh
+		pendingRelays--
+	case <-r.Context().Done():
+		err = r.Context().Err()
 	}
 	_ = clientConn.Close()
 	_ = upstreamConn.Close()
+	for i := 0; i < pendingRelays; i++ {
+		<-errCh
+	}
 	return err
 }
 
@@ -196,23 +193,6 @@ func shouldRewriteFnosPortIconHijackWebSocketPayload(r *http.Request) bool {
 	}
 	requestType := strings.TrimSpace(r.URL.Query().Get("type"))
 	return requestType == "" || strings.EqualFold(requestType, "main")
-}
-
-func closeFnosPortIconHijackWebSocketPair(clientConn *websocket.Conn, upstreamConn *websocket.Conn) {
-	deadline := time.Now().Add(fnosPortIconHijackWebSocketCloseTimeout)
-	closeMessage := websocket.FormatCloseMessage(websocket.CloseNormalClosure, "websocket lifetime exceeded")
-	for _, conn := range []*websocket.Conn{clientConn, upstreamConn} {
-		if conn == nil {
-			continue
-		}
-		_ = conn.WriteControl(websocket.CloseMessage, closeMessage, deadline)
-	}
-	for _, conn := range []*websocket.Conn{clientConn, upstreamConn} {
-		if conn == nil {
-			continue
-		}
-		_ = conn.Close()
-	}
 }
 
 func (h *Handler) fnosPortIconHijackResponsePort() int {

@@ -44,6 +44,7 @@ import (
 
 	"github.com/soheilhy/cmux"
 	"golang.org/x/net/http/httpguts"
+	"golang.org/x/net/http2"
 
 	"github.com/rs/zerolog"
 )
@@ -54,6 +55,8 @@ const (
 	proxyMaxIdleConnectionsPerHost     = 2048
 	proxyIdleConnectionTimeout         = 90 * time.Second
 	proxyTLSClientSessionCacheSize     = 256
+	proxyHTTP2SendPingTimeout          = 30 * time.Second
+	proxyHTTP2PingTimeout              = 10 * time.Second
 	trafficCounterFlushBytes           = 1024 * 1024
 	maxSignedAuthRequestBodyBytes  int = 4 * 1024 * 1024
 )
@@ -885,7 +888,47 @@ func newProxyTransport() *http.Transport {
 	// Let long-running admin/API requests such as local service discovery
 	// decide their own deadline instead of failing at the gateway layer.
 	transport.ResponseHeaderTimeout = 0
+	// Detect unresponsive HTTP/2 connections without limiting application
+	// response time. Healthy long requests and idle streams can answer PINGs.
+	transport.HTTP2 = &http.HTTP2Config{
+		SendPingTimeout: proxyHTTP2SendPingTimeout,
+		PingTimeout:     proxyHTTP2PingTimeout,
+		CountError: func(errorType string) {
+			if errorType == "conn_close_lost_ping" {
+				logger.Diagnostic("WARN", "proxy", "http2_upstream_healthcheck_failed", errorType, nil)
+			}
+		},
+	}
+	// Go 1.26's bundled HTTP/2 client reads the ping durations above but
+	// does not forward HTTP2Config.CountError to its transport callback.
+	// Explicitly wire the existing x/net adapter until that is supported.
+	if proxyHTTP2DisabledByEnvironment() {
+		// Explicit x/net registration bypasses net/http's GODEBUG check,
+		// including its HTTP/2 idle-connection cleanup initialization.
+		return transport
+	}
+	if h2, err := http2.ConfigureTransports(transport); err != nil {
+		// The standard transport still applies the health-check durations.
+		logger.Diagnostic("WARN", "proxy", "http2_healthcheck_logging_unavailable", "transport_configuration_failed", nil)
+	} else {
+		h2.CountError = func(errorType string) {
+			if report := transport.HTTP2.CountError; report != nil {
+				report(errorType)
+			}
+		}
+	}
 	return transport
+}
+
+// Match GODEBUG's last-value-wins rule without dropping unrelated settings.
+func proxyHTTP2DisabledByEnvironment() bool {
+	settings := strings.Split(os.Getenv("GODEBUG"), ",")
+	for i := len(settings) - 1; i >= 0; i-- {
+		if value, ok := strings.CutPrefix(settings[i], "http2client="); ok {
+			return value == "0"
+		}
+	}
+	return false
 }
 
 func ensureLeadingSlash(p string) string {

@@ -283,6 +283,12 @@ Host 也可以由网关直接映射单个文件或只读目录：
 
 联合鉴权协议通过 `authorize_http_v1` capability 协商。滚动升级时应先发布 Rust 后端，再发布 Go 网关；旧 Rust 后端会自动继续使用双调用流程。
 
+### 上游 HTTP/2 连接探活
+
+HTTP/2 上游连接连续 30 秒未收到帧时，网关发送 PING；10 秒内未收到回应则淘汰该连接，后续请求重新建连。这不是请求总时长限制：能回应 PING 的慢请求、下载和静默 SSE 保持可用。保留 `GODEBUG=http2client=0` 禁用 HTTP/2 的运维开关。HTTP/1.1 不受影响，网关不增加请求重试层，受影响的在途请求仍可能失败。
+
+探活失败通过运行诊断日志记录 `component=proxy`、`event=http2_upstream_healthcheck_failed`、`reason_code=conn_close_lost_ping`，使用现有日志的重复事件聚合机制。部署新版本后新建的 Transport 默认启用，无需配置迁移。此机制处理连接失去响应，不能解决仍能回应 PING 的上游应用卡顿。
+
 ### TLS 入口
 
 - `single_active`：部署一个活动证书

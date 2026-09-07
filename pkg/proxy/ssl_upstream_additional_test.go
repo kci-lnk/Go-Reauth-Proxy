@@ -37,6 +37,10 @@ func TestNewProxyTransportEnablesBoundedTLSClientSessionCache(t *testing.T) {
 	if !transport.TLSClientConfig.InsecureSkipVerify {
 		t.Fatal("proxy transport changed the configured upstream TLS verification behavior")
 	}
+	defer transport.CloseIdleConnections()
+	if transport.HTTP2 == nil || transport.HTTP2.SendPingTimeout != 30*time.Second || transport.HTTP2.PingTimeout != 10*time.Second || transport.HTTP2.CountError == nil {
+		t.Fatalf("missing default HTTP/2 health checks: %+v", transport.HTTP2)
+	}
 	if transport.ResponseHeaderTimeout != 0 {
 		t.Fatalf("ResponseHeaderTimeout = %v, want no gateway-level timeout", transport.ResponseHeaderTimeout)
 	}

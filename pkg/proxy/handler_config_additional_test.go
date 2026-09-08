@@ -1568,3 +1568,50 @@ func newAdditionalProxyTestHandlerWithPath(t *testing.T) (*Handler, *config.Mana
 	t.Cleanup(handler.gatewayLogManager.Close)
 	return handler, manager, configPath
 }
+
+func TestLoggingDirectoryPersistsAndRejectsInvalidUpdate(t *testing.T) {
+	handler, manager := newAdditionalProxyTestHandler(t)
+	original := handler.GetLoggingDirectory().LogsDir
+	custom := filepath.Join(t.TempDir(), "custom logs")
+	if _, err := handler.SetLoggingConfig(models.LoggingConfig{Enabled: true, CustomLogsDir: custom}); err != nil {
+		t.Fatal(err)
+	}
+	stored, err := manager.Load()
+	if err != nil || stored.Logging.CustomLogsDir != custom {
+		t.Fatalf("persisted directory: %#v %v", stored, err)
+	}
+	if _, err := handler.SetLoggingConfig(models.LoggingConfig{Enabled: true, CustomLogsDir: "relative"}); err == nil {
+		t.Fatal("accepted relative path")
+	}
+	stored, err = manager.Load()
+	if err != nil || stored.Logging.CustomLogsDir != custom || handler.GetLoggingDirectory().LogsDir != custom {
+		t.Fatal("invalid update changed storage")
+	}
+	if _, err := handler.SetLoggingConfig(models.LoggingConfig{Enabled: true}); err != nil {
+		t.Fatal(err)
+	}
+	stored, err = manager.Load()
+	if err != nil || stored.Logging.CustomLogsDir != "" || handler.GetLoggingDirectory().LogsDir != original {
+		t.Fatal("reset did not persist default mode")
+	}
+}
+
+func TestResetRejectsInvalidLoggingDirectoryBeforePersisting(t *testing.T) {
+	handler, manager := newAdditionalProxyTestHandler(t)
+	previous := handler.GetLoggingConfig()
+	cfg, err := manager.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.Logging.CustomLogsDir = "relative"
+	if err := handler.ResetAllData(cfg); err == nil {
+		t.Fatal("reset accepted invalid directory")
+	}
+	stored, err := manager.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.Logging.CustomLogsDir != "" || handler.GetLoggingConfig() != previous {
+		t.Fatal("invalid reset changed logging configuration")
+	}
+}

@@ -38,7 +38,10 @@ func TestNewManagerExposesConfigInfo(t *testing.T) {
 func TestUpdateConfigNormalizesAndPersistsInMemory(t *testing.T) {
 	manager := NewManager(t.TempDir(), models.LoggingConfig{})
 	t.Cleanup(manager.Close)
-	info := manager.UpdateConfig(models.LoggingConfig{Enabled: true, MaxDays: 0})
+	info, err := manager.UpdateConfig(models.LoggingConfig{Enabled: true, MaxDays: 0})
+	if err != nil {
+		t.Fatal(err)
+	}
 	if !info.Enabled || info.MaxDays != DefaultMaxDays {
 		t.Fatalf("UpdateConfig() = %#v", info)
 	}
@@ -147,7 +150,10 @@ func TestManagerStartsWorkerLazilyWhenEnabled(t *testing.T) {
 	manager := NewManager(dir, models.LoggingConfig{Enabled: false})
 	t.Cleanup(manager.Close)
 
-	info := manager.UpdateConfig(models.LoggingConfig{Enabled: true})
+	info, err := manager.UpdateConfig(models.LoggingConfig{Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
 	if info.QueueSize != asyncLogQueueSize {
 		t.Fatalf("enabled logger queue size = %d, want %d", info.QueueSize, asyncLogQueueSize)
 	}
@@ -265,7 +271,10 @@ func TestManagerLogRecordsLocalhostIPv4WhenConfigured(t *testing.T) {
 	t.Cleanup(manager.Close)
 
 	manager.Log(Entry{Method: "GET", Path: "/filtered-before-enable", Status: 200, RemoteIP: "127.0.0.1"})
-	info := manager.UpdateConfig(models.LoggingConfig{Enabled: true, RecordLocalhost: true})
+	info, err := manager.UpdateConfig(models.LoggingConfig{Enabled: true, RecordLocalhost: true})
+	if err != nil {
+		t.Fatal(err)
+	}
 	if !info.RecordLocalhost {
 		t.Fatalf("UpdateConfig() = %#v, want localhost logging enabled", info)
 	}

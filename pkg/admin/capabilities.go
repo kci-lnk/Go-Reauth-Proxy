@@ -22,6 +22,7 @@ var commonGatewayCapabilities = []string{
 	"compiled_whitelist_firewall_v1",
 	"compiled_trusted_client_ipset_v1",
 	"static_path_browse_v1",
+	"gateway_log_directory_v1",
 	"stream_service_probe_v1",
 	"stream_strict_validation_v1",
 	"stream_bypass_policy_v1",

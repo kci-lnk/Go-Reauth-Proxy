@@ -616,3 +616,26 @@ func newGatewayControlTestServer(t *testing.T, token string) *GRPCServer {
 	proxyHandler := proxy.NewHandler(7996, 7999, cfgManager, initialCfg, filepath.Join(t.TempDir(), "logs"), nil)
 	return NewGRPCServer(NewServer(proxyHandler, 7996, cfgManager, initialCfg, nil), token)
 }
+
+func TestGatewayLogDirectoryLegacyUpdateAndRestore(t *testing.T) {
+	server := newGatewayControlTestServer(t, "secret")
+	ctx := authTestContext()
+	original, err := server.GetLoggingConfig(ctx, &emptypb.Empty{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	custom := filepath.Join(t.TempDir(), "logs")
+	set, err := server.SetLoggingConfig(ctx, &pb.LoggingConfig{Enabled: true, MaxDays: 7, CustomLogsDir: &custom})
+	if err != nil || set.GetLogsDir() != custom || set.GetDefaultLogsDir() != original.GetLogsDir() {
+		t.Fatalf("custom: %v %v", set, err)
+	}
+	set, err = server.SetLoggingConfig(ctx, &pb.LoggingConfig{Enabled: true, MaxDays: 3})
+	if err != nil || set.GetCustomLogsDir() != custom || set.GetLogsDir() != custom {
+		t.Fatalf("legacy update lost path: %v %v", set, err)
+	}
+	empty := ""
+	set, err = server.SetLoggingConfig(ctx, &pb.LoggingConfig{Enabled: true, MaxDays: 7, CustomLogsDir: &empty})
+	if err != nil || set.GetLogsDir() != original.GetLogsDir() || set.GetCustomLogsDir() != "" {
+		t.Fatalf("reset: %v %v", set, err)
+	}
+}

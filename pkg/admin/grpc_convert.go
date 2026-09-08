@@ -696,6 +696,8 @@ func loggingConfigToProto(cfg gatewaylog.ConfigInfo) *pb.LoggingConfig {
 		RecordLocalhost: cfg.RecordLocalhost,
 		MaxDays:         int32(cfg.MaxDays),
 		LogsDir:         cfg.LogsDir,
+		CustomLogsDir:   &cfg.CustomLogsDir,
+		DefaultLogsDir:  cfg.DefaultLogsDir,
 		DroppedEntries:  cfg.DroppedEntries,
 		QueueSize:       int32(cfg.QueueSize),
 		QueueDepth:      int32(cfg.QueueDepth),
@@ -707,6 +709,7 @@ func protoToLoggingConfig(cfg *pb.LoggingConfig) models.LoggingConfig {
 		return models.LoggingConfig{}
 	}
 	return models.LoggingConfig{
+		CustomLogsDir:   cfg.GetCustomLogsDir(),
 		Enabled:         cfg.GetEnabled(),
 		RecordLocalhost: cfg.GetRecordLocalhost(),
 		MaxDays:         int(cfg.GetMaxDays()),

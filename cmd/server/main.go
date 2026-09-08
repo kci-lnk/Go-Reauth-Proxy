@@ -715,6 +715,13 @@ func run(options runOptions) error {
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)
 	}
+	initialCfg.Logging = gatewaylog.NormalizeConfig(initialCfg.Logging)
+	if initialCfg.Logging.CustomLogsDir != "" {
+		if err := gatewaylog.ValidateLogsDirectory(initialCfg.Logging.CustomLogsDir); err != nil {
+			return fmt.Errorf("custom request log directory is unavailable: %w", err)
+		}
+	}
+
 	if configured := strings.TrimSpace(options.WAFDir); configured != "" {
 		if !filepath.IsAbs(configured) {
 			return fmt.Errorf("WAF directory must be absolute: %s", configured)

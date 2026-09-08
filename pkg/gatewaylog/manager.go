@@ -105,6 +105,8 @@ type Entry struct {
 }
 
 type ConfigInfo struct {
+	CustomLogsDir   string `json:"custom_logs_dir"`
+	DefaultLogsDir  string `json:"default_logs_dir"`
 	Enabled         bool   `json:"enabled"`
 	RecordLocalhost bool   `json:"record_localhost"`
 	MaxDays         int    `json:"max_days"`
@@ -379,6 +381,10 @@ type logQueueState struct {
 }
 
 type Manager struct {
+	// directoryMu keeps complete reads/deletes on one directory during a switch.
+	directoryMu       directoryLock
+	inputMu           sync.RWMutex
+	defaultLogsDir    string
 	mu                sync.RWMutex
 	workerMu          sync.Mutex
 	config            models.LoggingConfig
@@ -403,6 +409,10 @@ type Manager struct {
 
 func NormalizeConfig(cfg models.LoggingConfig) models.LoggingConfig {
 	cfg.MaxDays = normalizeMaxDays(cfg.MaxDays)
+	cfg.CustomLogsDir = strings.TrimSpace(cfg.CustomLogsDir)
+	if cfg.CustomLogsDir != "" {
+		cfg.CustomLogsDir = filepath.Clean(cfg.CustomLogsDir)
+	}
 	return cfg
 }
 
@@ -412,11 +422,16 @@ func DefaultLogsDir(runtimeDir string) string {
 
 func NewManager(logsDir string, cfg models.LoggingConfig) *Manager {
 	normalized := NormalizeConfig(cfg)
+	defaultLogsDir := logsDir
+	if normalized.CustomLogsDir != "" {
+		logsDir = normalized.CustomLogsDir
+	}
 	writer := NewDailyFileWriter(logsDir, normalized.MaxDays)
 	logger := zerolog.New(writer).With().Timestamp().Logger()
 
 	m := &Manager{
 		config:         normalized,
+		defaultLogsDir: defaultLogsDir,
 		logsDir:        logsDir,
 		writer:         writer,
 		logger:         logger,
@@ -436,6 +451,12 @@ func NewManager(logsDir string, cfg models.LoggingConfig) *Manager {
 }
 
 func (m *Manager) GetConfigInfo() ConfigInfo {
+	m.directoryMu.RLock()
+	defer m.directoryMu.RUnlock()
+	return m.configInfo()
+}
+
+func (m *Manager) configInfo() ConfigInfo {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
@@ -446,6 +467,8 @@ func (m *Manager) GetConfigInfo() ConfigInfo {
 		queueDepth = len(queue.entries)
 	}
 	return ConfigInfo{
+		CustomLogsDir:   m.config.CustomLogsDir,
+		DefaultLogsDir:  m.defaultLogsDir,
 		Enabled:         m.config.Enabled,
 		RecordLocalhost: m.config.RecordLocalhost,
 		MaxDays:         m.config.MaxDays,
@@ -456,28 +479,119 @@ func (m *Manager) GetConfigInfo() ConfigInfo {
 	}
 }
 
-func (m *Manager) UpdateConfig(cfg models.LoggingConfig) ConfigInfo {
-	normalized := NormalizeConfig(cfg)
-	if !normalized.Enabled {
-		m.enabled.Store(false)
+// UpdateConfig applies an already persisted configuration.
+func (m *Manager) UpdateConfig(cfg models.LoggingConfig) (ConfigInfo, error) {
+	return m.Configure(cfg, nil)
+}
+
+// Configure validates storage before persisting, then switches the stable writer.
+// Producers wait briefly so every queued entry is flushed to the old directory.
+func (m *Manager) Configure(cfg models.LoggingConfig, persist func() error) (ConfigInfo, error) {
+	return m.ConfigureContext(context.Background(), cfg, persist)
+}
+
+func (m *Manager) ConfigureContext(ctx context.Context, cfg models.LoggingConfig, persist func() error) (ConfigInfo, error) {
+	return m.ConfigurePatchContext(ctx, cfg, false, func(models.LoggingConfig) error {
+		if persist != nil {
+			return persist()
+		}
+		return nil
+	})
+}
+
+// ConfigurePatchContext resolves omitted directory input under the same lock
+// as the update, so legacy callers cannot restore a stale directory.
+func (m *Manager) ConfigurePatchContext(ctx context.Context, cfg models.LoggingConfig, preserveDirectory bool, persist func(models.LoggingConfig) error) (ConfigInfo, error) {
+	if ctx == nil {
+		ctx = context.Background()
 	}
-	m.Flush()
+	if err := m.directoryMu.LockContext(ctx); err != nil {
+		return ConfigInfo{}, err
+	}
+	defer m.directoryMu.Unlock()
+	if m.closed.Load() {
+		return m.configInfo(), fmt.Errorf("request log manager is closed")
+	}
+	if preserveDirectory {
+		cfg.CustomLogsDir = m.config.CustomLogsDir
+	}
+	normalized := NormalizeConfig(cfg)
+	target := m.defaultLogsDir
+	if normalized.CustomLogsDir != "" {
+		target = normalized.CustomLogsDir
+	}
+	changingDirectory := target != m.logsDir
+	// Turning logging off must remain possible after the disk becomes unavailable.
+	if changingDirectory || normalized.Enabled {
+		if err := ValidateLogsDirectory(target); err != nil {
+			return m.configInfo(), err
+		}
+	}
+	m.inputMu.Lock()
+	defer m.inputMu.Unlock()
+	if err := m.FlushContext(ctx); err != nil {
+		return m.configInfo(), err
+	}
+	if err := m.writer.Flush(); err != nil && (changingDirectory || normalized.Enabled) {
+		return m.configInfo(), err
+	}
+	// Keep the writer object stable: the worker's logger and periodic flushes use it.
+	m.writer.mu.Lock()
+	defer m.writer.mu.Unlock()
+	var prepared *DailyFileWriter
+	if changingDirectory || (normalized.Enabled && !m.enabled.Load()) {
+		prepared = NewDailyFileWriter(target, normalized.MaxDays)
+		if err := prepared.ensureDirLocked(); err != nil {
+			return m.configInfo(), err
+		}
+		if err := prepared.rotateLocked(time.Now()); err != nil {
+			return m.configInfo(), err
+		}
+		defer prepared.Close()
+	}
+	if err := ctx.Err(); err != nil {
+		return m.configInfo(), err
+	}
+	if persist != nil {
+		if err := persist(normalized); err != nil {
+			return m.configInfo(), err
+		}
+	}
+	if prepared != nil {
+		if m.writer.currentFile != nil {
+			_ = m.writer.currentFile.Close()
+		}
+		m.writer.baseDir = target
+		m.writer.currentFile, prepared.currentFile = prepared.currentFile, nil
+		m.writer.currentBuffer, prepared.currentBuffer = prepared.currentBuffer, nil
+		m.writer.currentDate = prepared.currentDate
+		m.writer.currentDay = prepared.currentDay
+		m.writer.nextDay = prepared.nextDay
+		m.writer.dirReady = true
+		m.writer.lastCleanup = ""
+		m.logsDir = target
+		m.analyticsMu.Lock()
+		m.analyticsCache = make(map[string]cachedDailyAnalytics)
+		m.analyticsMu.Unlock()
+	}
+	m.writer.retentionDays = normalized.MaxDays
+	if changingDirectory || normalized.Enabled {
+		_ = m.writer.cleanupLocked(time.Now())
+	}
+	m.mu.Lock()
+	m.config = normalized
+	m.mu.Unlock()
+	m.recordLocalhost.Store(normalized.RecordLocalhost)
 	if normalized.Enabled {
 		m.ensureLogWorker()
 	}
-
-	m.mu.Lock()
-	m.config = normalized
-	m.writer.SetRetentionDays(normalized.MaxDays)
-	m.mu.Unlock()
-	m.recordLocalhost.Store(normalized.RecordLocalhost)
 	m.enabled.Store(normalized.Enabled)
-
-	_ = m.writer.Cleanup()
-	return m.GetConfigInfo()
+	return m.configInfo(), nil
 }
 
 func (m *Manager) LogsDir() string {
+	m.directoryMu.RLock()
+	defer m.directoryMu.RUnlock()
 	return m.logsDir
 }
 
@@ -486,6 +600,11 @@ func (m *Manager) Enabled() bool {
 }
 
 func (m *Manager) Log(entry Entry) {
+	if m == nil {
+		return
+	}
+	m.inputMu.RLock()
+	defer m.inputMu.RUnlock()
 	if m == nil || m.closed.Load() || !m.enabled.Load() {
 		return
 	}
@@ -586,6 +705,10 @@ func (m *Manager) Close() {
 		return
 	}
 	m.closeOnce.Do(func() {
+		m.directoryMu.Lock()
+		defer m.directoryMu.Unlock()
+		m.inputMu.Lock()
+		defer m.inputMu.Unlock()
 		m.closed.Store(true)
 		m.enabled.Store(false)
 		m.Flush()
@@ -729,6 +852,8 @@ func (m *Manager) writeLogEntry(entry *Entry) {
 }
 
 func (m *Manager) GetDates() (DatesResult, error) {
+	m.directoryMu.RLock()
+	defer m.directoryMu.RUnlock()
 	m.Flush()
 	dates, err := m.listDates(true)
 	if err != nil {
@@ -767,6 +892,10 @@ func (m *Manager) QueryContext(ctx context.Context, date string, page int, limit
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	if err := m.directoryMu.RLockContext(ctx); err != nil {
+		return QueryResult{}, err
+	}
+	defer m.directoryMu.RUnlock()
 	release, err := m.acquireQuery(ctx)
 	if err != nil {
 		return QueryResult{}, err
@@ -850,6 +979,10 @@ func (m *Manager) FindByTraceIDContext(ctx context.Context, traceID string) (Tra
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	if err := m.directoryMu.RLockContext(ctx); err != nil {
+		return TraceResult{}, err
+	}
+	defer m.directoryMu.RUnlock()
 	traceID = strings.TrimSpace(traceID)
 	result := TraceResult{TraceID: traceID}
 	release, err := m.acquireQuery(ctx)
@@ -924,6 +1057,8 @@ func (m *Manager) FindByTraceIDContext(ctx context.Context, traceID string) (Tra
 }
 
 func (m *Manager) DeleteDate(date string) (DeleteResult, error) {
+	m.directoryMu.RLock()
+	defer m.directoryMu.RUnlock()
 	m.Flush()
 	selectedDate, err := normalizeDate(date)
 	if err != nil {

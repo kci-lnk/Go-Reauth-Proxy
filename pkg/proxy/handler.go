@@ -2138,6 +2138,18 @@ func (h *Handler) ResetAllData(resetConfig *config.AppConfig) error {
 	defer h.wafChangeMu.Unlock()
 
 	loggingConfig := gatewaylog.NormalizeConfig(resetConfig.Logging)
+	if h.gatewayLogManager != nil {
+		current := h.gatewayLogManager.GetConfigInfo()
+		target := current.DefaultLogsDir
+		if loggingConfig.CustomLogsDir != "" {
+			target = loggingConfig.CustomLogsDir
+		}
+		if target != current.LogsDir || loggingConfig.Enabled {
+			if err := gatewaylog.ValidateLogsDirectory(target); err != nil {
+				return fmt.Errorf("validate reset log directory: %w", err)
+			}
+		}
+	}
 	forwardedHeaders, _ := normalizeForwardedHeadersConfig(resetConfig.ForwardedHeaders)
 	preserveHost, _ := normalizePreserveHostConfig(resetConfig.PreserveHost)
 	visibility, err := newGatewayVisibility(resetConfig.Visibility)
@@ -2239,8 +2251,11 @@ func (h *Handler) ResetAllData(resetConfig *config.AppConfig) error {
 	h.publishRequestSnapshotLocked()
 	h.mu.Unlock()
 
+	var loggingResetErr error
 	if h.gatewayLogManager != nil {
-		h.gatewayLogManager.UpdateConfig(loggingConfig)
+		if _, err := h.gatewayLogManager.UpdateConfig(loggingConfig); err != nil {
+			loggingResetErr = fmt.Errorf("other settings were reset, but request log configuration could not be applied: %w", err)
+		}
 	}
 	h.clearAuthCache()
 	h.loggedInActiveMu.Lock()
@@ -2269,7 +2284,7 @@ func (h *Handler) ResetAllData(resetConfig *config.AppConfig) error {
 	if event := debugProxyEvent("all_data_reset", ""); event != nil {
 		event.Send()
 	}
-	return nil
+	return loggingResetErr
 }
 
 // persistGatewayListenerConfigLocked updates only the listener setting. A
@@ -3979,43 +3994,56 @@ func (h *Handler) GetLoggingConfig() gatewaylog.ConfigInfo {
 			Enabled:         config.Enabled,
 			RecordLocalhost: config.RecordLocalhost,
 			MaxDays:         config.MaxDays,
+			CustomLogsDir:   config.CustomLogsDir,
 		}
 	}
 	return h.gatewayLogManager.GetConfigInfo()
 }
 
 func (h *Handler) SetLoggingConfig(cfg models.LoggingConfig) (gatewaylog.ConfigInfo, error) {
+	return h.SetLoggingConfigContext(context.Background(), cfg)
+}
+
+func (h *Handler) SetLoggingConfigContext(ctx context.Context, cfg models.LoggingConfig, preserveDirectory ...bool) (gatewaylog.ConfigInfo, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	normalized := gatewaylog.NormalizeConfig(cfg)
 
-	h.mu.Lock()
-	previous := h.LoggingConfig
-	saveErr := h.commitConfigMutationLocked(
-		func() { h.LoggingConfig = normalized },
-		func() { h.LoggingConfig = previous },
-		func(conf *config.AppConfig) {
-			conf.Logging = h.LoggingConfig
-		},
-		nil,
-	)
-	h.mu.Unlock()
-	if saveErr != nil {
-		return h.GetLoggingConfig(), saveErr
+	preserve := len(preserveDirectory) > 0 && preserveDirectory[0]
+	persist := func(effective models.LoggingConfig) error {
+		h.mu.Lock()
+		defer h.mu.Unlock()
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if h.gatewayLogManager == nil && preserve {
+			effective.CustomLogsDir = h.LoggingConfig.CustomLogsDir
+		}
+		normalized = effective
+		previous := h.LoggingConfig
+		return h.commitConfigMutationLocked(
+			func() { h.LoggingConfig = normalized },
+			func() { h.LoggingConfig = previous },
+			func(conf *config.AppConfig) { conf.Logging = h.LoggingConfig }, nil,
+		)
 	}
-	if event := debugProxyEvent("gateway_logging_config_set", ""); event != nil {
-		event.Bool("enabled", normalized.Enabled).
-			Bool("record_localhost", normalized.RecordLocalhost).
-			Int("max_days", normalized.MaxDays).
-			Send()
-	}
-
 	if h.gatewayLogManager == nil {
-		return gatewaylog.ConfigInfo{
-			Enabled:         normalized.Enabled,
-			RecordLocalhost: normalized.RecordLocalhost,
-			MaxDays:         normalized.MaxDays,
-		}, nil
+		if err := persist(normalized); err != nil {
+			return h.GetLoggingConfig(), err
+		}
+		return gatewaylog.ConfigInfo{Enabled: normalized.Enabled, RecordLocalhost: normalized.RecordLocalhost, MaxDays: normalized.MaxDays, CustomLogsDir: normalized.CustomLogsDir}, nil
 	}
-	return h.gatewayLogManager.UpdateConfig(normalized), nil
+	info, err := h.gatewayLogManager.ConfigurePatchContext(ctx, normalized, preserve, persist)
+	if err == nil {
+		if event := debugProxyEvent("gateway_logging_config_set", ""); event != nil {
+			event.Bool("enabled", normalized.Enabled).
+				Bool("record_localhost", normalized.RecordLocalhost).
+				Int("max_days", normalized.MaxDays).
+				Str("custom_logs_dir", logger.SanitizeLogString(normalized.CustomLogsDir)).Send()
+		}
+	}
+	return info, err
 }
 
 func (h *Handler) GetLoggingDirectory() gatewaylog.DirectoryInfo {

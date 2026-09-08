@@ -2930,6 +2930,8 @@ type LoggingConfig struct {
 	QueueSize       int32                  `protobuf:"varint,5,opt,name=queue_size,json=queueSize,proto3" json:"queue_size,omitempty"`
 	QueueDepth      int32                  `protobuf:"varint,6,opt,name=queue_depth,json=queueDepth,proto3" json:"queue_depth,omitempty"`
 	RecordLocalhost bool                   `protobuf:"varint,7,opt,name=record_localhost,json=recordLocalhost,proto3" json:"record_localhost,omitempty"`
+	CustomLogsDir   *string                `protobuf:"bytes,8,opt,name=custom_logs_dir,json=customLogsDir,proto3,oneof" json:"custom_logs_dir,omitempty"`
+	DefaultLogsDir  string                 `protobuf:"bytes,9,opt,name=default_logs_dir,json=defaultLogsDir,proto3" json:"default_logs_dir,omitempty"`
 	unknownFields   protoimpl.UnknownFields
 	sizeCache       protoimpl.SizeCache
 }
@@ -3011,6 +3013,20 @@ func (x *LoggingConfig) GetRecordLocalhost() bool {
 		return x.RecordLocalhost
 	}
 	return false
+}
+
+func (x *LoggingConfig) GetCustomLogsDir() string {
+	if x != nil && x.CustomLogsDir != nil {
+		return *x.CustomLogsDir
+	}
+	return ""
+}
+
+func (x *LoggingConfig) GetDefaultLogsDir() string {
+	if x != nil {
+		return x.DefaultLogsDir
+	}
+	return ""
 }
 
 type ReverseProxyThrottleConfig struct {
@@ -12109,7 +12125,7 @@ const file_fnknock_v1_gateway_proto_rawDesc = "" +
 	"\x10public_http_port\x18\f \x01(\x05R\x0epublicHttpPort\x12*\n" +
 	"\x11public_https_port\x18\r \x01(\x05R\x0fpublicHttpsPort\x12\x1b\n" +
 	"\tauth_host\x18\x0e \x01(\tR\bauthHost\x122\n" +
-	"\x15trust_forwarded_proto\x18\x0f \x01(\bR\x13trustForwardedProto\"\xf3\x01\n" +
+	"\x15trust_forwarded_proto\x18\x0f \x01(\bR\x13trustForwardedProto\"\xde\x02\n" +
 	"\rLoggingConfig\x12\x18\n" +
 	"\aenabled\x18\x01 \x01(\bR\aenabled\x12\x19\n" +
 	"\bmax_days\x18\x02 \x01(\x05R\amaxDays\x12\x19\n" +
@@ -12119,7 +12135,10 @@ const file_fnknock_v1_gateway_proto_rawDesc = "" +
 	"queue_size\x18\x05 \x01(\x05R\tqueueSize\x12\x1f\n" +
 	"\vqueue_depth\x18\x06 \x01(\x05R\n" +
 	"queueDepth\x12)\n" +
-	"\x10record_localhost\x18\a \x01(\bR\x0frecordLocalhost\"\xa1\x01\n" +
+	"\x10record_localhost\x18\a \x01(\bR\x0frecordLocalhost\x12+\n" +
+	"\x0fcustom_logs_dir\x18\b \x01(\tH\x00R\rcustomLogsDir\x88\x01\x01\x12(\n" +
+	"\x10default_logs_dir\x18\t \x01(\tR\x0edefaultLogsDirB\x12\n" +
+	"\x10_custom_logs_dir\"\xa1\x01\n" +
 	"\x1aReverseProxyThrottleConfig\x12\x18\n" +
 	"\aenabled\x18\x01 \x01(\bR\aenabled\x12.\n" +
 	"\x13requests_per_second\x18\x02 \x01(\x05R\x11requestsPerSecond\x12\x14\n" +
@@ -13628,6 +13647,7 @@ func file_fnknock_v1_gateway_proto_init() {
 	file_fnknock_v1_gateway_proto_msgTypes[15].OneofWrappers = []any{}
 	file_fnknock_v1_gateway_proto_msgTypes[20].OneofWrappers = []any{}
 	file_fnknock_v1_gateway_proto_msgTypes[21].OneofWrappers = []any{}
+	file_fnknock_v1_gateway_proto_msgTypes[33].OneofWrappers = []any{}
 	file_fnknock_v1_gateway_proto_msgTypes[126].OneofWrappers = []any{}
 	file_fnknock_v1_gateway_proto_msgTypes[137].OneofWrappers = []any{
 		(*AuthBridgeEnvelope_Ready)(nil),

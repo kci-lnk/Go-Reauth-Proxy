@@ -664,8 +664,12 @@ func (s *GRPCServer) SetLoggingConfig(ctx context.Context, req *pb.LoggingConfig
 	if req.GetMaxDays() < 0 {
 		return nil, grpcBadRequest("max_days must be greater than 0")
 	}
-	cfg, err := s.admin.ProxyHandler.SetLoggingConfig(protoToLoggingConfig(req))
+	input := protoToLoggingConfig(req)
+	cfg, err := s.admin.ProxyHandler.SetLoggingConfigContext(ctx, input, req.CustomLogsDir == nil)
 	if err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return nil, status.FromContextError(err).Err()
+		}
 		return nil, grpcInternal("failed to set logging config: %v", err)
 	}
 	return loggingConfigToProto(cfg), nil

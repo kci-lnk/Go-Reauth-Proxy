@@ -1082,7 +1082,10 @@ func (s *Server) handleGetLoggingConfig(w http.ResponseWriter, r *http.Request) 
 }
 
 func (s *Server) handleSetLoggingConfig(w http.ResponseWriter, r *http.Request) {
-	var req models.LoggingConfig
+	var req struct {
+		models.LoggingConfig
+		CustomLogsDir *string `json:"custom_logs_dir"`
+	}
 	if !decodeAdminJSONBody(w, r, &req) {
 		return
 	}
@@ -1091,7 +1094,10 @@ func (s *Server) handleSetLoggingConfig(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	cfg, err := s.ProxyHandler.SetLoggingConfig(req)
+	if req.CustomLogsDir != nil {
+		req.LoggingConfig.CustomLogsDir = *req.CustomLogsDir
+	}
+	cfg, err := s.ProxyHandler.SetLoggingConfigContext(r.Context(), req.LoggingConfig, req.CustomLogsDir == nil)
 	if err != nil {
 		response.Error(w, errors.CodeInternal, "Failed to set logging config: "+err.Error())
 		return

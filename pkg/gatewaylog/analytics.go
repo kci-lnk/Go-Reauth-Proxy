@@ -251,6 +251,10 @@ func (m *Manager) AnalyzeContext(ctx context.Context, fromDate string, toDate st
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	if err := m.directoryMu.RLockContext(ctx); err != nil {
+		return AnalyticsResult{}, err
+	}
+	defer m.directoryMu.RUnlock()
 	if err := ctx.Err(); err != nil {
 		return AnalyticsResult{}, err
 	}

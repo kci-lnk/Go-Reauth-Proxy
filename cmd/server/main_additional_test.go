@@ -6,6 +6,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"os"
 	"path/filepath"
 	"strings"
 	"syscall"
@@ -579,5 +580,43 @@ func TestLiteManagedCloudflareListenerUsesSeparatePort(t *testing.T) {
 	managed := targets[len(targets)-1]
 	if managed.host != "127.0.0.1" || managed.port != 18999 || managed.proxyProtocol {
 		t.Fatalf("Lite managed Cloudflare target = %#v", managed)
+	}
+}
+
+func TestRunRejectsUnavailableCustomLogDirectoryBeforeServing(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	manager := config.NewManager(path)
+	cfg, err := manager.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.Logging.CustomLogsDir = "relative/logs"
+	if err := manager.Save(cfg); err != nil {
+		t.Fatal(err)
+	}
+	err = run(runOptions{ConfigPath: path, ProxyPort: 7999})
+	if err == nil || !strings.Contains(err.Error(), "custom request log directory is unavailable") {
+		t.Fatalf("startup: %v", err)
+	}
+}
+
+func TestRunRejectsBlockedDailyLogBeforeServing(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	manager := config.NewManager(path)
+	cfg, err := manager.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.Logging.CustomLogsDir = t.TempDir()
+	cfg.Logging.Enabled = true
+	if err := os.Mkdir(filepath.Join(cfg.Logging.CustomLogsDir, time.Now().Format("2006-01-02")+".log"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.Save(cfg); err != nil {
+		t.Fatal(err)
+	}
+	err = run(runOptions{ConfigPath: path, ProxyPort: 7999})
+	if err == nil || !strings.Contains(err.Error(), "open daily request log") {
+		t.Fatalf("startup: %v", err)
 	}
 }

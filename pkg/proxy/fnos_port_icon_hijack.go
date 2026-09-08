@@ -494,6 +494,10 @@ func hostRuleTargetPort(rawTarget string) (int, bool) {
 }
 
 func hostRuleAuthorityPort(authority string) (int, bool, bool) {
+	// Go 1.26 rejects unbracketed IPv6 authorities; keep this fast parser aligned.
+	if !strings.HasPrefix(authority, "[") && strings.Count(authority, ":") > 1 {
+		return 0, false, true
+	}
 	if authority == "" {
 		return 0, false, false
 	}

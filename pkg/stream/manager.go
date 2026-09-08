@@ -2302,6 +2302,9 @@ func (m *Manager) normalizeRule(rule models.StreamRule) (models.StreamRule, erro
 }
 
 func (m *Manager) reservedPortName(rule models.StreamRule) string {
+	if m != nil && m.handler != nil && rule.Protocol == models.StreamProtocolUDP && rule.ListenPort == m.handler.ProxyPort && m.handler.GetGatewayHttp3Config().Enabled {
+		return "HTTP/3 gateway"
+	}
 	if m == nil || m.handler == nil || rule.Protocol != models.StreamProtocolTCP {
 		return ""
 	}

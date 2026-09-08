@@ -24,6 +24,7 @@ const (
 var errConfigFileTooLarge = errors.New("gateway config file is too large")
 
 type AppConfig struct {
+	GatewayHttp3         models.GatewayHttp3Config          `json:"gateway_http3"`
 	Rules                []models.Rule                      `json:"rules"`
 	HostRules            []models.HostRule                  `json:"host_rules,omitempty"`
 	VisibilityPolicies   map[string]models.CompiledIPSet    `json:"visibility_policies,omitempty"`

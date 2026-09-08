@@ -778,6 +778,7 @@ func run(options runOptions) error {
 		fnosConnectIngress *proxy.FnosConnectIngress
 		grpcServer         *internalGRPCServer
 		proxyStack         *proxyStack
+		http3Runtime       *http3Runtime
 		httpServer         *http.Server
 		httpsServer        *http.Server
 		shutdownOnce       sync.Once
@@ -804,6 +805,9 @@ func run(options runOptions) error {
 				if err := fnosConnectIngress.Close(); err != nil {
 					log.Printf("Failed to stop FN Connect ingress: %v", err)
 				}
+			}
+			if http3Runtime != nil {
+				http3Runtime.Shutdown(shutdownCtx)
 			}
 			shutdownHTTPServers(shutdownCtx, httpServer, httpsServer)
 			if grpcServer != nil {
@@ -891,10 +895,12 @@ func run(options runOptions) error {
 		grpcServer.SetServingStatus(healthGatewayAuthBridge, ready)
 	})
 
+	http3Runtime = newHTTP3Runtime(proxyHandler, options.ProxyPort)
+	proxyHandler.SetHTTP3Hooks(http3Runtime.Apply, http3Runtime.Status)
 	httpsConns := &proxyConnTracker{}
 	httpConns := &proxyConnTracker{}
 	httpsServer = &http.Server{
-		Handler:           proxyConnectionRetirementHandler(proxyHandler),
+		Handler:           http3Runtime.Advertise(proxyConnectionRetirementHandler(proxyHandler)),
 		ReadHeaderTimeout: 10 * time.Second,
 		IdleTimeout:       120 * time.Second,
 		TLSConfig:         newProxyTLSConfig(proxyHandler),
@@ -922,8 +928,16 @@ func run(options runOptions) error {
 	proxyHandler.SetSSLChangeHook(func() {
 		httpsConns.retireForServerNames(nil)
 		httpConns.retireForServerNames(nil)
+		if err := http3Runtime.RefreshPolicy(); err != nil {
+			log.Printf("HTTP/3 certificate refresh: %v", err)
+		}
 	})
-	proxyHandler.SetHostProtocolModeChangeHook(httpsConns.retireForServerNames)
+	proxyHandler.SetHostProtocolModeChangeHook(func(names []string) {
+		httpsConns.retireForServerNames(names)
+		if err := http3Runtime.RefreshPolicy(); err != nil {
+			log.Printf("HTTP/3 protocol refresh: %v", err)
+		}
+	})
 
 	proxyStack = newProxyStack(options.ProxyPort, proxyHandler, httpServer, httpsServer)
 	bridgeReadyCtx, bridgeReadyCancel := context.WithTimeout(ctx, resolveAuthBridgeStartupTimeout())
@@ -938,6 +952,10 @@ func run(options runOptions) error {
 				Send()
 		}
 		return fmt.Errorf("start proxy stack: %w", err)
+	}
+	http3Runtime.started.Store(true)
+	if err := proxyHandler.WithGatewayListenerChange(func() error { return http3Runtime.Apply(proxyHandler.GetGatewayHttp3Config()) }); err != nil {
+		log.Printf("HTTP/3 startup: %v", err)
 	}
 	grpcServer.SetServingStatus(healthGatewayDataplane, true)
 	logger.Diagnostic("INFO", "gateway_dataplane", "listener_bound", "proxy_stack_started", map[string]any{"status": "healthy"})
@@ -955,6 +973,11 @@ func run(options runOptions) error {
 			log.Printf("Proxy listener scope rebind failed: %v", err)
 			return err
 		}
+		desiredHost := proxyStack.desiredHostForScope(listener.Scope)
+		if err := http3Runtime.ApplyHost(proxyHandler.GetGatewayHttp3Config(), desiredHost, false); err != nil {
+			_ = proxyStack.RequestRebind()
+			return err
+		}
 		grpcServer.SetServingStatus(healthGatewayDataplane, true)
 		return nil
 	})
@@ -964,6 +987,9 @@ func run(options runOptions) error {
 		if err := proxyStack.RequestRebind(); err != nil {
 			grpcServer.SetServingStatus(healthGatewayDataplane, proxyStack.IsServing())
 			log.Printf("Proxy listener rebind failed: %v", err)
+			return err
+		}
+		if err := http3Runtime.Refresh(); err != nil {
 			return err
 		}
 		grpcServer.SetServingStatus(healthGatewayDataplane, true)

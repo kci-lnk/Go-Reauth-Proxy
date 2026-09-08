@@ -121,6 +121,9 @@ type Handler struct {
 	ProxyPort               int
 	ProxyProtocolForce      bool
 	ProxyProtocol           models.GatewayProxyProtocolConfig
+	GatewayHttp3            models.GatewayHttp3Config
+	http3Apply              func(models.GatewayHttp3Config) error
+	http3Status             func() models.GatewayHttp3Status
 	GatewayListener         models.GatewayListenerConfig
 	ReverseProxyThrottle    models.ReverseProxyThrottleConfig
 	GatewayVisibility       models.GatewayVisibilityConfig
@@ -634,6 +637,9 @@ func newRouteGeneration() string {
 }
 
 func resolveClientIP(r *http.Request, authConfig models.AuthConfig, _ bool) string {
+	if r.ProtoMajor == 3 {
+		return normalizeClientIP(r.RemoteAddr)
+	}
 	if isManagedCloudflareTunnelIngress(r) {
 		// The managed Tunnel has its own loopback destination, so only
 		// Cloudflare's edge-generated client headers are authoritative here.
@@ -1747,12 +1753,12 @@ func shouldRunPreflightForRoute(isSelectRoute bool, isAuthRoute bool, matchedHos
 }
 
 func isHTTP1OnlyHostOverHTTP2(r *http.Request, rule *models.HostRule) bool {
-	return r != nil && r.TLS != nil && r.ProtoMajor == 2 && rule != nil &&
+	return r != nil && r.TLS != nil && r.ProtoMajor >= 2 && rule != nil &&
 		models.NormalizeHostProtocolMode(rule.ProtocolMode) == models.HostProtocolModeHTTP1
 }
 
 func isHTTP2OnlyHostOverHTTP1(r *http.Request, rule *models.HostRule) bool {
-	return r != nil && r.TLS != nil && r.ProtoMajor == 1 && rule != nil &&
+	return r != nil && r.TLS != nil && r.ProtoMajor != 2 && rule != nil &&
 		models.NormalizeHostProtocolMode(rule.ProtocolMode) == models.HostProtocolModeHTTP2
 }
 
@@ -1771,21 +1777,6 @@ func serveProtocolMisdirectedRequest(w http.ResponseWriter, r *http.Request, clo
 		}
 	}
 	http.Error(w, http.StatusText(http.StatusMisdirectedRequest), http.StatusMisdirectedRequest)
-}
-
-func (h *Handler) abortConnection(w http.ResponseWriter) {
-	rc := http.NewResponseController(w)
-	conn, _, err := rc.Hijack()
-	if err == nil && conn != nil {
-		if tcpConn := unwrapTCPConn(conn); tcpConn != nil {
-			_ = tcpConn.SetLinger(0)
-			_ = tcpConn.Close()
-			return
-		}
-		_ = conn.Close()
-		return
-	}
-	panic(http.ErrAbortHandler)
 }
 
 func markConnectionResetStatus(w http.ResponseWriter) {
@@ -1933,6 +1924,7 @@ func NewHandler(adminPort int, proxyPort int, cfgManager *config.Manager, initia
 		ProxyProtocolForce:         initialCfg.ProxyProtocolForce,
 		ProxyProtocol:              proxyProtocolRuntime.getConfig(),
 		GatewayListener:            initialCfg.GatewayListener,
+		GatewayHttp3:               initialCfg.GatewayHttp3,
 		ReverseProxyThrottle:       normalizeReverseProxyThrottleConfig(initialCfg.ReverseProxyThrottle),
 		GatewayVisibility:          initialVisibility,
 		ForwardedHeaders:           normalizedForwardedHeaders,
@@ -2226,6 +2218,7 @@ func (h *Handler) ResetAllData(resetConfig *config.AppConfig) error {
 	h.ProxyProtocolForce = resetConfig.ProxyProtocolForce
 	h.ProxyProtocol = resetConfig.ProxyProtocol
 	h.GatewayListener = resetConfig.GatewayListener
+	h.GatewayHttp3 = resetConfig.GatewayHttp3
 	h.ReverseProxyThrottle = resetConfig.ReverseProxyThrottle
 	h.GatewayVisibility = resetConfig.Visibility
 	h.ForwardedHeaders = forwardedHeaders
@@ -5275,7 +5268,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				Str("required_protocol", requiredProtocol).
 				Send()
 		}
-		serveProtocolMisdirectedRequest(w, r, http2Required)
+		serveProtocolMisdirectedRequest(w, r, http2Required && r.ProtoMajor == 1)
 		return
 	}
 

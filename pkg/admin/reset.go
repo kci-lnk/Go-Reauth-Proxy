@@ -48,6 +48,9 @@ func (s *Server) ResetAllData() error {
 			return fmt.Errorf("stop gateway stream listeners: %w", err)
 		}
 	}
+	if err := s.ProxyHandler.SetGatewayHttp3Config(resetConfig.GatewayHttp3); err != nil {
+		return err
+	}
 	if err := s.ProxyHandler.SetGatewayListenerConfig(resetConfig.GatewayListener); err != nil {
 		return fmt.Errorf("reset gateway listener: %w", err)
 	}

@@ -101,6 +101,9 @@ func (h *Handler) ValidateStreamRulesBundle(
 	normalized := make([]models.StreamRule, 0, len(rules))
 	seenRules := make(map[string]struct{}, len(rules))
 	for _, rule := range rules {
+		if rule.Protocol == models.StreamProtocolUDP && rule.ListenPort == h.ProxyPort && h.GetGatewayHttp3Config().Enabled {
+			return nil, nil, fmt.Errorf("UDP port %d is reserved by HTTP/3", h.ProxyPort)
+		}
 		nextRule, err := h.normalizeStreamRule(rule)
 		if err != nil {
 			return nil, nil, err

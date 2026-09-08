@@ -294,7 +294,7 @@ func negotiateTestALPN(serverConfig *tls.Config, serverName string, clientALPN [
 	return clientTLS.ConnectionState().NegotiatedProtocol, nil
 }
 
-func newProtocolModeTestCertificate(t *testing.T) tls.Certificate {
+func newProtocolModeTestCertificate(t testing.TB) tls.Certificate {
 	t.Helper()
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {

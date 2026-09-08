@@ -6,7 +6,7 @@
 
 统一承载 HTTP(S)、WebSocket、TCP 与 UDP 流量，提供认证接入、动态路由、WAF、流量治理和本机 gRPC 控制面。
 
-![Go](https://img.shields.io/badge/Go-1.25%2B-00ADD8?logo=go&logoColor=white)
+![Go](https://img.shields.io/badge/Go-1.26%2B-00ADD8?logo=go&logoColor=white)
 ![Control Plane](https://img.shields.io/badge/Control%20Plane-gRPC-244C5A?logo=google&logoColor=white)
 ![Protocols](https://img.shields.io/badge/Protocols-HTTP%2FS%20%C2%B7%20WS%20%C2%B7%20TCP%20%C2%B7%20UDP-5C4EE5)
 ![Platforms](https://img.shields.io/badge/Platforms-Linux%20%C2%B7%20macOS%20%C2%B7%20Windows-6C757D)
@@ -102,7 +102,7 @@ flowchart LR
 
 ### 环境要求
 
-- Go `1.25.13+`；仓库通过 `toolchain` 指定 Go `1.26.7`，同时覆盖 `os.Root` 越界及 2026 年 8 月标准库安全修复
+- Go `1.26.0+`；仓库通过 `toolchain` 指定 Go `1.26.7`，同时覆盖 `os.Root` 越界及 2026 年 8 月标准库安全修复
 - 可选：[Task](https://taskfile.dev/) 用于统一执行构建与测试命令
 - 配套的 FN-Knock Rust 后端，用于建立 AuthBridge 和管理网关
 - 使用防火墙能力时需要 Linux、`iptables` / `ip6tables` 及相应权限

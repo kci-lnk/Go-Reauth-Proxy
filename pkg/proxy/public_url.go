@@ -435,6 +435,10 @@ func publicPortFromAuthBaseURL(rawBaseURL string, scheme string) string {
 }
 
 func urlAuthorityPort(authority string) (string, bool, bool) {
+	// Go 1.26 rejects unbracketed IPv6 authorities; keep this fast parser aligned.
+	if !strings.HasPrefix(authority, "[") && strings.Count(authority, ":") > 1 {
+		return "", false, true
+	}
 	if authority == "" {
 		return "", false, false
 	}

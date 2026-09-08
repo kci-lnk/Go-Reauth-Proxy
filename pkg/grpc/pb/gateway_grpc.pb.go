@@ -24,6 +24,8 @@ const (
 	GatewayControlService_GetRuntimeInfo_FullMethodName                   = "/fnknock.v1.GatewayControlService/GetRuntimeInfo"
 	GatewayControlService_SetGatewayMemoryConfig_FullMethodName           = "/fnknock.v1.GatewayControlService/SetGatewayMemoryConfig"
 	GatewayControlService_ReclaimGatewayMemory_FullMethodName             = "/fnknock.v1.GatewayControlService/ReclaimGatewayMemory"
+	GatewayControlService_GetGatewayHttp3Status_FullMethodName            = "/fnknock.v1.GatewayControlService/GetGatewayHttp3Status"
+	GatewayControlService_SetGatewayHttp3Config_FullMethodName            = "/fnknock.v1.GatewayControlService/SetGatewayHttp3Config"
 	GatewayControlService_GetGatewayListenerConfig_FullMethodName         = "/fnknock.v1.GatewayControlService/GetGatewayListenerConfig"
 	GatewayControlService_SetGatewayListenerConfig_FullMethodName         = "/fnknock.v1.GatewayControlService/SetGatewayListenerConfig"
 	GatewayControlService_GetGatewayProxyProtocolConfig_FullMethodName    = "/fnknock.v1.GatewayControlService/GetGatewayProxyProtocolConfig"
@@ -85,6 +87,8 @@ type GatewayControlServiceClient interface {
 	GetRuntimeInfo(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*GatewayRuntimeInfo, error)
 	SetGatewayMemoryConfig(ctx context.Context, in *GatewayMemoryConfig, opts ...grpc.CallOption) (*GatewayMemoryConfig, error)
 	ReclaimGatewayMemory(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*GatewayRuntimeInfo, error)
+	GetGatewayHttp3Status(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*GatewayHttp3Status, error)
+	SetGatewayHttp3Config(ctx context.Context, in *GatewayHttp3Config, opts ...grpc.CallOption) (*GatewayHttp3Status, error)
 	GetGatewayListenerConfig(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*GatewayListenerConfig, error)
 	SetGatewayListenerConfig(ctx context.Context, in *GatewayListenerConfig, opts ...grpc.CallOption) (*GatewayListenerConfig, error)
 	GetGatewayProxyProtocolConfig(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*GatewayProxyProtocolConfig, error)
@@ -187,6 +191,26 @@ func (c *gatewayControlServiceClient) ReclaimGatewayMemory(ctx context.Context, 
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(GatewayRuntimeInfo)
 	err := c.cc.Invoke(ctx, GatewayControlService_ReclaimGatewayMemory_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *gatewayControlServiceClient) GetGatewayHttp3Status(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*GatewayHttp3Status, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GatewayHttp3Status)
+	err := c.cc.Invoke(ctx, GatewayControlService_GetGatewayHttp3Status_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *gatewayControlServiceClient) SetGatewayHttp3Config(ctx context.Context, in *GatewayHttp3Config, opts ...grpc.CallOption) (*GatewayHttp3Status, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GatewayHttp3Status)
+	err := c.cc.Invoke(ctx, GatewayControlService_SetGatewayHttp3Config_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -713,6 +737,8 @@ type GatewayControlServiceServer interface {
 	GetRuntimeInfo(context.Context, *emptypb.Empty) (*GatewayRuntimeInfo, error)
 	SetGatewayMemoryConfig(context.Context, *GatewayMemoryConfig) (*GatewayMemoryConfig, error)
 	ReclaimGatewayMemory(context.Context, *emptypb.Empty) (*GatewayRuntimeInfo, error)
+	GetGatewayHttp3Status(context.Context, *emptypb.Empty) (*GatewayHttp3Status, error)
+	SetGatewayHttp3Config(context.Context, *GatewayHttp3Config) (*GatewayHttp3Status, error)
 	GetGatewayListenerConfig(context.Context, *emptypb.Empty) (*GatewayListenerConfig, error)
 	SetGatewayListenerConfig(context.Context, *GatewayListenerConfig) (*GatewayListenerConfig, error)
 	GetGatewayProxyProtocolConfig(context.Context, *emptypb.Empty) (*GatewayProxyProtocolConfig, error)
@@ -792,6 +818,12 @@ func (UnimplementedGatewayControlServiceServer) SetGatewayMemoryConfig(context.C
 }
 func (UnimplementedGatewayControlServiceServer) ReclaimGatewayMemory(context.Context, *emptypb.Empty) (*GatewayRuntimeInfo, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method ReclaimGatewayMemory not implemented")
+}
+func (UnimplementedGatewayControlServiceServer) GetGatewayHttp3Status(context.Context, *emptypb.Empty) (*GatewayHttp3Status, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method GetGatewayHttp3Status not implemented")
+}
+func (UnimplementedGatewayControlServiceServer) SetGatewayHttp3Config(context.Context, *GatewayHttp3Config) (*GatewayHttp3Status, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method SetGatewayHttp3Config not implemented")
 }
 func (UnimplementedGatewayControlServiceServer) GetGatewayListenerConfig(context.Context, *emptypb.Empty) (*GatewayListenerConfig, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method GetGatewayListenerConfig not implemented")
@@ -1035,6 +1067,42 @@ func _GatewayControlService_ReclaimGatewayMemory_Handler(srv interface{}, ctx co
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(GatewayControlServiceServer).ReclaimGatewayMemory(ctx, req.(*emptypb.Empty))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _GatewayControlService_GetGatewayHttp3Status_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(emptypb.Empty)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(GatewayControlServiceServer).GetGatewayHttp3Status(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: GatewayControlService_GetGatewayHttp3Status_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(GatewayControlServiceServer).GetGatewayHttp3Status(ctx, req.(*emptypb.Empty))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _GatewayControlService_SetGatewayHttp3Config_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GatewayHttp3Config)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(GatewayControlServiceServer).SetGatewayHttp3Config(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: GatewayControlService_SetGatewayHttp3Config_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(GatewayControlServiceServer).SetGatewayHttp3Config(ctx, req.(*GatewayHttp3Config))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -1979,6 +2047,14 @@ var GatewayControlService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "ReclaimGatewayMemory",
 			Handler:    _GatewayControlService_ReclaimGatewayMemory_Handler,
+		},
+		{
+			MethodName: "GetGatewayHttp3Status",
+			Handler:    _GatewayControlService_GetGatewayHttp3Status_Handler,
+		},
+		{
+			MethodName: "SetGatewayHttp3Config",
+			Handler:    _GatewayControlService_SetGatewayHttp3Config_Handler,
 		},
 		{
 			MethodName: "GetGatewayListenerConfig",

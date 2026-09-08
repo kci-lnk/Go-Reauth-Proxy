@@ -44,6 +44,20 @@ const (
 	GatewayListenerScopeAll      = "all"
 )
 
+type GatewayHttp3Config struct {
+	Enabled        bool `json:"enabled"`
+	AdvertisedPort int  `json:"advertised_port"`
+}
+
+type GatewayHttp3Status struct {
+	Config            GatewayHttp3Config `json:"config"`
+	State             string             `json:"state"`
+	ListenAddresses   []string           `json:"listen_addresses"`
+	Error             string             `json:"error"`
+	ActiveConnections uint64             `json:"active_connections"`
+	HandshakeFailures uint64             `json:"handshake_failures"`
+}
+
 type GatewayListenerConfig struct {
 	Scope string `json:"scope"`
 }

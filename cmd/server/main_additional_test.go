@@ -564,7 +564,7 @@ func TestProxyTLSConfigEnablesSessionResumption(t *testing.T) {
 	}
 }
 
-func newServerTestProxyHandler(t *testing.T) *proxy.Handler {
+func newServerTestProxyHandler(t testing.TB) *proxy.Handler {
 	t.Helper()
 	manager := config.NewManager(filepath.Join(t.TempDir(), "config.json"))
 	cfg, err := manager.Load()

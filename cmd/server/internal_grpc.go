@@ -190,7 +190,8 @@ func newInternalUnaryInterceptor(token string) grpc.UnaryServerInterceptor {
 
 func isSerializedDurableMutation(fullMethod string) bool {
 	switch fullMethod {
-	case pb.GatewayControlService_SetGatewayListenerConfig_FullMethodName,
+	case pb.GatewayControlService_SetGatewayHttp3Config_FullMethodName,
+		pb.GatewayControlService_SetGatewayListenerConfig_FullMethodName,
 		pb.GatewayControlService_SetGatewayProxyProtocolConfig_FullMethodName,
 		pb.GatewayControlService_ResetAllData_FullMethodName,
 		pb.GatewayControlService_SetRules_FullMethodName,

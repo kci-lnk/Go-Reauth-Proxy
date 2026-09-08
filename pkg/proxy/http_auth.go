@@ -156,7 +156,7 @@ func (h *Handler) executeCombinedHTTPAuth(r *http.Request, authConfig models.Aut
 		}
 	}
 	preflight, preflightHit, authExecution, authHit := h.cachedCombinedHTTPAuth(r, authConfig, time.Now(), preflightLookup, canPreflightLookup, authLookup, canAuthLookup)
-	if !preflightHit && h.preflightSkipUntilUnixNano.Load() > time.Now().UnixNano() {
+	if !preflightHit && h.preflightSkipUntilUnixNano.Load() > time.Now().UnixNano() && !requestAuth.preflightRequired() {
 		if !authHit {
 			authExecution = h.executeAuthCheck(r, authConfig, clientIP, accessMode, requestID, requestAuth)
 		}
@@ -168,7 +168,7 @@ func (h *Handler) executeCombinedHTTPAuth(r *http.Request, authConfig models.Aut
 
 	run := func(callRequest *http.Request) combinedHTTPAuthExecution {
 		if preflight, preflightHit, authExecution, authHit := h.cachedCombinedHTTPAuth(callRequest, authConfig, time.Now(), preflightLookup, canPreflightLookup, authLookup, canAuthLookup); preflightHit || authHit {
-			if !preflightHit && h.preflightSkipUntilUnixNano.Load() > time.Now().UnixNano() {
+			if !preflightHit && h.preflightSkipUntilUnixNano.Load() > time.Now().UnixNano() && !requestAuth.preflightRequired() {
 				if !authHit {
 					authExecution = h.executeAuthCheck(callRequest, authConfig, clientIP, accessMode, requestID, requestAuth)
 				}
@@ -178,7 +178,7 @@ func (h *Handler) executeCombinedHTTPAuth(r *http.Request, authConfig models.Aut
 				return execution
 			}
 		}
-		if h.preflightSkipUntilUnixNano.Load() > time.Now().UnixNano() {
+		if h.preflightSkipUntilUnixNano.Load() > time.Now().UnixNano() && !requestAuth.preflightRequired() {
 			return combinedHTTPAuthExecution{
 				auth:    h.executeAuthCheck(callRequest, authConfig, clientIP, accessMode, requestID, requestAuth),
 				handled: true,

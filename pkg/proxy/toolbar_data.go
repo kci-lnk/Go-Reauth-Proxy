@@ -140,7 +140,7 @@ func (h *Handler) handleToolbarDataRoute(w http.ResponseWriter, r *http.Request,
 	}
 
 	accessMode := ""
-	if matchedHostRule != nil && matchedHostRule.UseAuth {
+	if hostLocationUsesAuth(matchedHostRule, matchedHostLocation) {
 		accessMode = matchedHostRule.AccessMode
 		if normalizeRequestHost(matchedHostRule.Host) != normalizeRequestHost(snapshot.authConfig.AuthHost) {
 			withAdvancedAuthPolicyVersion(pageRequest, matchedHostRule.AdvancedAuth.PolicyVersion)

@@ -56,6 +56,7 @@ func TestNormalizeHostLocationAuthMode(t *testing.T) {
 		{name: "missing defaults to inherit", want: models.HostLocationAuthModeInherit},
 		{name: "inherit", mode: models.HostLocationAuthModeInherit, want: models.HostLocationAuthModeInherit},
 		{name: "public", mode: models.HostLocationAuthModePublic, want: models.HostLocationAuthModePublic},
+		{name: "require login", mode: " require_login ", want: models.HostLocationAuthModeRequireLogin},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			location, err := handler.normalizeHostLocation(models.HostLocation{

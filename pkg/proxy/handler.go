@@ -957,7 +957,6 @@ const localServiceURLPrefix = "http://127.0.0.1:"
 const localServiceHostPrefix = "127.0.0.1:"
 
 const (
-	internalPreflightHeader           = "X-Reauth-Internal-Preflight"
 	reauthAccessDeniedHeader          = "X-Reauth-Access-Denied"
 	reauthScopeDeniedReason           = "scope"
 	reauthServiceUnavailableReason    = "auth_service_unavailable"
@@ -1104,10 +1103,23 @@ func copyUserAgentHeader(dst, src *http.Request) {
 }
 
 type requestAuthContext struct {
-	context       *pb.AuthContext
-	headers       http.Header
-	routeIdentity string
-	legacyOnce    sync.Once
+	requirePreflight bool
+	context          *pb.AuthContext
+	headers          http.Header
+	routeIdentity    string
+	legacyOnce       sync.Once
+}
+
+// Explicit path authentication must not skip a failed permissions preflight.
+func (c *requestAuthContext) preflightRequired() bool {
+	return c != nil && c.requirePreflight
+}
+
+func (c *requestAuthContext) preflightFailureDecision() preflightDecision {
+	if c.preflightRequired() {
+		return preflightDecision{serviceUnavailable: true, retryAfter: "1"}
+	}
+	return preflightDecision{}
 }
 
 type routedBackend struct {
@@ -1480,13 +1492,6 @@ func (h *Handler) shouldOmitPreserveHostKey(key string) bool {
 }
 
 func (h *Handler) runPreflight(r *http.Request, authConfig models.AuthConfig, clientIP string, isMatch bool, accessMode string, requestID string, requestAuth *requestAuthContext) preflightDecision {
-	if r.Header.Get(internalPreflightHeader) == "1" {
-		if event := debugProxyEvent("preflight_skipped_internal", requestID); event != nil {
-			event.Send()
-		}
-		return preflightDecision{}
-	}
-
 	if strings.TrimSpace(authConfig.AuthURL) == "" {
 		if event := debugProxyEvent("preflight_skipped_no_auth_url", requestID); event != nil {
 			event.Send()
@@ -1524,7 +1529,7 @@ func (h *Handler) runPreflight(r *http.Request, authConfig models.AuthConfig, cl
 		if event := debugProxyEvent("preflight_skipped_cooldown", requestID); event != nil {
 			event.Time("skip_until", time.Unix(0, skipUntil)).Send()
 		}
-		return preflightDecision{}
+		return requestAuth.preflightFailureDecision()
 	}
 
 	if canLookup && ttl > 0 {
@@ -1558,7 +1563,7 @@ func (h *Handler) runPreflight(r *http.Request, authConfig models.AuthConfig, cl
 						Send()
 				}
 				log.Printf("Preflight request failed, skipping checks for %s: %v", preflightFailureCooldown, err)
-				return preflightCacheExecution{}, nil
+				return preflightCacheExecution{decision: requestAuth.preflightFailureDecision()}, nil
 			}
 			h.preflightSkipUntilUnixNano.Store(0)
 
@@ -1578,7 +1583,7 @@ func (h *Handler) runPreflight(r *http.Request, authConfig models.AuthConfig, cl
 		case result := <-resultCh:
 			execution, _ = result.Val.(preflightCacheExecution)
 		case <-r.Context().Done():
-			return preflightDecision{}
+			return requestAuth.preflightFailureDecision()
 		}
 		if execution.entry != nil {
 			return execution.entry.decision
@@ -1601,7 +1606,7 @@ func (h *Handler) runPreflight(r *http.Request, authConfig models.AuthConfig, cl
 			failure.cause,
 			preflightFailureCooldown,
 		)
-		return preflightDecision{}
+		return requestAuth.preflightFailureDecision()
 	}
 	h.preflightSkipUntilUnixNano.Store(0)
 	return decision
@@ -1658,6 +1663,9 @@ func (h *Handler) performPreflight(r *http.Request, authConfig models.AuthConfig
 	if err != nil {
 		return preflightDecision{}, pb.AuthCacheScope_AUTH_CACHE_SCOPE_NONE, err
 	}
+	if resp == nil {
+		return preflightDecision{}, pb.AuthCacheScope_AUTH_CACHE_SCOPE_NONE, rpcbridge.ErrAuthBridgeInvalidResponse
+	}
 	return h.preflightDecisionFromResponse(resp, requestID, start), cacheScope, nil
 }
 
@@ -1702,8 +1710,18 @@ func (h *Handler) preflightDecisionFromResponse(resp *pb.PreflightAuthResponse, 
 }
 
 func hostLocationUsesAuth(hostRule *models.HostRule, location *models.HostLocation) bool {
-	return hostRule != nil && hostRule.UseAuth &&
-		(location == nil || location.AuthMode != models.HostLocationAuthModePublic)
+	if hostRule == nil {
+		return false
+	}
+	if location != nil {
+		switch location.AuthMode {
+		case models.HostLocationAuthModePublic:
+			return false
+		case models.HostLocationAuthModeRequireLogin:
+			return true
+		}
+	}
+	return hostRule.UseAuth
 }
 
 func shouldRunPreflightForRoute(isSelectRoute bool, isAuthRoute bool, matchedHostRule *models.HostRule, matchedHostLocation *models.HostLocation, matchedRule *models.Rule) bool {
@@ -3292,8 +3310,10 @@ func (h *Handler) normalizeHostLocation(location models.HostLocation) (models.Ho
 		location.AuthMode = models.HostLocationAuthModeInherit
 	case models.HostLocationAuthModePublic:
 		location.AuthMode = models.HostLocationAuthModePublic
+	case models.HostLocationAuthModeRequireLogin:
+		location.AuthMode = models.HostLocationAuthModeRequireLogin
 	default:
-		return models.HostLocation{}, fmt.Errorf("host location auth mode must be inherit or public")
+		return models.HostLocation{}, fmt.Errorf("host location auth mode must be inherit, public or require_login")
 	}
 
 	switch location.Action {
@@ -5540,6 +5560,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	isMatch := isBuiltinAuthRoute || isAuthRoute || matchedHostRule != nil || matchedRule != nil || r.URL.Path == "/"
 	accessEntry.Matched = isMatch
 	accessEntry.AccessMode = accessMode
+	accessEntry.AuthRequired = effectiveHostUseAuth && strings.TrimSpace(snapshot.authConfig.AuthURL) != ""
 	var authTimingStarted time.Time
 	finishAuthTiming := func() {
 		if authTimingStarted.IsZero() {
@@ -5551,11 +5572,24 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		authTimingStarted = time.Time{}
 	}
 	defer finishAuthTiming()
+	// An explicit path requirement must never become public when auth is unconfigured.
+	if !isAuthRoute && !isBuiltinAuthRoute && matchedHostLocation != nil &&
+		matchedHostLocation.AuthMode == models.HostLocationAuthModeRequireLogin &&
+		strings.TrimSpace(snapshot.authConfig.AuthURL) == "" {
+		accessEntry.RouteType = "host_location"
+		accessEntry.RouteKey = hostLocationRouteKey(matchedHostRule, matchedHostLocation)
+		accessEntry.AuthRequired = true
+		accessEntry.AuthDecision = "auth_unavailable"
+		loggedStatusCode = http.StatusServiceUnavailable
+		respondAuthServiceUnavailable(w, r, "")
+		return
+	}
 	var preparedAuth *authCheckExecution
 	if shouldRunPreflightForRoute(isBuiltinAuthRoute, isAuthRoute, matchedHostRule, matchedHostLocation, matchedRule) {
 		authTimingStarted = time.Now()
 		if strings.TrimSpace(snapshot.authConfig.AuthURL) != "" {
 			requestAuth = newRequestAuthContext(r, clientIP, authContextAccessMode, routedBackend)
+			requestAuth.requirePreflight = matchedHostLocation != nil && matchedHostLocation.AuthMode == models.HostLocationAuthModeRequireLogin
 		}
 		preflight := preflightDecision{}
 		verifyRequired := strings.TrimSpace(snapshot.authConfig.AuthURL) != "" && !isAuthRoute &&

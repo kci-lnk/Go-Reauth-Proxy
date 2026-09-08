@@ -201,8 +201,9 @@ const (
 	HostLocationActionProxy    = "proxy"
 	HostLocationActionResponse = "response"
 
-	HostLocationAuthModeInherit = "inherit"
-	HostLocationAuthModePublic  = "public"
+	HostLocationAuthModeInherit      = "inherit"
+	HostLocationAuthModePublic       = "public"
+	HostLocationAuthModeRequireLogin = "require_login"
 )
 
 type HostLocation struct {

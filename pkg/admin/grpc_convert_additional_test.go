@@ -61,6 +61,10 @@ func TestHostRulesProtoRoundTripPreservesLocations(t *testing.T) {
 			Path: "/api", Match: models.HostLocationMatchPrefix, Action: models.HostLocationActionResponse,
 			AuthMode: models.HostLocationAuthModePublic,
 			Response: models.HostLocationResponse{Status: 200, Headers: map[string]string{"X-Test": "ok"}},
+		}, {
+			Path: "/admin", Match: models.HostLocationMatchExact, Action: models.HostLocationActionResponse,
+			AuthMode: models.HostLocationAuthModeRequireLogin,
+			Response: models.HostLocationResponse{Status: 200, Body: "secret", Headers: map[string]string{}},
 		}},
 	}}
 	got := protoToHostRules(hostRulesToProto(input))

@@ -639,3 +639,52 @@ func TestGatewayLogDirectoryLegacyUpdateAndRestore(t *testing.T) {
 		t.Fatalf("reset: %v %v", set, err)
 	}
 }
+
+func TestLogStorageBrowserCanSelectProtectedRuntimeDirectory(t *testing.T) {
+	server := newGatewayControlTestServer(t, "secret")
+	// Mirrors /usr/local/etc/fn-knock/logs under the protected runtime root.
+	directory := filepath.Join(t.TempDir(), "usr", "local", "etc", "fn-knock", "logs")
+	if err := os.MkdirAll(directory, 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("FN_KNOCK_GATEWAY_CONFIG_DIR", filepath.Dir(directory))
+	if err := os.WriteFile(filepath.Join(directory, "private.log"), []byte("private"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	typ := pb.HostRuleTargetType_HOST_RULE_TARGET_TYPE_DIRECTORY
+	req := &pb.StaticPathBrowseRequest{TargetType: typ, Path: directory}
+	ordinary, err := server.BrowseStaticPath(authTestContext(), req)
+	if err != nil || ordinary.GetErrorCode() != "protected_path" {
+		t.Fatalf("static browse: %v %v", ordinary, err)
+	}
+	req.ForLogStorage = true
+	if _, err := server.BrowseStaticPath(context.Background(), req); status.Code(err) != codes.Unauthenticated {
+		t.Fatalf("unauthenticated log browse: %v", err)
+	}
+	result, err := server.BrowseStaticPath(authTestContext(), req)
+	if err != nil || result.GetErrorCode() != "" || !result.GetCurrentSelectable() || result.GetCurrentPath() == "" {
+		t.Fatalf("log browse: %v %v", result, err)
+	}
+	if len(result.GetEntries()) != 0 {
+		t.Fatal("log directory browser exposed file entries")
+	}
+	probeReq := &pb.StaticPathProbeRequest{RequestedType: typ, Path: directory, ForLogStorage: true}
+	probe, err := server.ProbeStaticPath(authTestContext(), probeReq)
+	if err != nil || probe.GetErrorCode() != "" || !probe.GetReadable() {
+		t.Fatalf("log probe: %v %v", probe, err)
+	}
+	probeReq.ForLogStorage = false
+	probe, err = server.ProbeStaticPath(authTestContext(), probeReq)
+	if err != nil || probe.GetErrorCode() != "protected_path" {
+		t.Fatalf("static probe protection changed: %v %v", probe, err)
+	}
+	req.TargetType = pb.HostRuleTargetType_HOST_RULE_TARGET_TYPE_FILE
+	if _, err := server.BrowseStaticPath(authTestContext(), req); status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("log file selection: %v", err)
+	}
+	probeReq.ForLogStorage = true
+	probeReq.RequestedType = pb.HostRuleTargetType_HOST_RULE_TARGET_TYPE_FILE
+	if _, err := server.ProbeStaticPath(authTestContext(), probeReq); status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("log file probe: %v", err)
+	}
+}

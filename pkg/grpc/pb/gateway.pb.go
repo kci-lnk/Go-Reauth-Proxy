@@ -1554,6 +1554,8 @@ type StaticPathProbeRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	RequestedType HostRuleTargetType     `protobuf:"varint,1,opt,name=requested_type,json=requestedType,proto3,enum=fnknock.v1.HostRuleTargetType" json:"requested_type,omitempty"`
 	Path          string                 `protobuf:"bytes,2,opt,name=path,proto3" json:"path,omitempty"`
+	// Administrator-only directory selection, never used to authorize static serving.
+	ForLogStorage bool `protobuf:"varint,3,opt,name=for_log_storage,json=forLogStorage,proto3" json:"for_log_storage,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1600,6 +1602,13 @@ func (x *StaticPathProbeRequest) GetPath() string {
 		return x.Path
 	}
 	return ""
+}
+
+func (x *StaticPathProbeRequest) GetForLogStorage() bool {
+	if x != nil {
+		return x.ForLogStorage
+	}
+	return false
 }
 
 type StaticPathProbeResult struct {
@@ -1691,6 +1700,7 @@ type StaticPathBrowseRequest struct {
 	TargetType    HostRuleTargetType     `protobuf:"varint,1,opt,name=target_type,json=targetType,proto3,enum=fnknock.v1.HostRuleTargetType" json:"target_type,omitempty"`
 	Path          string                 `protobuf:"bytes,2,opt,name=path,proto3" json:"path,omitempty"`
 	Cursor        string                 `protobuf:"bytes,3,opt,name=cursor,proto3" json:"cursor,omitempty"`
+	ForLogStorage bool                   `protobuf:"varint,4,opt,name=for_log_storage,json=forLogStorage,proto3" json:"for_log_storage,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1744,6 +1754,13 @@ func (x *StaticPathBrowseRequest) GetCursor() string {
 		return x.Cursor
 	}
 	return ""
+}
+
+func (x *StaticPathBrowseRequest) GetForLogStorage() bool {
+	if x != nil {
+		return x.ForLogStorage
+	}
+	return false
 }
 
 type StaticPathBreadcrumb struct {
@@ -11978,10 +11995,11 @@ const file_fnknock_v1_gateway_proto_rawDesc = "" +
 	"targetType\x12@\n" +
 	"\fstatic_serve\x18\x16 \x01(\v2\x1d.fnknock.v1.StaticServeConfigR\vstaticServeB\v\n" +
 	"\t_group_idB\r\n" +
-	"\v_group_name\"s\n" +
+	"\v_group_name\"\x9b\x01\n" +
 	"\x16StaticPathProbeRequest\x12E\n" +
 	"\x0erequested_type\x18\x01 \x01(\x0e2\x1e.fnknock.v1.HostRuleTargetTypeR\rrequestedType\x12\x12\n" +
-	"\x04path\x18\x02 \x01(\tR\x04path\"\x9b\x02\n" +
+	"\x04path\x18\x02 \x01(\tR\x04path\x12&\n" +
+	"\x0ffor_log_storage\x18\x03 \x01(\bR\rforLogStorage\"\x9b\x02\n" +
 	"\x15StaticPathProbeResult\x12E\n" +
 	"\x0erequested_type\x18\x01 \x01(\x0e2\x1e.fnknock.v1.HostRuleTargetTypeR\rrequestedType\x12?\n" +
 	"\vactual_type\x18\x02 \x01(\x0e2\x1e.fnknock.v1.HostRuleTargetTypeR\n" +
@@ -11990,12 +12008,13 @@ const file_fnknock_v1_gateway_proto_rawDesc = "" +
 	"\x06exists\x18\x04 \x01(\bR\x06exists\x12\x1a\n" +
 	"\breadable\x18\x05 \x01(\bR\breadable\x12\x1d\n" +
 	"\n" +
-	"error_code\x18\x06 \x01(\tR\terrorCode\"\x86\x01\n" +
+	"error_code\x18\x06 \x01(\tR\terrorCode\"\xae\x01\n" +
 	"\x17StaticPathBrowseRequest\x12?\n" +
 	"\vtarget_type\x18\x01 \x01(\x0e2\x1e.fnknock.v1.HostRuleTargetTypeR\n" +
 	"targetType\x12\x12\n" +
 	"\x04path\x18\x02 \x01(\tR\x04path\x12\x16\n" +
-	"\x06cursor\x18\x03 \x01(\tR\x06cursor\">\n" +
+	"\x06cursor\x18\x03 \x01(\tR\x06cursor\x12&\n" +
+	"\x0ffor_log_storage\x18\x04 \x01(\bR\rforLogStorage\">\n" +
 	"\x14StaticPathBreadcrumb\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x12\n" +
 	"\x04path\x18\x02 \x01(\tR\x04path\"\xa5\x02\n" +

@@ -106,14 +106,23 @@ func (s *GRPCServer) ProbeStaticPath(ctx context.Context, req *pb.StaticPathProb
 	if requestedType != models.HostRuleTargetTypeFile && requestedType != models.HostRuleTargetTypeDirectory {
 		return nil, grpcBadRequest("requested_type must be file or directory")
 	}
+	if req.GetForLogStorage() && requestedType != models.HostRuleTargetTypeDirectory {
+		return nil, grpcBadRequest("log storage requires a directory")
+	}
 	runtimeDir := ""
 	if s.admin != nil && s.admin.ConfigManager != nil {
 		runtimeDir = s.admin.ConfigManager.RuntimeDir()
 	}
+	protectedPaths := staticserve.GatewayProtectedPaths(runtimeDir, os.Getenv(logger.DataDirEnv))
+	// Selecting a private log destination does not publish a static mapping.
+	// Keep the public-serving policy on all ordinary browse/probe requests.
+	if req.GetForLogStorage() {
+		protectedPaths = nil
+	}
 	probe := staticserve.ProbePath(
 		requestedType,
 		req.GetPath(),
-		staticserve.GatewayProtectedPaths(runtimeDir, os.Getenv(logger.DataDirEnv))...,
+		protectedPaths...,
 	)
 	return &pb.StaticPathProbeResult{
 		RequestedType:  staticProbeTargetTypeToProto(probe.RequestedType),
@@ -136,16 +145,25 @@ func (s *GRPCServer) BrowseStaticPath(ctx context.Context, req *pb.StaticPathBro
 	if targetType != models.HostRuleTargetTypeFile && targetType != models.HostRuleTargetTypeDirectory {
 		return nil, grpcBadRequest("target_type must be file or directory")
 	}
+	if req.GetForLogStorage() && targetType != models.HostRuleTargetTypeDirectory {
+		return nil, grpcBadRequest("log storage requires a directory")
+	}
 	runtimeDir := ""
 	if s.admin != nil && s.admin.ConfigManager != nil {
 		runtimeDir = s.admin.ConfigManager.RuntimeDir()
+	}
+	protectedPaths := staticserve.GatewayProtectedPaths(runtimeDir, os.Getenv(logger.DataDirEnv))
+	// Selecting a private log destination does not publish a static mapping.
+	// Keep the public-serving policy on all ordinary browse/probe requests.
+	if req.GetForLogStorage() {
+		protectedPaths = nil
 	}
 	browse := staticserve.BrowsePath(
 		ctx,
 		targetType,
 		req.GetPath(),
 		req.GetCursor(),
-		staticserve.GatewayProtectedPaths(runtimeDir, os.Getenv(logger.DataDirEnv))...,
+		protectedPaths...,
 	)
 	result := &pb.StaticPathBrowseResult{
 		TargetType:        staticProbeTargetTypeToProto(browse.TargetType),
@@ -167,6 +185,9 @@ func (s *GRPCServer) BrowseStaticPath(ctx context.Context, req *pb.StaticPathBro
 	}
 	result.Entries = make([]*pb.StaticPathBrowseEntry, 0, len(browse.Entries))
 	for _, entry := range browse.Entries {
+		if req.GetForLogStorage() && entry.EntryType != models.HostRuleTargetTypeDirectory {
+			continue
+		}
 		result.Entries = append(result.Entries, &pb.StaticPathBrowseEntry{
 			Name:       entry.Name,
 			Path:       entry.Path,

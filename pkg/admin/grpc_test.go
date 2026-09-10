@@ -688,3 +688,21 @@ func TestLogStorageBrowserCanSelectProtectedRuntimeDirectory(t *testing.T) {
 		t.Fatalf("log file probe: %v", err)
 	}
 }
+
+func TestGatewayLogCapacityLegacyUpdatePreservesLimits(t *testing.T) {
+	server := newGatewayControlTestServer(t, "secret")
+	ctx := authTestContext()
+	daily, total := int64(100), int64(500)
+	cfg, err := server.SetLoggingConfig(ctx, &pb.LoggingConfig{Enabled: true, MaxDays: 7, MaxDailySizeMb: &daily, MaxTotalSizeMb: &total})
+	if err != nil || cfg.GetMaxDailySizeMb() != daily || cfg.GetMaxTotalSizeMb() != total {
+		t.Fatalf("set limits: %v %v", cfg, err)
+	}
+	cfg, err = server.SetLoggingConfig(ctx, &pb.LoggingConfig{Enabled: true, MaxDays: 3})
+	if err != nil || cfg.GetMaxDailySizeMb() != daily || cfg.GetMaxTotalSizeMb() != total {
+		t.Fatalf("legacy update lost limits: %v %v", cfg, err)
+	}
+	zero := int64(0)
+	if _, err := server.SetLoggingConfig(ctx, &pb.LoggingConfig{MaxDailySizeMb: &zero}); err == nil {
+		t.Fatal("zero capacity accepted")
+	}
+}

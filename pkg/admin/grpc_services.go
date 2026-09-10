@@ -685,11 +685,17 @@ func (s *GRPCServer) SetLoggingConfig(ctx context.Context, req *pb.LoggingConfig
 	if req.GetMaxDays() < 0 {
 		return nil, grpcBadRequest("max_days must be greater than 0")
 	}
+	if (req.MaxDailySizeMb != nil && req.GetMaxDailySizeMb() <= 0) || (req.MaxTotalSizeMb != nil && req.GetMaxTotalSizeMb() <= 0) {
+		return nil, grpcBadRequest("log capacities must be positive integers")
+	}
 	input := protoToLoggingConfig(req)
 	cfg, err := s.admin.ProxyHandler.SetLoggingConfigContext(ctx, input, req.CustomLogsDir == nil)
 	if err != nil {
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 			return nil, status.FromContextError(err).Err()
+		}
+		if errors.Is(err, gatewaylog.ErrInvalidCapacity) {
+			return nil, grpcBadRequest("%v", err)
 		}
 		return nil, grpcInternal("failed to set logging config: %v", err)
 	}

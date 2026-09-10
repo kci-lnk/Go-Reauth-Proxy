@@ -57,7 +57,7 @@ func TestDailyFileWriterWriteCreatesTodayFile(t *testing.T) {
 	if err := writer.Flush(); err != nil {
 		t.Fatalf("Flush() returned error: %v", err)
 	}
-	path := filepath.Join(dir, time.Now().Format(dateLayout)+fileExtension)
+	path := writer.currentFile.Name()
 	data, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("read log file: %v", err)
@@ -328,7 +328,7 @@ func TestManagerGetDatesIncludesTodayWithoutFiles(t *testing.T) {
 
 func TestManagerDeleteDateRemovesExistingLog(t *testing.T) {
 	dir := t.TempDir()
-	date := "2024-01-02"
+	date := time.Now().Format(dateLayout)
 	if err := os.WriteFile(filepath.Join(dir, date+fileExtension), []byte("{}\n"), 0o644); err != nil {
 		t.Fatalf("write log: %v", err)
 	}

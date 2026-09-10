@@ -28,18 +28,18 @@ type ControlApiVersion int32
 
 const (
 	ControlApiVersion_CONTROL_API_VERSION_UNSPECIFIED ControlApiVersion = 0
-	ControlApiVersion_CONTROL_API_VERSION_CURRENT     ControlApiVersion = 24
+	ControlApiVersion_CONTROL_API_VERSION_CURRENT     ControlApiVersion = 25
 )
 
 // Enum value maps for ControlApiVersion.
 var (
 	ControlApiVersion_name = map[int32]string{
 		0:  "CONTROL_API_VERSION_UNSPECIFIED",
-		24: "CONTROL_API_VERSION_CURRENT",
+		25: "CONTROL_API_VERSION_CURRENT",
 	}
 	ControlApiVersion_value = map[string]int32{
 		"CONTROL_API_VERSION_UNSPECIFIED": 0,
-		"CONTROL_API_VERSION_CURRENT":     24,
+		"CONTROL_API_VERSION_CURRENT":     25,
 	}
 )
 
@@ -2939,18 +2939,24 @@ func (x *AuthConfig) GetTrustForwardedProto() bool {
 }
 
 type LoggingConfig struct {
-	state           protoimpl.MessageState `protogen:"open.v1"`
-	Enabled         bool                   `protobuf:"varint,1,opt,name=enabled,proto3" json:"enabled,omitempty"`
-	MaxDays         int32                  `protobuf:"varint,2,opt,name=max_days,json=maxDays,proto3" json:"max_days,omitempty"`
-	LogsDir         string                 `protobuf:"bytes,3,opt,name=logs_dir,json=logsDir,proto3" json:"logs_dir,omitempty"`
-	DroppedEntries  uint64                 `protobuf:"varint,4,opt,name=dropped_entries,json=droppedEntries,proto3" json:"dropped_entries,omitempty"`
-	QueueSize       int32                  `protobuf:"varint,5,opt,name=queue_size,json=queueSize,proto3" json:"queue_size,omitempty"`
-	QueueDepth      int32                  `protobuf:"varint,6,opt,name=queue_depth,json=queueDepth,proto3" json:"queue_depth,omitempty"`
-	RecordLocalhost bool                   `protobuf:"varint,7,opt,name=record_localhost,json=recordLocalhost,proto3" json:"record_localhost,omitempty"`
-	CustomLogsDir   *string                `protobuf:"bytes,8,opt,name=custom_logs_dir,json=customLogsDir,proto3,oneof" json:"custom_logs_dir,omitempty"`
-	DefaultLogsDir  string                 `protobuf:"bytes,9,opt,name=default_logs_dir,json=defaultLogsDir,proto3" json:"default_logs_dir,omitempty"`
-	unknownFields   protoimpl.UnknownFields
-	sizeCache       protoimpl.SizeCache
+	state                  protoimpl.MessageState `protogen:"open.v1"`
+	Enabled                bool                   `protobuf:"varint,1,opt,name=enabled,proto3" json:"enabled,omitempty"`
+	MaxDays                int32                  `protobuf:"varint,2,opt,name=max_days,json=maxDays,proto3" json:"max_days,omitempty"`
+	LogsDir                string                 `protobuf:"bytes,3,opt,name=logs_dir,json=logsDir,proto3" json:"logs_dir,omitempty"`
+	DroppedEntries         uint64                 `protobuf:"varint,4,opt,name=dropped_entries,json=droppedEntries,proto3" json:"dropped_entries,omitempty"`
+	QueueSize              int32                  `protobuf:"varint,5,opt,name=queue_size,json=queueSize,proto3" json:"queue_size,omitempty"`
+	QueueDepth             int32                  `protobuf:"varint,6,opt,name=queue_depth,json=queueDepth,proto3" json:"queue_depth,omitempty"`
+	RecordLocalhost        bool                   `protobuf:"varint,7,opt,name=record_localhost,json=recordLocalhost,proto3" json:"record_localhost,omitempty"`
+	CustomLogsDir          *string                `protobuf:"bytes,8,opt,name=custom_logs_dir,json=customLogsDir,proto3,oneof" json:"custom_logs_dir,omitempty"`
+	DefaultLogsDir         string                 `protobuf:"bytes,9,opt,name=default_logs_dir,json=defaultLogsDir,proto3" json:"default_logs_dir,omitempty"`
+	MaxDailySizeMb         *int64                 `protobuf:"varint,10,opt,name=max_daily_size_mb,json=maxDailySizeMb,proto3,oneof" json:"max_daily_size_mb,omitempty"`
+	MaxTotalSizeMb         *int64                 `protobuf:"varint,11,opt,name=max_total_size_mb,json=maxTotalSizeMb,proto3,oneof" json:"max_total_size_mb,omitempty"`
+	TodaySizeBytes         uint64                 `protobuf:"varint,12,opt,name=today_size_bytes,json=todaySizeBytes,proto3" json:"today_size_bytes,omitempty"`
+	TotalSizeBytes         uint64                 `protobuf:"varint,13,opt,name=total_size_bytes,json=totalSizeBytes,proto3" json:"total_size_bytes,omitempty"`
+	CapacityDroppedEntries uint64                 `protobuf:"varint,14,opt,name=capacity_dropped_entries,json=capacityDroppedEntries,proto3" json:"capacity_dropped_entries,omitempty"`
+	CleanupError           string                 `protobuf:"bytes,15,opt,name=cleanup_error,json=cleanupError,proto3" json:"cleanup_error,omitempty"`
+	unknownFields          protoimpl.UnknownFields
+	sizeCache              protoimpl.SizeCache
 }
 
 func (x *LoggingConfig) Reset() {
@@ -3042,6 +3048,48 @@ func (x *LoggingConfig) GetCustomLogsDir() string {
 func (x *LoggingConfig) GetDefaultLogsDir() string {
 	if x != nil {
 		return x.DefaultLogsDir
+	}
+	return ""
+}
+
+func (x *LoggingConfig) GetMaxDailySizeMb() int64 {
+	if x != nil && x.MaxDailySizeMb != nil {
+		return *x.MaxDailySizeMb
+	}
+	return 0
+}
+
+func (x *LoggingConfig) GetMaxTotalSizeMb() int64 {
+	if x != nil && x.MaxTotalSizeMb != nil {
+		return *x.MaxTotalSizeMb
+	}
+	return 0
+}
+
+func (x *LoggingConfig) GetTodaySizeBytes() uint64 {
+	if x != nil {
+		return x.TodaySizeBytes
+	}
+	return 0
+}
+
+func (x *LoggingConfig) GetTotalSizeBytes() uint64 {
+	if x != nil {
+		return x.TotalSizeBytes
+	}
+	return 0
+}
+
+func (x *LoggingConfig) GetCapacityDroppedEntries() uint64 {
+	if x != nil {
+		return x.CapacityDroppedEntries
+	}
+	return 0
+}
+
+func (x *LoggingConfig) GetCleanupError() string {
+	if x != nil {
+		return x.CleanupError
 	}
 	return ""
 }
@@ -12281,7 +12329,7 @@ const file_fnknock_v1_gateway_proto_rawDesc = "" +
 	"\x10public_http_port\x18\f \x01(\x05R\x0epublicHttpPort\x12*\n" +
 	"\x11public_https_port\x18\r \x01(\x05R\x0fpublicHttpsPort\x12\x1b\n" +
 	"\tauth_host\x18\x0e \x01(\tR\bauthHost\x122\n" +
-	"\x15trust_forwarded_proto\x18\x0f \x01(\bR\x13trustForwardedProto\"\xde\x02\n" +
+	"\x15trust_forwarded_proto\x18\x0f \x01(\bR\x13trustForwardedProto\"\x9d\x05\n" +
 	"\rLoggingConfig\x12\x18\n" +
 	"\aenabled\x18\x01 \x01(\bR\aenabled\x12\x19\n" +
 	"\bmax_days\x18\x02 \x01(\x05R\amaxDays\x12\x19\n" +
@@ -12293,8 +12341,17 @@ const file_fnknock_v1_gateway_proto_rawDesc = "" +
 	"queueDepth\x12)\n" +
 	"\x10record_localhost\x18\a \x01(\bR\x0frecordLocalhost\x12+\n" +
 	"\x0fcustom_logs_dir\x18\b \x01(\tH\x00R\rcustomLogsDir\x88\x01\x01\x12(\n" +
-	"\x10default_logs_dir\x18\t \x01(\tR\x0edefaultLogsDirB\x12\n" +
-	"\x10_custom_logs_dir\"\xa1\x01\n" +
+	"\x10default_logs_dir\x18\t \x01(\tR\x0edefaultLogsDir\x12.\n" +
+	"\x11max_daily_size_mb\x18\n" +
+	" \x01(\x03H\x01R\x0emaxDailySizeMb\x88\x01\x01\x12.\n" +
+	"\x11max_total_size_mb\x18\v \x01(\x03H\x02R\x0emaxTotalSizeMb\x88\x01\x01\x12(\n" +
+	"\x10today_size_bytes\x18\f \x01(\x04R\x0etodaySizeBytes\x12(\n" +
+	"\x10total_size_bytes\x18\r \x01(\x04R\x0etotalSizeBytes\x128\n" +
+	"\x18capacity_dropped_entries\x18\x0e \x01(\x04R\x16capacityDroppedEntries\x12#\n" +
+	"\rcleanup_error\x18\x0f \x01(\tR\fcleanupErrorB\x12\n" +
+	"\x10_custom_logs_dirB\x14\n" +
+	"\x12_max_daily_size_mbB\x14\n" +
+	"\x12_max_total_size_mb\"\xa1\x01\n" +
 	"\x1aReverseProxyThrottleConfig\x12\x18\n" +
 	"\aenabled\x18\x01 \x01(\bR\aenabled\x12.\n" +
 	"\x13requests_per_second\x18\x02 \x01(\x05R\x11requestsPerSecond\x12\x14\n" +
@@ -13158,7 +13215,7 @@ const file_fnknock_v1_gateway_proto_rawDesc = "" +
 	"last_error\x18\t \x01(\tR\tlastError*Y\n" +
 	"\x11ControlApiVersion\x12#\n" +
 	"\x1fCONTROL_API_VERSION_UNSPECIFIED\x10\x00\x12\x1f\n" +
-	"\x1bCONTROL_API_VERSION_CURRENT\x10\x18*\xa1\x01\n" +
+	"\x1bCONTROL_API_VERSION_CURRENT\x10\x19*\xa1\x01\n" +
 	"\x12HostRuleTargetType\x12%\n" +
 	"!HOST_RULE_TARGET_TYPE_UNSPECIFIED\x10\x00\x12\x1f\n" +
 	"\x1bHOST_RULE_TARGET_TYPE_PROXY\x10\x01\x12\x1e\n" +

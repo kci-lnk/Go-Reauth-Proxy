@@ -142,6 +142,7 @@ func defaultConfig() *AppConfig {
 			UpdatedAt: "",
 		},
 		Logging: models.LoggingConfig{
+			MaxDailySizeMB: 256, MaxTotalSizeMB: 1024,
 			Enabled: false,
 			MaxDays: gatewaylog.DefaultMaxDays,
 		},
@@ -358,6 +359,7 @@ func applyDefaults(cfg *AppConfig) bool {
 	if cfg.CrawlerBlocker.UpdatedAt == "" {
 		cfg.CrawlerBlocker.UpdatedAt = ""
 	}
+	cfg.Logging = gatewaylog.NormalizeConfig(cfg.Logging)
 	if cfg.Logging.MaxDays <= 0 {
 		cfg.Logging.MaxDays = gatewaylog.DefaultMaxDays
 		changed = true

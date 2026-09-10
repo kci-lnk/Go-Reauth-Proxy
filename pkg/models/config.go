@@ -371,6 +371,8 @@ func (c AuthConfig) TencentEdgeOneActive() bool {
 }
 
 type LoggingConfig struct {
+	MaxDailySizeMB  int64  `json:"max_daily_size_mb,omitempty"`
+	MaxTotalSizeMB  int64  `json:"max_total_size_mb,omitempty"`
 	CustomLogsDir   string `json:"custom_logs_dir,omitempty"`
 	Enabled         bool   `json:"enabled"`
 	RecordLocalhost bool   `json:"record_localhost"`

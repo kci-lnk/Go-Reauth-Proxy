@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"go-reauth-proxy/pkg/config"
 	"go-reauth-proxy/pkg/errors"
+	"go-reauth-proxy/pkg/gatewaylog"
 	"go-reauth-proxy/pkg/i18n"
 	"go-reauth-proxy/pkg/iptables"
 	"go-reauth-proxy/pkg/models"
@@ -1084,10 +1085,22 @@ func (s *Server) handleGetLoggingConfig(w http.ResponseWriter, r *http.Request) 
 func (s *Server) handleSetLoggingConfig(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		models.LoggingConfig
-		CustomLogsDir *string `json:"custom_logs_dir"`
+		MaxDailySizeMB *int64  `json:"max_daily_size_mb"`
+		MaxTotalSizeMB *int64  `json:"max_total_size_mb"`
+		CustomLogsDir  *string `json:"custom_logs_dir"`
 	}
 	if !decodeAdminJSONBody(w, r, &req) {
 		return
+	}
+	if (req.MaxDailySizeMB != nil && *req.MaxDailySizeMB <= 0) || (req.MaxTotalSizeMB != nil && *req.MaxTotalSizeMB <= 0) {
+		response.Error(w, errors.CodeBadRequest, "log capacities must be positive integers")
+		return
+	}
+	if req.MaxDailySizeMB != nil {
+		req.LoggingConfig.MaxDailySizeMB = *req.MaxDailySizeMB
+	}
+	if req.MaxTotalSizeMB != nil {
+		req.LoggingConfig.MaxTotalSizeMB = *req.MaxTotalSizeMB
 	}
 	if req.MaxDays < 0 {
 		response.Error(w, errors.CodeBadRequest, "max_days must be greater than 0")
@@ -1099,6 +1112,10 @@ func (s *Server) handleSetLoggingConfig(w http.ResponseWriter, r *http.Request) 
 	}
 	cfg, err := s.ProxyHandler.SetLoggingConfigContext(r.Context(), req.LoggingConfig, req.CustomLogsDir == nil)
 	if err != nil {
+		if stderrors.Is(err, gatewaylog.ErrInvalidCapacity) {
+			response.Error(w, errors.CodeBadRequest, err.Error())
+			return
+		}
 		response.Error(w, errors.CodeInternal, "Failed to set logging config: "+err.Error())
 		return
 	}

@@ -695,12 +695,15 @@ func loggingConfigToProto(cfg gatewaylog.ConfigInfo) *pb.LoggingConfig {
 		Enabled:         cfg.Enabled,
 		RecordLocalhost: cfg.RecordLocalhost,
 		MaxDays:         int32(cfg.MaxDays),
-		LogsDir:         cfg.LogsDir,
-		CustomLogsDir:   &cfg.CustomLogsDir,
-		DefaultLogsDir:  cfg.DefaultLogsDir,
-		DroppedEntries:  cfg.DroppedEntries,
-		QueueSize:       int32(cfg.QueueSize),
-		QueueDepth:      int32(cfg.QueueDepth),
+		MaxDailySizeMb:  &cfg.MaxDailySizeMB, MaxTotalSizeMb: &cfg.MaxTotalSizeMB,
+		TodaySizeBytes: uint64(cfg.TodaySizeBytes), TotalSizeBytes: uint64(cfg.TotalSizeBytes),
+		CapacityDroppedEntries: cfg.CapacityDroppedEntries, CleanupError: cfg.CleanupError,
+		LogsDir:        cfg.LogsDir,
+		CustomLogsDir:  &cfg.CustomLogsDir,
+		DefaultLogsDir: cfg.DefaultLogsDir,
+		DroppedEntries: cfg.DroppedEntries,
+		QueueSize:      int32(cfg.QueueSize),
+		QueueDepth:     int32(cfg.QueueDepth),
 	}
 }
 
@@ -713,6 +716,7 @@ func protoToLoggingConfig(cfg *pb.LoggingConfig) models.LoggingConfig {
 		Enabled:         cfg.GetEnabled(),
 		RecordLocalhost: cfg.GetRecordLocalhost(),
 		MaxDays:         int(cfg.GetMaxDays()),
+		MaxDailySizeMB:  cfg.GetMaxDailySizeMb(), MaxTotalSizeMB: cfg.GetMaxTotalSizeMb(),
 	}
 }
 

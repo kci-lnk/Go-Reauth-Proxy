@@ -13,7 +13,6 @@ import (
 	"net/netip"
 	"net/url"
 	"os"
-	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -141,9 +140,11 @@ type dailyAnalytics struct {
 }
 
 type cachedDailyAnalytics struct {
-	size       int64
-	modifiedAt int64
-	data       *dailyAnalytics
+	fingerprint string
+	size        int64
+	segments    []logSegment
+	modified    []int64
+	data        *dailyAnalytics
 }
 
 // analyticsCardinality is a compact HyperLogLog sketch used only after the
@@ -372,77 +373,7 @@ func analyticsCalendarDays(from time.Time, to time.Time) int {
 }
 
 func (m *Manager) analyticsForDate(ctx context.Context, date string) (*dailyAnalytics, error) {
-	path := filepath.Join(m.logsDir, date+fileExtension)
-	info, err := os.Stat(path)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			empty := &dailyAnalytics{analyticsCounter: newAnalyticsCounter()}
-			return empty, nil
-		}
-		return nil, err
-	}
-	if cached := m.cachedAnalytics(date, info); cached != nil {
-		return cached, nil
-	}
-
-	select {
-	case m.analyticsScan <- struct{}{}:
-		defer func() { <-m.analyticsScan }()
-	case <-ctx.Done():
-		return nil, ctx.Err()
-	}
-
-	// A previous waiter may have populated the cache while this request waited
-	// for the single scan slot. Restat so append-only growth is incorporated.
-	info, err = os.Stat(path)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return &dailyAnalytics{analyticsCounter: newAnalyticsCounter()}, nil
-		}
-		return nil, err
-	}
-	if cached := m.cachedAnalytics(date, info); cached != nil {
-		return cached, nil
-	}
-
-	start := int64(0)
-	var data *dailyAnalytics
-	m.analyticsMu.Lock()
-	cached, hasCached := m.analyticsCache[date]
-	if hasCached && cached.data != nil && cached.size > 0 && cached.size < info.Size() && cached.modifiedAt <= info.ModTime().UnixNano() {
-		start = cached.size
-		data = cloneDailyAnalytics(cached.data)
-	}
-	m.analyticsMu.Unlock()
-	if data == nil {
-		data = &dailyAnalytics{analyticsCounter: newAnalyticsCounter()}
-	}
-	if err := scanDailyAnalyticsRange(ctx, path, date, start, info.Size(), data); err != nil {
-		return nil, err
-	}
-
-	m.analyticsMu.Lock()
-	m.analyticsCache[date] = cachedDailyAnalytics{
-		size:       info.Size(),
-		modifiedAt: info.ModTime().UnixNano(),
-		data:       data,
-	}
-	m.enforceAnalyticsCacheLimitLocked(date)
-	m.analyticsMu.Unlock()
-	return data, nil
-}
-
-func (m *Manager) cachedAnalytics(date string, info os.FileInfo) *dailyAnalytics {
-	if m == nil || info == nil {
-		return nil
-	}
-	m.analyticsMu.Lock()
-	defer m.analyticsMu.Unlock()
-	cached, ok := m.analyticsCache[date]
-	if !ok || cached.size != info.Size() || cached.modifiedAt != info.ModTime().UnixNano() {
-		return nil
-	}
-	return cached.data
+	return m.analyticsForSegments(ctx, date)
 }
 
 func (m *Manager) invalidateAnalyticsDate(date string) {

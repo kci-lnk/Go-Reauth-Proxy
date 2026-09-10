@@ -4027,7 +4027,7 @@ func (h *Handler) SetLoggingConfigContext(ctx context.Context, cfg models.Loggin
 		}
 		return gatewaylog.ConfigInfo{Enabled: normalized.Enabled, RecordLocalhost: normalized.RecordLocalhost, MaxDays: normalized.MaxDays, CustomLogsDir: normalized.CustomLogsDir}, nil
 	}
-	info, err := h.gatewayLogManager.ConfigurePatchContext(ctx, normalized, preserve, persist)
+	info, err := h.gatewayLogManager.ConfigurePatchContext(ctx, cfg, preserve, persist)
 	if err == nil {
 		if event := debugProxyEvent("gateway_logging_config_set", ""); event != nil {
 			event.Bool("enabled", normalized.Enabled).

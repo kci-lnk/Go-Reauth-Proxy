@@ -43,6 +43,8 @@ const (
 
 var errStopScan = errors.New("stop scan")
 
+var ErrInvalidCapacity = errors.New("request log capacities must be positive integers up to 1048576 MiB, with total at least daily")
+
 var ErrQueryResultTooLarge = errors.New("log query result exceeds 16 MiB; reduce the limit or narrow the filters")
 
 type Entry struct {
@@ -105,15 +107,21 @@ type Entry struct {
 }
 
 type ConfigInfo struct {
-	CustomLogsDir   string `json:"custom_logs_dir"`
-	DefaultLogsDir  string `json:"default_logs_dir"`
-	Enabled         bool   `json:"enabled"`
-	RecordLocalhost bool   `json:"record_localhost"`
-	MaxDays         int    `json:"max_days"`
-	LogsDir         string `json:"logs_dir"`
-	DroppedEntries  uint64 `json:"dropped_entries"`
-	QueueSize       int    `json:"queue_size"`
-	QueueDepth      int    `json:"queue_depth"`
+	CustomLogsDir          string `json:"custom_logs_dir"`
+	DefaultLogsDir         string `json:"default_logs_dir"`
+	Enabled                bool   `json:"enabled"`
+	RecordLocalhost        bool   `json:"record_localhost"`
+	MaxDays                int    `json:"max_days"`
+	MaxDailySizeMB         int64  `json:"max_daily_size_mb"`
+	MaxTotalSizeMB         int64  `json:"max_total_size_mb"`
+	TodaySizeBytes         int64  `json:"today_size_bytes"`
+	TotalSizeBytes         int64  `json:"total_size_bytes"`
+	CapacityDroppedEntries uint64 `json:"capacity_dropped_entries"`
+	CleanupError           string `json:"cleanup_error"`
+	LogsDir                string `json:"logs_dir"`
+	DroppedEntries         uint64 `json:"dropped_entries"`
+	QueueSize              int    `json:"queue_size"`
+	QueueDepth             int    `json:"queue_depth"`
 }
 
 type DirectoryInfo struct {
@@ -171,22 +179,31 @@ type DeleteResult struct {
 }
 
 type DailyFileWriter struct {
-	baseDir       string
-	mu            sync.Mutex
-	retentionDays int
-	currentDate   string
-	currentDay    time.Time
-	nextDay       time.Time
-	currentFile   *os.File
-	currentBuffer *bufio.Writer
-	lastCleanup   string
-	dirReady      bool
+	baseDir         string
+	mu              sync.Mutex
+	retentionDays   int
+	currentDate     string
+	currentDay      time.Time
+	nextDay         time.Time
+	currentFile     *os.File
+	currentBuffer   *bufio.Writer
+	lastCleanup     string
+	dirReady        bool
+	segments        []logSegment
+	indexed         bool
+	dailyLimit      int64
+	totalLimit      int64
+	segmentLimit    int64
+	sequence        int64
+	capacityDropped atomic.Uint64
+	storageStatus   atomic.Pointer[logStorageStatus]
 }
 
 func NewDailyFileWriter(baseDir string, retentionDays int) *DailyFileWriter {
 	return &DailyFileWriter{
 		baseDir:       baseDir,
 		retentionDays: normalizeMaxDays(retentionDays),
+		dailyLimit:    256 << 20, totalLimit: 1024 << 20, segmentLimit: 16 << 20,
 	}
 }
 
@@ -218,34 +235,48 @@ func (w *DailyFileWriter) DeleteDate(date string) (bool, error) {
 		w.nextDay = time.Time{}
 	}
 
-	logPath := w.pathForDate(date)
-	if err := os.Remove(logPath); err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return false, nil
-		}
+	w.indexed = false
+	if err := w.indexLocked(); err != nil {
 		return false, err
 	}
-	return true, nil
+	deleted := false
+	for i := 0; i < len(w.segments); {
+		if w.segments[i].date != date {
+			i++
+			continue
+		}
+		if err := w.removeSegmentLocked(i); err != nil {
+			return deleted, err
+		}
+		deleted = true
+	}
+	w.publishStorageStatus(nil)
+	return deleted, nil
 }
 
 func (w *DailyFileWriter) Write(p []byte) (int, error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
-	now := time.Now()
-	if err := w.ensureDirLocked(); err != nil {
-		return 0, err
+	if err := w.prepareWriteLocked(time.Now(), int64(len(p))); err != nil {
+		w.capacityDropped.Add(1)
+		w.publishStorageStatus(err)
+		// The async logger must not emit a diagnostic per discarded request.
+		return len(p), nil
 	}
-	if err := w.rotateLocked(now); err != nil {
-		return 0, err
+	n, err := w.currentBuffer.Write(p)
+	for i := range w.segments {
+		if w.segments[i].path == w.currentFile.Name() {
+			w.segments[i].size += int64(n)
+			break
+		}
 	}
-	if err := w.maybeCleanupLocked(now); err != nil {
-		return 0, err
+	w.publishStorageStatus(err)
+	if err != nil {
+		w.capacityDropped.Add(1)
+		return len(p), nil
 	}
-	if w.currentFile == nil || w.currentBuffer == nil {
-		return 0, fmt.Errorf("log file is not open")
-	}
-	return w.currentBuffer.Write(p)
+	return n, nil
 }
 
 func (w *DailyFileWriter) Flush() error {
@@ -257,7 +288,11 @@ func (w *DailyFileWriter) Flush() error {
 	if w.currentBuffer == nil {
 		return nil
 	}
-	return w.currentBuffer.Flush()
+	err := w.currentBuffer.Flush()
+	if err != nil {
+		w.publishStorageStatus(err)
+	}
+	return err
 }
 
 func (w *DailyFileWriter) Close() error {
@@ -312,63 +347,13 @@ func (w *DailyFileWriter) maybeCleanupLocked(now time.Time) error {
 }
 
 func (w *DailyFileWriter) rotateLocked(now time.Time) error {
-	if w.currentFile != nil && !w.currentDay.IsZero() &&
-		!now.Before(w.currentDay) && now.Before(w.nextDay) {
-		return nil
-	}
-	date := now.Format(dateLayout)
-
-	if w.currentFile != nil {
-		if w.currentBuffer != nil {
-			if err := w.currentBuffer.Flush(); err != nil {
-				return err
-			}
-			w.currentBuffer = nil
-		}
-		_ = w.currentFile.Close()
-		w.currentFile = nil
-	}
-
-	file, err := os.OpenFile(w.pathForDate(date), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
-	if err != nil {
-		return err
-	}
-
-	w.currentDate = date
-	w.currentDay = dayStart(now)
-	w.nextDay = w.currentDay.AddDate(0, 0, 1)
-	w.currentFile = file
-	w.currentBuffer = bufio.NewWriterSize(file, asyncLogWriterBufferSize)
-	return nil
+	return w.openSegmentLocked(now, false)
 }
 
 func (w *DailyFileWriter) cleanupLocked(now time.Time) error {
-	entries, err := os.ReadDir(w.baseDir)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return nil
-		}
-		return err
-	}
-
-	retentionDays := normalizeMaxDays(w.retentionDays)
-	cutoff := dayStart(now).AddDate(0, 0, -(retentionDays - 1))
-
-	for _, entry := range entries {
-		if entry.IsDir() {
-			continue
-		}
-		date, ok := parseFileDate(entry.Name())
-		if !ok {
-			continue
-		}
-		if date.Before(cutoff) {
-			if err := os.Remove(filepath.Join(w.baseDir, entry.Name())); err != nil && !errors.Is(err, os.ErrNotExist) {
-				return err
-			}
-		}
-	}
-	return nil
+	err := w.enforceCapacityLocked(now, "", 0)
+	w.publishStorageStatus(err)
+	return err
 }
 
 func (w *DailyFileWriter) pathForDate(date string) string {
@@ -409,6 +394,17 @@ type Manager struct {
 
 func NormalizeConfig(cfg models.LoggingConfig) models.LoggingConfig {
 	cfg.MaxDays = normalizeMaxDays(cfg.MaxDays)
+	if cfg.MaxDailySizeMB <= 0 {
+		cfg.MaxDailySizeMB = 256
+	}
+	if cfg.MaxTotalSizeMB <= 0 {
+		cfg.MaxTotalSizeMB = 1024
+	}
+	if cfg.MaxTotalSizeMB < cfg.MaxDailySizeMB {
+		cfg.MaxTotalSizeMB = cfg.MaxDailySizeMB
+	}
+	cfg.MaxDailySizeMB = min(cfg.MaxDailySizeMB, 1_048_576)
+	cfg.MaxTotalSizeMB = min(cfg.MaxTotalSizeMB, 1_048_576)
 	cfg.CustomLogsDir = strings.TrimSpace(cfg.CustomLogsDir)
 	if cfg.CustomLogsDir != "" {
 		cfg.CustomLogsDir = filepath.Clean(cfg.CustomLogsDir)
@@ -427,6 +423,8 @@ func NewManager(logsDir string, cfg models.LoggingConfig) *Manager {
 		logsDir = normalized.CustomLogsDir
 	}
 	writer := NewDailyFileWriter(logsDir, normalized.MaxDays)
+	writer.setCapacityLocked(normalized)
+	_ = writer.Cleanup()
 	logger := zerolog.New(writer).With().Timestamp().Logger()
 
 	m := &Manager{
@@ -466,16 +464,28 @@ func (m *Manager) configInfo() ConfigInfo {
 		queueSize = cap(queue.entries)
 		queueDepth = len(queue.entries)
 	}
+	var status *logStorageStatus
+	var capacityDropped uint64
+	if m.writer != nil {
+		status = m.writer.storageStatus.Load()
+		capacityDropped = m.writer.capacityDropped.Load()
+	}
+	if status == nil {
+		status = &logStorageStatus{}
+	}
 	return ConfigInfo{
 		CustomLogsDir:   m.config.CustomLogsDir,
 		DefaultLogsDir:  m.defaultLogsDir,
 		Enabled:         m.config.Enabled,
 		RecordLocalhost: m.config.RecordLocalhost,
 		MaxDays:         m.config.MaxDays,
-		LogsDir:         m.logsDir,
-		DroppedEntries:  m.droppedLogEntries.Load(),
-		QueueSize:       queueSize,
-		QueueDepth:      queueDepth,
+		MaxDailySizeMB:  m.config.MaxDailySizeMB, MaxTotalSizeMB: m.config.MaxTotalSizeMB,
+		TodaySizeBytes: status.today, TotalSizeBytes: status.total, CleanupError: status.error,
+		CapacityDroppedEntries: capacityDropped,
+		LogsDir:                m.logsDir,
+		DroppedEntries:         m.droppedLogEntries.Load(),
+		QueueSize:              queueSize,
+		QueueDepth:             queueDepth,
 	}
 }
 
@@ -515,6 +525,15 @@ func (m *Manager) ConfigurePatchContext(ctx context.Context, cfg models.LoggingC
 	if preserveDirectory {
 		cfg.CustomLogsDir = m.config.CustomLogsDir
 	}
+	if cfg.MaxDailySizeMB == 0 {
+		cfg.MaxDailySizeMB = m.config.MaxDailySizeMB
+	}
+	if cfg.MaxTotalSizeMB == 0 {
+		cfg.MaxTotalSizeMB = m.config.MaxTotalSizeMB
+	}
+	if cfg.MaxDailySizeMB < 0 || cfg.MaxDailySizeMB > 1_048_576 || cfg.MaxTotalSizeMB < 0 || cfg.MaxTotalSizeMB > 1_048_576 || cfg.MaxTotalSizeMB < cfg.MaxDailySizeMB {
+		return m.configInfo(), ErrInvalidCapacity
+	}
 	normalized := NormalizeConfig(cfg)
 	target := m.defaultLogsDir
 	if normalized.CustomLogsDir != "" {
@@ -541,6 +560,7 @@ func (m *Manager) ConfigurePatchContext(ctx context.Context, cfg models.LoggingC
 	var prepared *DailyFileWriter
 	if changingDirectory || (normalized.Enabled && !m.enabled.Load()) {
 		prepared = NewDailyFileWriter(target, normalized.MaxDays)
+		prepared.setCapacityLocked(normalized)
 		if err := prepared.ensureDirLocked(); err != nil {
 			return m.configInfo(), err
 		}
@@ -569,15 +589,16 @@ func (m *Manager) ConfigurePatchContext(ctx context.Context, cfg models.LoggingC
 		m.writer.nextDay = prepared.nextDay
 		m.writer.dirReady = true
 		m.writer.lastCleanup = ""
+		m.writer.indexed = false
 		m.logsDir = target
 		m.analyticsMu.Lock()
 		m.analyticsCache = make(map[string]cachedDailyAnalytics)
 		m.analyticsMu.Unlock()
 	}
 	m.writer.retentionDays = normalized.MaxDays
-	if changingDirectory || normalized.Enabled {
-		_ = m.writer.cleanupLocked(time.Now())
-	}
+	m.writer.setCapacityLocked(normalized)
+	m.writer.indexed = false
+	_ = m.writer.cleanupLocked(time.Now())
 	m.mu.Lock()
 	m.config = normalized
 	m.mu.Unlock()
@@ -919,56 +940,32 @@ func (m *Manager) QueryContext(ctx context.Context, date string, page int, limit
 		limit = 200
 	}
 
-	logPath := filepath.Join(m.logsDir, selectedDate+fileExtension)
 	filter, err := newQueryFilter(search, status, loggedIn, credential)
 	if err != nil {
 		return QueryResult{}, err
 	}
 	filter.ctx = ctx
-
+	m.writer.mu.Lock()
+	defer m.writer.mu.Unlock()
+	if m.writer.currentBuffer != nil {
+		if err := m.writer.currentBuffer.Flush(); err != nil {
+			return QueryResult{}, err
+		}
+	}
 	dates, err := m.listDates(true)
 	if err != nil {
 		return QueryResult{}, err
 	}
-
 	mode := normalizePaginationMode(pagination)
-	if mode == "cursor" {
-		items, nextCursor, hasMore, resolvedCursor, err := queryEntriesByCursor(logPath, filter, cursor, limit)
-		if err != nil {
-			return QueryResult{}, err
-		}
-
-		return QueryResult{
-			Date:           selectedDate,
-			LogsDir:        m.logsDir,
-			AvailableDates: dates,
-			Pagination:     mode,
-			Page:           1,
-			Limit:          limit,
-			Total:          0,
-			Cursor:         resolvedCursor,
-			NextCursor:     nextCursor,
-			HasMore:        hasMore,
-			Items:          items,
-		}, nil
-	}
-
-	items, total, hasMore, err := queryEntries(logPath, filter, page, limit)
+	items, total, next, more, err := querySegmentEntries(m.logsDir, selectedDate, filter, cursor, page, limit, mode)
 	if err != nil {
 		return QueryResult{}, err
 	}
-
-	return QueryResult{
-		Date:           selectedDate,
-		LogsDir:        m.logsDir,
-		AvailableDates: dates,
-		Pagination:     mode,
-		Page:           page,
-		Limit:          limit,
-		Total:          total,
-		HasMore:        hasMore,
-		Items:          items,
-	}, nil
+	if mode == "cursor" {
+		total = 0
+		page = 1
+	}
+	return QueryResult{Date: selectedDate, LogsDir: m.logsDir, AvailableDates: dates, Pagination: mode, Page: page, Limit: limit, Total: total, Cursor: cursor, NextCursor: next, HasMore: more, Items: items}, nil
 }
 
 func (m *Manager) FindByTraceID(traceID string) (TraceResult, error) {
@@ -996,6 +993,8 @@ func (m *Manager) FindByTraceIDContext(ctx context.Context, traceID string) (Tra
 	if err := m.FlushContext(ctx); err != nil {
 		return result, err
 	}
+	m.writer.mu.Lock()
+	defer m.writer.mu.Unlock()
 	dates, err := m.listDates(false)
 	if err != nil {
 		return result, err
@@ -1013,44 +1012,50 @@ func (m *Manager) FindByTraceIDContext(ctx context.Context, traceID string) (Tra
 		if parseErr != nil || parsedDate.Before(oldestRetainedDay) {
 			continue
 		}
-		logPath := filepath.Join(m.logsDir, date+fileExtension)
-		file, openErr := os.Open(logPath)
-		if openErr != nil {
-			if errors.Is(openErr, os.ErrNotExist) {
-				continue
-			}
-			return result, openErr
+		segments, segmentErr := segmentsForDate(m.logsDir, date)
+		if segmentErr != nil {
+			return result, segmentErr
 		}
-		stat, statErr := file.Stat()
-		if statErr != nil {
+		for i := len(segments) - 1; i >= 0; i-- {
+			logPath := segments[i].path
+			file, openErr := os.Open(logPath)
+			if openErr != nil {
+				if errors.Is(openErr, os.ErrNotExist) {
+					continue
+				}
+				return result, openErr
+			}
+			stat, statErr := file.Stat()
+			if statErr != nil {
+				_ = file.Close()
+				return result, statErr
+			}
+			var matched Entry
+			found := false
+			scanErr := scanLinesBackwardContext(ctx, file, stat.Size(), func(line []byte, _ int64) (bool, error) {
+				if !bytes.Contains(line, needle) || !jsonLogLineLooksLikeEntryObject(line) {
+					return true, nil
+				}
+				var entry Entry
+				if err := json.Unmarshal(line, &entry); err != nil {
+					return true, nil
+				}
+				if entry.TraceID != traceID && entry.WAFTraceID != traceID {
+					return true, nil
+				}
+				matched = entry
+				found = true
+				return false, nil
+			})
 			_ = file.Close()
-			return result, statErr
-		}
-		var matched Entry
-		found := false
-		scanErr := scanLinesBackwardContext(ctx, file, stat.Size(), func(line []byte, _ int64) (bool, error) {
-			if !bytes.Contains(line, needle) || !jsonLogLineLooksLikeEntryObject(line) {
-				return true, nil
+			if scanErr != nil {
+				return result, scanErr
 			}
-			var entry Entry
-			if err := json.Unmarshal(line, &entry); err != nil {
-				return true, nil
+			if found {
+				result.Found = true
+				result.Entry = matched
+				return result, nil
 			}
-			if entry.TraceID != traceID && entry.WAFTraceID != traceID {
-				return true, nil
-			}
-			matched = entry
-			found = true
-			return false, nil
-		})
-		_ = file.Close()
-		if scanErr != nil {
-			return result, scanErr
-		}
-		if found {
-			result.Found = true
-			result.Entry = matched
-			return result, nil
 		}
 	}
 	return result, nil
@@ -1134,6 +1139,27 @@ func parseFileDate(fileName string) (time.Time, bool) {
 	}
 
 	base := strings.TrimSuffix(fileName, fileExtension)
+	if len(base) > 10 {
+		if (len(base) != 31 && len(base) != 52) || base[10] != '.' {
+			return time.Time{}, false
+		}
+		for _, c := range base[11:31] {
+			if c < '0' || c > '9' {
+				return time.Time{}, false
+			}
+		}
+		if len(base) == 52 {
+			if base[31] != '-' {
+				return time.Time{}, false
+			}
+			for _, c := range base[32:] {
+				if c < '0' || c > '9' {
+					return time.Time{}, false
+				}
+			}
+		}
+		base = base[:10]
+	}
 	parsed, err := time.Parse(dateLayout, base)
 	if err != nil {
 		return time.Time{}, false

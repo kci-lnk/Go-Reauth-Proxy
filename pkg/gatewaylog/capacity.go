@@ -22,6 +22,7 @@ type logSegment struct {
 type logStorageStatus struct {
 	today, total int64
 	error        string
+	day          string
 }
 
 func (w *DailyFileWriter) setCapacityLocked(cfg models.LoggingConfig) {
@@ -72,7 +73,7 @@ func (w *DailyFileWriter) indexLocked() error {
 		return nil
 	}
 	if w.currentBuffer != nil {
-		if err := w.currentBuffer.Flush(); err != nil {
+		if err := w.flushLocked(); err != nil {
 			return err
 		}
 	}
@@ -109,7 +110,7 @@ func (w *DailyFileWriter) indexLocked() error {
 
 func (w *DailyFileWriter) closeSegmentLocked() error {
 	if w.currentBuffer != nil {
-		if err := w.currentBuffer.Flush(); err != nil {
+		if err := w.flushLocked(); err != nil {
 			return err
 		}
 		w.currentBuffer = nil
@@ -137,31 +138,19 @@ func (w *DailyFileWriter) openSegmentLocked(now time.Time, force bool) error {
 	if err := w.closeSegmentLocked(); err != nil {
 		return err
 	}
-	path := ""
-	if !force && len(w.segments) > 0 {
-		last := w.segments[len(w.segments)-1]
-		if last.date == date && last.size < w.segmentLimit && len(filepath.Base(last.path)) > 14 {
-			path = last.path
-		}
+	// A previous process can leave a partial JSON record at EOF. A new
+	// writer always creates a new segment rather than joining the next record
+	// to a crash tail (and losing both during parsing).
+	w.sequence = max(w.sequence+1, now.UnixNano())
+	path := filepath.Join(w.baseDir, fmt.Sprintf("%s.%020d.log", date, w.sequence))
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
+	if err != nil {
+		return err
 	}
-	if path == "" {
-		w.sequence = max(w.sequence+1, now.UnixNano())
-		path = filepath.Join(w.baseDir, fmt.Sprintf("%s.%020d.log", date, w.sequence))
-		file, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
-		if err != nil {
-			return err
-		}
-		w.currentFile = file
-		w.segments = append(w.segments, logSegment{path, date, 0})
-		sort.SliceStable(w.segments, func(i, j int) bool { return w.segments[i].date < w.segments[j].date })
-	} else {
-		file, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND, 0o644)
-		if err != nil {
-			return err
-		}
-		w.currentFile = file
-	}
-	w.currentBuffer = bufio.NewWriterSize(w.currentFile, asyncLogWriterBufferSize)
+	w.currentFile = file
+	w.segments = append(w.segments, logSegment{path, date, 0})
+	sort.SliceStable(w.segments, func(i, j int) bool { return w.segments[i].date < w.segments[j].date })
+	w.currentBuffer = newRetryLogBuffer(file, asyncLogWriterBufferSize)
 	w.currentDate = date
 	w.currentDay = dayStart(now)
 	w.nextDay = w.currentDay.AddDate(0, 0, 1)
@@ -227,7 +216,11 @@ func (w *DailyFileWriter) compactSegmentLocked(i int) error {
 	}
 	defer os.Remove(tmp.Name())
 	defer tmp.Close()
-	if err := tmp.Chmod(0o644); err != nil {
+	info, err := file.Stat()
+	if err != nil {
+		return err
+	}
+	if err := tmp.Chmod(info.Mode().Perm()); err != nil {
 		return err
 	}
 	// Copy only complete lines, without allocating a potentially huge record.
@@ -276,14 +269,14 @@ func (w *DailyFileWriter) compactSegmentLocked(i int) error {
 		ordinal = name[11:31]
 	}
 	target := filepath.Join(w.baseDir, fmt.Sprintf("%s.%s-%020d.log", segment.date, ordinal, w.sequence))
-	if err := os.Rename(tmp.Name(), segment.path); err != nil {
+	// Invalidate the old identity before replacing any bytes. If the second
+	// rename fails or the process exits in between, the full original remains
+	// available under the new identity and can be retried safely on startup.
+	path, err := replaceCompactedLog(segment.path, target, tmp.Name(), os.Rename)
+	segment.path = path
+	if err != nil {
 		return err
 	}
-	if err := os.Rename(segment.path, target); err != nil {
-		w.indexed = false
-		return err
-	}
-	segment.path = target
 	segment.size = n
 	return nil
 }
@@ -361,6 +354,7 @@ func (w *DailyFileWriter) prepareWriteLocked(now time.Time, incoming int64) erro
 func (w *DailyFileWriter) publishStorageStatus(err error) {
 	status := &logStorageStatus{}
 	today := time.Now().Format(dateLayout)
+	status.day = today
 	for _, s := range w.segments {
 		status.total += s.size
 		if s.date == today {
@@ -371,4 +365,25 @@ func (w *DailyFileWriter) publishStorageStatus(err error) {
 		status.error = err.Error()
 	}
 	w.storageStatus.Store(status)
+}
+
+func replaceCompactedLog(source, target, temporary string, rename func(string, string) error) (string, error) {
+	// Reserve the new identity without overwriting an existing segment, even
+	// if the system clock has moved backwards since the previous process.
+	reservation, err := os.OpenFile(target, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	if err != nil {
+		return source, err
+	}
+	if err := reservation.Close(); err != nil {
+		_ = os.Remove(target)
+		return source, err
+	}
+	if err := rename(source, target); err != nil {
+		_ = os.Remove(target)
+		return source, err
+	}
+	if err := rename(temporary, target); err != nil {
+		return target, err
+	}
+	return target, nil
 }

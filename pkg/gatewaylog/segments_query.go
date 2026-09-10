@@ -33,7 +33,7 @@ func querySegmentEntries(dir, date string, filter queryFilter, cursor string, pa
 	}
 	start := len(files) - 1
 	offset := int64(-1)
-	if cursor != "" {
+	if mode == "cursor" && cursor != "" {
 		name, raw, ok := strings.Cut(cursor, ":")
 		if !ok {
 			name = date + fileExtension
@@ -127,10 +127,12 @@ func (m *Manager) analyticsForSegments(ctx context.Context, date string) (*daily
 	}
 	// Hold the writer lock for a consistent file set. This is off the proxy path;
 	// the bounded async queue continues to protect forwarding from slow disks.
-	m.writer.mu.Lock()
+	if err := m.writer.lockContext(ctx); err != nil {
+		return nil, err
+	}
 	defer m.writer.mu.Unlock()
 	if m.writer.currentBuffer != nil {
-		if err := m.writer.currentBuffer.Flush(); err != nil {
+		if err := m.writer.flushLocked(); err != nil {
 			return nil, err
 		}
 	}

@@ -186,7 +186,7 @@ type DailyFileWriter struct {
 	currentDay      time.Time
 	nextDay         time.Time
 	currentFile     *os.File
-	currentBuffer   *bufio.Writer
+	currentBuffer   logBuffer
 	lastCleanup     string
 	dirReady        bool
 	segments        []logSegment
@@ -225,7 +225,7 @@ func (w *DailyFileWriter) DeleteDate(date string) (bool, error) {
 
 	if w.currentDate == date && w.currentFile != nil {
 		if w.currentBuffer != nil {
-			_ = w.currentBuffer.Flush()
+			_ = w.flushLocked()
 			w.currentBuffer = nil
 		}
 		_ = w.currentFile.Close()
@@ -288,8 +288,19 @@ func (w *DailyFileWriter) Flush() error {
 	if w.currentBuffer == nil {
 		return nil
 	}
+	return w.flushLocked()
+}
+
+func (w *DailyFileWriter) flushLocked() error {
+	if w.currentBuffer == nil {
+		return nil
+	}
+	failed := false
+	if buffer, ok := w.currentBuffer.(*retryLogBuffer); ok {
+		failed = buffer.failed
+	}
 	err := w.currentBuffer.Flush()
-	if err != nil {
+	if err != nil || failed {
 		w.publishStorageStatus(err)
 	}
 	return err
@@ -303,7 +314,7 @@ func (w *DailyFileWriter) Close() error {
 	defer w.mu.Unlock()
 	var flushErr error
 	if w.currentBuffer != nil {
-		flushErr = w.currentBuffer.Flush()
+		flushErr = w.flushLocked()
 		w.currentBuffer = nil
 	}
 	if w.currentFile == nil {
@@ -473,6 +484,10 @@ func (m *Manager) configInfo() ConfigInfo {
 	if status == nil {
 		status = &logStorageStatus{}
 	}
+	todaySize := status.today
+	if status.day != time.Now().Format(dateLayout) {
+		todaySize = 0
+	}
 	return ConfigInfo{
 		CustomLogsDir:   m.config.CustomLogsDir,
 		DefaultLogsDir:  m.defaultLogsDir,
@@ -480,7 +495,7 @@ func (m *Manager) configInfo() ConfigInfo {
 		RecordLocalhost: m.config.RecordLocalhost,
 		MaxDays:         m.config.MaxDays,
 		MaxDailySizeMB:  m.config.MaxDailySizeMB, MaxTotalSizeMB: m.config.MaxTotalSizeMB,
-		TodaySizeBytes: status.today, TotalSizeBytes: status.total, CleanupError: status.error,
+		TodaySizeBytes: todaySize, TotalSizeBytes: status.total, CleanupError: status.error,
 		CapacityDroppedEntries: capacityDropped,
 		LogsDir:                m.logsDir,
 		DroppedEntries:         m.droppedLogEntries.Load(),
@@ -624,7 +639,16 @@ func (m *Manager) Log(entry Entry) {
 	if m == nil {
 		return
 	}
-	m.inputMu.RLock()
+	// Configuration may wait for disk I/O while holding inputMu. Logging is
+	// best effort and must never make a forwarding request wait for that I/O.
+	if !m.inputMu.TryRLock() {
+		if m.Enabled() {
+			dropped := m.droppedLogEntries.Add(1)
+			diagnostics.RecordGatewayLogDrop()
+			m.warnDroppedLogEntry(dropped)
+		}
+		return
+	}
 	defer m.inputMu.RUnlock()
 	if m == nil || m.closed.Load() || !m.enabled.Load() {
 		return
@@ -689,7 +713,7 @@ func (m *Manager) warnDroppedLogEntry(dropped uint64) {
 	if !m.lastDropWarnNano.CompareAndSwap(last, now) {
 		return
 	}
-	_, _ = fmt.Fprintf(os.Stderr, "gateway access log queue full; dropped %d entries\n", dropped)
+	_, _ = fmt.Fprintf(os.Stderr, "gateway access log queue full or configuration busy; dropped %d entries\n", dropped)
 }
 
 func (m *Manager) Flush() {
@@ -945,10 +969,12 @@ func (m *Manager) QueryContext(ctx context.Context, date string, page int, limit
 		return QueryResult{}, err
 	}
 	filter.ctx = ctx
-	m.writer.mu.Lock()
+	if err := m.writer.lockContext(ctx); err != nil {
+		return QueryResult{}, err
+	}
 	defer m.writer.mu.Unlock()
 	if m.writer.currentBuffer != nil {
-		if err := m.writer.currentBuffer.Flush(); err != nil {
+		if err := m.writer.flushLocked(); err != nil {
 			return QueryResult{}, err
 		}
 	}
@@ -957,6 +983,9 @@ func (m *Manager) QueryContext(ctx context.Context, date string, page int, limit
 		return QueryResult{}, err
 	}
 	mode := normalizePaginationMode(pagination)
+	if mode != "cursor" {
+		cursor = ""
+	}
 	items, total, next, more, err := querySegmentEntries(m.logsDir, selectedDate, filter, cursor, page, limit, mode)
 	if err != nil {
 		return QueryResult{}, err
@@ -993,7 +1022,9 @@ func (m *Manager) FindByTraceIDContext(ctx context.Context, traceID string) (Tra
 	if err := m.FlushContext(ctx); err != nil {
 		return result, err
 	}
-	m.writer.mu.Lock()
+	if err := m.writer.lockContext(ctx); err != nil {
+		return TraceResult{}, err
+	}
 	defer m.writer.mu.Unlock()
 	dates, err := m.listDates(false)
 	if err != nil {

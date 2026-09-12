@@ -2,6 +2,8 @@ package proxy
 
 import (
 	"fmt"
+	"go-reauth-proxy/pkg/config"
+	"go-reauth-proxy/pkg/logger"
 	"go-reauth-proxy/pkg/models"
 	"net/netip"
 	"sort"
@@ -309,6 +311,8 @@ func normalizeGeneralBlacklistSource(value string) string {
 		return models.GeneralBlacklistSourceRequestLog
 	case models.GeneralBlacklistSourceActiveIP:
 		return models.GeneralBlacklistSourceActiveIP
+	case models.GeneralBlacklistSourceWAFRateLimit:
+		return models.GeneralBlacklistSourceWAFRateLimit
 	case models.GeneralBlacklistSourceWAFLog:
 		return models.GeneralBlacklistSourceWAFLog
 	default:
@@ -354,4 +358,117 @@ func generalBlacklistRecordMatches(record models.GeneralBlacklistRecord, needle 
 	return containsFoldString(record.IP, needle) ||
 		containsFoldString(record.Source, needle) ||
 		containsFoldString(record.Comment, needle)
+}
+
+func (h *Handler) ListGeneralBlacklist(page int, limit int, search string) models.GeneralBlacklistList {
+	h.mu.RLock()
+	runtime := h.generalBlacklist
+	h.mu.RUnlock()
+
+	if runtime == nil {
+		return models.GeneralBlacklistList{Items: []models.GeneralBlacklistRecord{}}
+	}
+	return runtime.list(page, limit, search)
+}
+
+func (h *Handler) CheckGeneralBlacklist(ips []string) (models.GeneralBlacklistStatus, error) {
+	h.mu.RLock()
+	runtime := h.generalBlacklist
+	h.mu.RUnlock()
+
+	if runtime == nil {
+		runtime = newGeneralBlacklistRuntime(models.GeneralBlacklistConfig{})
+	}
+	return runtime.status(ips)
+}
+
+func (h *Handler) GetGeneralBlacklist() models.GeneralBlacklistConfig {
+	h.mu.RLock()
+	runtime := h.generalBlacklist
+	h.mu.RUnlock()
+
+	if runtime == nil {
+		return models.GeneralBlacklistConfig{Items: []models.GeneralBlacklistRecord{}}
+	}
+	return runtime.getConfig()
+}
+
+func (h *Handler) AddGeneralBlacklist(ips []string, source string, comment string) (models.GeneralBlacklistMutationResult, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.addGeneralBlacklistLocked(ips, source, comment)
+}
+
+func (h *Handler) addGeneralBlacklistLocked(ips []string, source string, comment string) (models.GeneralBlacklistMutationResult, error) {
+	runtime := h.generalBlacklist
+	if runtime == nil {
+		runtime = newGeneralBlacklistRuntime(models.GeneralBlacklistConfig{})
+		h.generalBlacklist = runtime
+	}
+	previousRuntime := runtime.getConfig()
+	previousConfigured := h.GeneralBlacklist
+	normalized, result, err := runtime.addMany(ips, source, comment, time.Now())
+	if err != nil {
+		return models.GeneralBlacklistMutationResult{}, err
+	}
+
+	h.GeneralBlacklist = normalized
+	if err := h.saveConfigMutationLocked(func(conf *config.AppConfig) {
+		conf.GeneralBlacklist = h.GeneralBlacklist
+	}); err != nil {
+		runtime.updateConfig(previousRuntime)
+		h.GeneralBlacklist = previousConfigured
+		return models.GeneralBlacklistMutationResult{}, err
+	}
+
+	if event := debugProxyEvent("general_blacklist_added", ""); event != nil {
+		event.Int("added", result.Added).
+			Int("updated", result.Updated).
+			Int("total", result.Total).
+			Str("source", logger.SanitizeLogString(normalizeGeneralBlacklistSource(source))).
+			Send()
+	}
+	return result, nil
+}
+
+func (h *Handler) RemoveGeneralBlacklist(ips []string) (models.GeneralBlacklistMutationResult, error) {
+	h.mu.Lock()
+	runtime := h.generalBlacklist
+	if runtime == nil {
+		runtime = newGeneralBlacklistRuntime(models.GeneralBlacklistConfig{})
+		h.generalBlacklist = runtime
+	}
+	previousRuntime := runtime.getConfig()
+	previousConfigured := h.GeneralBlacklist
+	normalized, result, err := runtime.removeMany(ips)
+	if err != nil {
+		h.mu.Unlock()
+		return models.GeneralBlacklistMutationResult{}, err
+	}
+
+	h.GeneralBlacklist = normalized
+	if err := h.saveConfigMutationLocked(func(conf *config.AppConfig) {
+		conf.GeneralBlacklist = h.GeneralBlacklist
+	}); err != nil {
+		runtime.updateConfig(previousRuntime)
+		h.GeneralBlacklist = previousConfigured
+		h.mu.Unlock()
+		return models.GeneralBlacklistMutationResult{}, err
+	}
+	h.wafViolationEpoch.Add(1)
+	if h.wafViolationLimiter != nil {
+		for _, raw := range ips {
+			if ip, _, ok := normalizeGeneralBlacklistIP(raw); ok {
+				h.wafViolationLimiter.remove(ip)
+			}
+		}
+	}
+	h.mu.Unlock()
+
+	if event := debugProxyEvent("general_blacklist_removed", ""); event != nil {
+		event.Int("removed", result.Removed).
+			Int("total", result.Total).
+			Send()
+	}
+	return result, nil
 }

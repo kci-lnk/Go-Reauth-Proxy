@@ -1,6 +1,7 @@
 package waf
 
 import (
+	"fmt"
 	"path/filepath"
 	"strings"
 
@@ -24,6 +25,12 @@ func DefaultRulesDir(runtimeDir string) string {
 }
 
 func NormalizeConfig(cfg models.WAFConfig, defaultRulesDir string) models.WAFConfig {
+	if cfg.ViolationRateLimitCapacity == 0 {
+		cfg.ViolationRateLimitCapacity = 5
+	}
+	if cfg.ViolationRateLimitRefillSeconds == 0 {
+		cfg.ViolationRateLimitRefillSeconds = 60
+	}
 	defaulted := strings.TrimSpace(cfg.Mode) == ""
 	cfg.Mode = strings.ToLower(strings.TrimSpace(cfg.Mode))
 	switch cfg.Mode {
@@ -139,4 +146,15 @@ func normalizePathPrefixes(values []string) []string {
 		out = append(out, value)
 	}
 	return out
+}
+
+// Zero represents fields absent from older persisted configurations.
+func ValidateViolationRateLimit(cfg models.WAFConfig) error {
+	if cfg.ViolationRateLimitCapacity < 0 || cfg.ViolationRateLimitCapacity > 10000 {
+		return fmt.Errorf("violation_rate_limit_capacity must be between 1 and 10000")
+	}
+	if cfg.ViolationRateLimitRefillSeconds < 0 || cfg.ViolationRateLimitRefillSeconds > 86400 {
+		return fmt.Errorf("violation_rate_limit_refill_seconds must be between 1 and 86400")
+	}
+	return nil
 }

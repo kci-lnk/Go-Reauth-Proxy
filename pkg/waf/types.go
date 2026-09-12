@@ -23,18 +23,20 @@ type EvaluateContext struct {
 }
 
 type Decision struct {
-	Enabled       bool
-	Allowed       bool
-	DetectionOnly bool
-	TraceID       string
-	Status        int
-	Mode          string
-	BlockBehavior string
-	Action        string
-	BundleID      string
-	RuleIDs       []int
-	Event         *Event
-	Err           error
+	// Captured from the same runtime snapshot as the WAF evaluation.
+	ViolationRateLimitEnabled bool
+	Enabled                   bool
+	Allowed                   bool
+	DetectionOnly             bool
+	TraceID                   string
+	Status                    int
+	Mode                      string
+	BlockBehavior             string
+	Action                    string
+	BundleID                  string
+	RuleIDs                   []int
+	Event                     *Event
+	Err                       error
 }
 
 type Event struct {

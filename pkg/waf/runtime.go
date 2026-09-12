@@ -125,6 +125,9 @@ func (rt *Runtime) PrepareConfig(cfg models.WAFConfig) (PreparedState, error) {
 	if rt == nil {
 		return PreparedState{config: cfg}, nil
 	}
+	if err := ValidateViolationRateLimit(cfg); err != nil {
+		return PreparedState{}, err
+	}
 	cfg = NormalizeConfig(cfg, rt.defaultRulesDir)
 	if !IsActive(cfg) {
 		return PreparedState{
@@ -154,6 +157,9 @@ func (rt *Runtime) PrepareReload(
 ) (PreparedState, error) {
 	if rt == nil {
 		return PreparedState{}, fmt.Errorf("WAF runtime is not initialized")
+	}
+	if err := ValidateViolationRateLimit(cfg); err != nil {
+		return PreparedState{}, err
 	}
 	cfg = NormalizeConfig(cfg, rt.defaultRulesDir)
 	if !IsActive(cfg) {
@@ -382,6 +388,7 @@ func (rt *Runtime) Evaluate(r *http.Request, ctx EvaluateContext) Decision {
 	snapshot := rt.snapshot()
 	cfg := snapshot.config
 	decision.Enabled = IsActive(cfg)
+	decision.ViolationRateLimitEnabled = cfg.ViolationRateLimitEnabled
 	decision.Mode = cfg.Mode
 	decision.BlockBehavior = cfg.BlockBehavior
 	decision.DetectionOnly = cfg.Mode == ModeDetection

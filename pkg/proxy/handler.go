@@ -108,6 +108,8 @@ type Handler struct {
 	mu                      sync.RWMutex
 	listenerChangeMu        sync.Mutex
 	wafChangeMu             sync.Mutex
+	wafViolationLimiter     *wafViolationLimiter
+	wafViolationEpoch       atomic.Uint64
 	Rules                   []models.Rule
 	HostRules               []models.HostRule
 	VisibilityPolicies      map[string]models.CompiledIPSet
@@ -2239,6 +2241,8 @@ func (h *Handler) ResetAllData(resetConfig *config.AppConfig) error {
 	h.gatewayVisibility = visibility
 	h.compiledVisibilityPolicies = map[string]*compiledipset.Set{}
 	h.generalBlacklist = generalBlacklist
+	h.wafViolationLimiter = nil
+	h.wafViolationEpoch.Add(1)
 	h.forwardedHeaders = newForwardedHeadersConfig(forwardedHeaders)
 	h.preserveHost = newPreserveHostConfig(preserveHost)
 	h.publishRequestSnapshotLocked()
@@ -4146,6 +4150,10 @@ func (h *Handler) SetWAFConfig(cfg models.WAFConfig) (proxywaf.Status, error) {
 		return h.wafRuntime.Status(), saveErr
 	}
 	status := h.wafRuntime.CommitPrepared(prepared)
+	if violationRateSettingsChanged(previous, normalized) {
+		h.wafViolationLimiter = nil
+		h.wafViolationEpoch.Add(1)
+	}
 	h.mu.Unlock()
 	if event := debugProxyEvent("waf_config_set", ""); event != nil {
 		event.Bool("enabled", normalized.Enabled).
@@ -4204,6 +4212,10 @@ func (h *Handler) ReloadWAFBundle(cfg models.WAFConfig, bundleID string, bundleP
 		return h.wafRuntime.Status(), saveErr
 	}
 	status := h.wafRuntime.CommitPrepared(prepared)
+	if violationRateSettingsChanged(previous, normalized) {
+		h.wafViolationLimiter = nil
+		h.wafViolationEpoch.Add(1)
+	}
 	h.mu.Unlock()
 	if event := debugProxyEvent("waf_bundle_reloaded", ""); event != nil {
 		event.Bool("enabled", status.Enabled).
@@ -4300,109 +4312,6 @@ func (h *Handler) GetGatewayVisibility() models.GatewayVisibilityConfig {
 		result.Policy = &copied
 	}
 	return result
-}
-
-func (h *Handler) ListGeneralBlacklist(page int, limit int, search string) models.GeneralBlacklistList {
-	h.mu.RLock()
-	runtime := h.generalBlacklist
-	h.mu.RUnlock()
-
-	if runtime == nil {
-		return models.GeneralBlacklistList{Items: []models.GeneralBlacklistRecord{}}
-	}
-	return runtime.list(page, limit, search)
-}
-
-func (h *Handler) CheckGeneralBlacklist(ips []string) (models.GeneralBlacklistStatus, error) {
-	h.mu.RLock()
-	runtime := h.generalBlacklist
-	h.mu.RUnlock()
-
-	if runtime == nil {
-		runtime = newGeneralBlacklistRuntime(models.GeneralBlacklistConfig{})
-	}
-	return runtime.status(ips)
-}
-
-func (h *Handler) GetGeneralBlacklist() models.GeneralBlacklistConfig {
-	h.mu.RLock()
-	runtime := h.generalBlacklist
-	h.mu.RUnlock()
-
-	if runtime == nil {
-		return models.GeneralBlacklistConfig{Items: []models.GeneralBlacklistRecord{}}
-	}
-	return runtime.getConfig()
-}
-
-func (h *Handler) AddGeneralBlacklist(ips []string, source string, comment string) (models.GeneralBlacklistMutationResult, error) {
-	h.mu.Lock()
-	runtime := h.generalBlacklist
-	if runtime == nil {
-		runtime = newGeneralBlacklistRuntime(models.GeneralBlacklistConfig{})
-		h.generalBlacklist = runtime
-	}
-	previousRuntime := runtime.getConfig()
-	previousConfigured := h.GeneralBlacklist
-	normalized, result, err := runtime.addMany(ips, source, comment, time.Now())
-	if err != nil {
-		h.mu.Unlock()
-		return models.GeneralBlacklistMutationResult{}, err
-	}
-
-	h.GeneralBlacklist = normalized
-	if err := h.saveConfigMutationLocked(func(conf *config.AppConfig) {
-		conf.GeneralBlacklist = h.GeneralBlacklist
-	}); err != nil {
-		runtime.updateConfig(previousRuntime)
-		h.GeneralBlacklist = previousConfigured
-		h.mu.Unlock()
-		return models.GeneralBlacklistMutationResult{}, err
-	}
-	h.mu.Unlock()
-
-	if event := debugProxyEvent("general_blacklist_added", ""); event != nil {
-		event.Int("added", result.Added).
-			Int("updated", result.Updated).
-			Int("total", result.Total).
-			Str("source", logger.SanitizeLogString(normalizeGeneralBlacklistSource(source))).
-			Send()
-	}
-	return result, nil
-}
-
-func (h *Handler) RemoveGeneralBlacklist(ips []string) (models.GeneralBlacklistMutationResult, error) {
-	h.mu.Lock()
-	runtime := h.generalBlacklist
-	if runtime == nil {
-		runtime = newGeneralBlacklistRuntime(models.GeneralBlacklistConfig{})
-		h.generalBlacklist = runtime
-	}
-	previousRuntime := runtime.getConfig()
-	previousConfigured := h.GeneralBlacklist
-	normalized, result, err := runtime.removeMany(ips)
-	if err != nil {
-		h.mu.Unlock()
-		return models.GeneralBlacklistMutationResult{}, err
-	}
-
-	h.GeneralBlacklist = normalized
-	if err := h.saveConfigMutationLocked(func(conf *config.AppConfig) {
-		conf.GeneralBlacklist = h.GeneralBlacklist
-	}); err != nil {
-		runtime.updateConfig(previousRuntime)
-		h.GeneralBlacklist = previousConfigured
-		h.mu.Unlock()
-		return models.GeneralBlacklistMutationResult{}, err
-	}
-	h.mu.Unlock()
-
-	if event := debugProxyEvent("general_blacklist_removed", ""); event != nil {
-		event.Int("removed", result.Removed).
-			Int("total", result.Total).
-			Send()
-	}
-	return result, nil
 }
 
 func (h *Handler) GetForwardedHeadersConfig() models.ForwardedHeadersConfig {
@@ -5498,6 +5407,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		wafBypassedByCommonLocation := commonLocationExemptions != nil && commonLocationExemptions.shouldBypassWAF(clientIP)
 		if !trustedClientIP && !wafBypassedByCommonLocation {
 			wafTimingStarted := time.Now()
+			violationEpoch := h.wafViolationEpoch.Load()
 			decision := wafRuntime.Evaluate(r, proxywaf.EvaluateContext{
 				TraceID:    traceID,
 				ClientIP:   clientIP,
@@ -5531,6 +5441,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				accessEntry.WAFBundle = decision.BundleID
 			}
 			if !decision.Allowed {
+				h.recordWAFViolation(clientIP, decision, violationEpoch)
 				accessEntry.Matched = true
 				accessEntry.RouteType = wafRouteType
 				accessEntry.RouteKey = wafRouteKey

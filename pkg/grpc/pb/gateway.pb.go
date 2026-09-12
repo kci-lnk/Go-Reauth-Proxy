@@ -28,18 +28,18 @@ type ControlApiVersion int32
 
 const (
 	ControlApiVersion_CONTROL_API_VERSION_UNSPECIFIED ControlApiVersion = 0
-	ControlApiVersion_CONTROL_API_VERSION_CURRENT     ControlApiVersion = 25
+	ControlApiVersion_CONTROL_API_VERSION_CURRENT     ControlApiVersion = 26
 )
 
 // Enum value maps for ControlApiVersion.
 var (
 	ControlApiVersion_name = map[int32]string{
 		0:  "CONTROL_API_VERSION_UNSPECIFIED",
-		25: "CONTROL_API_VERSION_CURRENT",
+		26: "CONTROL_API_VERSION_CURRENT",
 	}
 	ControlApiVersion_value = map[string]int32{
 		"CONTROL_API_VERSION_UNSPECIFIED": 0,
-		"CONTROL_API_VERSION_CURRENT":     25,
+		"CONTROL_API_VERSION_CURRENT":     26,
 	}
 )
 
@@ -4081,26 +4081,29 @@ func (x *GeneralBlacklistStatus) GetRecords() map[string]*GeneralBlacklistRecord
 }
 
 type WafConfig struct {
-	state                         protoimpl.MessageState `protogen:"open.v1"`
-	Enabled                       bool                   `protobuf:"varint,1,opt,name=enabled,proto3" json:"enabled,omitempty"`
-	Mode                          string                 `protobuf:"bytes,2,opt,name=mode,proto3" json:"mode,omitempty"`
-	RulesDir                      string                 `protobuf:"bytes,3,opt,name=rules_dir,json=rulesDir,proto3" json:"rules_dir,omitempty"`
-	ActiveBundleId                string                 `protobuf:"bytes,4,opt,name=active_bundle_id,json=activeBundleId,proto3" json:"active_bundle_id,omitempty"`
-	ParanoiaLevel                 int32                  `protobuf:"varint,5,opt,name=paranoia_level,json=paranoiaLevel,proto3" json:"paranoia_level,omitempty"`
-	ExecutingParanoiaLevel        int32                  `protobuf:"varint,6,opt,name=executing_paranoia_level,json=executingParanoiaLevel,proto3" json:"executing_paranoia_level,omitempty"`
-	InboundAnomalyThreshold       int32                  `protobuf:"varint,7,opt,name=inbound_anomaly_threshold,json=inboundAnomalyThreshold,proto3" json:"inbound_anomaly_threshold,omitempty"`
-	OutboundAnomalyThreshold      int32                  `protobuf:"varint,8,opt,name=outbound_anomaly_threshold,json=outboundAnomalyThreshold,proto3" json:"outbound_anomaly_threshold,omitempty"`
-	RequestBodyAccess             bool                   `protobuf:"varint,9,opt,name=request_body_access,json=requestBodyAccess,proto3" json:"request_body_access,omitempty"`
-	RequestBodyLimitBytes         int32                  `protobuf:"varint,10,opt,name=request_body_limit_bytes,json=requestBodyLimitBytes,proto3" json:"request_body_limit_bytes,omitempty"`
-	RequestBodyInMemoryLimitBytes int32                  `protobuf:"varint,11,opt,name=request_body_in_memory_limit_bytes,json=requestBodyInMemoryLimitBytes,proto3" json:"request_body_in_memory_limit_bytes,omitempty"`
-	ResponseBodyAccess            bool                   `protobuf:"varint,12,opt,name=response_body_access,json=responseBodyAccess,proto3" json:"response_body_access,omitempty"`
-	DisabledHosts                 []string               `protobuf:"bytes,13,rep,name=disabled_hosts,json=disabledHosts,proto3" json:"disabled_hosts,omitempty"`
-	DisabledPathPrefixes          []string               `protobuf:"bytes,14,rep,name=disabled_path_prefixes,json=disabledPathPrefixes,proto3" json:"disabled_path_prefixes,omitempty"`
-	UpdatedAt                     string                 `protobuf:"bytes,15,opt,name=updated_at,json=updatedAt,proto3" json:"updated_at,omitempty"`
-	PrivateIpExemptEnabled        bool                   `protobuf:"varint,16,opt,name=private_ip_exempt_enabled,json=privateIpExemptEnabled,proto3" json:"private_ip_exempt_enabled,omitempty"`
-	BlockBehavior                 string                 `protobuf:"bytes,17,opt,name=block_behavior,json=blockBehavior,proto3" json:"block_behavior,omitempty"`
-	unknownFields                 protoimpl.UnknownFields
-	sizeCache                     protoimpl.SizeCache
+	state                           protoimpl.MessageState `protogen:"open.v1"`
+	Enabled                         bool                   `protobuf:"varint,1,opt,name=enabled,proto3" json:"enabled,omitempty"`
+	Mode                            string                 `protobuf:"bytes,2,opt,name=mode,proto3" json:"mode,omitempty"`
+	RulesDir                        string                 `protobuf:"bytes,3,opt,name=rules_dir,json=rulesDir,proto3" json:"rules_dir,omitempty"`
+	ActiveBundleId                  string                 `protobuf:"bytes,4,opt,name=active_bundle_id,json=activeBundleId,proto3" json:"active_bundle_id,omitempty"`
+	ParanoiaLevel                   int32                  `protobuf:"varint,5,opt,name=paranoia_level,json=paranoiaLevel,proto3" json:"paranoia_level,omitempty"`
+	ExecutingParanoiaLevel          int32                  `protobuf:"varint,6,opt,name=executing_paranoia_level,json=executingParanoiaLevel,proto3" json:"executing_paranoia_level,omitempty"`
+	InboundAnomalyThreshold         int32                  `protobuf:"varint,7,opt,name=inbound_anomaly_threshold,json=inboundAnomalyThreshold,proto3" json:"inbound_anomaly_threshold,omitempty"`
+	OutboundAnomalyThreshold        int32                  `protobuf:"varint,8,opt,name=outbound_anomaly_threshold,json=outboundAnomalyThreshold,proto3" json:"outbound_anomaly_threshold,omitempty"`
+	RequestBodyAccess               bool                   `protobuf:"varint,9,opt,name=request_body_access,json=requestBodyAccess,proto3" json:"request_body_access,omitempty"`
+	RequestBodyLimitBytes           int32                  `protobuf:"varint,10,opt,name=request_body_limit_bytes,json=requestBodyLimitBytes,proto3" json:"request_body_limit_bytes,omitempty"`
+	RequestBodyInMemoryLimitBytes   int32                  `protobuf:"varint,11,opt,name=request_body_in_memory_limit_bytes,json=requestBodyInMemoryLimitBytes,proto3" json:"request_body_in_memory_limit_bytes,omitempty"`
+	ResponseBodyAccess              bool                   `protobuf:"varint,12,opt,name=response_body_access,json=responseBodyAccess,proto3" json:"response_body_access,omitempty"`
+	DisabledHosts                   []string               `protobuf:"bytes,13,rep,name=disabled_hosts,json=disabledHosts,proto3" json:"disabled_hosts,omitempty"`
+	DisabledPathPrefixes            []string               `protobuf:"bytes,14,rep,name=disabled_path_prefixes,json=disabledPathPrefixes,proto3" json:"disabled_path_prefixes,omitempty"`
+	UpdatedAt                       string                 `protobuf:"bytes,15,opt,name=updated_at,json=updatedAt,proto3" json:"updated_at,omitempty"`
+	PrivateIpExemptEnabled          bool                   `protobuf:"varint,16,opt,name=private_ip_exempt_enabled,json=privateIpExemptEnabled,proto3" json:"private_ip_exempt_enabled,omitempty"`
+	BlockBehavior                   string                 `protobuf:"bytes,17,opt,name=block_behavior,json=blockBehavior,proto3" json:"block_behavior,omitempty"`
+	ViolationRateLimitEnabled       bool                   `protobuf:"varint,18,opt,name=violation_rate_limit_enabled,json=violationRateLimitEnabled,proto3" json:"violation_rate_limit_enabled,omitempty"`
+	ViolationRateLimitCapacity      int32                  `protobuf:"varint,19,opt,name=violation_rate_limit_capacity,json=violationRateLimitCapacity,proto3" json:"violation_rate_limit_capacity,omitempty"`
+	ViolationRateLimitRefillSeconds int32                  `protobuf:"varint,20,opt,name=violation_rate_limit_refill_seconds,json=violationRateLimitRefillSeconds,proto3" json:"violation_rate_limit_refill_seconds,omitempty"`
+	unknownFields                   protoimpl.UnknownFields
+	sizeCache                       protoimpl.SizeCache
 }
 
 func (x *WafConfig) Reset() {
@@ -4250,6 +4253,27 @@ func (x *WafConfig) GetBlockBehavior() string {
 		return x.BlockBehavior
 	}
 	return ""
+}
+
+func (x *WafConfig) GetViolationRateLimitEnabled() bool {
+	if x != nil {
+		return x.ViolationRateLimitEnabled
+	}
+	return false
+}
+
+func (x *WafConfig) GetViolationRateLimitCapacity() int32 {
+	if x != nil {
+		return x.ViolationRateLimitCapacity
+	}
+	return 0
+}
+
+func (x *WafConfig) GetViolationRateLimitRefillSeconds() int32 {
+	if x != nil {
+		return x.ViolationRateLimitRefillSeconds
+	}
+	return 0
 }
 
 type WafStatus struct {
@@ -12434,7 +12458,7 @@ const file_fnknock_v1_gateway_proto_rawDesc = "" +
 	"\arecords\x18\x01 \x03(\v2/.fnknock.v1.GeneralBlacklistStatus.RecordsEntryR\arecords\x1a^\n" +
 	"\fRecordsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x128\n" +
-	"\x05value\x18\x02 \x01(\v2\".fnknock.v1.GeneralBlacklistRecordR\x05value:\x028\x01\"\x9f\x06\n" +
+	"\x05value\x18\x02 \x01(\v2\".fnknock.v1.GeneralBlacklistRecordR\x05value:\x028\x01\"\xf1\a\n" +
 	"\tWafConfig\x12\x18\n" +
 	"\aenabled\x18\x01 \x01(\bR\aenabled\x12\x12\n" +
 	"\x04mode\x18\x02 \x01(\tR\x04mode\x12\x1b\n" +
@@ -12454,7 +12478,10 @@ const file_fnknock_v1_gateway_proto_rawDesc = "" +
 	"\n" +
 	"updated_at\x18\x0f \x01(\tR\tupdatedAt\x129\n" +
 	"\x19private_ip_exempt_enabled\x18\x10 \x01(\bR\x16privateIpExemptEnabled\x12%\n" +
-	"\x0eblock_behavior\x18\x11 \x01(\tR\rblockBehavior\"\x8f\x02\n" +
+	"\x0eblock_behavior\x18\x11 \x01(\tR\rblockBehavior\x12?\n" +
+	"\x1cviolation_rate_limit_enabled\x18\x12 \x01(\bR\x19violationRateLimitEnabled\x12A\n" +
+	"\x1dviolation_rate_limit_capacity\x18\x13 \x01(\x05R\x1aviolationRateLimitCapacity\x12L\n" +
+	"#violation_rate_limit_refill_seconds\x18\x14 \x01(\x05R\x1fviolationRateLimitRefillSeconds\"\x8f\x02\n" +
 	"\tWafStatus\x12\x18\n" +
 	"\aenabled\x18\x01 \x01(\bR\aenabled\x12\x12\n" +
 	"\x04mode\x18\x02 \x01(\tR\x04mode\x12\x16\n" +
@@ -13215,7 +13242,7 @@ const file_fnknock_v1_gateway_proto_rawDesc = "" +
 	"last_error\x18\t \x01(\tR\tlastError*Y\n" +
 	"\x11ControlApiVersion\x12#\n" +
 	"\x1fCONTROL_API_VERSION_UNSPECIFIED\x10\x00\x12\x1f\n" +
-	"\x1bCONTROL_API_VERSION_CURRENT\x10\x19*\xa1\x01\n" +
+	"\x1bCONTROL_API_VERSION_CURRENT\x10\x1a*\xa1\x01\n" +
 	"\x12HostRuleTargetType\x12%\n" +
 	"!HOST_RULE_TARGET_TYPE_UNSPECIFIED\x10\x00\x12\x1f\n" +
 	"\x1bHOST_RULE_TARGET_TYPE_PROXY\x10\x01\x12\x1e\n" +

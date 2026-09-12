@@ -380,10 +380,11 @@ type LoggingConfig struct {
 }
 
 const (
-	GeneralBlacklistSourceManual     = "manual"
-	GeneralBlacklistSourceRequestLog = "request_log"
-	GeneralBlacklistSourceActiveIP   = "active_ip"
-	GeneralBlacklistSourceWAFLog     = "waf_log"
+	GeneralBlacklistSourceManual       = "manual"
+	GeneralBlacklistSourceRequestLog   = "request_log"
+	GeneralBlacklistSourceActiveIP     = "active_ip"
+	GeneralBlacklistSourceWAFLog       = "waf_log"
+	GeneralBlacklistSourceWAFRateLimit = "waf_rate_limit"
 )
 
 type GeneralBlacklistRecord struct {
@@ -416,23 +417,26 @@ type GeneralBlacklistStatus struct {
 }
 
 type WAFConfig struct {
-	Enabled                       bool     `json:"enabled,omitempty"`
-	Mode                          string   `json:"mode,omitempty"`
-	RulesDir                      string   `json:"rules_dir,omitempty"`
-	ActiveBundleID                string   `json:"active_bundle_id,omitempty"`
-	ParanoiaLevel                 int      `json:"paranoia_level,omitempty"`
-	ExecutingParanoiaLevel        int      `json:"executing_paranoia_level,omitempty"`
-	InboundAnomalyThreshold       int      `json:"inbound_anomaly_threshold,omitempty"`
-	OutboundAnomalyThreshold      int      `json:"outbound_anomaly_threshold,omitempty"`
-	RequestBodyAccess             bool     `json:"request_body_access,omitempty"`
-	RequestBodyLimitBytes         int      `json:"request_body_limit_bytes,omitempty"`
-	RequestBodyInMemoryLimitBytes int      `json:"request_body_in_memory_limit_bytes,omitempty"`
-	ResponseBodyAccess            bool     `json:"response_body_access,omitempty"`
-	DisabledHosts                 []string `json:"disabled_hosts,omitempty"`
-	DisabledPathPrefixes          []string `json:"disabled_path_prefixes,omitempty"`
-	UpdatedAt                     string   `json:"updated_at,omitempty"`
-	PrivateIPExemptEnabled        bool     `json:"private_ip_exempt_enabled,omitempty"`
-	BlockBehavior                 string   `json:"block_behavior,omitempty" example:"error_page"`
+	ViolationRateLimitEnabled       bool     `json:"violation_rate_limit_enabled"`
+	ViolationRateLimitCapacity      int      `json:"violation_rate_limit_capacity"`
+	ViolationRateLimitRefillSeconds int      `json:"violation_rate_limit_refill_seconds"`
+	Enabled                         bool     `json:"enabled,omitempty"`
+	Mode                            string   `json:"mode,omitempty"`
+	RulesDir                        string   `json:"rules_dir,omitempty"`
+	ActiveBundleID                  string   `json:"active_bundle_id,omitempty"`
+	ParanoiaLevel                   int      `json:"paranoia_level,omitempty"`
+	ExecutingParanoiaLevel          int      `json:"executing_paranoia_level,omitempty"`
+	InboundAnomalyThreshold         int      `json:"inbound_anomaly_threshold,omitempty"`
+	OutboundAnomalyThreshold        int      `json:"outbound_anomaly_threshold,omitempty"`
+	RequestBodyAccess               bool     `json:"request_body_access,omitempty"`
+	RequestBodyLimitBytes           int      `json:"request_body_limit_bytes,omitempty"`
+	RequestBodyInMemoryLimitBytes   int      `json:"request_body_in_memory_limit_bytes,omitempty"`
+	ResponseBodyAccess              bool     `json:"response_body_access,omitempty"`
+	DisabledHosts                   []string `json:"disabled_hosts,omitempty"`
+	DisabledPathPrefixes            []string `json:"disabled_path_prefixes,omitempty"`
+	UpdatedAt                       string   `json:"updated_at,omitempty"`
+	PrivateIPExemptEnabled          bool     `json:"private_ip_exempt_enabled,omitempty"`
+	BlockBehavior                   string   `json:"block_behavior,omitempty" example:"error_page"`
 }
 
 const (

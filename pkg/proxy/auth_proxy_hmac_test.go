@@ -18,6 +18,7 @@ func TestInternalAuthProxyHeadersReplaceClientSignatureAndBindRequest(t *testing
 	const secret = "gateway-only-hmac-secret"
 	body := `{"target":"device-1"}`
 	req := httptest.NewRequest(http.MethodPost, "http://127.0.0.1/api/auth/wol/targets/device-1/wake?audit=1", strings.NewReader(body))
+	req.Header.Set("X-Forwarded-Path", "/auth/forged")
 	req.Header.Set("X-Timestamp", "client-controlled")
 	req.Header.Set("X-Nonce", "client-controlled")
 	req.Header.Set("X-Signature", "client-controlled")
@@ -30,6 +31,10 @@ func TestInternalAuthProxyHeadersReplaceClientSignatureAndBindRequest(t *testing
 	digest := hex.EncodeToString(digestBytes[:])
 
 	applyInternalAuthProxyHeaders(req, source, target, "203.0.113.10", models.AuthConfig{}, secret, digest)
+
+	if got := req.Header.Get("X-Forwarded-Path"); got != source.URL.Path {
+		t.Fatalf("forwarded path = %q, want %q", got, source.URL.Path)
+	}
 
 	timestamp := req.Header.Get("X-Timestamp")
 	nonce := req.Header.Get("X-Nonce")

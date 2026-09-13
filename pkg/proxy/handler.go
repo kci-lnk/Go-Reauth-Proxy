@@ -1343,6 +1343,9 @@ func applyInternalAuthProxyHeaders(req *http.Request, source *http.Request, targ
 
 	// Strip internal routing hints and any client-supplied real-IP header.
 	req.Header.Del("X-Forwarded-Path")
+	if source != nil && source.URL != nil {
+		req.Header.Set("X-Forwarded-Path", source.URL.Path)
+	}
 	req.Header.Del("X-Match")
 	req.Header.Del("X-Timestamp")
 	req.Header.Del("X-Nonce")

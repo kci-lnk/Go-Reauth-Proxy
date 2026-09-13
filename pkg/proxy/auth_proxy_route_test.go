@@ -1034,3 +1034,28 @@ func assertAuthResponseNoStore(t *testing.T, headers http.Header) {
 		}
 	}
 }
+
+func TestAuthHTMLProxyPreservesBrowserMountPath(t *testing.T) {
+	authServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("X-Forwarded-Path"); got != "/__auth__/login" {
+			t.Errorf("forwarded path = %q", got)
+		}
+		if r.URL.Path != "/login" || r.URL.RawQuery != "redirect_uri=%2Fprivate" {
+			t.Errorf("upstream URI = %q", r.URL.RequestURI())
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer authServer.Close()
+	handler := &Handler{
+		AuthConfig: models.AuthConfig{AuthPort: testServerPort(t, authServer.URL), LoginURL: "/login"},
+		authCache:  newAuthStateCache(), preflightCache: newPreflightStateCache(),
+	}
+	handler.publishRequestSnapshotLocked()
+	request := httptest.NewRequest(http.MethodGet, "http://app.example.com/__auth__/login?redirect_uri=%2Fprivate", nil)
+	request.Header.Set("X-Forwarded-Path", "/auth/forged")
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d", recorder.Code)
+	}
+}

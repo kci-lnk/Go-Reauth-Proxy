@@ -40,7 +40,8 @@ func resolveManagedCloudflareClientIP(r *http.Request) string {
 // parseCloudflareSingleIPHeader intentionally accepts less syntax than the
 // general client-address normalizer. Cloudflare documents these headers as one
 // bare IP address, so host:port values, bracketed literals, zones, lists and
-// duplicate field lines are malformed and must fail closed.
+// duplicate field lines are malformed and must fail closed. Local, private and
+// non-unicast addresses cannot identify an Internet visitor through this ingress.
 func parseCloudflareSingleIPHeader(header http.Header, name string) (netip.Addr, bool) {
 	values := header.Values(name)
 	if len(values) != 1 {
@@ -49,7 +50,8 @@ func parseCloudflareSingleIPHeader(header http.Header, name string) (netip.Addr,
 
 	value := strings.TrimSpace(values[0])
 	addr, err := netip.ParseAddr(value)
-	if err != nil || addr.Zone() != "" || addr.Is4In6() {
+	if err != nil || addr.Zone() != "" || addr.Is4In6() ||
+		!addr.IsGlobalUnicast() || addr.IsPrivate() {
 		return netip.Addr{}, false
 	}
 	return addr, true

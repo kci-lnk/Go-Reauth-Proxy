@@ -5054,6 +5054,16 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			Send()
 	}
 
+	// A missing Tunnel identity must stop here. Downstream consumers may fall
+	// back to RemoteAddr for an empty IP and mistakenly exempt the loopback peer.
+	if fnosConnect == nil && isManagedCloudflareTunnelIngress(r) && clientIP == "" {
+		accessEntry.RouteType = "cloudflare_ingress"
+		accessEntry.AuthDecision = "invalid_client_ip"
+		loggedStatusCode = http.StatusBadRequest
+		http.Error(w, "Missing or invalid Cloudflare client IP", http.StatusBadRequest)
+		return
+	}
+
 	matchedHostRule := matchHostRule(r, snapshot)
 	if fnosConnect != nil {
 		matchedHostRule = &fnosConnect.hostRule

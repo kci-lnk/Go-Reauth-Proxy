@@ -832,6 +832,8 @@ func TestManagedCloudflarePseudoIPv4UsesOriginalIPv6ForVisibility(t *testing.T) 
 
 func TestResolveClientIPManagedCloudflareIngressFailsClosed(t *testing.T) {
 	for _, connectingIP := range []string{
+		"127.0.0.1", "::1", "0.0.0.0", "::", "224.0.0.1", "ff02::1",
+		"10.0.0.1", "fd00::1", "169.254.1.1", "fe80::1", "255.255.255.255",
 		"",
 		"not-an-ip",
 		"198.51.100.25:443",
@@ -932,5 +934,37 @@ func TestLiteManagedCloudflareIngressTrustBoundary(t *testing.T) {
 		if got := isManagedCloudflareTunnelIngress(req); got != tc.want {
 			t.Fatalf("ingress %s:%d trusted = %v, want %v", tc.ip, tc.port, got, tc.want)
 		}
+	}
+}
+
+// The same resolved identity must reach authentication and application upstreams.
+func TestManagedCloudflareClientIPForwarding(t *testing.T) {
+	for _, port := range []int{ManagedCloudflareIngressPort, ManagedCloudflareLiteIngressPort} {
+		t.Run(strconv.Itoa(port), func(t *testing.T) {
+			target := "fpk"
+			if port == ManagedCloudflareLiteIngressPort {
+				target = "fpk-lite"
+			}
+			t.Setenv("FN_KNOCK_RUNTIME_TARGET", target)
+			req := requestWithLocalAddress(httptest.NewRequest(http.MethodGet, "http://app.example/", nil), "127.0.0.1", port)
+			req.RemoteAddr = "127.0.0.1:49952"
+			req.Header.Set("CF-Connecting-IP", "198.51.100.25")
+			req.Header.Set("X-Forwarded-For", "127.0.0.1, 198.51.100.25")
+			req.Header.Set("X-Real-IP", "127.0.0.1")
+			clientIP := resolveClientIP(req, models.AuthConfig{}, false)
+			out := req.Clone(req.Context())
+			applyForwardedHeaderPolicy(out, req, clientIP, false)
+			for _, name := range []string{"X-Forwarded-For", "X-Real-IP"} {
+				if got := out.Header.Get(name); got != "198.51.100.25" {
+					t.Fatalf("%s = %q", name, got)
+				}
+			}
+			authOut := req.Clone(req.Context())
+			targetURL, _ := url.Parse("http://127.0.0.1:7997")
+			applyInternalAuthProxyHeaders(authOut, req, targetURL, clientIP, models.AuthConfig{}, "test-secret", "")
+			if got := authOut.Header.Get("X-Forwarded-For"); got != "198.51.100.25" {
+				t.Fatalf("auth XFF = %q", got)
+			}
+		})
 	}
 }

@@ -877,6 +877,18 @@ func (s *GRPCServer) GetTrafficStats(ctx context.Context, _ *emptypb.Empty) (*pb
 	return trafficStatsToProto(s.admin.ProxyHandler.GetTrafficStats(time.Now())), nil
 }
 
+func (s *GRPCServer) GetOnlineIps(ctx context.Context, _ *emptypb.Empty) (*pb.OnlineIpsStats, error) {
+	if err := s.checkToken(ctx); err != nil {
+		return nil, err
+	}
+	stats := s.admin.ProxyHandler.GetOnlineIPs(time.Now())
+	result := &pb.OnlineIpsStats{OnlineCount: stats.OnlineCount, WindowSeconds: stats.WindowSeconds, Timestamp: stats.Timestamp, Items: make([]*pb.OnlineIpStats, 0, len(stats.Items))}
+	for _, item := range stats.Items {
+		result.Items = append(result.Items, &pb.OnlineIpStats{Ip: item.IP, LastSeenAt: item.LastSeenAt.Format(time.RFC3339Nano), IdentityCount: item.IdentityCount})
+	}
+	return result, nil
+}
+
 func (s *GRPCServer) GetHostActiveIps(ctx context.Context, req *pb.HostRequest) (*pb.HostActiveIpsStats, error) {
 	if err := s.checkToken(ctx); err != nil {
 		return nil, err

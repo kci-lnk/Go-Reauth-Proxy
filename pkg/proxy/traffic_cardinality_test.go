@@ -40,7 +40,7 @@ func TestActivityMembershipCountsStayBoundedDuringConcurrentChurn(t *testing.T) 
 				ip := fmt.Sprintf("10.%d.%d.%d", worker, i/256, i%256)
 				r := tracker.markActiveIP(ip, now)
 				releaseHostActiveIP(r, now)
-				handler.storeLoggedInActive(ip, now)
+				handler.storeLoggedInActive(ip, ip, now)
 				if i%128 == 0 {
 					tracker.cleanupActiveIPs(now)
 					handler.cleanupLoggedInActive(now)

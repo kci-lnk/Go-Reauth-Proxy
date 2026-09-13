@@ -83,7 +83,7 @@ func TestLoggedInActiveEnforcesMaxEntriesOnWrite(t *testing.T) {
 	handler := &Handler{}
 	now := time.Unix(100, 0)
 	for i := 0; i < loggedInActiveMaxEntries+25; i++ {
-		handler.storeLoggedInActive(fmt.Sprintf("identity-%d", i), now.Add(time.Duration(i)*time.Millisecond))
+		handler.storeLoggedInActive(fmt.Sprintf("identity-%d", i), "", now.Add(time.Duration(i)*time.Millisecond))
 	}
 
 	if got := handler.activeLoggedInCount(now.Add(time.Minute)); got > loggedInActiveMaxEntries {

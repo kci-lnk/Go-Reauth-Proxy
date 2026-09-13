@@ -884,3 +884,20 @@ func TestDefaultParentChainsUsesFallback(t *testing.T) {
 func authTestContext() context.Context {
 	return metadata.NewIncomingContext(context.Background(), metadata.Pairs(rpcbridge.InternalTokenMetadataKey, "secret"))
 }
+
+func TestTrafficServiceOnlineIPsAuthenticationAndSnapshot(t *testing.T) {
+	server := newGatewayControlTestServer(t, "secret")
+	if _, err := server.GetOnlineIps(context.Background(), &emptypb.Empty{}); status.Code(err) != codes.Unauthenticated {
+		t.Fatalf("expected unauthenticated, got %v", err)
+	}
+	now := time.Now()
+	server.admin.ProxyHandler.MarkLoggedInActiveByClientIP("192.0.2.1", now)
+	server.admin.ProxyHandler.MarkLoggedInActiveByClientIP("192.0.2.1", now)
+	got, err := server.GetOnlineIps(authTestContext(), &emptypb.Empty{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.OnlineCount != 1 || got.WindowSeconds != 120 || len(got.Items) != 1 || got.Items[0].Ip != "192.0.2.1" || got.Items[0].IdentityCount != 1 || got.Timestamp < now.UnixMilli() {
+		t.Fatalf("invalid online snapshot: %v", got)
+	}
+}

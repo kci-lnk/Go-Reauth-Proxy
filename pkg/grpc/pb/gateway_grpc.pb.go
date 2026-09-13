@@ -3305,6 +3305,7 @@ var SecurityService_ServiceDesc = grpc.ServiceDesc{
 
 const (
 	TrafficService_GetTrafficStats_FullMethodName    = "/fnknock.v1.TrafficService/GetTrafficStats"
+	TrafficService_GetOnlineIps_FullMethodName       = "/fnknock.v1.TrafficService/GetOnlineIps"
 	TrafficService_GetHostActiveIps_FullMethodName   = "/fnknock.v1.TrafficService/GetHostActiveIps"
 	TrafficService_GetStreamActiveIps_FullMethodName = "/fnknock.v1.TrafficService/GetStreamActiveIps"
 )
@@ -3314,6 +3315,7 @@ const (
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
 type TrafficServiceClient interface {
 	GetTrafficStats(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*TrafficStats, error)
+	GetOnlineIps(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*OnlineIpsStats, error)
 	GetHostActiveIps(ctx context.Context, in *HostRequest, opts ...grpc.CallOption) (*HostActiveIpsStats, error)
 	GetStreamActiveIps(ctx context.Context, in *StreamRequest, opts ...grpc.CallOption) (*StreamActiveIpsStats, error)
 }
@@ -3330,6 +3332,16 @@ func (c *trafficServiceClient) GetTrafficStats(ctx context.Context, in *emptypb.
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(TrafficStats)
 	err := c.cc.Invoke(ctx, TrafficService_GetTrafficStats_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *trafficServiceClient) GetOnlineIps(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*OnlineIpsStats, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(OnlineIpsStats)
+	err := c.cc.Invoke(ctx, TrafficService_GetOnlineIps_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -3361,6 +3373,7 @@ func (c *trafficServiceClient) GetStreamActiveIps(ctx context.Context, in *Strea
 // for forward compatibility.
 type TrafficServiceServer interface {
 	GetTrafficStats(context.Context, *emptypb.Empty) (*TrafficStats, error)
+	GetOnlineIps(context.Context, *emptypb.Empty) (*OnlineIpsStats, error)
 	GetHostActiveIps(context.Context, *HostRequest) (*HostActiveIpsStats, error)
 	GetStreamActiveIps(context.Context, *StreamRequest) (*StreamActiveIpsStats, error)
 	mustEmbedUnimplementedTrafficServiceServer()
@@ -3375,6 +3388,9 @@ type UnimplementedTrafficServiceServer struct{}
 
 func (UnimplementedTrafficServiceServer) GetTrafficStats(context.Context, *emptypb.Empty) (*TrafficStats, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method GetTrafficStats not implemented")
+}
+func (UnimplementedTrafficServiceServer) GetOnlineIps(context.Context, *emptypb.Empty) (*OnlineIpsStats, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method GetOnlineIps not implemented")
 }
 func (UnimplementedTrafficServiceServer) GetHostActiveIps(context.Context, *HostRequest) (*HostActiveIpsStats, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method GetHostActiveIps not implemented")
@@ -3417,6 +3433,24 @@ func _TrafficService_GetTrafficStats_Handler(srv interface{}, ctx context.Contex
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(TrafficServiceServer).GetTrafficStats(ctx, req.(*emptypb.Empty))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _TrafficService_GetOnlineIps_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(emptypb.Empty)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(TrafficServiceServer).GetOnlineIps(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: TrafficService_GetOnlineIps_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(TrafficServiceServer).GetOnlineIps(ctx, req.(*emptypb.Empty))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -3467,6 +3501,10 @@ var TrafficService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "GetTrafficStats",
 			Handler:    _TrafficService_GetTrafficStats_Handler,
+		},
+		{
+			MethodName: "GetOnlineIps",
+			Handler:    _TrafficService_GetOnlineIps_Handler,
 		},
 		{
 			MethodName: "GetHostActiveIps",

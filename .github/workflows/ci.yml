@@ -86,6 +86,9 @@ jobs:
       - name: Probe and serve static paths on the native filesystem
         run: go test ./pkg/staticserve -count=1
 
+      - name: Read active log segments on the native filesystem
+        run: go test ./pkg/gatewaylog -run '^TestLogSegments' -count=1
+
       - name: Exercise static host routing and policy integration
         env:
           # Go's Windows test temp directory lives under LOCALAPPDATA. The

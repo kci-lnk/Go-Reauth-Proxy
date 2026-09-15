@@ -144,11 +144,12 @@ func (m *Manager) analyticsForSegments(ctx context.Context, date string) (*daily
 	var fingerprintBuilder strings.Builder
 	var totalSize int64
 	modified := make([]int64, 0, len(files))
-	for _, s := range files {
-		info, err := os.Stat(s.path)
+	for i, s := range files {
+		info, err := statLogSegment(s.path)
 		if err != nil {
 			return nil, err
 		}
+		files[i].size = info.Size()
 		totalSize += info.Size()
 		modified = append(modified, info.ModTime().UnixNano())
 		fmt.Fprintf(&fingerprintBuilder, "%s:%d:%d;", filepath.Base(s.path), info.Size(), info.ModTime().UnixNano())

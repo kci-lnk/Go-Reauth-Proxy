@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -48,11 +49,12 @@ func listLogSegments(dir string) ([]logSegment, error) {
 		if !ok {
 			continue
 		}
-		info, err := entry.Info()
+		path := filepath.Join(dir, entry.Name())
+		info, err := statLogSegment(path)
 		if err != nil {
 			return nil, err
 		}
-		result = append(result, logSegment{filepath.Join(dir, entry.Name()), date.Format(dateLayout), info.Size()})
+		result = append(result, logSegment{path, date.Format(dateLayout), info.Size()})
 	}
 	sort.Slice(result, func(i, j int) bool {
 		if result[i].date != result[j].date {
@@ -66,6 +68,21 @@ func listLogSegments(dir string) ([]logSegment, error) {
 		return a < b
 	})
 	return result, nil
+}
+
+// Windows directory entries and path-based Stat can report stale sizes while
+// the writer remains open. Read metadata through a handle so flushed records
+// are visible to queries, cursor validation, analytics, and capacity indexing.
+func statLogSegment(path string) (os.FileInfo, error) {
+	if runtime.GOOS != "windows" {
+		return os.Stat(path)
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+	return file.Stat()
 }
 
 func (w *DailyFileWriter) indexLocked() error {

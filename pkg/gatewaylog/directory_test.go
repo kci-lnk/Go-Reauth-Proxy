@@ -156,8 +156,11 @@ func TestDirectorySwitchConcurrentLogReadAnalyzeDelete(t *testing.T) {
 		}
 		count += result.Total
 	}
-	if count != 1000 {
-		t.Fatalf("switch lost or duplicated entries: %d", count)
+	// Log deliberately drops (and counts) entries while configuration owns
+	// inputMu, rather than blocking forwarding. Account for that documented
+	// behavior; requiring all entries makes this race test timing-dependent.
+	if accounted := uint64(count) + m.DroppedLogEntries(); accounted != 1000 {
+		t.Fatalf("switch lost or duplicated unaccounted entries: stored=%d dropped=%d", count, m.DroppedLogEntries())
 	}
 }
 

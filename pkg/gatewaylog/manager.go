@@ -378,29 +378,31 @@ type logQueueState struct {
 
 type Manager struct {
 	// directoryMu keeps complete reads/deletes on one directory during a switch.
-	directoryMu       directoryLock
-	inputMu           sync.RWMutex
-	defaultLogsDir    string
-	mu                sync.RWMutex
-	workerMu          sync.Mutex
-	config            models.LoggingConfig
-	logsDir           string
-	writer            *DailyFileWriter
-	logger            zerolog.Logger
-	logQueue          atomic.Pointer[logQueueState]
-	flushQueue        chan chan struct{}
-	done              chan struct{}
-	closeOnce         sync.Once
-	closed            atomic.Bool
-	enabled           atomic.Bool
-	recordLocalhost   atomic.Bool
-	droppedLogEntries atomic.Uint64
-	lastDropWarnNano  atomic.Int64
-	entryPool         sync.Pool
-	analyticsMu       sync.Mutex
-	analyticsCache    map[string]cachedDailyAnalytics
-	analyticsScan     chan struct{}
-	querySlots        chan struct{}
+	directoryMu         directoryLock
+	inputMu             sync.RWMutex
+	defaultLogsDir      string
+	mu                  sync.RWMutex
+	workerMu            sync.Mutex
+	config              models.LoggingConfig
+	logsDir             string
+	writer              *DailyFileWriter
+	logger              zerolog.Logger
+	logQueue            atomic.Pointer[logQueueState]
+	flushQueue          chan chan struct{}
+	done                chan struct{}
+	closeOnce           sync.Once
+	closed              atomic.Bool
+	enabled             atomic.Bool
+	recordLocalhost     atomic.Bool
+	droppedLogEntries   atomic.Uint64
+	lastDropWarnNano    atomic.Int64
+	entryPool           sync.Pool
+	analyticsMu         sync.Mutex
+	analyticsCache      map[string]cachedDailyAnalytics
+	analyticsTimer      *time.Timer
+	analyticsGeneration uint64
+	analyticsScan       chan struct{}
+	querySlots          chan struct{}
 }
 
 func NormalizeConfig(cfg models.LoggingConfig) models.LoggingConfig {
@@ -607,7 +609,7 @@ func (m *Manager) ConfigurePatchContext(ctx context.Context, cfg models.LoggingC
 		m.writer.indexed = false
 		m.logsDir = target
 		m.analyticsMu.Lock()
-		m.analyticsCache = make(map[string]cachedDailyAnalytics)
+		m.clearAnalyticsCacheLocked()
 		m.analyticsMu.Unlock()
 	}
 	m.writer.retentionDays = normalized.MaxDays
@@ -755,6 +757,9 @@ func (m *Manager) Close() {
 		m.inputMu.Lock()
 		defer m.inputMu.Unlock()
 		m.closed.Store(true)
+		m.analyticsMu.Lock()
+		m.clearAnalyticsCacheLocked()
+		m.analyticsMu.Unlock()
 		m.enabled.Store(false)
 		m.Flush()
 		close(m.done)

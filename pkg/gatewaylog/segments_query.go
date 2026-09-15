@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 )
 
 func segmentsForDate(dir, date string) ([]logSegment, error) {
@@ -140,7 +141,7 @@ func (m *Manager) analyticsForSegments(ctx context.Context, date string) (*daily
 	if err != nil {
 		return nil, err
 	}
-	fingerprint := ""
+	var fingerprintBuilder strings.Builder
 	var totalSize int64
 	modified := make([]int64, 0, len(files))
 	for _, s := range files {
@@ -150,12 +151,19 @@ func (m *Manager) analyticsForSegments(ctx context.Context, date string) (*daily
 		}
 		totalSize += info.Size()
 		modified = append(modified, info.ModTime().UnixNano())
-		fingerprint += fmt.Sprintf("%s:%d:%d;", filepath.Base(s.path), info.Size(), info.ModTime().UnixNano())
+		fmt.Fprintf(&fingerprintBuilder, "%s:%d:%d;", filepath.Base(s.path), info.Size(), info.ModTime().UnixNano())
 	}
+	fingerprint := fingerprintBuilder.String()
 	m.analyticsMu.Lock()
+	m.expireAnalyticsCacheLocked(time.Now())
 	cached, ok := m.analyticsCache[date]
+	hit := ok && cached.fingerprint == fingerprint && cached.data != nil
+	if hit {
+		cached.lastUsed = time.Now()
+		m.analyticsCache[date] = cached
+	}
 	m.analyticsMu.Unlock()
-	if ok && cached.fingerprint == fingerprint && cached.data != nil {
+	if hit {
 		return cached.data, nil
 	}
 	data := &dailyAnalytics{analyticsCounter: newAnalyticsCounter()}
@@ -184,8 +192,8 @@ func (m *Manager) analyticsForSegments(ctx context.Context, date string) (*daily
 		}
 	}
 	m.analyticsMu.Lock()
-	m.analyticsCache[date] = cachedDailyAnalytics{data: data, fingerprint: fingerprint, size: totalSize, segments: files, modified: modified}
-	m.enforceAnalyticsCacheLimitLocked(date)
+	entry := cachedDailyAnalytics{data: data, fingerprint: fingerprint, size: totalSize, segments: files, modified: modified, lastUsed: time.Now()}
+	m.storeAnalyticsCacheLocked(date, entry)
 	m.analyticsMu.Unlock()
 	return data, nil
 }

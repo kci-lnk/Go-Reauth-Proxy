@@ -49,3 +49,7 @@ require (
 )
 
 replace github.com/quic-go/quic-go v0.62.0 => ./third_party/quic-go
+
+replace github.com/medama-io/go-useragent v1.2.3 => ./third_party/go-useragent
+
+replace github.com/petar-dambovaliev/aho-corasick v0.0.0-20250424160509-463d218d4745 => ./third_party/aho-corasick

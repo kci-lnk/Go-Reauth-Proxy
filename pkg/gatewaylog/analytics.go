@@ -16,6 +16,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -37,7 +38,7 @@ const (
 
 var (
 	analyticsLatencyBounds = [...]int64{10, 25, 50, 100, 250, 500, 1000, 2500, 5000, 10000}
-	analyticsUAParser      = useragent.NewParser()
+	analyticsUAParser      = sync.OnceValue(useragent.NewParser)
 )
 
 type AnalyticsSummary struct {
@@ -145,6 +146,8 @@ type cachedDailyAnalytics struct {
 	segments    []logSegment
 	modified    []int64
 	data        *dailyAnalytics
+	lastUsed    time.Time
+	memoryBytes int64
 }
 
 // analyticsCardinality is a compact HyperLogLog sketch used only after the
@@ -382,6 +385,7 @@ func (m *Manager) invalidateAnalyticsDate(date string) {
 	}
 	m.analyticsMu.Lock()
 	delete(m.analyticsCache, date)
+	m.stopAnalyticsExpiryIfEmptyLocked()
 	m.analyticsMu.Unlock()
 }
 
@@ -399,22 +403,29 @@ func (m *Manager) pruneAnalyticsCache(dates []string) {
 		}
 	}
 	m.enforceAnalyticsCacheLimitLocked("")
+	m.stopAnalyticsExpiryIfEmptyLocked()
 }
 
 func (m *Manager) enforceAnalyticsCacheLimitLocked(preserve string) {
-	for len(m.analyticsCache) > analyticsCacheDayLimit {
+	var bytes int64
+	for _, entry := range m.analyticsCache {
+		bytes += entry.memoryBytes
+	}
+	for len(m.analyticsCache) > analyticsCacheDayLimit || bytes > analyticsCacheMaxBytes {
 		oldest := ""
-		for date := range m.analyticsCache {
+		for date, entry := range m.analyticsCache {
 			if date == preserve {
 				continue
 			}
-			if oldest == "" || date < oldest {
+			if oldest == "" || entry.lastUsed.Before(m.analyticsCache[oldest].lastUsed) ||
+				(entry.lastUsed.Equal(m.analyticsCache[oldest].lastUsed) && date < oldest) {
 				oldest = date
 			}
 		}
 		if oldest == "" {
 			return
 		}
+		bytes -= m.analyticsCache[oldest].memoryBytes
 		delete(m.analyticsCache, oldest)
 	}
 }
@@ -539,7 +550,10 @@ func (counter *analyticsCounter) addEntry(entry Entry, fallbackTime time.Time) {
 	incrementAnalytics(counter.utmMediums, defaultAnalyticsKey(values.Get("utm_medium")))
 	incrementAnalytics(counter.utmCampaigns, defaultAnalyticsKey(values.Get("utm_campaign")))
 
-	agent := analyticsUAParser.Parse(entry.UserAgent)
+	var agent useragent.UserAgent
+	if entry.UserAgent != "" {
+		agent = analyticsUAParser().Parse(entry.UserAgent)
+	}
 	incrementAnalytics(counter.devices, defaultAnalyticsKey(agent.Device().String()))
 	incrementAnalytics(counter.browsers, defaultAnalyticsKey(agent.Browser().String()))
 	incrementAnalytics(counter.operatingOS, defaultAnalyticsKey(agent.OS().String()))
@@ -556,9 +570,9 @@ func (counter *analyticsCounter) addEntry(entry Entry, fallbackTime time.Time) {
 	if clientIP := EffectiveClientIP(entry); clientIP != "" {
 		counter.clientUnique.add(clientIP)
 		if _, exists := counter.clientCounts[clientIP]; exists {
-			counter.clientCounts[clientIP]++
+			counter.clientCounts[strings.Clone(clientIP)]++
 		} else if len(counter.clientCounts) < analyticsClientKeyLimit {
-			counter.clientCounts[clientIP] = 1
+			counter.clientCounts[strings.Clone(clientIP)] = 1
 		} else {
 			counter.clientOverflow = true
 		}
@@ -835,11 +849,13 @@ func incrementAnalyticsBy(values map[string]int64, key string, count int64) {
 	}
 	key = defaultAnalyticsKey(key)
 	if _, exists := values[key]; exists {
-		values[key] += count
+		// Updating a Go string map key can replace its backing storage too.
+		values[strings.Clone(key)] += count
 		return
 	}
 	if len(values) < analyticsDimensionKeyLimit {
-		values[key] = count
+		// A short hostname/path may still reference an entire logged URL.
+		values[strings.Clone(key)] = count
 		return
 	}
 	values[analyticsOverflowKey] += count

@@ -5418,7 +5418,14 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if wafRuntime != nil && wafRuntime.Active() {
 		commonLocationExemptions := snapshot.commonLocationExemptions
 		wafBypassedByCommonLocation := commonLocationExemptions != nil && commonLocationExemptions.shouldBypassWAF(clientIP)
-		if !trustedClientIP && !wafBypassedByCommonLocation {
+		grantExempt := false
+		if !trustedClientIP && !wafBypassedByCommonLocation && effectiveHostUseAuth &&
+			matchedHostRule != nil && !isAuthRoute && !isBuiltinAuthRoute &&
+			normalizeRequestHost(matchedHostRule.Host) != normalizeRequestHost(snapshot.authConfig.AuthHost) &&
+			snapshot.advancedAuth[normalizeRequestHost(matchedHostRule.Host)] != nil {
+			grantExempt = h.inspectSubdomainGrantSecurityExemption(r, clientIP, authContextAccessMode, routedBackend)
+		}
+		if !trustedClientIP && !wafBypassedByCommonLocation && !grantExempt {
 			wafTimingStarted := time.Now()
 			violationEpoch := h.wafViolationEpoch.Load()
 			decision := wafRuntime.Evaluate(r, proxywaf.EvaluateContext{
@@ -5476,6 +5483,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+
 	if isWOLPath && !isWOLRoute {
 		// Keep the built-in path reserved even while its shortcut is disabled.
 		// Otherwise a broad user path/host rule could unexpectedly expose an

@@ -23,16 +23,17 @@ import (
 )
 
 const (
-	InternalTokenMetadataKey        = "x-fn-knock-internal-rpc-token"
-	AuthBridgeInstanceMetadataKey   = "x-fn-knock-auth-bridge-instance-id"
-	AuthBridgeCapabilityMetadataKey = "x-fn-knock-auth-bridge-capability"
-	CapabilityAuthorizeHTTPV1       = "authorize_http_v1"
-	CapabilitySubdomainRuleGrantV1  = "subdomain_rule_grant_v1"
-	authBridgeSendQueueSize         = 256
-	authBridgeInFlightLimit         = 1024
-	authBridgePendingShardCount     = 64
-	authBridgeRoundTripTimeout      = 5 * time.Second
-	authBridgeCanceledSendGrace     = 100 * time.Millisecond
+	InternalTokenMetadataKey          = "x-fn-knock-internal-rpc-token"
+	AuthBridgeInstanceMetadataKey     = "x-fn-knock-auth-bridge-instance-id"
+	AuthBridgeCapabilityMetadataKey   = "x-fn-knock-auth-bridge-capability"
+	CapabilityInspectSubdomainGrantV1 = "inspect_subdomain_grant_v1"
+	CapabilityAuthorizeHTTPV1         = "authorize_http_v1"
+	CapabilitySubdomainRuleGrantV1    = "subdomain_rule_grant_v1"
+	authBridgeSendQueueSize           = 256
+	authBridgeInFlightLimit           = 1024
+	authBridgePendingShardCount       = 64
+	authBridgeRoundTripTimeout        = 5 * time.Second
+	authBridgeCanceledSendGrace       = 100 * time.Millisecond
 )
 
 var (
@@ -282,7 +283,9 @@ func (m *AuthBridgeManager) AuthorizeHTTP(ctx context.Context, req *pb.Authorize
 	if active == nil {
 		return nil, ErrAuthBridgeUnavailable
 	}
-	if !active.supportsCapability(CapabilityAuthorizeHTTPV1) {
+	if !active.supportsCapability(CapabilityAuthorizeHTTPV1) ||
+		(req.GetMode() == pb.HttpAuthMode_HTTP_AUTH_MODE_INSPECT_SUBDOMAIN_GRANT &&
+			!active.supportsCapability(CapabilityInspectSubdomainGrantV1)) {
 		return nil, ErrAuthBridgeCapabilityUnsupported
 	}
 	msg, err := m.roundTripOnStream(ctx, active, &pb.AuthBridgeEnvelope{

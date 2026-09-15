@@ -1035,3 +1035,25 @@ func (s *blockingAuthBridgeStream) release() {
 		s.releaseOnce.Do(func() { close(s.releaseSend) })
 	}
 }
+
+// Capability checks must use the actual stream, including after reconnect.
+func TestGrantInspectionRequiresCapabilityOnSelectedStream(t *testing.T) {
+	manager := NewAuthBridgeManager("secret")
+	stream := &blockingAuthBridgeStream{ctx: context.Background(), sent: make(chan *pb.AuthBridgeEnvelope, 1)}
+	active := manager.attachStream(stream)
+	t.Cleanup(func() { manager.detachStream(active) })
+	manager.handleIncoming(active, &pb.AuthBridgeEnvelope{Payload: &pb.AuthBridgeEnvelope_Ready{
+		Ready: &pb.AuthBridgeReady{Capabilities: []string{CapabilityAuthorizeHTTPV1}},
+	}})
+	_, err := manager.AuthorizeHTTP(context.Background(), &pb.AuthorizeHttpRequest{
+		Mode: pb.HttpAuthMode_HTTP_AUTH_MODE_INSPECT_SUBDOMAIN_GRANT,
+	})
+	if !errors.Is(err, ErrAuthBridgeCapabilityUnsupported) {
+		t.Fatalf("inspection error=%v", err)
+	}
+	select {
+	case msg := <-stream.sent:
+		t.Fatalf("inspection was sent to unsupported peer: %v", msg)
+	default:
+	}
+}

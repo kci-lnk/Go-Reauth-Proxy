@@ -184,6 +184,8 @@ const (
 	HttpAuthMode_HTTP_AUTH_MODE_PREFLIGHT_ONLY       HttpAuthMode = 1
 	HttpAuthMode_HTTP_AUTH_MODE_VERIFY_ONLY          HttpAuthMode = 2
 	HttpAuthMode_HTTP_AUTH_MODE_PREFLIGHT_AND_VERIFY HttpAuthMode = 3
+	// Read-only host-scoped grant/probe inspection; never issues or renews.
+	HttpAuthMode_HTTP_AUTH_MODE_INSPECT_SUBDOMAIN_GRANT HttpAuthMode = 4
 )
 
 // Enum value maps for HttpAuthMode.
@@ -193,12 +195,14 @@ var (
 		1: "HTTP_AUTH_MODE_PREFLIGHT_ONLY",
 		2: "HTTP_AUTH_MODE_VERIFY_ONLY",
 		3: "HTTP_AUTH_MODE_PREFLIGHT_AND_VERIFY",
+		4: "HTTP_AUTH_MODE_INSPECT_SUBDOMAIN_GRANT",
 	}
 	HttpAuthMode_value = map[string]int32{
-		"HTTP_AUTH_MODE_UNSPECIFIED":          0,
-		"HTTP_AUTH_MODE_PREFLIGHT_ONLY":       1,
-		"HTTP_AUTH_MODE_VERIFY_ONLY":          2,
-		"HTTP_AUTH_MODE_PREFLIGHT_AND_VERIFY": 3,
+		"HTTP_AUTH_MODE_UNSPECIFIED":             0,
+		"HTTP_AUTH_MODE_PREFLIGHT_ONLY":          1,
+		"HTTP_AUTH_MODE_VERIFY_ONLY":             2,
+		"HTTP_AUTH_MODE_PREFLIGHT_AND_VERIFY":    3,
+		"HTTP_AUTH_MODE_INSPECT_SUBDOMAIN_GRANT": 4,
 	}
 )
 
@@ -11584,8 +11588,10 @@ type AuthorizeHttpResponse struct {
 	Verify              *VerifyAuthResponse    `protobuf:"bytes,2,opt,name=verify,proto3" json:"verify,omitempty"`
 	PreflightCacheScope AuthCacheScope         `protobuf:"varint,3,opt,name=preflight_cache_scope,json=preflightCacheScope,proto3,enum=fnknock.v1.AuthCacheScope" json:"preflight_cache_scope,omitempty"`
 	VerifyCacheScope    AuthCacheScope         `protobuf:"varint,4,opt,name=verify_cache_scope,json=verifyCacheScope,proto3,enum=fnknock.v1.AuthCacheScope" json:"verify_cache_scope,omitempty"`
-	unknownFields       protoimpl.UnknownFields
-	sizeCache           protoimpl.SizeCache
+	// Request-local only; defaults to false for older peers and failures.
+	SubdomainGrantSecurityExempt bool `protobuf:"varint,5,opt,name=subdomain_grant_security_exempt,json=subdomainGrantSecurityExempt,proto3" json:"subdomain_grant_security_exempt,omitempty"`
+	unknownFields                protoimpl.UnknownFields
+	sizeCache                    protoimpl.SizeCache
 }
 
 func (x *AuthorizeHttpResponse) Reset() {
@@ -11644,6 +11650,13 @@ func (x *AuthorizeHttpResponse) GetVerifyCacheScope() AuthCacheScope {
 		return x.VerifyCacheScope
 	}
 	return AuthCacheScope_AUTH_CACHE_SCOPE_UNSPECIFIED
+}
+
+func (x *AuthorizeHttpResponse) GetSubdomainGrantSecurityExempt() bool {
+	if x != nil {
+		return x.SubdomainGrantSecurityExempt
+	}
+	return false
 }
 
 type VerifyStreamAuthRequest struct {
@@ -13324,12 +13337,13 @@ const file_fnknock_v1_gateway_proto_rawDesc = "" +
 	"\acontext\x18\x01 \x01(\v2\x17.fnknock.v1.AuthContextR\acontext\x12\x18\n" +
 	"\amatched\x18\x02 \x01(\bR\amatched\x12,\n" +
 	"\x04mode\x18\x03 \x01(\x0e2\x18.fnknock.v1.HttpAuthModeR\x04mode\x12P\n" +
-	"\x14subdomain_rule_match\x18\x04 \x01(\v2\x1e.fnknock.v1.SubdomainRuleMatchR\x12subdomainRuleMatch\"\xaa\x02\n" +
+	"\x14subdomain_rule_match\x18\x04 \x01(\v2\x1e.fnknock.v1.SubdomainRuleMatchR\x12subdomainRuleMatch\"\xf1\x02\n" +
 	"\x15AuthorizeHttpResponse\x12?\n" +
 	"\tpreflight\x18\x01 \x01(\v2!.fnknock.v1.PreflightAuthResponseR\tpreflight\x126\n" +
 	"\x06verify\x18\x02 \x01(\v2\x1e.fnknock.v1.VerifyAuthResponseR\x06verify\x12N\n" +
 	"\x15preflight_cache_scope\x18\x03 \x01(\x0e2\x1a.fnknock.v1.AuthCacheScopeR\x13preflightCacheScope\x12H\n" +
-	"\x12verify_cache_scope\x18\x04 \x01(\x0e2\x1a.fnknock.v1.AuthCacheScopeR\x10verifyCacheScope\"\x8b\x01\n" +
+	"\x12verify_cache_scope\x18\x04 \x01(\x0e2\x1a.fnknock.v1.AuthCacheScopeR\x10verifyCacheScope\x12E\n" +
+	"\x1fsubdomain_grant_security_exempt\x18\x05 \x01(\bR\x1csubdomainGrantSecurityExempt\"\x8b\x01\n" +
 	"\x17VerifyStreamAuthRequest\x12\x1b\n" +
 	"\tclient_ip\x18\x01 \x01(\tR\bclientIp\x12\x1a\n" +
 	"\bprotocol\x18\x02 \x01(\tR\bprotocol\x12\x1f\n" +
@@ -13390,12 +13404,13 @@ const file_fnknock_v1_gateway_proto_rawDesc = "" +
 	"\x1fWAF_DRAIN_OPERATION_UNSPECIFIED\x10\x00\x12\x1d\n" +
 	"\x19WAF_DRAIN_OPERATION_LEASE\x10\x01\x12#\n" +
 	"\x1fWAF_DRAIN_OPERATION_ACKNOWLEDGE\x10\x02\x12\x1f\n" +
-	"\x1bWAF_DRAIN_OPERATION_RELEASE\x10\x03*\x9a\x01\n" +
+	"\x1bWAF_DRAIN_OPERATION_RELEASE\x10\x03*\xc6\x01\n" +
 	"\fHttpAuthMode\x12\x1e\n" +
 	"\x1aHTTP_AUTH_MODE_UNSPECIFIED\x10\x00\x12!\n" +
 	"\x1dHTTP_AUTH_MODE_PREFLIGHT_ONLY\x10\x01\x12\x1e\n" +
 	"\x1aHTTP_AUTH_MODE_VERIFY_ONLY\x10\x02\x12'\n" +
-	"#HTTP_AUTH_MODE_PREFLIGHT_AND_VERIFY\x10\x03*\x8c\x01\n" +
+	"#HTTP_AUTH_MODE_PREFLIGHT_AND_VERIFY\x10\x03\x12*\n" +
+	"&HTTP_AUTH_MODE_INSPECT_SUBDOMAIN_GRANT\x10\x04*\x8c\x01\n" +
 	"\x0eAuthCacheScope\x12 \n" +
 	"\x1cAUTH_CACHE_SCOPE_UNSPECIFIED\x10\x00\x12\x19\n" +
 	"\x15AUTH_CACHE_SCOPE_NONE\x10\x01\x12\"\n" +

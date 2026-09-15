@@ -1001,6 +1001,9 @@ func run(options runOptions) error {
 }
 
 func main() {
+	if err := configureTransparentHugePages(); err != nil {
+		log.Printf("Disable transparent huge pages: %v (continuing with the existing memory policy)", err)
+	}
 	logger.Setup()
 	defer logger.CloseDiagnosticLogger()
 	raiseNoFileLimit()

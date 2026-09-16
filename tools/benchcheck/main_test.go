@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -20,7 +21,7 @@ BenchmarkIncomplete-10 100 25 ns/op
 	if !ok {
 		t.Fatalf("missing normalized benchmark name: %#v", parsed)
 	}
-	if got != (benchmarkSummary{Nanoseconds: 200, Bytes: 96, Allocs: 3}) {
+	if !reflect.DeepEqual(got, benchmarkSummary{Nanoseconds: 200, Bytes: 96, Allocs: 3, latencySamples: []float64{100, 200, 300}}) {
 		t.Fatalf("summary = %#v", got)
 	}
 }
@@ -92,5 +93,60 @@ func TestCompareBenchmarksRejectsNonZeroMetricAfterZeroBaseline(t *testing.T) {
 	)
 	if err == nil || !strings.Contains(err.Error(), "increased from zero") {
 		t.Fatalf("unexpected zero-baseline result: %v", err)
+	}
+}
+
+func TestCompareBenchmarksByteRoundingAllowanceStillRejectsRealGrowth(t *testing.T) {
+	base := map[string]benchmarkSummary{"BenchmarkHot": {Nanoseconds: 100, Bytes: 0, Allocs: 0}}
+	limits := tolerances{Latency: 0.10, Bytes: 0.05, BytesAbsolute: 1}
+	for _, amount := range []float64{0.5, 1, 2} {
+		current := map[string]benchmarkSummary{"BenchmarkHot": {Nanoseconds: 100, Bytes: amount, Allocs: 0}}
+		err := compareBenchmarks(base, current, limits, &bytes.Buffer{})
+		if (err != nil) != (amount > 1) {
+			t.Fatalf("bytes=%v: %v", amount, err)
+		}
+	}
+}
+
+func TestCompareBenchmarksTenPercentLatencyLimit(t *testing.T) {
+	base := map[string]benchmarkSummary{"BenchmarkHot": {Nanoseconds: 100}}
+	for _, latency := range []float64{106, 110, 111} {
+		current := map[string]benchmarkSummary{"BenchmarkHot": {Nanoseconds: latency}}
+		err := compareBenchmarks(base, current, tolerances{Latency: 0.10}, &bytes.Buffer{})
+		if (err != nil) != (latency > 110) {
+			t.Fatalf("latency=%v: %v", latency, err)
+		}
+	}
+}
+
+func TestCompareBenchmarksFifteenPercentByteLimit(t *testing.T) {
+	base := map[string]benchmarkSummary{"BenchmarkHot": {Nanoseconds: 100, Bytes: 100}}
+	for _, amount := range []float64{110, 114, 116} {
+		current := map[string]benchmarkSummary{"BenchmarkHot": {Nanoseconds: 100, Bytes: amount}}
+		err := compareBenchmarks(base, current, tolerances{Bytes: 0.15, BytesAbsolute: 1}, &bytes.Buffer{})
+		if (err != nil) != (amount > 115) {
+			t.Fatalf("bytes=%v: %v", amount, err)
+		}
+	}
+}
+
+func TestLatencyConfidenceRetainsStableRegressionsAndHandlesNoise(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		base, current []float64
+		reject        bool
+	}{
+		{"stable regression", []float64{99, 100, 100, 100, 100, 101}, []float64{129, 130, 130, 130, 130, 131}, true},
+		{"noisy overlap", []float64{34, 38, 48, 50, 50, 70}, []float64{50, 54, 59, 63, 85, 960}, false},
+		{"insufficient samples", []float64{100, 100}, []float64{130, 130}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			b := benchmarkSummary{Nanoseconds: median(append([]float64(nil), tc.base...)), latencySamples: tc.base}
+			c := benchmarkSummary{Nanoseconds: median(append([]float64(nil), tc.current...)), latencySamples: tc.current}
+			result := latencyRegression(tc.name, b, c, 0.10, &bytes.Buffer{})
+			if (result != "") != tc.reject {
+				t.Fatalf("unexpected latency result: %q", result)
+			}
+		})
 	}
 }

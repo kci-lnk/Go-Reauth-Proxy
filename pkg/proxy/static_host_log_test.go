@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"go-reauth-proxy/internal/testutil"
 	"go-reauth-proxy/pkg/models"
 )
 
@@ -22,7 +23,7 @@ func TestStaticHostAccessLogsUseRouteIdentityWithoutFilesystemPaths(t *testing.T
 		t.Fatal(err)
 	}
 
-	root := filepath.Join(t.TempDir(), "filesystem-secret-directory")
+	root := filepath.Join(testutil.StaticDir(t), "filesystem-secret-directory")
 	if err := os.Mkdir(root, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -30,7 +31,7 @@ func TestStaticHostAccessLogsUseRouteIdentityWithoutFilesystemPaths(t *testing.T
 	if err := os.WriteFile(filePath, []byte("file body"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	missingRoot := filepath.Join(t.TempDir(), "filesystem-secret-missing")
+	missingRoot := filepath.Join(testutil.StaticDir(t), "filesystem-secret-missing")
 	if err := handler.SetHostRules([]models.HostRule{
 		{
 			Host:        "file.static.example.test",

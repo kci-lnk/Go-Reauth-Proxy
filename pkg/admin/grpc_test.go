@@ -614,6 +614,7 @@ func newGatewayControlTestServer(t *testing.T, token string) *GRPCServer {
 		t.Fatalf("load config: %v", err)
 	}
 	proxyHandler := proxy.NewHandler(7996, 7999, cfgManager, initialCfg, filepath.Join(t.TempDir(), "logs"), nil)
+	t.Cleanup(proxyHandler.Close)
 	return NewGRPCServer(NewServer(proxyHandler, 7996, cfgManager, initialCfg, nil), token)
 }
 

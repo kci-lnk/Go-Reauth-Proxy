@@ -1352,8 +1352,13 @@ func (m *Manager) loadEvents(s *sessionState) error {
 	if errors.As(journalErr, &fileErr) && !errors.Is(journalErr, os.ErrNotExist) {
 		return journalErr
 	}
-	s.meta.EventCount = eventCount
 	storedBytes, storageErr := m.recoveredStorageBytes(s.meta.ID)
+	// Windows can report a missing journal when its parent is a regular file.
+	// Only accept a missing journal after successfully reading the directory.
+	if errors.Is(journalErr, os.ErrNotExist) && storageErr != nil {
+		return errors.Join(journalErr, storageErr)
+	}
+	s.meta.EventCount = eventCount
 	if storageErr == nil {
 		s.meta.BytesStored = storedBytes
 	}

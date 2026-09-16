@@ -109,7 +109,11 @@ func TestWAFResetConnectionHTTP1ClosesWithoutResponseAndKeepsEvent(t *testing.T)
 	}); err != nil {
 		t.Fatalf("enable gateway logging: %v", err)
 	}
-	server := httptest.NewServer(handler)
+	handled := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer close(handled)
+		handler.ServeHTTP(w, r)
+	}))
 	defer server.Close()
 
 	serverURL, err := url.Parse(server.URL)
@@ -131,6 +135,14 @@ func TestWAFResetConnectionHTTP1ClosesWithoutResponseAndKeepsEvent(t *testing.T)
 	}
 	if !isConnectionResetError(readErr) {
 		t.Fatalf("read error = %v, want connection reset", readErr)
+	}
+
+	// The reset can reach the client before ServeHTTP's deferred access log
+	// has been enqueued. Synchronize with the handler before querying logs.
+	select {
+	case <-handled:
+	case <-time.After(5 * time.Second):
+		t.Fatal("WAF reset handler did not finish")
 	}
 
 	drained := handler.DrainWAFEvents(10)

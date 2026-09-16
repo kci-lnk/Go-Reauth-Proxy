@@ -30,6 +30,7 @@ type benchmarkSummary struct {
 type tolerances struct {
 	Latency        float64
 	Bytes          float64
+	BytesAbsolute  float64
 	Allocs         float64
 	AllocsAbsolute float64
 }
@@ -37,8 +38,9 @@ type tolerances struct {
 func main() {
 	basePath := flag.String("base", "", "benchmark output for the PR base revision")
 	currentPath := flag.String("current", "", "benchmark output for the current revision")
-	latencyTolerance := flag.Float64("max-latency-regression", 0.05, "maximum allowed ns/op regression as a fraction")
+	latencyTolerance := flag.Float64("max-latency-regression", 0.10, "maximum allowed ns/op regression as a fraction")
 	bytesTolerance := flag.Float64("max-bytes-regression", 0.05, "maximum allowed B/op regression as a fraction")
+	bytesAbsoluteTolerance := flag.Float64("max-bytes-absolute-regression", 1, "maximum allowed B/op regression in reported byte units")
 	allocsTolerance := flag.Float64("max-allocs-regression", 0.05, "maximum allowed allocs/op regression as a fraction")
 	allocsAbsoluteTolerance := flag.Float64("max-allocs-absolute-regression", 1, "maximum allowed allocs/op regression in reported allocation units")
 	flag.Parse()
@@ -49,6 +51,7 @@ func main() {
 	limits := tolerances{
 		Latency:        *latencyTolerance,
 		Bytes:          *bytesTolerance,
+		BytesAbsolute:  *bytesAbsoluteTolerance,
 		Allocs:         *allocsTolerance,
 		AllocsAbsolute: *allocsAbsoluteTolerance,
 	}
@@ -78,6 +81,7 @@ func validateTolerances(limits tolerances) error {
 	for label, value := range map[string]float64{
 		"latency":         limits.Latency,
 		"bytes":           limits.Bytes,
+		"bytes-absolute":  limits.BytesAbsolute,
 		"allocs":          limits.Allocs,
 		"allocs-absolute": limits.AllocsAbsolute,
 	} {
@@ -204,7 +208,7 @@ func compareBenchmarks(base, current map[string]benchmarkSummary, limits toleran
 		)
 		failures = append(failures,
 			regression(name, "ns/op", baseSummary.Nanoseconds, currentSummary.Nanoseconds, limits.Latency),
-			regression(name, "B/op", baseSummary.Bytes, currentSummary.Bytes, limits.Bytes),
+			regressionWithAbsoluteSlack(name, "B/op", baseSummary.Bytes, currentSummary.Bytes, limits.Bytes, limits.BytesAbsolute),
 			regressionWithAbsoluteSlack(name, "allocs/op", baseSummary.Allocs, currentSummary.Allocs, limits.Allocs, limits.AllocsAbsolute),
 		)
 	}

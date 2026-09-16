@@ -94,3 +94,26 @@ func TestCompareBenchmarksRejectsNonZeroMetricAfterZeroBaseline(t *testing.T) {
 		t.Fatalf("unexpected zero-baseline result: %v", err)
 	}
 }
+
+func TestCompareBenchmarksByteRoundingAllowanceStillRejectsRealGrowth(t *testing.T) {
+	base := map[string]benchmarkSummary{"BenchmarkHot": {Nanoseconds: 100, Bytes: 0, Allocs: 0}}
+	limits := tolerances{Latency: 0.10, Bytes: 0.05, BytesAbsolute: 1}
+	for _, amount := range []float64{0.5, 1, 2} {
+		current := map[string]benchmarkSummary{"BenchmarkHot": {Nanoseconds: 100, Bytes: amount, Allocs: 0}}
+		err := compareBenchmarks(base, current, limits, &bytes.Buffer{})
+		if (err != nil) != (amount > 1) {
+			t.Fatalf("bytes=%v: %v", amount, err)
+		}
+	}
+}
+
+func TestCompareBenchmarksTenPercentLatencyLimit(t *testing.T) {
+	base := map[string]benchmarkSummary{"BenchmarkHot": {Nanoseconds: 100}}
+	for _, latency := range []float64{106, 110, 111} {
+		current := map[string]benchmarkSummary{"BenchmarkHot": {Nanoseconds: latency}}
+		err := compareBenchmarks(base, current, tolerances{Latency: 0.10}, &bytes.Buffer{})
+		if (err != nil) != (latency > 110) {
+			t.Fatalf("latency=%v: %v", latency, err)
+		}
+	}
+}

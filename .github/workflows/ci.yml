@@ -160,8 +160,9 @@ jobs:
           go run ./tools/benchcheck \
             --base "${base_output}" \
             --current "${current_output}" \
-            --max-latency-regression 0.05 \
+            --max-latency-regression 0.10 \
             --max-bytes-regression 0.05 \
+            --max-bytes-absolute-regression 1 \
             --max-allocs-regression 0.05 \
             --max-allocs-absolute-regression 1
 

@@ -117,3 +117,14 @@ func TestCompareBenchmarksTenPercentLatencyLimit(t *testing.T) {
 		}
 	}
 }
+
+func TestCompareBenchmarksFifteenPercentByteLimit(t *testing.T) {
+	base := map[string]benchmarkSummary{"BenchmarkHot": {Nanoseconds: 100, Bytes: 100}}
+	for _, amount := range []float64{110, 114, 116} {
+		current := map[string]benchmarkSummary{"BenchmarkHot": {Nanoseconds: 100, Bytes: amount}}
+		err := compareBenchmarks(base, current, tolerances{Bytes: 0.15, BytesAbsolute: 1}, &bytes.Buffer{})
+		if (err != nil) != (amount > 115) {
+			t.Fatalf("bytes=%v: %v", amount, err)
+		}
+	}
+}

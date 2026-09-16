@@ -9,6 +9,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"math/rand"
 	"os"
 	"sort"
 	"strconv"
@@ -22,9 +23,10 @@ type benchmarkSample struct {
 }
 
 type benchmarkSummary struct {
-	Nanoseconds float64
-	Bytes       float64
-	Allocs      float64
+	Nanoseconds    float64
+	Bytes          float64
+	Allocs         float64
+	latencySamples []float64
 }
 
 type tolerances struct {
@@ -134,9 +136,10 @@ func parseBenchmarkSamples(input io.Reader) (map[string]benchmarkSummary, error)
 			allocs = append(allocs, value.Allocs)
 		}
 		summaries[name] = benchmarkSummary{
-			Nanoseconds: median(nanoseconds),
-			Bytes:       median(bytes),
-			Allocs:      median(allocs),
+			Nanoseconds:    median(nanoseconds),
+			latencySamples: nanoseconds,
+			Bytes:          median(bytes),
+			Allocs:         median(allocs),
 		}
 	}
 	return summaries, nil
@@ -207,7 +210,7 @@ func compareBenchmarks(base, current map[string]benchmarkSummary, limits toleran
 			baseSummary.Allocs, currentSummary.Allocs,
 		)
 		failures = append(failures,
-			regression(name, "ns/op", baseSummary.Nanoseconds, currentSummary.Nanoseconds, limits.Latency),
+			latencyRegression(name, baseSummary, currentSummary, limits.Latency, output),
 			regressionWithAbsoluteSlack(name, "B/op", baseSummary.Bytes, currentSummary.Bytes, limits.Bytes, limits.BytesAbsolute),
 			regressionWithAbsoluteSlack(name, "allocs/op", baseSummary.Allocs, currentSummary.Allocs, limits.Allocs, limits.AllocsAbsolute),
 		)
@@ -258,4 +261,39 @@ func sortedKeys(values map[string]benchmarkSummary) []string {
 	}
 	sort.Strings(keys)
 	return keys
+}
+
+// Require a repeatable latency increase, not just a noisy median. Bootstrap
+// independent samples with a fixed seed so CI decisions are reproducible.
+// Six samples are required; shorter inputs retain the strict median check.
+func latencyRegression(name string, base, current benchmarkSummary, tolerance float64, output io.Writer) string {
+	failure := regression(name, "ns/op", base.Nanoseconds, current.Nanoseconds, tolerance)
+	if failure == "" || len(base.latencySamples) < 6 || len(current.latencySamples) < 6 || base.Nanoseconds <= 0 {
+		return failure
+	}
+	rng := rand.New(rand.NewSource(1))
+	const iterations = 10000
+	ratios := make([]float64, iterations)
+	b := make([]float64, len(base.latencySamples))
+	c := make([]float64, len(current.latencySamples))
+	for i := range ratios {
+		for j := range b {
+			b[j] = base.latencySamples[rng.Intn(len(base.latencySamples))]
+		}
+		for j := range c {
+			c[j] = current.latencySamples[rng.Intn(len(current.latencySamples))]
+		}
+		baseline := median(b)
+		if baseline <= 0 {
+			return failure
+		}
+		ratios[i] = median(c)/baseline - 1
+	}
+	sort.Float64s(ratios)
+	low, high := ratios[iterations/40], ratios[iterations*39/40]
+	fmt.Fprintf(output, "%s: latency bootstrap 95%% interval %.1f%% to %.1f%% (limit %.1f%%)\n", name, low*100, high*100, tolerance*100)
+	if low <= tolerance {
+		return ""
+	}
+	return failure
 }

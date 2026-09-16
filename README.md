@@ -472,7 +472,7 @@ go test ./pkg/staticserve -fuzz=FuzzStaticDirectoryNeverEscapesRoot -fuzztime=30
 go test ./pkg/staticserve -fuzz=FuzzRequestRootNameIsAlwaysLocalAndVisible -fuzztime=30s
 ```
 
-每个 PR 会在同一 CI runner 上将热路径 benchmark 与目标分支基线进行比较。基线和当前版本会先各执行一轮不计入结果的完整预热，再以交替顺序运行 6 轮独立样本，避免进程启动、CPU 初始调频、固定的先后顺序、热漂移或前序 benchmark 的自适应工作量系统性影响其中一方。比较器取每个 benchmark 的样本中位数：`ns/op`（等价吞吐门禁）最多回退 5%，`B/op` 与 `allocs/op` 最多回退 5%；考虑到 Go benchmark 将 `allocs/op` 报告为整数，该指标额外允许 1 个报告单位的绝对舍入余量。缺失的既有 benchmark 同样会使检查失败。这个门禁用于识别相对回退，实际绝对性能仍应以发布前的目标设备测量为准。
+每个 PR 会在同一 CI runner 上将热路径 benchmark 与目标分支基线进行比较。基线和当前版本会先各执行一轮不计入结果的完整预热，再以交替顺序运行 6 轮独立样本，避免进程启动、CPU 初始调频、固定的先后顺序、热漂移或前序 benchmark 的自适应工作量系统性影响其中一方。每轮采样至少 500 ms。比较器取每个 benchmark 的样本中位数：`ns/op` 的容差为 10%，`B/op` 为 15%，`allocs/op` 为 5%；字节数与分配次数各允许 1 个报告单位的绝对舍入余量。至少有 6 个样本时，延迟还使用固定随机种子的 10,000 次 bootstrap 重采样估计 95% 区间，仅当区间下界也超过 10% 时阻塞，以避免共享 runner 上网络时序波动造成误报。少于 6 个样本时仍严格比较中位数。缺失的既有 benchmark 同样会使检查失败。这个门禁用于识别相对回退，实际绝对性能仍应以发布前的目标设备测量为准。
 
 项目结构：
 

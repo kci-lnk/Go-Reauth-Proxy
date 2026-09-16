@@ -10,6 +10,7 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"go-reauth-proxy/internal/testutil"
 	"go-reauth-proxy/pkg/grpc/pb"
 	"go-reauth-proxy/pkg/models"
 	proxywaf "go-reauth-proxy/pkg/waf"
@@ -17,7 +18,7 @@ import (
 
 func TestSetHostRulesNormalizesStaticDiscriminatedUnion(t *testing.T) {
 	handler, manager := newAdditionalProxyTestHandler(t)
-	staticRoot := t.TempDir()
+	staticRoot := testutil.StaticDir(t)
 	rule := models.HostRule{
 		Host:            "static.example.test",
 		Target:          "not-a-proxy-url",
@@ -66,7 +67,7 @@ func TestSetHostRulesNormalizesStaticDiscriminatedUnion(t *testing.T) {
 
 func TestStaticHostRuleDispatchesAfterRoutingPolicies(t *testing.T) {
 	handler, _ := newAdditionalProxyTestHandler(t)
-	staticRoot := t.TempDir()
+	staticRoot := testutil.StaticDir(t)
 	if err := os.WriteFile(filepath.Join(staticRoot, "hello.txt"), []byte("hello static"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -106,7 +107,7 @@ func TestStaticHostRuleDispatchesAfterRoutingPolicies(t *testing.T) {
 }
 
 func TestStaticHostRuleRejectsNonCanonicalPathsBeforeInternalRouting(t *testing.T) {
-	staticRoot := t.TempDir()
+	staticRoot := testutil.StaticDir(t)
 	var authHits atomic.Int32
 	authServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		authHits.Add(1)
@@ -167,7 +168,7 @@ func TestStaticHostRuleNonCanonicalPathsStillTraverseRoutingPolicies(t *testing.
 			TargetType: models.HostRuleTargetTypeDirectory,
 			Disabled:   true,
 			StaticServe: &models.StaticServeConfig{
-				Path: t.TempDir(),
+				Path: testutil.StaticDir(t),
 			},
 		}}); err != nil {
 			t.Fatal(err)
@@ -197,7 +198,7 @@ func TestStaticHostRuleNonCanonicalPathsStillTraverseRoutingPolicies(t *testing.
 				Mode:  models.HostVisibilityModeCustom,
 				CIDRs: []string{"1.1.1.0/24"},
 			},
-			StaticServe: &models.StaticServeConfig{Path: t.TempDir()},
+			StaticServe: &models.StaticServeConfig{Path: testutil.StaticDir(t)},
 		}}); err != nil {
 			t.Fatal(err)
 		}
@@ -217,7 +218,7 @@ func TestStaticHostRuleNonCanonicalPathsStillTraverseRoutingPolicies(t *testing.
 		if err := handler.SetHostRules([]models.HostRule{{
 			Host:        "static.example.test",
 			TargetType:  models.HostRuleTargetTypeDirectory,
-			StaticServe: &models.StaticServeConfig{Path: t.TempDir()},
+			StaticServe: &models.StaticServeConfig{Path: testutil.StaticDir(t)},
 		}}); err != nil {
 			t.Fatal(err)
 		}
@@ -254,7 +255,7 @@ func TestStaticHostRuleIsBlockedByWAFBeforeFilesystemDispatch(t *testing.T) {
 	if _, err := handler.SetLoggingConfig(models.LoggingConfig{Enabled: true, RecordLocalhost: true, MaxDays: 1}); err != nil {
 		t.Fatal(err)
 	}
-	staticRoot := t.TempDir()
+	staticRoot := testutil.StaticDir(t)
 	if err := os.WriteFile(filepath.Join(staticRoot, "index.html"), []byte("must not be served"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -269,7 +270,7 @@ func TestStaticHostRuleIsBlockedByWAFBeforeFilesystemDispatch(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	rulesDir := t.TempDir()
+	rulesDir := testutil.StaticDir(t)
 	customDir := filepath.Join(rulesDir, "custom")
 	if err := os.MkdirAll(customDir, 0o755); err != nil {
 		t.Fatal(err)
@@ -318,7 +319,7 @@ func TestStaticHostRuleIsBlockedByWAFBeforeFilesystemDispatch(t *testing.T) {
 
 func TestStaticHostRuleAuthenticatesBeforeFilesystemDispatch(t *testing.T) {
 	handler, _ := newAdditionalProxyTestHandler(t)
-	staticRoot := t.TempDir()
+	staticRoot := testutil.StaticDir(t)
 	if err := os.WriteFile(filepath.Join(staticRoot, "asset.txt"), []byte("private static"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -389,7 +390,7 @@ func TestStaticHostRuleRejectsProtectedRuntimeDirectory(t *testing.T) {
 
 func TestStaticRouteIncarnationChangesWithStaticConfig(t *testing.T) {
 	handler, _ := newAdditionalProxyTestHandler(t)
-	staticRoot := t.TempDir()
+	staticRoot := testutil.StaticDir(t)
 	rule := models.HostRule{
 		Host:       "static.example.test",
 		TargetType: models.HostRuleTargetTypeDirectory,

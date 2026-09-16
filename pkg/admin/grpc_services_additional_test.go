@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"go-reauth-proxy/internal/testutil"
 	"go-reauth-proxy/pkg/grpc/pb"
 	"go-reauth-proxy/pkg/models"
 	"go-reauth-proxy/pkg/rpcbridge"
@@ -102,7 +103,7 @@ func TestGatewayControlHostRulesRoundTrip(t *testing.T) {
 
 func TestGatewayControlStaticHostRuleRoundTrip(t *testing.T) {
 	server := newGatewayControlTestServer(t, "secret")
-	staticRoot := t.TempDir()
+	staticRoot := testutil.StaticDir(t)
 	ctx := authTestContext()
 	_, err := server.SetHostRules(ctx, &pb.HostRules{Items: []*pb.HostRule{{
 		Host:       "static.example.test",
@@ -138,7 +139,7 @@ func TestGatewayControlStaticHostRuleRoundTrip(t *testing.T) {
 
 func TestGatewayControlProbeStaticPath(t *testing.T) {
 	server := newGatewayControlTestServer(t, "secret")
-	filePath := filepath.Join(t.TempDir(), "asset.txt")
+	filePath := filepath.Join(testutil.StaticDir(t), "asset.txt")
 	if err := os.WriteFile(filePath, []byte("ok"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -172,7 +173,7 @@ func TestGatewayControlProbeStaticPath(t *testing.T) {
 
 func TestGatewayControlBrowseStaticPath(t *testing.T) {
 	server := newGatewayControlTestServer(t, "secret")
-	root := t.TempDir()
+	root := testutil.StaticDir(t)
 	directoryPath := filepath.Join(root, "folder")
 	if err := os.Mkdir(directoryPath, 0o755); err != nil {
 		t.Fatal(err)

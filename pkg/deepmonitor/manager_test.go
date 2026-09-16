@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -102,7 +103,7 @@ func TestManagerLifecyclePersistenceAndPayload(t *testing.T) {
 	if !payloadFound {
 		t.Fatal("archive missing captured payload")
 	}
-	if info, err := os.Stat(filepath.Join(logsDir, "deep-monitor", session.Id, "session.json")); err != nil || info.Mode().Perm() != 0o600 {
+	if info, err := os.Stat(filepath.Join(logsDir, "deep-monitor", session.Id, "session.json")); err != nil || (runtime.GOOS != "windows" && info.Mode().Perm() != 0o600) {
 		t.Fatalf("session metadata permissions = %v, %v", info, err)
 	}
 	manager.Close()

@@ -89,17 +89,8 @@ jobs:
       - name: Read active log segments on the native filesystem
         run: go test ./pkg/gatewaylog -run '^TestLogSegments' -count=1
 
-      - name: Exercise static host routing and policy integration
-        env:
-          # Go's Windows test temp directory lives under LOCALAPPDATA. The
-          # production gateway protects that tree, so isolate test fixtures
-          # from deployment-derived protected roots in this smoke step. Keep
-          # the Go build cache explicit because Go otherwise derives it from
-          # LOCALAPPDATA on Windows.
-          APPDATA: ""
-          LOCALAPPDATA: ""
-          GOCACHE: ${{ runner.temp }}/go-build
-        run: go test ./pkg/proxy -run '^TestStaticHost' -count=1
+      - name: Exercise all gateway tests on the native platform
+        run: go test ./... -count=1
 
   hot-benchmarks:
     if: github.event_name == 'pull_request'

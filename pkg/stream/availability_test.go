@@ -34,14 +34,14 @@ func TestScheduleClosedRejectsTCPBeforeAuthOrDial(t *testing.T) {
 	})
 
 	client, server := net.Pipe()
+	if err := client.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
+		t.Fatalf("SetReadDeadline: %v", err)
+	}
 	done := make(chan struct{})
 	go func() {
 		manager.handleConn(server, key)
 		close(done)
 	}()
-	if err := client.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
-		t.Fatalf("SetReadDeadline: %v", err)
-	}
 	buffer := make([]byte, 1)
 	if _, err := client.Read(buffer); err == nil {
 		t.Fatal("schedule-closed TCP connection remained open")

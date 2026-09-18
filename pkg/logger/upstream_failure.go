@@ -24,7 +24,7 @@ func UpstreamFailure(target *url.URL, traceID, route, class string, err error) {
 		return
 	}
 	switch route {
-	case "host_rule", "host_location", "path_rule":
+	case "host_rule", "host_location", "path_rule", "auth_proxy":
 	default:
 		return
 	}

@@ -29,7 +29,7 @@ func TestUpstreamFailureDefaultLoggingAndRedaction(t *testing.T) {
 	UpstreamFailure(target, trace, "host_rule", "bad_gateway", errors.New("password secret /private token=secret"))
 	UpstreamFailure(target, trace, "host_rule", "timeout", context.Canceled)
 	other, _ := url.Parse("http://another.example")
-	UpstreamFailure(other, trace, "host_rule", "connect_unavailable", failure)
+	UpstreamFailure(other, trace, "auth_proxy", "connect_unavailable", failure)
 	FlushDiagnosticLogger()
 	data, err := os.ReadFile(filepath.Join(dir, "gateway.jsonl"))
 	if err != nil {
@@ -41,6 +41,9 @@ func TestUpstreamFailureDefaultLoggingAndRedaction(t *testing.T) {
 		}
 	}
 	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+	if !strings.Contains(string(data), `"route_type":"auth_proxy"`) {
+		t.Fatalf("missing auth proxy failure: %s", data)
+	}
 	if len(lines) != 3 {
 		t.Fatalf("want deduplicated failure, unknown error, independent origin: %s", data)
 	}

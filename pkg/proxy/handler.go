@@ -161,6 +161,8 @@ type Handler struct {
 	loggedInActive             sync.Map
 	authBridge                 authBridgeClient
 	proxyTransport             *http.Transport
+	authProxyTransport         *http.Transport
+	authTransportOnce          sync.Once
 	proxyRoundTripper          http.RoundTripper
 	preflightSkipUntilUnixNano atomic.Int64
 	authCache                  authStateCache
@@ -6004,11 +6006,13 @@ func (h *Handler) handleAuthProxyRoute(w http.ResponseWriter, r *http.Request, s
 
 	proxy := httputil.NewSingleHostReverseProxy(targetURL)
 	proxy.BufferPool = sharedProxyBufferPool
-	transport := h.proxyTransport
-	if transport == nil {
-		transport = newProxyTransport()
-	}
+	transport := h.authTransport()
 	proxy.Transport = h.monitoredTransport(transport)
+	proxy.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
+		logger.UpstreamFailure(targetURL, requestTraceID(r), "auth_proxy", classifyUpstreamFailure(err).class, err)
+		applyNoStoreCacheHeaders(w.Header())
+		h.handleUpstreamUnavailable(w, r, snapshot.unmatchedRoute, snapshot.rules, false, err)
+	}
 
 	originalDirector := proxy.Director
 	proxy.Director = func(req *http.Request) {
@@ -6440,6 +6444,9 @@ func (h *Handler) proxyToHostLocationTarget(w http.ResponseWriter, r *http.Reque
 	suppressToolbarForUA := response.ShouldSuppressToolbarForUserAgent(r.UserAgent())
 	toolbarCandidate := targetSupportsHTMLFeatures && gatewayPortalEnabled && authResult.authenticated && !matchedRule.SuppressToolbar && !authResult.suppressToolbar && !suppressToolbarForUA
 	isAuthHostProxy := snapshot.authConfig.AuthHost != "" && normalizeRequestHost(matchedRule.Host) == snapshot.authConfig.AuthHost
+	if isAuthHostProxy && isInternalAuthTarget(transportTargetURL, snapshot.authConfig.AuthPort) {
+		transport = h.authTransport()
+	}
 	if event := debugProxyEvent("reverse_proxy_start", requestID); event != nil {
 		event.Str("route_type", "host_location").
 			Str("route_key", logger.SanitizeLogString(hostLocationRouteKey(&matchedRule, &location))).
@@ -6624,6 +6631,9 @@ func (h *Handler) proxyToHostTarget(w http.ResponseWriter, r *http.Request, snap
 	suppressToolbarForUA := response.ShouldSuppressToolbarForUserAgent(r.UserAgent())
 	toolbarCandidate := targetSupportsHTMLFeatures && gatewayPortalEnabled && authResult.authenticated && !matchedRule.SuppressToolbar && !authResult.suppressToolbar && !suppressToolbarForUA
 	isAuthHostProxy := snapshot.authConfig.AuthHost != "" && normalizeRequestHost(matchedRule.Host) == snapshot.authConfig.AuthHost
+	if isAuthHostProxy && isInternalAuthTarget(transportTargetURL, snapshot.authConfig.AuthPort) {
+		transport = h.authTransport()
+	}
 	if event := debugProxyEvent("reverse_proxy_start", requestID); event != nil {
 		event.Str("route_type", "host_rule").
 			Str("route_key", logger.SanitizeLogString(matchedRule.Host)).

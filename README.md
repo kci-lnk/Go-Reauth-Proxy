@@ -289,6 +289,14 @@ HTTP/2 上游连接连续 30 秒未收到帧时，网关发送 PING；10 秒内�
 
 探活失败通过运行诊断日志记录 `component=proxy`、`event=http2_upstream_healthcheck_failed`、`reason_code=conn_close_lost_ping`，使用现有日志的重复事件聚合机制。部署新版本后新建的 Transport 默认启用，无需配置迁移。此机制处理连接失去响应，不能解决仍能回应 PING 的上游应用卡顿。
 
+### 上游连接失败诊断
+
+三类反向代理路由失败时默认向 `runtime/logs/gateway.jsonl` 写入 `event=upstream_failure`，不需要开启控制台或调试日志。`reason_code` 区分连接不可用、DNS、超时、EOF 和重置；`fields` 包含目标 origin（协议、主机和端口）、服务端生成的 `trace_id`、路由类型、连接阶段，以及可用时的实际 TCP 地址、系统 errno 和规范化错误类别。未知错误不记录原文。取消请求不产生此告警，错误响应和重试策略保持不变。
+
+这是一项专用的故障诊断例外：本地受限权限日志保留上游地址，便于排查容器端口、DNS 和连接问题，但不记录用户信息、URL 路径、查询参数、请求头、请求体或任意错误文本。分享日志前应按需遮蔽内部地址。相同 origin、路由、类别、阶段和错误类型在 60 秒内合并，下一条记录的 `count` 包含期间抑制的重复次数；沿用有界异步队列、重复键数量上限及日志轮转。队列过载可能丢弃记录，告警次数不能当作请求失败总数。可使用 `trace_id` 关联已启用的访问日志；未记录本机访问时仍保留此故障诊断。
+
+测试机可显式运行只读对照：`FN_KNOCK_TEST_UPSTREAM=https://127.0.0.1:19123/ go test ./pkg/proxy -run '^TestUpstreamLiveProtocolComparison$' -v -count=1`。仅接受 loopback HTTPS 根地址，分别验证 HTTP/1.1、HTTP/2 的首次访问、45 秒空闲后的访问和 8 路并发，输出请求失败、连接复用和 PING 失败数量。默认测试不访问现场上游；慢响应、静默 SSE 和断连恢复由 `TestTransportFault*` 故障注入测试覆盖。
+
 ### TLS 入口
 
 - `single_active`：部署一个活动证书

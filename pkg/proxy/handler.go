@@ -6515,6 +6515,7 @@ func (h *Handler) proxyToHostLocationTarget(w http.ResponseWriter, r *http.Reque
 					Send()
 			}
 			log.Printf("Host location proxy error: %v", err)
+			logger.UpstreamFailure(transportTargetURL, requestTraceID(r), "host_location", classifyUpstreamFailure(err).class, err)
 			h.handleUpstreamUnavailable(w, r, snapshot.unmatchedRoute, snapshot.rules, authResult.authenticated, err)
 		},
 	}
@@ -6687,6 +6688,7 @@ func (h *Handler) proxyToHostTarget(w http.ResponseWriter, r *http.Request, snap
 					Send()
 			}
 			log.Printf("Host proxy error: %v", err)
+			logger.UpstreamFailure(transportTargetURL, requestTraceID(r), "host_rule", classifyUpstreamFailure(err).class, err)
 			h.handleUpstreamUnavailable(w, r, snapshot.unmatchedRoute, snapshot.rules, authResult.authenticated, err)
 		},
 	}
@@ -6852,6 +6854,7 @@ func (h *Handler) proxyToRuleTarget(w http.ResponseWriter, r *http.Request, snap
 					Send()
 			}
 			log.Printf("Proxy error: %v", err)
+			logger.UpstreamFailure(transportTargetURL, requestTraceID(r), "path_rule", classifyUpstreamFailure(err).class, err)
 			h.handleUpstreamUnavailable(w, r, snapshot.unmatchedRoute, snapshot.rules, authResult.authenticated, err)
 		},
 	}

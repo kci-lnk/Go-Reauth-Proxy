@@ -1562,7 +1562,7 @@ func (h *Handler) runPreflight(r *http.Request, authConfig models.AuthConfig, cl
 
 	if canLookup && ttl > 0 {
 		sharedRequest := r.WithContext(context.WithoutCancel(r.Context()))
-		resultCh := h.preflightCache.group.DoChan(lookup.cacheKey, func() (any, error) {
+		resultCh := h.preflightCache.group.DoChan(lookup.cacheKey.flightKey(), func() (any, error) {
 			if entry, ok := h.preflightCacheGet(lookup.cacheKey, time.Now()); ok {
 				if shouldBypassFNAppNegativePreflightCache(r, entry.decision) {
 					h.preflightCache.mu.Lock()

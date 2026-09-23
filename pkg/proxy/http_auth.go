@@ -105,14 +105,14 @@ func (h *Handler) storeCombinedHTTPAuth(r *http.Request, authConfig models.AuthC
 	if ttl <= 0 {
 		return execution
 	}
-	cacheKey := ""
+	var cacheKey authCacheKey
 	switch response.GetVerifyCacheScope() {
 	case pb.AuthCacheScope_AUTH_CACHE_SCOPE_EXACT_REQUEST:
 		cacheKey = authLookup.cacheKey
 	case pb.AuthCacheScope_AUTH_CACHE_SCOPE_HOST:
 		cacheKey = authLookup.hostCacheKey
 	}
-	if cacheKey == "" {
+	if cacheKey == (authCacheKey{}) {
 		return execution
 	}
 	entry := authCacheEntry{
@@ -256,7 +256,7 @@ func (h *Handler) executeCombinedHTTPAuthMiss(r *http.Request, authConfig models
 	}
 
 	sharedRequest := r.WithContext(context.WithoutCancel(r.Context()))
-	key := "authorize-http:" + preflightLookup.cacheKey + ":" + authLookup.cacheKey
+	key := "authorize-http:" + preflightLookup.cacheKey.flightKey() + ":" + authLookup.cacheKey.flightKey()
 	resultCh := h.authCache.group.DoChan(key, func() (any, error) {
 		return run(sharedRequest), nil
 	})
@@ -686,16 +686,16 @@ func shouldProbeAuthForToolbar(r *http.Request, authConfig models.AuthConfig, po
 		!response.ShouldSuppressToolbarForUserAgent(r.UserAgent())
 }
 
-func (h *Handler) cachedAuthEntry(lookup authCacheLookup, now time.Time) (*authCacheEntry, string, bool) {
+func (h *Handler) cachedAuthEntry(lookup authCacheLookup, now time.Time) (*authCacheEntry, authCacheKey, bool) {
 	if entry, ok := h.authCacheGet(lookup.cacheKey, now); ok {
 		return entry, lookup.cacheKey, true
 	}
-	if lookup.hostCacheKey != "" {
+	if lookup.hostCacheKey != (authCacheKey{}) {
 		if entry, ok := h.authCacheGet(lookup.hostCacheKey, now); ok {
 			return entry, lookup.hostCacheKey, true
 		}
 	}
-	return nil, "", false
+	return nil, authCacheKey{}, false
 }
 
 type authBridgeFailure struct {
@@ -775,7 +775,7 @@ func (h *Handler) executeAuthCheck(r *http.Request, authConfig models.AuthConfig
 		}
 
 		sharedRequest := r.WithContext(context.WithoutCancel(r.Context()))
-		resultCh := h.authCache.group.DoChan(lookup.cacheKey, func() (any, error) {
+		resultCh := h.authCache.group.DoChan(lookup.cacheKey.flightKey(), func() (any, error) {
 			if entry, cacheKey, ok := h.cachedAuthEntry(lookup, time.Now()); ok {
 				if shouldBypassFNAppUnauthorizedAuthCache(r, entry.result) {
 					h.authCache.mu.Lock()
@@ -799,14 +799,14 @@ func (h *Handler) executeAuthCheck(r *http.Request, authConfig models.AuthConfig
 			plan := h.performAuthCheck(sharedRequest, authConfig, clientIP, accessMode, requestID, requestAuth)
 			if plan.errorPage == nil && len(plan.setCookies) == 0 {
 				if ttl := authCacheTTL(authConfig, plan.result); ttl > 0 {
-					cacheKey := ""
+					var cacheKey authCacheKey
 					switch plan.cacheScope {
 					case pb.AuthCacheScope_AUTH_CACHE_SCOPE_EXACT_REQUEST:
 						cacheKey = lookup.cacheKey
 					case pb.AuthCacheScope_AUTH_CACHE_SCOPE_HOST:
 						cacheKey = lookup.hostCacheKey
 					}
-					if cacheKey == "" {
+					if cacheKey == (authCacheKey{}) {
 						return authCheckExecution{plan: plan}, nil
 					}
 					entry := authCacheEntry{

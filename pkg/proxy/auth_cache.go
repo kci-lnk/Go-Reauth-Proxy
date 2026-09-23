@@ -31,12 +31,20 @@ const (
 	identitySourceIPPrefix     = "ip:"
 )
 
+// authCacheKey keeps request digests binary. Identity keys remain hexadecimal
+// because logout invalidation and active-session tracking share that format.
+type authCacheKey [sha256.Size]byte
+
+func (key authCacheKey) flightKey() string { return string(key[:]) }
+
+func (key authCacheKey) String() string { return hex.EncodeToString(key[:]) }
+
 type authStateCache struct {
 	mu             sync.RWMutex
-	entries        map[string]*authCacheEntry
-	keysByIdentity map[string]map[string]struct{}
+	entries        map[authCacheKey]*authCacheEntry
+	keysByIdentity map[string]map[authCacheKey]struct{}
 	order          *list.List
-	orderByKey     map[string]*list.Element
+	orderByKey     map[authCacheKey]*list.Element
 	group          singleflight.Group
 }
 
@@ -63,21 +71,21 @@ func authRouteIdentityFromRequest(r *http.Request) string {
 
 type preflightStateCache struct {
 	mu             sync.RWMutex
-	entries        map[string]*preflightCacheEntry
-	keysByIdentity map[string]map[string]struct{}
+	entries        map[authCacheKey]*preflightCacheEntry
+	keysByIdentity map[string]map[authCacheKey]struct{}
 	order          *list.List
-	orderByKey     map[string]*list.Element
+	orderByKey     map[authCacheKey]*list.Element
 	group          singleflight.Group
 }
 
 type authCacheLookup struct {
-	cacheKey     string
-	hostCacheKey string
+	cacheKey     authCacheKey
+	hostCacheKey authCacheKey
 	identityKey  string
 }
 
 type preflightCacheLookup struct {
-	cacheKey    string
+	cacheKey    authCacheKey
 	identityKey string
 }
 
@@ -125,19 +133,19 @@ type authSetCookieMutations struct {
 
 func newAuthStateCache() authStateCache {
 	return authStateCache{
-		entries:        make(map[string]*authCacheEntry),
-		keysByIdentity: make(map[string]map[string]struct{}),
+		entries:        make(map[authCacheKey]*authCacheEntry),
+		keysByIdentity: make(map[string]map[authCacheKey]struct{}),
 		order:          list.New(),
-		orderByKey:     make(map[string]*list.Element),
+		orderByKey:     make(map[authCacheKey]*list.Element),
 	}
 }
 
 func newPreflightStateCache() preflightStateCache {
 	return preflightStateCache{
-		entries:        make(map[string]*preflightCacheEntry),
-		keysByIdentity: make(map[string]map[string]struct{}),
+		entries:        make(map[authCacheKey]*preflightCacheEntry),
+		keysByIdentity: make(map[string]map[authCacheKey]struct{}),
 		order:          list.New(),
-		orderByKey:     make(map[string]*list.Element),
+		orderByKey:     make(map[authCacheKey]*list.Element),
 	}
 }
 
@@ -358,7 +366,7 @@ func buildPreflightCacheLookup(r *http.Request, clientIP string, accessMode stri
 	return dimensions.preflightLookup(isMatch), true
 }
 
-func authCacheLookupKey(identityKey, clientIPDimension, accessMode, scheme, method, host string, requestURL *url.URL) string {
+func authCacheLookupKey(identityKey, clientIPDimension, accessMode, scheme, method, host string, requestURL *url.URL) authCacheKey {
 	var stack [authCacheHashBufferSize]byte
 	buf := stack[:0]
 	buf = appendCacheKeyField(buf, identityKey)
@@ -368,10 +376,10 @@ func authCacheLookupKey(identityKey, clientIPDimension, accessMode, scheme, meth
 	buf = appendCacheKeyField(buf, method)
 	buf = appendCacheKeyField(buf, host)
 	buf = appendCacheKeyRequestURIField(buf, requestURL)
-	return sha256HexBytes(buf)
+	return sha256.Sum256(buf)
 }
 
-func authCacheHostLookupKey(identityKey, clientIPDimension, accessMode, scheme, host string) string {
+func authCacheHostLookupKey(identityKey, clientIPDimension, accessMode, scheme, host string) authCacheKey {
 	var stack [authCacheHashBufferSize]byte
 	buf := stack[:0]
 	buf = appendCacheKeyField(buf, "host")
@@ -380,10 +388,10 @@ func authCacheHostLookupKey(identityKey, clientIPDimension, accessMode, scheme, 
 	buf = appendCacheKeyField(buf, accessMode)
 	buf = appendCacheKeyField(buf, scheme)
 	buf = appendCacheKeyField(buf, host)
-	return sha256HexBytes(buf)
+	return sha256.Sum256(buf)
 }
 
-func preflightCacheLookupKey(identityKey, clientIPDimension, accessMode, scheme, host, isMatch string, requestURL *url.URL) string {
+func preflightCacheLookupKey(identityKey, clientIPDimension, accessMode, scheme, host, isMatch string, requestURL *url.URL) authCacheKey {
 	var stack [authCacheHashBufferSize]byte
 	buf := stack[:0]
 	buf = appendCacheKeyField(buf, identityKey)
@@ -393,7 +401,7 @@ func preflightCacheLookupKey(identityKey, clientIPDimension, accessMode, scheme,
 	buf = appendCacheKeyField(buf, host)
 	buf = appendCacheKeyField(buf, isMatch)
 	buf = appendCacheKeyRequestURIField(buf, requestURL)
-	return sha256HexBytes(buf)
+	return sha256.Sum256(buf)
 }
 
 func appendCacheKeyField(buf []byte, field string) []byte {
@@ -478,7 +486,7 @@ func copySetCookieHeaders(values []string) []string {
 	return cloned
 }
 
-func (h *Handler) authCacheGet(cacheKey string, now time.Time) (*authCacheEntry, bool) {
+func (h *Handler) authCacheGet(cacheKey authCacheKey, now time.Time) (*authCacheEntry, bool) {
 	cache := &h.authCache
 
 	cache.mu.RLock()
@@ -501,7 +509,7 @@ func (h *Handler) authCacheGet(cacheKey string, now time.Time) (*authCacheEntry,
 	return entry, true
 }
 
-func (h *Handler) preflightCacheGet(cacheKey string, now time.Time) (*preflightCacheEntry, bool) {
+func (h *Handler) preflightCacheGet(cacheKey authCacheKey, now time.Time) (*preflightCacheEntry, bool) {
 	cache := &h.preflightCache
 
 	cache.mu.RLock()
@@ -524,7 +532,7 @@ func (h *Handler) preflightCacheGet(cacheKey string, now time.Time) (*preflightC
 	return entry, true
 }
 
-func (h *Handler) authCacheStore(cacheKey string, entry authCacheEntry, _ time.Time) *authCacheEntry {
+func (h *Handler) authCacheStore(cacheKey authCacheKey, entry authCacheEntry, _ time.Time) *authCacheEntry {
 	cache := &h.authCache
 	// Published entries are immutable and may outlive invalidation while an
 	// in-flight request still references them. Never recycle their storage.
@@ -538,7 +546,7 @@ func (h *Handler) authCacheStore(cacheKey string, entry authCacheEntry, _ time.T
 	if entry.identityKey != "" {
 		keys := cache.keysByIdentity[entry.identityKey]
 		if keys == nil {
-			keys = make(map[string]struct{})
+			keys = make(map[authCacheKey]struct{})
 			cache.keysByIdentity[entry.identityKey] = keys
 		}
 		keys[cacheKey] = struct{}{}
@@ -548,7 +556,7 @@ func (h *Handler) authCacheStore(cacheKey string, entry authCacheEntry, _ time.T
 	return &entry
 }
 
-func (h *Handler) preflightCacheStore(cacheKey string, entry preflightCacheEntry, _ time.Time) *preflightCacheEntry {
+func (h *Handler) preflightCacheStore(cacheKey authCacheKey, entry preflightCacheEntry, _ time.Time) *preflightCacheEntry {
 	cache := &h.preflightCache
 
 	cache.mu.Lock()
@@ -558,7 +566,7 @@ func (h *Handler) preflightCacheStore(cacheKey string, entry preflightCacheEntry
 	if entry.identityKey != "" {
 		keys := cache.keysByIdentity[entry.identityKey]
 		if keys == nil {
-			keys = make(map[string]struct{})
+			keys = make(map[authCacheKey]struct{})
 			cache.keysByIdentity[entry.identityKey] = keys
 		}
 		keys[cacheKey] = struct{}{}
@@ -602,21 +610,21 @@ func (h *Handler) clearAuthCache() {
 	preflightCache := &h.preflightCache
 
 	authCache.mu.Lock()
-	authCache.entries = make(map[string]*authCacheEntry)
-	authCache.keysByIdentity = make(map[string]map[string]struct{})
+	authCache.entries = make(map[authCacheKey]*authCacheEntry)
+	authCache.keysByIdentity = make(map[string]map[authCacheKey]struct{})
 	authCache.order = list.New()
-	authCache.orderByKey = make(map[string]*list.Element)
+	authCache.orderByKey = make(map[authCacheKey]*list.Element)
 	authCache.mu.Unlock()
 
 	preflightCache.mu.Lock()
-	preflightCache.entries = make(map[string]*preflightCacheEntry)
-	preflightCache.keysByIdentity = make(map[string]map[string]struct{})
+	preflightCache.entries = make(map[authCacheKey]*preflightCacheEntry)
+	preflightCache.keysByIdentity = make(map[string]map[authCacheKey]struct{})
 	preflightCache.order = list.New()
-	preflightCache.orderByKey = make(map[string]*list.Element)
+	preflightCache.orderByKey = make(map[authCacheKey]*list.Element)
 	preflightCache.mu.Unlock()
 }
 
-func (c *authStateCache) deleteEntryLocked(cacheKey string) {
+func (c *authStateCache) deleteEntryLocked(cacheKey authCacheKey) {
 	entry, ok := c.entries[cacheKey]
 	if !ok {
 		return
@@ -645,11 +653,11 @@ func (c *authStateCache) enforceMaxEntriesLocked(limit int) {
 		if oldest == nil {
 			return
 		}
-		c.deleteEntryLocked(oldest.Value.(string))
+		c.deleteEntryLocked(oldest.Value.(authCacheKey))
 	}
 }
 
-func (c *preflightStateCache) deleteEntryLocked(cacheKey string) {
+func (c *preflightStateCache) deleteEntryLocked(cacheKey authCacheKey) {
 	entry, ok := c.entries[cacheKey]
 	if !ok {
 		return
@@ -678,7 +686,7 @@ func (c *preflightStateCache) enforceMaxEntriesLocked(limit int) {
 		if oldest == nil {
 			return
 		}
-		c.deleteEntryLocked(oldest.Value.(string))
+		c.deleteEntryLocked(oldest.Value.(authCacheKey))
 	}
 }
 

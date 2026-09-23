@@ -35,11 +35,11 @@ func TestRouteUpdatesClearAuthenticationCaches(t *testing.T) {
 	handler, _ := newAdditionalProxyTestHandler(t)
 	storeEntries := func() {
 		now := time.Now()
-		handler.authCacheStore("stale-auth", authCacheEntry{
+		handler.authCacheStore(testAuthCacheKey("stale-auth"), authCacheEntry{
 			expiresAt:   now.Add(time.Minute),
 			identityKey: "identity",
 		}, now)
-		handler.preflightCacheStore("stale-preflight", preflightCacheEntry{
+		handler.preflightCacheStore(testAuthCacheKey("stale-preflight"), preflightCacheEntry{
 			expiresAt:   now.Add(time.Minute),
 			identityKey: "identity",
 		}, now)

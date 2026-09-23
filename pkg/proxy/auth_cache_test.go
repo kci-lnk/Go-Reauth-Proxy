@@ -27,6 +27,8 @@ var (
 
 const benchmarkAuthCacheCapacity = 8192
 
+func testAuthCacheKey(value string) authCacheKey { return sha256.Sum256([]byte(value)) }
+
 func TestAuthCachePublishedEntrySurvivesReplacementAndInvalidation(t *testing.T) {
 	h := &Handler{authCache: newAuthStateCache(), preflightCache: newPreflightStateCache()}
 	now := time.Now()
@@ -35,8 +37,8 @@ func TestAuthCachePublishedEntrySurvivesReplacementAndInvalidation(t *testing.T)
 		result:     authCheckResult{allowed: true, allowedSubdomainHosts: map[string]struct{}{"original.test": {}}},
 		setCookies: []string{"sid=original"},
 	}
-	h.authCacheStore("key", source, now)
-	published, ok := h.authCacheGet("key", now)
+	h.authCacheStore(testAuthCacheKey("key"), source, now)
+	published, ok := h.authCacheGet(testAuthCacheKey("key"), now)
 	if !ok {
 		t.Fatal("entry missing")
 	}
@@ -45,7 +47,7 @@ func TestAuthCachePublishedEntrySurvivesReplacementAndInvalidation(t *testing.T)
 	var workers sync.WaitGroup
 	workers.Go(func() {
 		for range 100 {
-			h.authCacheStore("key", authCacheEntry{identityKey: "identity", expiresAt: now.Add(time.Hour)}, now)
+			h.authCacheStore(testAuthCacheKey("key"), authCacheEntry{identityKey: "identity", expiresAt: now.Add(time.Hour)}, now)
 			h.authCacheInvalidateByIdentityKeys("identity")
 		}
 	})
@@ -58,7 +60,7 @@ func TestAuthCachePublishedEntrySurvivesReplacementAndInvalidation(t *testing.T)
 		}
 	}
 	workers.Wait()
-	if _, ok := h.authCacheGet("key", now); ok {
+	if _, ok := h.authCacheGet(testAuthCacheKey("key"), now); ok {
 		t.Fatal("invalidated entry remains reachable from the cache")
 	}
 }
@@ -66,7 +68,7 @@ func TestAuthCachePublishedEntrySurvivesReplacementAndInvalidation(t *testing.T)
 func TestAuthCacheExactEntryPrecedesHostEntry(t *testing.T) {
 	h := &Handler{authCache: newAuthStateCache(), preflightCache: newPreflightStateCache()}
 	now := time.Now()
-	lookup := authCacheLookup{cacheKey: "exact", hostCacheKey: "host"}
+	lookup := authCacheLookup{cacheKey: testAuthCacheKey("exact"), hostCacheKey: testAuthCacheKey("host")}
 	h.authCacheStore(lookup.hostCacheKey, authCacheEntry{result: authCheckResult{allowed: true}, expiresAt: now.Add(time.Hour)}, now)
 	h.authCacheStore(lookup.cacheKey, authCacheEntry{result: authCheckResult{decision: "denied"}, expiresAt: now.Add(time.Minute)}, now)
 	entry, key, ok := h.cachedAuthEntry(lookup, now)
@@ -269,7 +271,7 @@ func TestAuthCacheLookupKeysMatchCanonicalHashFields(t *testing.T) {
 	if got, want := authLookup.identityKey, identityKey; got != want {
 		t.Fatalf("auth lookup identityKey = %q, want %q", got, want)
 	}
-	if got, want := authLookup.cacheKey, legacySHA256HexString(authRaw); got != want {
+	if got, want := authLookup.cacheKey.String(), legacySHA256HexString(authRaw); got != want {
 		t.Fatalf("auth lookup cacheKey = %q, want %q", got, want)
 	}
 
@@ -289,7 +291,7 @@ func TestAuthCacheLookupKeysMatchCanonicalHashFields(t *testing.T) {
 	if got, want := preflightLookup.identityKey, identityKey; got != want {
 		t.Fatalf("preflight lookup identityKey = %q, want %q", got, want)
 	}
-	if got, want := preflightLookup.cacheKey, legacySHA256HexString(preflightRaw); got != want {
+	if got, want := preflightLookup.cacheKey.String(), legacySHA256HexString(preflightRaw); got != want {
 		t.Fatalf("preflight lookup cacheKey = %q, want %q", got, want)
 	}
 }
@@ -523,7 +525,7 @@ func TestAuthCacheStoreEnforcesMaxEntriesAndIdentityIndex(t *testing.T) {
 
 	for i := 0; i <= authCacheMaxEntries; i++ {
 		suffix := strconv.Itoa(i)
-		handler.authCacheStore("key-"+suffix, authCacheEntry{
+		handler.authCacheStore(testAuthCacheKey("key-"+suffix), authCacheEntry{
 			result:      authCheckResult{allowed: true, authenticated: true},
 			expiresAt:   now.Add(time.Duration(i+1) * time.Second),
 			identityKey: "identity-" + suffix,
@@ -533,13 +535,13 @@ func TestAuthCacheStoreEnforcesMaxEntriesAndIdentityIndex(t *testing.T) {
 	if got := len(handler.authCache.entries); got != authCacheMaxEntries {
 		t.Fatalf("auth cache entries = %d, want %d", got, authCacheMaxEntries)
 	}
-	if _, ok := handler.authCache.entries["key-0"]; ok {
+	if _, ok := handler.authCache.entries[testAuthCacheKey("key-0")]; ok {
 		t.Fatal("oldest auth cache entry was not evicted")
 	}
 	if _, ok := handler.authCache.keysByIdentity["identity-0"]; ok {
 		t.Fatal("oldest auth cache identity index was not removed")
 	}
-	if _, ok := handler.authCache.entries["key-"+strconv.Itoa(authCacheMaxEntries)]; !ok {
+	if _, ok := handler.authCache.entries[testAuthCacheKey("key-"+strconv.Itoa(authCacheMaxEntries))]; !ok {
 		t.Fatal("newest auth cache entry was evicted unexpectedly")
 	}
 }
@@ -553,18 +555,18 @@ func TestAuthCacheFIFOOrderIndexDoesNotLeakAtSmallCapacity(t *testing.T) {
 		identityKey: "identity-a",
 	}
 
-	storeAuthCacheEntryWithLimit(&cache, "key-a", entry, 2)
-	storeAuthCacheEntryWithLimit(&cache, "key-b", entry, 2)
-	storeAuthCacheEntryWithLimit(&cache, "key-a", entry, 2)
-	storeAuthCacheEntryWithLimit(&cache, "key-c", entry, 2)
+	storeAuthCacheEntryWithLimit(&cache, testAuthCacheKey("key-a"), entry, 2)
+	storeAuthCacheEntryWithLimit(&cache, testAuthCacheKey("key-b"), entry, 2)
+	storeAuthCacheEntryWithLimit(&cache, testAuthCacheKey("key-a"), entry, 2)
+	storeAuthCacheEntryWithLimit(&cache, testAuthCacheKey("key-c"), entry, 2)
 
-	if _, ok := cache.entries["key-b"]; ok {
+	if _, ok := cache.entries[testAuthCacheKey("key-b")]; ok {
 		t.Fatal("FIFO cache retained the oldest key after capacity eviction")
 	}
-	if _, ok := cache.entries["key-a"]; !ok {
+	if _, ok := cache.entries[testAuthCacheKey("key-a")]; !ok {
 		t.Fatal("FIFO cache evicted the refreshed key")
 	}
-	if _, ok := cache.entries["key-c"]; !ok {
+	if _, ok := cache.entries[testAuthCacheKey("key-c")]; !ok {
 		t.Fatal("FIFO cache did not retain the newest key")
 	}
 	if got := cache.order.Len(); got != 2 {
@@ -573,20 +575,20 @@ func TestAuthCacheFIFOOrderIndexDoesNotLeakAtSmallCapacity(t *testing.T) {
 	if got := len(cache.orderByKey); got != 2 {
 		t.Fatalf("FIFO order index length = %d, want 2", got)
 	}
-	if got := cache.order.Front().Value.(string); got != "key-a" {
+	if got := cache.order.Front().Value.(authCacheKey); got != testAuthCacheKey("key-a") {
 		t.Fatalf("FIFO oldest key = %q, want key-a", got)
 	}
-	if got := cache.order.Back().Value.(string); got != "key-c" {
+	if got := cache.order.Back().Value.(authCacheKey); got != testAuthCacheKey("key-c") {
 		t.Fatalf("FIFO newest key = %q, want key-c", got)
 	}
 	identityKeys := cache.keysByIdentity[entry.identityKey]
 	if len(identityKeys) != 2 {
 		t.Fatalf("identity index size = %d, want 2", len(identityKeys))
 	}
-	if _, ok := identityKeys["key-b"]; ok {
+	if _, ok := identityKeys[testAuthCacheKey("key-b")]; ok {
 		t.Fatal("identity index retained the evicted key")
 	}
-	for _, key := range []string{"key-a", "key-c"} {
+	for _, key := range []authCacheKey{testAuthCacheKey("key-a"), testAuthCacheKey("key-c")} {
 		element := cache.orderByKey[key]
 		if element == nil || element.Value != key {
 			t.Fatalf("order index for %q is missing or stale", key)
@@ -594,8 +596,8 @@ func TestAuthCacheFIFOOrderIndexDoesNotLeakAtSmallCapacity(t *testing.T) {
 	}
 
 	cache.mu.Lock()
-	cache.deleteEntryLocked("key-a")
-	cache.deleteEntryLocked("key-c")
+	cache.deleteEntryLocked(testAuthCacheKey("key-a"))
+	cache.deleteEntryLocked(testAuthCacheKey("key-c"))
 	cache.mu.Unlock()
 	if len(cache.entries) != 0 || cache.order.Len() != 0 || len(cache.orderByKey) != 0 || len(cache.keysByIdentity) != 0 {
 		t.Fatalf("cache indexes leaked after deletion: entries=%d order=%d order_index=%d identities=%d",
@@ -609,7 +611,7 @@ func TestPreflightCacheStoreEnforcesMaxEntriesAndIdentityIndex(t *testing.T) {
 
 	for i := 0; i <= authCacheMaxEntries; i++ {
 		suffix := strconv.Itoa(i)
-		handler.preflightCacheStore("key-"+suffix, preflightCacheEntry{
+		handler.preflightCacheStore(testAuthCacheKey("key-"+suffix), preflightCacheEntry{
 			decision:    preflightDecision{},
 			expiresAt:   now.Add(time.Duration(i+1) * time.Second),
 			identityKey: "identity-" + suffix,
@@ -619,13 +621,13 @@ func TestPreflightCacheStoreEnforcesMaxEntriesAndIdentityIndex(t *testing.T) {
 	if got := len(handler.preflightCache.entries); got != authCacheMaxEntries {
 		t.Fatalf("preflight cache entries = %d, want %d", got, authCacheMaxEntries)
 	}
-	if _, ok := handler.preflightCache.entries["key-0"]; ok {
+	if _, ok := handler.preflightCache.entries[testAuthCacheKey("key-0")]; ok {
 		t.Fatal("oldest preflight cache entry was not evicted")
 	}
 	if _, ok := handler.preflightCache.keysByIdentity["identity-0"]; ok {
 		t.Fatal("oldest preflight cache identity index was not removed")
 	}
-	if _, ok := handler.preflightCache.entries["key-"+strconv.Itoa(authCacheMaxEntries)]; !ok {
+	if _, ok := handler.preflightCache.entries[testAuthCacheKey("key-"+strconv.Itoa(authCacheMaxEntries))]; !ok {
 		t.Fatal("newest preflight cache entry was evicted unexpectedly")
 	}
 }
@@ -1174,8 +1176,8 @@ func BenchmarkAuthCacheHighCardinalityURLWritesCapacity8192Parallel(b *testing.B
 	assertBenchmarkAuthCacheIndexes(b, cache)
 }
 
-func benchmarkHighCardinalityAuthCacheKeys(count int) []string {
-	keys := make([]string, count)
+func benchmarkHighCardinalityAuthCacheKeys(count int) []authCacheKey {
+	keys := make([]authCacheKey, count)
 	for i := range keys {
 		requestURL := &url.URL{
 			Path:     "/api/resources/" + strconv.Itoa(i),
@@ -1194,7 +1196,7 @@ func benchmarkHighCardinalityAuthCacheKeys(count int) []string {
 	return keys
 }
 
-func prefilledBenchmarkAuthCache(keys []string) (*authStateCache, authCacheEntry) {
+func prefilledBenchmarkAuthCache(keys []authCacheKey) (*authStateCache, authCacheEntry) {
 	cache := newAuthStateCache()
 	entry := authCacheEntry{
 		result:      authCheckResult{allowed: true, authenticated: true},
@@ -1207,7 +1209,7 @@ func prefilledBenchmarkAuthCache(keys []string) (*authStateCache, authCacheEntry
 	return &cache, entry
 }
 
-func storeAuthCacheEntryWithLimit(cache *authStateCache, cacheKey string, entry authCacheEntry, limit int) {
+func storeAuthCacheEntryWithLimit(cache *authStateCache, cacheKey authCacheKey, entry authCacheEntry, limit int) {
 	cache.mu.Lock()
 	cache.deleteEntryLocked(cacheKey)
 	cache.entries[cacheKey] = &entry
@@ -1215,7 +1217,7 @@ func storeAuthCacheEntryWithLimit(cache *authStateCache, cacheKey string, entry 
 	if entry.identityKey != "" {
 		keys := cache.keysByIdentity[entry.identityKey]
 		if keys == nil {
-			keys = make(map[string]struct{})
+			keys = make(map[authCacheKey]struct{})
 			cache.keysByIdentity[entry.identityKey] = keys
 		}
 		keys[cacheKey] = struct{}{}

@@ -1,0 +1,11 @@
+{
+  "baseline_revision": "92d4c0cb5495d57801d52893a8f0e8496a1c9182",
+  "final_revision": "4d15fa32764e26df58b16930d0e2503a90880002",
+  "baseline_binary_sha256": "d6d65aff189616316a174b350d4f787cd21eef40e5bf9434905e0fd119b1b513",
+  "final_binary_sha256": "a993daa08ed273ce69f35a8667d5d2a28cd026ac3233c8e6eaa8c0a8b36affaa",
+  "benchmark_fixture_sha256": "449dc0b1d6ab764da8c3cea7e190ea48d01f3b14f857950c27b348dab54b639d",
+  "baseline_fixture_identical_to_final": true,
+  "baseline_reused_from_previous_go_hot_path_experiment": true,
+  "baseline_archived_production_go_files_compared_to_92d4c0c": 406,
+  "baseline_archived_production_go_blob_differences": []
+}

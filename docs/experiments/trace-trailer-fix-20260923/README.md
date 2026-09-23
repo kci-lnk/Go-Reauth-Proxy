@@ -1,5 +1,7 @@
 # Late trace trailer regression fix
 
+This is the historical `748c97e` endpoint. The [final Go report](../auth-final-20260923/README.md) records the later Cookie compatibility fixes and a new direct `92d4c0c` → `4d15fa3` six-pair comparison. All measurements below remain the original archived stage results.
+
 A new authenticated business-proxy wire test exposed an existing leak: `ModifyResponse` filtered the initial trailer map, but Go's transport filled it again at body EOF. ReverseProxy then copied the newly populated trace trailers downstream. The affected forwarding and response-writer files had no changes between the performance baseline `92d4c0c` and optimized `91f65cc`; this is a previously uncovered correctness defect, not an optimization benefit.
 
 The test-only reproduction is `0f16a93b15555afbbd2c6ac7f4c813debb2290b1`. It failed for `X-Fn-Knock-Trace-ID`, `Traceparent`, `B3`, `X-B3-SpanId`, and an unannounced `X-Custom-Trace-Token`; ordinary Digest and X-Checksum trailers were preserved. The production fix is `748c97e03f6fb9087ac0b3c90064611dc2c6cf66`.

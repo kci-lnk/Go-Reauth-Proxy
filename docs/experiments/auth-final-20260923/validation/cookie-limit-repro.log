@@ -1,0 +1,6 @@
+unicode boundary "\u00a0sid=ok": before cookies=1; raw cookies=0
+unicode boundary "sid=ok\u00a0": before cookies=1; raw cookies=0
+unicode boundary "sid=ok; \u00a0theme=dark\u00a0 ": before cookies=2; raw cookies=1
+empty segment ";": before="sid=ok" cookies=1; after bytes=3006 cookies=0
+empty segment "; ": before="sid=ok" cookies=1; after bytes=6006 cookies=0
+empty segment ";\t": before="sid=ok" cookies=1; after bytes=6006 cookies=0

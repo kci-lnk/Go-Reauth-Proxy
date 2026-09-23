@@ -1,0 +1,31 @@
+package main
+
+import (
+	"fmt"
+	"net/http"
+	"strings"
+)
+
+func legacy(value string) string {
+	var kept []string
+	for _, part := range strings.Split(value, ";") {
+		if part = strings.TrimSpace(part); part != "" {
+			kept = append(kept, part)
+		}
+	}
+	return strings.Join(kept, "; ")
+}
+func main() {
+	for _, value := range []string{"\u00a0sid=ok", "sid=ok\u00a0", "sid=ok; \u00a0theme=dark\u00a0 "} {
+		before := &http.Request{Header: http.Header{"Cookie": {legacy(value)}}}
+		after := &http.Request{Header: http.Header{"Cookie": {value}}}
+		fmt.Printf("unicode boundary %q: before cookies=%d; raw cookies=%d\n", value, len(before.Cookies()), len(after.Cookies()))
+	}
+
+	for _, empty := range []string{";", "; ", ";\t"} {
+		value := "sid=ok" + strings.Repeat(empty, 3000)
+		before := &http.Request{Header: http.Header{"Cookie": {legacy(value)}}}
+		after := &http.Request{Header: http.Header{"Cookie": {value}}}
+		fmt.Printf("empty segment %q: before=%q cookies=%d; after bytes=%d cookies=%d\n", empty, before.Header.Get("Cookie"), len(before.Cookies()), len(value), len(after.Cookies()))
+	}
+}

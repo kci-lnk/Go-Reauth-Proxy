@@ -1,7 +1,0 @@
-goos: darwin
-goarch: arm64
-pkg: go-reauth-proxy/pkg/proxy
-cpu: Apple M5
-BenchmarkHandlerHotPathAuthOff-2    	  264860	      4380 ns/op	 233.78 MB/s	    5355 B/op	      55 allocs/op
-BenchmarkHandlerHotPathCacheHit-2   	  199839	      6000 ns/op	 170.67 MB/s	    6092 B/op	      66 allocs/op
-PASS

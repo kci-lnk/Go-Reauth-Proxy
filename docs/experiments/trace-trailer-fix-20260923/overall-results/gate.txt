@@ -1,2 +1,0 @@
-BenchmarkHandlerHotPathAuthOff: ns/op 4720 -> 4406, B/op 6520 -> 5352, allocs/op 66 -> 55
-BenchmarkHandlerHotPathCacheHit: ns/op 7013 -> 5984, B/op 8338 -> 6092, allocs/op 90 -> 66

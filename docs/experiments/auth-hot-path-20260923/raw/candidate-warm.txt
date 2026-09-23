@@ -1,0 +1,14 @@
+goos: darwin
+goarch: arm64
+pkg: go-reauth-proxy/pkg/proxy
+cpu: Apple M5
+BenchmarkAuthCombinedCacheLookupsCookie-2                          	  358960	       647.0 ns/op	      64 B/op	       1 allocs/op
+BenchmarkAuthCacheHighCardinalityURLWritesCapacity8192-2           	 1000000	       228.1 ns/op	     368 B/op	       3 allocs/op
+BenchmarkAuthCacheHighCardinalityURLWritesCapacity8192Parallel-2   	  667214	       369.8 ns/op	     368 B/op	       3 allocs/op
+BenchmarkHandlerHotPathAuthOff-2                                   	   54381	      4377 ns/op	 233.94 MB/s	    5349 B/op	      55 allocs/op
+BenchmarkHandlerHotPathCacheHit-2                                  	   41041	      5943 ns/op	 172.29 MB/s	    6094 B/op	      66 allocs/op
+BenchmarkReservedCookieStripping/One-2                             	 6040394	        40.90 ns/op	       0 B/op	       0 allocs/op
+BenchmarkReservedCookieStripping/Eight-2                           	 2230087	       111.0 ns/op	       0 B/op	       0 allocs/op
+BenchmarkReservedCookieStripping/ThirtyTwo-2                       	  665818	       384.8 ns/op	       0 B/op	       0 allocs/op
+BenchmarkTraceHeaderClassification-2                               	 2274639	        99.15 ns/op	       0 B/op	       0 allocs/op
+PASS

@@ -1,0 +1,74 @@
+{
+  "base": {
+    "BenchmarkHandlerIsolated/Path/AuthOff/1KiB-2": [
+      5603.0,
+      11014.0,
+      78.0
+    ],
+    "BenchmarkHandlerIsolated/Host/CombinedCacheHit/1KiB-2": [
+      7879.5,
+      13071.5,
+      99.0
+    ]
+  },
+  "capture": {
+    "BenchmarkHandlerIsolated/Path/AuthOff/1KiB-2": [
+      5409.5,
+      10307.5,
+      76.0
+    ],
+    "BenchmarkHandlerIsolated/Host/CombinedCacheHit/1KiB-2": [
+      7597.5,
+      11997.5,
+      96.0
+    ]
+  },
+  "lazy": {
+    "BenchmarkHandlerIsolated/Path/AuthOff/1KiB-2": [
+      5466.0,
+      10309.0,
+      76.0
+    ],
+    "BenchmarkHandlerIsolated/Host/CombinedCacheHit/1KiB-2": [
+      7311.5,
+      11461.0,
+      90.0
+    ]
+  },
+  "immutable": {
+    "BenchmarkHandlerIsolated/Path/AuthOff/1KiB-2": [
+      5419.0,
+      10313.5,
+      76.0
+    ],
+    "BenchmarkHandlerIsolated/Host/CombinedCacheHit/1KiB-2": [
+      7140.0,
+      11167.5,
+      89.0
+    ]
+  },
+  "binary": {
+    "BenchmarkHandlerIsolated/Path/AuthOff/1KiB-2": [
+      5395.0,
+      10307.0,
+      76.0
+    ],
+    "BenchmarkHandlerIsolated/Host/CombinedCacheHit/1KiB-2": [
+      7113.5,
+      10973.5,
+      86.0
+    ]
+  },
+  "candidate": {
+    "BenchmarkHandlerIsolated/Path/AuthOff/1KiB-2": [
+      5070.5,
+      10164.0,
+      64.0
+    ],
+    "BenchmarkHandlerIsolated/Host/CombinedCacheHit/1KiB-2": [
+      6688.0,
+      10832.5,
+      75.0
+    ]
+  }
+}

@@ -1,0 +1,13 @@
+BenchmarkHandlerEndToEnd/Host/AuthOff/PortalOff/LoggingOff/1KiB: ns/op 40272 -> 38956, B/op 16411 -> 15196, allocs/op 142 -> 127
+BenchmarkHandlerEndToEnd/Host/CombinedCacheHit/PortalOff/LoggingOff/1KiB: ns/op 44294 -> 42514, B/op 19090 -> 16804, allocs/op 173 -> 145
+BenchmarkHandlerEndToEnd/Host/CombinedCacheHit/PortalOn/LoggingOff/64KiB: ns/op 51955 -> 50530, B/op 20180 -> 17942, allocs/op 178 -> 154
+BenchmarkHandlerEndToEnd/Path/AuthOff/PortalOff/LoggingOff/1KiB: ns/op 40565 -> 39444, B/op 16272 -> 15388, allocs/op 148 -> 130
+BenchmarkHandlerEndToEnd/Path/AuthOff/PortalOff/LoggingOff/2MiB: ns/op 183810 -> 185440, B/op 16572 -> 15692, allocs/op 148 -> 130
+BenchmarkHandlerEndToEnd/Path/AuthOff/PortalOff/LoggingOff/64KiB: ns/op 45038 -> 44711, B/op 16258 -> 15373, allocs/op 148 -> 130
+BenchmarkHandlerEndToEnd/Path/AuthOff/PortalOff/LoggingOff/WAFEnabled/1KiB: ns/op 49298 -> 48568, B/op 18730 -> 17851, allocs/op 221 -> 203
+BenchmarkHandlerEndToEnd/Path/AuthOff/PortalOff/LoggingOn/1KiB: ns/op 40572 -> 39698, B/op 16394 -> 15506, allocs/op 153 -> 135
+BenchmarkHandlerEndToEnd/Path/CombinedMiss/PortalOff/LoggingOff/1KiB: ns/op 48539 -> 47252, B/op 21643 -> 20040, allocs/op 207 -> 181
+BenchmarkHandlerEndToEndParallelAuthOff1KiB: ns/op 19909 -> 19472, B/op 16266 -> 15370, allocs/op 147 -> 129
+BenchmarkHandlerEndToEndParallelAuthOff2MiB: ns/op 119792 -> 122526, B/op 16616 -> 15720, allocs/op 148 -> 130
+BenchmarkHandlerEndToEndParallelCombinedCacheHit1KiB: ns/op 22334 -> 21334, B/op 19087 -> 16797, allocs/op 172 -> 144
+BenchmarkHandlerEndToEndParallelUnknownLength2MiB: ns/op 981174 -> 986272, B/op 21838 -> 20532, allocs/op 404 -> 390

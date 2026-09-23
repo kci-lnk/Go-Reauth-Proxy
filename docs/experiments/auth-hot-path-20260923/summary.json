@@ -1,0 +1,164 @@
+{
+  "BenchmarkAuthCombinedCacheLookupsCookie-2": {
+    "base": [
+      697.5999999999999,
+      256.0,
+      4.0
+    ],
+    "candidate": [
+      610.55,
+      64.0,
+      1.0
+    ],
+    "delta_percent": [
+      -12.47849770642201,
+      -75.0,
+      -75.0
+    ],
+    "samples": 6
+  },
+  "BenchmarkAuthCacheHighCardinalityURLWritesCapacity8192-2": {
+    "base": [
+      265.4,
+      352.0,
+      3.0
+    ],
+    "candidate": [
+      230.55,
+      368.0,
+      3.0
+    ],
+    "delta_percent": [
+      -13.13112283345892,
+      4.545454545454541,
+      0.0
+    ],
+    "samples": 6
+  },
+  "BenchmarkAuthCacheHighCardinalityURLWritesCapacity8192Parallel-2": {
+    "base": [
+      419.45,
+      352.0,
+      3.0
+    ],
+    "candidate": [
+      369.65,
+      368.0,
+      3.0
+    ],
+    "delta_percent": [
+      -11.872690427941357,
+      4.545454545454541,
+      0.0
+    ],
+    "samples": 6
+  },
+  "BenchmarkHandlerHotPathAuthOff-2": {
+    "base": [
+      4691.0,
+      6517.0,
+      66.0
+    ],
+    "candidate": [
+      4253.5,
+      5349.0,
+      55.0
+    ],
+    "delta_percent": [
+      -9.326369643999143,
+      -17.922356912689885,
+      -16.666666666666664
+    ],
+    "samples": 6
+  },
+  "BenchmarkHandlerHotPathCacheHit-2": {
+    "base": [
+      6940.5,
+      8335.0,
+      90.0
+    ],
+    "candidate": [
+      5839.5,
+      6093.0,
+      66.0
+    ],
+    "delta_percent": [
+      -15.863410417116919,
+      -26.898620275944808,
+      -26.66666666666667
+    ],
+    "samples": 6
+  },
+  "BenchmarkReservedCookieStripping/One-2": {
+    "base": [
+      130.7,
+      48.0,
+      3.0
+    ],
+    "candidate": [
+      38.695,
+      0.0,
+      0.0
+    ],
+    "delta_percent": [
+      -70.39403213465953,
+      -100.0,
+      -100.0
+    ],
+    "samples": 6
+  },
+  "BenchmarkReservedCookieStripping/Eight-2": {
+    "base": [
+      333.70000000000005,
+      416.0,
+      5.0
+    ],
+    "candidate": [
+      106.8,
+      0.0,
+      0.0
+    ],
+    "delta_percent": [
+      -67.99520527419838,
+      -100.0,
+      -100.0
+    ],
+    "samples": 6
+  },
+  "BenchmarkReservedCookieStripping/ThirtyTwo-2": {
+    "base": [
+      958.0999999999999,
+      1536.0,
+      5.0
+    ],
+    "candidate": [
+      350.05,
+      0.0,
+      0.0
+    ],
+    "delta_percent": [
+      -63.464147792506,
+      -100.0,
+      -100.0
+    ],
+    "samples": 6
+  },
+  "BenchmarkTraceHeaderClassification-2": {
+    "base": [
+      307.05,
+      128.0,
+      10.0
+    ],
+    "candidate": [
+      94.76,
+      0.0,
+      0.0
+    ],
+    "delta_percent": [
+      -69.13857677902622,
+      -100.0,
+      -100.0
+    ],
+    "samples": 6
+  }
+}

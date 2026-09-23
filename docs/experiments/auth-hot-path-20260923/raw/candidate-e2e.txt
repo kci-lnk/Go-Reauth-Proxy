@@ -1,0 +1,108 @@
+goos: darwin
+goarch: arm64
+pkg: go-reauth-proxy/pkg/proxy
+cpu: Apple M5
+BenchmarkHandlerEndToEnd/Path/AuthOff/PortalOff/LoggingOff/1KiB-2         	    8996	     39455 ns/op	  25.95 MB/s	   15383 B/op	     130 allocs/op
+BenchmarkHandlerEndToEnd/Host/AuthOff/PortalOff/LoggingOff/1KiB-2         	    9240	     38918 ns/op	  26.31 MB/s	   15197 B/op	     127 allocs/op
+BenchmarkHandlerEndToEnd/Path/CombinedMiss/PortalOff/LoggingOff/1KiB-2    	    7779	     46763 ns/op	  21.90 MB/s	   20035 B/op	     181 allocs/op
+BenchmarkHandlerEndToEnd/Host/CombinedCacheHit/PortalOff/LoggingOff/1KiB-2         	    8569	     42555 ns/op	  24.06 MB/s	   16808 B/op	     145 allocs/op
+BenchmarkHandlerEndToEnd/Host/CombinedCacheHit/PortalOn/LoggingOff/64KiB-2         	    7155	     50526 ns/op	1297.08 MB/s	   17913 B/op	     154 allocs/op
+BenchmarkHandlerEndToEnd/Path/AuthOff/PortalOff/LoggingOn/1KiB-2                   	    9106	     39565 ns/op	  25.88 MB/s	   15508 B/op	     135 allocs/op
+BenchmarkHandlerEndToEnd/Path/AuthOff/PortalOff/LoggingOff/64KiB-2                 	    7993	     45014 ns/op	1455.90 MB/s	   15380 B/op	     130 allocs/op
+BenchmarkHandlerEndToEnd/Path/AuthOff/PortalOff/LoggingOff/2MiB-2                  	    2000	    179316 ns/op	11695.31 MB/s	   15629 B/op	     130 allocs/op
+BenchmarkHandlerEndToEnd/Path/AuthOff/PortalOff/LoggingOff/WAFEnabled/1KiB-2       	    6544	     50130 ns/op	  20.43 MB/s	   17852 B/op	     203 allocs/op
+BenchmarkHandlerEndToEndParallelAuthOff1KiB-2                                      	   18272	     19557 ns/op	  52.36 MB/s	   15373 B/op	     129 allocs/op
+BenchmarkHandlerEndToEndParallelCombinedCacheHit1KiB-2                             	   16526	     21028 ns/op	  48.70 MB/s	   16788 B/op	     144 allocs/op
+BenchmarkHandlerEndToEndParallelAuthOff2MiB-2                                      	    3088	    125512 ns/op	16708.82 MB/s	   15714 B/op	     130 allocs/op
+BenchmarkHandlerEndToEndParallelUnknownLength2MiB-2                                	     345	    967426 ns/op	2167.77 MB/s	   20577 B/op	     390 allocs/op
+PASS
+goos: darwin
+goarch: arm64
+pkg: go-reauth-proxy/pkg/proxy
+cpu: Apple M5
+BenchmarkHandlerEndToEnd/Path/AuthOff/PortalOff/LoggingOff/1KiB-2         	    8301	     39432 ns/op	  25.97 MB/s	   15393 B/op	     130 allocs/op
+BenchmarkHandlerEndToEnd/Host/AuthOff/PortalOff/LoggingOff/1KiB-2         	    9387	     38995 ns/op	  26.26 MB/s	   15196 B/op	     127 allocs/op
+BenchmarkHandlerEndToEnd/Path/CombinedMiss/PortalOff/LoggingOff/1KiB-2    	    7858	     47466 ns/op	  21.57 MB/s	   20026 B/op	     181 allocs/op
+BenchmarkHandlerEndToEnd/Host/CombinedCacheHit/PortalOff/LoggingOff/1KiB-2         	    8259	     42407 ns/op	  24.15 MB/s	   16801 B/op	     145 allocs/op
+BenchmarkHandlerEndToEnd/Host/CombinedCacheHit/PortalOn/LoggingOff/64KiB-2         	    7390	     50458 ns/op	1298.81 MB/s	   17944 B/op	     154 allocs/op
+BenchmarkHandlerEndToEnd/Path/AuthOff/PortalOff/LoggingOn/1KiB-2                   	    9276	     40223 ns/op	  25.46 MB/s	   15503 B/op	     135 allocs/op
+BenchmarkHandlerEndToEnd/Path/AuthOff/PortalOff/LoggingOff/64KiB-2                 	    8182	     45027 ns/op	1455.48 MB/s	   15371 B/op	     130 allocs/op
+BenchmarkHandlerEndToEnd/Path/AuthOff/PortalOff/LoggingOff/2MiB-2                  	    2028	    177291 ns/op	11828.90 MB/s	   15755 B/op	     130 allocs/op
+BenchmarkHandlerEndToEnd/Path/AuthOff/PortalOff/LoggingOff/WAFEnabled/1KiB-2       	    6616	     48652 ns/op	  21.05 MB/s	   17855 B/op	     203 allocs/op
+BenchmarkHandlerEndToEndParallelAuthOff1KiB-2                                      	   18746	     19324 ns/op	  52.99 MB/s	   15369 B/op	     129 allocs/op
+BenchmarkHandlerEndToEndParallelCombinedCacheHit1KiB-2                             	   17119	     21635 ns/op	  47.33 MB/s	   16795 B/op	     144 allocs/op
+BenchmarkHandlerEndToEndParallelAuthOff2MiB-2                                      	    3010	    122946 ns/op	17057.44 MB/s	   15726 B/op	     130 allocs/op
+BenchmarkHandlerEndToEndParallelUnknownLength2MiB-2                                	     378	    993463 ns/op	2110.95 MB/s	   21694 B/op	     390 allocs/op
+PASS
+goos: darwin
+goarch: arm64
+pkg: go-reauth-proxy/pkg/proxy
+cpu: Apple M5
+BenchmarkHandlerEndToEnd/Path/AuthOff/PortalOff/LoggingOff/1KiB-2         	    8192	     40013 ns/op	  25.59 MB/s	   15394 B/op	     130 allocs/op
+BenchmarkHandlerEndToEnd/Host/AuthOff/PortalOff/LoggingOff/1KiB-2         	    9412	     39389 ns/op	  26.00 MB/s	   15196 B/op	     127 allocs/op
+BenchmarkHandlerEndToEnd/Path/CombinedMiss/PortalOff/LoggingOff/1KiB-2    	    7598	     47435 ns/op	  21.59 MB/s	   20044 B/op	     181 allocs/op
+BenchmarkHandlerEndToEnd/Host/CombinedCacheHit/PortalOff/LoggingOff/1KiB-2         	    8622	     42472 ns/op	  24.11 MB/s	   16800 B/op	     145 allocs/op
+BenchmarkHandlerEndToEnd/Host/CombinedCacheHit/PortalOn/LoggingOff/64KiB-2         	    7215	     50535 ns/op	1296.84 MB/s	   17972 B/op	     154 allocs/op
+BenchmarkHandlerEndToEnd/Path/AuthOff/PortalOff/LoggingOn/1KiB-2                   	    8659	     39724 ns/op	  25.78 MB/s	   15505 B/op	     135 allocs/op
+BenchmarkHandlerEndToEnd/Path/AuthOff/PortalOff/LoggingOff/64KiB-2                 	    8328	     44355 ns/op	1477.54 MB/s	   15371 B/op	     130 allocs/op
+BenchmarkHandlerEndToEnd/Path/AuthOff/PortalOff/LoggingOff/2MiB-2                  	    1995	    185184 ns/op	11324.71 MB/s	   15630 B/op	     130 allocs/op
+BenchmarkHandlerEndToEnd/Path/AuthOff/PortalOff/LoggingOff/WAFEnabled/1KiB-2       	    6787	     47643 ns/op	  21.49 MB/s	   17855 B/op	     203 allocs/op
+BenchmarkHandlerEndToEndParallelAuthOff1KiB-2                                      	   18691	     20271 ns/op	  50.52 MB/s	   15375 B/op	     129 allocs/op
+BenchmarkHandlerEndToEndParallelCombinedCacheHit1KiB-2                             	   16884	     21392 ns/op	  47.87 MB/s	   16799 B/op	     144 allocs/op
+BenchmarkHandlerEndToEndParallelAuthOff2MiB-2                                      	    3018	    119138 ns/op	17602.69 MB/s	   15551 B/op	     130 allocs/op
+BenchmarkHandlerEndToEndParallelUnknownLength2MiB-2                                	     375	    963801 ns/op	2175.92 MB/s	   20326 B/op	     390 allocs/op
+PASS
+goos: darwin
+goarch: arm64
+pkg: go-reauth-proxy/pkg/proxy
+cpu: Apple M5
+BenchmarkHandlerEndToEnd/Path/AuthOff/PortalOff/LoggingOff/1KiB-2         	    8959	     39647 ns/op	  25.83 MB/s	   15391 B/op	     130 allocs/op
+BenchmarkHandlerEndToEnd/Host/AuthOff/PortalOff/LoggingOff/1KiB-2         	    9447	     39035 ns/op	  26.23 MB/s	   15195 B/op	     127 allocs/op
+BenchmarkHandlerEndToEnd/Path/CombinedMiss/PortalOff/LoggingOff/1KiB-2    	    7447	     46887 ns/op	  21.84 MB/s	   20040 B/op	     181 allocs/op
+BenchmarkHandlerEndToEnd/Host/CombinedCacheHit/PortalOff/LoggingOff/1KiB-2         	    8704	     42307 ns/op	  24.20 MB/s	   16820 B/op	     145 allocs/op
+BenchmarkHandlerEndToEnd/Host/CombinedCacheHit/PortalOn/LoggingOff/64KiB-2         	    7233	     50827 ns/op	1289.40 MB/s	   17927 B/op	     154 allocs/op
+BenchmarkHandlerEndToEnd/Path/AuthOff/PortalOff/LoggingOn/1KiB-2                   	    9270	     39736 ns/op	  25.77 MB/s	   15507 B/op	     135 allocs/op
+BenchmarkHandlerEndToEnd/Path/AuthOff/PortalOff/LoggingOff/64KiB-2                 	    8187	     45094 ns/op	1453.32 MB/s	   15379 B/op	     130 allocs/op
+BenchmarkHandlerEndToEnd/Path/AuthOff/PortalOff/LoggingOff/2MiB-2                  	    1515	    199846 ns/op	10493.83 MB/s	   16064 B/op	     130 allocs/op
+BenchmarkHandlerEndToEnd/Path/AuthOff/PortalOff/LoggingOff/WAFEnabled/1KiB-2       	    6932	     47689 ns/op	  21.47 MB/s	   17850 B/op	     203 allocs/op
+BenchmarkHandlerEndToEndParallelAuthOff1KiB-2                                      	   18439	     19310 ns/op	  53.03 MB/s	   15370 B/op	     129 allocs/op
+BenchmarkHandlerEndToEndParallelCombinedCacheHit1KiB-2                             	   17210	     21013 ns/op	  48.73 MB/s	   16794 B/op	     144 allocs/op
+BenchmarkHandlerEndToEndParallelAuthOff2MiB-2                                      	    2920	    120151 ns/op	17454.26 MB/s	   15736 B/op	     130 allocs/op
+BenchmarkHandlerEndToEndParallelUnknownLength2MiB-2                                	     355	   1012019 ns/op	2072.25 MB/s	   20488 B/op	     390 allocs/op
+PASS
+goos: darwin
+goarch: arm64
+pkg: go-reauth-proxy/pkg/proxy
+cpu: Apple M5
+BenchmarkHandlerEndToEnd/Path/AuthOff/PortalOff/LoggingOff/1KiB-2         	    7982	     38882 ns/op	  26.34 MB/s	   15382 B/op	     130 allocs/op
+BenchmarkHandlerEndToEnd/Host/AuthOff/PortalOff/LoggingOff/1KiB-2         	    9398	     38733 ns/op	  26.44 MB/s	   15199 B/op	     127 allocs/op
+BenchmarkHandlerEndToEnd/Path/CombinedMiss/PortalOff/LoggingOff/1KiB-2    	    7741	     48697 ns/op	  21.03 MB/s	   20040 B/op	     181 allocs/op
+BenchmarkHandlerEndToEnd/Host/CombinedCacheHit/PortalOff/LoggingOff/1KiB-2         	    7738	     42878 ns/op	  23.88 MB/s	   16797 B/op	     145 allocs/op
+BenchmarkHandlerEndToEnd/Host/CombinedCacheHit/PortalOn/LoggingOff/64KiB-2         	    7236	     50774 ns/op	1290.73 MB/s	   17945 B/op	     154 allocs/op
+BenchmarkHandlerEndToEnd/Path/AuthOff/PortalOff/LoggingOn/1KiB-2                   	    9037	     39672 ns/op	  25.81 MB/s	   15507 B/op	     135 allocs/op
+BenchmarkHandlerEndToEnd/Path/AuthOff/PortalOff/LoggingOff/64KiB-2                 	    8301	     44390 ns/op	1476.38 MB/s	   15375 B/op	     130 allocs/op
+BenchmarkHandlerEndToEnd/Path/AuthOff/PortalOff/LoggingOff/2MiB-2                  	    1982	    185696 ns/op	11293.44 MB/s	   15765 B/op	     130 allocs/op
+BenchmarkHandlerEndToEnd/Path/AuthOff/PortalOff/LoggingOff/WAFEnabled/1KiB-2       	    6816	     48484 ns/op	  21.12 MB/s	   17849 B/op	     203 allocs/op
+BenchmarkHandlerEndToEndParallelAuthOff1KiB-2                                      	   18742	     19386 ns/op	  52.82 MB/s	   15371 B/op	     129 allocs/op
+BenchmarkHandlerEndToEndParallelCombinedCacheHit1KiB-2                             	   17024	     22986 ns/op	  44.55 MB/s	   16800 B/op	     144 allocs/op
+BenchmarkHandlerEndToEndParallelAuthOff2MiB-2                                      	    2889	    122107 ns/op	17174.72 MB/s	   15648 B/op	     130 allocs/op
+BenchmarkHandlerEndToEndParallelUnknownLength2MiB-2                                	     352	    979081 ns/op	2141.96 MB/s	   22010 B/op	     390 allocs/op
+PASS
+goos: darwin
+goarch: arm64
+pkg: go-reauth-proxy/pkg/proxy
+cpu: Apple M5
+BenchmarkHandlerEndToEnd/Path/AuthOff/PortalOff/LoggingOff/1KiB-2         	    7857	     38891 ns/op	  26.33 MB/s	   15386 B/op	     130 allocs/op
+BenchmarkHandlerEndToEnd/Host/AuthOff/PortalOff/LoggingOff/1KiB-2         	    9896	     38812 ns/op	  26.38 MB/s	   15200 B/op	     127 allocs/op
+BenchmarkHandlerEndToEnd/Path/CombinedMiss/PortalOff/LoggingOff/1KiB-2    	    7634	     47068 ns/op	  21.76 MB/s	   20044 B/op	     181 allocs/op
+BenchmarkHandlerEndToEnd/Host/CombinedCacheHit/PortalOff/LoggingOff/1KiB-2         	    8662	     42635 ns/op	  24.02 MB/s	   16808 B/op	     145 allocs/op
+BenchmarkHandlerEndToEnd/Host/CombinedCacheHit/PortalOn/LoggingOff/64KiB-2         	    7328	     50055 ns/op	1309.27 MB/s	   17941 B/op	     154 allocs/op
+BenchmarkHandlerEndToEnd/Path/AuthOff/PortalOff/LoggingOn/1KiB-2                   	    9540	     39607 ns/op	  25.85 MB/s	   15499 B/op	     135 allocs/op
+BenchmarkHandlerEndToEnd/Path/AuthOff/PortalOff/LoggingOff/64KiB-2                 	    8274	     44408 ns/op	1475.78 MB/s	   15371 B/op	     130 allocs/op
+BenchmarkHandlerEndToEnd/Path/AuthOff/PortalOff/LoggingOff/2MiB-2                  	    2002	    192809 ns/op	10876.85 MB/s	   15500 B/op	     130 allocs/op
+BenchmarkHandlerEndToEnd/Path/AuthOff/PortalOff/LoggingOff/WAFEnabled/1KiB-2       	    6756	     49094 ns/op	  20.86 MB/s	   17850 B/op	     203 allocs/op
+BenchmarkHandlerEndToEndParallelAuthOff1KiB-2                                      	   17979	     19587 ns/op	  52.28 MB/s	   15370 B/op	     129 allocs/op
+BenchmarkHandlerEndToEndParallelCombinedCacheHit1KiB-2                             	   16888	     21276 ns/op	  48.13 MB/s	   16804 B/op	     145 allocs/op
+BenchmarkHandlerEndToEndParallelAuthOff2MiB-2                                      	    2936	    123271 ns/op	17012.47 MB/s	   15733 B/op	     130 allocs/op
+BenchmarkHandlerEndToEndParallelUnknownLength2MiB-2                                	     343	   1019319 ns/op	2057.40 MB/s	   19025 B/op	     390 allocs/op
+PASS

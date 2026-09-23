@@ -1,0 +1,42 @@
+goos: darwin
+goarch: arm64
+pkg: go-reauth-proxy/pkg/proxy
+cpu: Apple M5
+BenchmarkHandlerIsolated/Path/AuthOff/1KiB-2         	   69997	      5030 ns/op	 203.59 MB/s	   10165 B/op	      64 allocs/op
+BenchmarkHandlerIsolated/Host/CombinedCacheHit/1KiB-2         	   53506	      6650 ns/op	 154.00 MB/s	   10830 B/op	      75 allocs/op
+PASS
+goos: darwin
+goarch: arm64
+pkg: go-reauth-proxy/pkg/proxy
+cpu: Apple M5
+BenchmarkHandlerIsolated/Path/AuthOff/1KiB-2         	   69189	      5074 ns/op	 201.82 MB/s	   10165 B/op	      64 allocs/op
+BenchmarkHandlerIsolated/Host/CombinedCacheHit/1KiB-2         	   53532	      6692 ns/op	 153.01 MB/s	   10842 B/op	      75 allocs/op
+PASS
+goos: darwin
+goarch: arm64
+pkg: go-reauth-proxy/pkg/proxy
+cpu: Apple M5
+BenchmarkHandlerIsolated/Path/AuthOff/1KiB-2         	   68740	      5067 ns/op	 202.08 MB/s	   10162 B/op	      64 allocs/op
+BenchmarkHandlerIsolated/Host/CombinedCacheHit/1KiB-2         	   53790	      6684 ns/op	 153.19 MB/s	   10830 B/op	      75 allocs/op
+PASS
+goos: darwin
+goarch: arm64
+pkg: go-reauth-proxy/pkg/proxy
+cpu: Apple M5
+BenchmarkHandlerIsolated/Path/AuthOff/1KiB-2         	   68731	      5126 ns/op	 199.76 MB/s	   10164 B/op	      64 allocs/op
+BenchmarkHandlerIsolated/Host/CombinedCacheHit/1KiB-2         	   53304	      6716 ns/op	 152.48 MB/s	   10837 B/op	      75 allocs/op
+PASS
+goos: darwin
+goarch: arm64
+pkg: go-reauth-proxy/pkg/proxy
+cpu: Apple M5
+BenchmarkHandlerIsolated/Path/AuthOff/1KiB-2         	   69963	      5076 ns/op	 201.74 MB/s	   10164 B/op	      64 allocs/op
+BenchmarkHandlerIsolated/Host/CombinedCacheHit/1KiB-2         	   53029	      6739 ns/op	 151.94 MB/s	   10829 B/op	      75 allocs/op
+PASS
+goos: darwin
+goarch: arm64
+pkg: go-reauth-proxy/pkg/proxy
+cpu: Apple M5
+BenchmarkHandlerIsolated/Path/AuthOff/1KiB-2         	   69999	      5044 ns/op	 203.03 MB/s	   10163 B/op	      64 allocs/op
+BenchmarkHandlerIsolated/Host/CombinedCacheHit/1KiB-2         	   53875	      6682 ns/op	 153.25 MB/s	   10835 B/op	      75 allocs/op
+PASS

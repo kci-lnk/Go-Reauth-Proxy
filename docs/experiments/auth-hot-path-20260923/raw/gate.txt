@@ -1,0 +1,9 @@
+BenchmarkAuthCacheHighCardinalityURLWritesCapacity8192: ns/op 265 -> 231, B/op 352 -> 368, allocs/op 3 -> 3
+BenchmarkAuthCacheHighCardinalityURLWritesCapacity8192Parallel: ns/op 419 -> 370, B/op 352 -> 368, allocs/op 3 -> 3
+BenchmarkAuthCombinedCacheLookupsCookie: ns/op 698 -> 611, B/op 256 -> 64, allocs/op 4 -> 1
+BenchmarkHandlerHotPathAuthOff: ns/op 4691 -> 4254, B/op 6517 -> 5349, allocs/op 66 -> 55
+BenchmarkHandlerHotPathCacheHit: ns/op 6940 -> 5840, B/op 8335 -> 6093, allocs/op 90 -> 66
+BenchmarkReservedCookieStripping/Eight: ns/op 334 -> 107, B/op 416 -> 0, allocs/op 5 -> 0
+BenchmarkReservedCookieStripping/One: ns/op 131 -> 39, B/op 48 -> 0, allocs/op 3 -> 0
+BenchmarkReservedCookieStripping/ThirtyTwo: ns/op 958 -> 350, B/op 1536 -> 0, allocs/op 5 -> 0
+BenchmarkTraceHeaderClassification: ns/op 307 -> 95, B/op 128 -> 0, allocs/op 10 -> 0

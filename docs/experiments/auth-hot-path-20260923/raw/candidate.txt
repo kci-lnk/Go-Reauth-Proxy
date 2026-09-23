@@ -1,0 +1,84 @@
+goos: darwin
+goarch: arm64
+pkg: go-reauth-proxy/pkg/proxy
+cpu: Apple M5
+BenchmarkAuthCombinedCacheLookupsCookie-2                          	  978831	       616.0 ns/op	      64 B/op	       1 allocs/op
+BenchmarkAuthCacheHighCardinalityURLWritesCapacity8192-2           	 2611662	       236.6 ns/op	     368 B/op	       3 allocs/op
+BenchmarkAuthCacheHighCardinalityURLWritesCapacity8192Parallel-2   	 1638020	       386.2 ns/op	     368 B/op	       3 allocs/op
+BenchmarkHandlerHotPathAuthOff-2                                   	  137377	      4323 ns/op	 236.89 MB/s	    5346 B/op	      55 allocs/op
+BenchmarkHandlerHotPathCacheHit-2                                  	   98619	      5833 ns/op	 175.56 MB/s	    6091 B/op	      66 allocs/op
+BenchmarkReservedCookieStripping/One-2                             	15463136	        39.32 ns/op	       0 B/op	       0 allocs/op
+BenchmarkReservedCookieStripping/Eight-2                           	 5481199	       106.8 ns/op	       0 B/op	       0 allocs/op
+BenchmarkReservedCookieStripping/ThirtyTwo-2                       	 1703964	       350.5 ns/op	       0 B/op	       0 allocs/op
+BenchmarkTraceHeaderClassification-2                               	 6272708	        95.44 ns/op	       0 B/op	       0 allocs/op
+PASS
+goos: darwin
+goarch: arm64
+pkg: go-reauth-proxy/pkg/proxy
+cpu: Apple M5
+BenchmarkAuthCombinedCacheLookupsCookie-2                          	  966338	       610.2 ns/op	      64 B/op	       1 allocs/op
+BenchmarkAuthCacheHighCardinalityURLWritesCapacity8192-2           	 2461489	       237.4 ns/op	     368 B/op	       3 allocs/op
+BenchmarkAuthCacheHighCardinalityURLWritesCapacity8192Parallel-2   	 1619553	       363.2 ns/op	     368 B/op	       3 allocs/op
+BenchmarkHandlerHotPathAuthOff-2                                   	  140086	      4253 ns/op	 240.78 MB/s	    5354 B/op	      55 allocs/op
+BenchmarkHandlerHotPathCacheHit-2                                  	  103461	      5846 ns/op	 175.17 MB/s	    6099 B/op	      66 allocs/op
+BenchmarkReservedCookieStripping/One-2                             	15785440	        37.88 ns/op	       0 B/op	       0 allocs/op
+BenchmarkReservedCookieStripping/Eight-2                           	 5639610	       106.9 ns/op	       0 B/op	       0 allocs/op
+BenchmarkReservedCookieStripping/ThirtyTwo-2                       	 1710322	       350.0 ns/op	       0 B/op	       0 allocs/op
+BenchmarkTraceHeaderClassification-2                               	 6351868	        94.79 ns/op	       0 B/op	       0 allocs/op
+PASS
+goos: darwin
+goarch: arm64
+pkg: go-reauth-proxy/pkg/proxy
+cpu: Apple M5
+BenchmarkAuthCombinedCacheLookupsCookie-2                          	  978166	       608.7 ns/op	      64 B/op	       1 allocs/op
+BenchmarkAuthCacheHighCardinalityURLWritesCapacity8192-2           	 2629804	       227.9 ns/op	     368 B/op	       3 allocs/op
+BenchmarkAuthCacheHighCardinalityURLWritesCapacity8192Parallel-2   	 1628445	       369.4 ns/op	     368 B/op	       3 allocs/op
+BenchmarkHandlerHotPathAuthOff-2                                   	  139830	      4233 ns/op	 241.92 MB/s	    5347 B/op	      55 allocs/op
+BenchmarkHandlerHotPathCacheHit-2                                  	  103580	      5793 ns/op	 176.77 MB/s	    6094 B/op	      66 allocs/op
+BenchmarkReservedCookieStripping/One-2                             	15460994	        38.68 ns/op	       0 B/op	       0 allocs/op
+BenchmarkReservedCookieStripping/Eight-2                           	 5611801	       106.8 ns/op	       0 B/op	       0 allocs/op
+BenchmarkReservedCookieStripping/ThirtyTwo-2                       	 1714095	       350.1 ns/op	       0 B/op	       0 allocs/op
+BenchmarkTraceHeaderClassification-2                               	 6272694	        94.73 ns/op	       0 B/op	       0 allocs/op
+PASS
+goos: darwin
+goarch: arm64
+pkg: go-reauth-proxy/pkg/proxy
+cpu: Apple M5
+BenchmarkAuthCombinedCacheLookupsCookie-2                          	  957535	       609.9 ns/op	      64 B/op	       1 allocs/op
+BenchmarkAuthCacheHighCardinalityURLWritesCapacity8192-2           	 2602443	       229.8 ns/op	     368 B/op	       3 allocs/op
+BenchmarkAuthCacheHighCardinalityURLWritesCapacity8192Parallel-2   	 1641205	       367.7 ns/op	     368 B/op	       3 allocs/op
+BenchmarkHandlerHotPathAuthOff-2                                   	  137229	      4299 ns/op	 238.20 MB/s	    5348 B/op	      55 allocs/op
+BenchmarkHandlerHotPathCacheHit-2                                  	  103072	      5877 ns/op	 174.23 MB/s	    6094 B/op	      66 allocs/op
+BenchmarkReservedCookieStripping/One-2                             	15423883	        38.72 ns/op	       0 B/op	       0 allocs/op
+BenchmarkReservedCookieStripping/Eight-2                           	 5673722	       104.9 ns/op	       0 B/op	       0 allocs/op
+BenchmarkReservedCookieStripping/ThirtyTwo-2                       	 1730365	       346.1 ns/op	       0 B/op	       0 allocs/op
+BenchmarkTraceHeaderClassification-2                               	 6394213	        93.92 ns/op	       0 B/op	       0 allocs/op
+PASS
+goos: darwin
+goarch: arm64
+pkg: go-reauth-proxy/pkg/proxy
+cpu: Apple M5
+BenchmarkAuthCombinedCacheLookupsCookie-2                          	  968313	       610.9 ns/op	      64 B/op	       1 allocs/op
+BenchmarkAuthCacheHighCardinalityURLWritesCapacity8192-2           	 2585484	       230.5 ns/op	     368 B/op	       3 allocs/op
+BenchmarkAuthCacheHighCardinalityURLWritesCapacity8192Parallel-2   	 1630992	       370.3 ns/op	     368 B/op	       3 allocs/op
+BenchmarkHandlerHotPathAuthOff-2                                   	  138634	      4254 ns/op	 240.71 MB/s	    5350 B/op	      55 allocs/op
+BenchmarkHandlerHotPathCacheHit-2                                  	  102663	      5798 ns/op	 176.61 MB/s	    6092 B/op	      66 allocs/op
+BenchmarkReservedCookieStripping/One-2                             	15422049	        38.71 ns/op	       0 B/op	       0 allocs/op
+BenchmarkReservedCookieStripping/Eight-2                           	 5648954	       106.2 ns/op	       0 B/op	       0 allocs/op
+BenchmarkReservedCookieStripping/ThirtyTwo-2                       	 1719556	       348.5 ns/op	       0 B/op	       0 allocs/op
+BenchmarkTraceHeaderClassification-2                               	 6403072	        94.57 ns/op	       0 B/op	       0 allocs/op
+PASS
+goos: darwin
+goarch: arm64
+pkg: go-reauth-proxy/pkg/proxy
+cpu: Apple M5
+BenchmarkAuthCombinedCacheLookupsCookie-2                          	  971797	       615.4 ns/op	      64 B/op	       1 allocs/op
+BenchmarkAuthCacheHighCardinalityURLWritesCapacity8192-2           	 2623390	       230.6 ns/op	     368 B/op	       3 allocs/op
+BenchmarkAuthCacheHighCardinalityURLWritesCapacity8192Parallel-2   	 1607950	       369.9 ns/op	     368 B/op	       3 allocs/op
+BenchmarkHandlerHotPathAuthOff-2                                   	  141682	      4199 ns/op	 243.89 MB/s	    5355 B/op	      55 allocs/op
+BenchmarkHandlerHotPathCacheHit-2                                  	  103263	      5862 ns/op	 174.67 MB/s	    6092 B/op	      66 allocs/op
+BenchmarkReservedCookieStripping/One-2                             	15897003	        38.50 ns/op	       0 B/op	       0 allocs/op
+BenchmarkReservedCookieStripping/Eight-2                           	 5626500	       106.9 ns/op	       0 B/op	       0 allocs/op
+BenchmarkReservedCookieStripping/ThirtyTwo-2                       	 1676784	       358.3 ns/op	       0 B/op	       0 allocs/op
+BenchmarkTraceHeaderClassification-2                               	 6342050	        95.39 ns/op	       0 B/op	       0 allocs/op
+PASS

@@ -1,0 +1,23 @@
+{
+  "baseline": "92d4c0c",
+  "candidate": "91f65cc",
+  "go": "go1.26.7 darwin/arm64",
+  "cpu": 2,
+  "benchtime": "500ms",
+  "samples": 6,
+  "started": 1790142702.2209558,
+  "revisions": {
+    "base": "92d4c0cb5495d57801d52893a8f0e8496a1c9182",
+    "capture": "0cc5ef5d65bfb0a5b2e52ba493241d85fbe0e3ee",
+    "lazy": "eb08cbb8acf166976192e112794c930656dcd385",
+    "immutable": "894d1122cefb0343df57566e4a5e023479cb0b10",
+    "binary": "2a54d3054904f21c4faadaad67fc6e85320bf2ae",
+    "candidate": "91f65ccd9eae6441cd02abb064cf83f10c1a5c84"
+  },
+  "primary_benchtime": "500ms",
+  "e2e_and_stage_benchtime": "300ms",
+  "stage_samples": 6,
+  "stage_order": "forward/reverse alternating",
+  "paired_order": "AB/BA alternating",
+  "product_binary_commit": "91f65ccd9eae6441cd02abb064cf83f10c1a5c84"
+}

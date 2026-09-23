@@ -1,0 +1,124 @@
+--- FAIL: TestAuthCacheInvalidationSeparatesPendingAuthorization (15.03s)
+    --- FAIL: TestAuthCacheInvalidationSeparatesPendingAuthorization/legacy_verify/identity/late_fill (0.00s)
+        auth_cache_invalidation_test.go:127: old RPC republished allow after invalidation
+        auth_cache_invalidation_test.go:130: post-invalidation authorization was not rechecked
+    --- FAIL: TestAuthCacheInvalidationSeparatesPendingAuthorization/legacy_verify/identity/new_request_before_old_returns (1.00s)
+        auth_cache_invalidation_test.go:114: post-invalidation request joined the old singleflight
+        auth_cache_invalidation_test.go:118: post-invalidation request received the old allow
+        auth_cache_invalidation_test.go:127: old RPC republished allow after invalidation
+        auth_cache_invalidation_test.go:130: post-invalidation authorization was not rechecked
+    --- FAIL: TestAuthCacheInvalidationSeparatesPendingAuthorization/legacy_verify/clear/late_fill (0.00s)
+        auth_cache_invalidation_test.go:127: old RPC republished allow after invalidation
+        auth_cache_invalidation_test.go:130: post-invalidation authorization was not rechecked
+    --- FAIL: TestAuthCacheInvalidationSeparatesPendingAuthorization/legacy_verify/clear/new_request_before_old_returns (1.00s)
+        auth_cache_invalidation_test.go:114: post-invalidation request joined the old singleflight
+        auth_cache_invalidation_test.go:118: post-invalidation request received the old allow
+        auth_cache_invalidation_test.go:127: old RPC republished allow after invalidation
+        auth_cache_invalidation_test.go:130: post-invalidation authorization was not rechecked
+    --- FAIL: TestAuthCacheInvalidationSeparatesPendingAuthorization/legacy_verify/logout_cookie/late_fill (0.00s)
+        auth_cache_invalidation_test.go:127: old RPC republished allow after invalidation
+        auth_cache_invalidation_test.go:130: post-invalidation authorization was not rechecked
+    --- FAIL: TestAuthCacheInvalidationSeparatesPendingAuthorization/legacy_verify/logout_cookie/new_request_before_old_returns (1.00s)
+        auth_cache_invalidation_test.go:114: post-invalidation request joined the old singleflight
+        auth_cache_invalidation_test.go:118: post-invalidation request received the old allow
+        auth_cache_invalidation_test.go:127: old RPC republished allow after invalidation
+        auth_cache_invalidation_test.go:130: post-invalidation authorization was not rechecked
+    --- FAIL: TestAuthCacheInvalidationSeparatesPendingAuthorization/combined_verify/identity/late_fill (0.00s)
+        auth_cache_invalidation_test.go:127: old RPC republished allow after invalidation
+        auth_cache_invalidation_test.go:130: post-invalidation authorization was not rechecked
+    --- FAIL: TestAuthCacheInvalidationSeparatesPendingAuthorization/combined_verify/identity/new_request_before_old_returns (1.00s)
+        auth_cache_invalidation_test.go:114: post-invalidation request joined the old singleflight
+        auth_cache_invalidation_test.go:118: post-invalidation request received the old allow
+        auth_cache_invalidation_test.go:127: old RPC republished allow after invalidation
+        auth_cache_invalidation_test.go:130: post-invalidation authorization was not rechecked
+    --- FAIL: TestAuthCacheInvalidationSeparatesPendingAuthorization/combined_verify/clear/late_fill (0.00s)
+        auth_cache_invalidation_test.go:127: old RPC republished allow after invalidation
+        auth_cache_invalidation_test.go:130: post-invalidation authorization was not rechecked
+    --- FAIL: TestAuthCacheInvalidationSeparatesPendingAuthorization/combined_verify/clear/new_request_before_old_returns (1.00s)
+        auth_cache_invalidation_test.go:114: post-invalidation request joined the old singleflight
+        auth_cache_invalidation_test.go:118: post-invalidation request received the old allow
+        auth_cache_invalidation_test.go:127: old RPC republished allow after invalidation
+        auth_cache_invalidation_test.go:130: post-invalidation authorization was not rechecked
+    --- FAIL: TestAuthCacheInvalidationSeparatesPendingAuthorization/combined_verify/logout_cookie/late_fill (0.00s)
+        auth_cache_invalidation_test.go:127: old RPC republished allow after invalidation
+        auth_cache_invalidation_test.go:130: post-invalidation authorization was not rechecked
+    --- FAIL: TestAuthCacheInvalidationSeparatesPendingAuthorization/combined_verify/logout_cookie/new_request_before_old_returns (1.00s)
+        auth_cache_invalidation_test.go:114: post-invalidation request joined the old singleflight
+        auth_cache_invalidation_test.go:118: post-invalidation request received the old allow
+        auth_cache_invalidation_test.go:127: old RPC republished allow after invalidation
+        auth_cache_invalidation_test.go:130: post-invalidation authorization was not rechecked
+    --- FAIL: TestAuthCacheInvalidationSeparatesPendingAuthorization/legacy_preflight/identity/late_fill (0.00s)
+        auth_cache_invalidation_test.go:127: old RPC republished allow after invalidation
+        auth_cache_invalidation_test.go:130: post-invalidation authorization was not rechecked
+    --- FAIL: TestAuthCacheInvalidationSeparatesPendingAuthorization/legacy_preflight/identity/new_request_before_old_returns (1.00s)
+        auth_cache_invalidation_test.go:114: post-invalidation request joined the old singleflight
+        auth_cache_invalidation_test.go:118: post-invalidation request received the old allow
+        auth_cache_invalidation_test.go:127: old RPC republished allow after invalidation
+        auth_cache_invalidation_test.go:130: post-invalidation authorization was not rechecked
+    --- FAIL: TestAuthCacheInvalidationSeparatesPendingAuthorization/legacy_preflight/clear/late_fill (0.00s)
+        auth_cache_invalidation_test.go:127: old RPC republished allow after invalidation
+        auth_cache_invalidation_test.go:130: post-invalidation authorization was not rechecked
+    --- FAIL: TestAuthCacheInvalidationSeparatesPendingAuthorization/legacy_preflight/clear/new_request_before_old_returns (1.00s)
+        auth_cache_invalidation_test.go:114: post-invalidation request joined the old singleflight
+        auth_cache_invalidation_test.go:118: post-invalidation request received the old allow
+        auth_cache_invalidation_test.go:127: old RPC republished allow after invalidation
+        auth_cache_invalidation_test.go:130: post-invalidation authorization was not rechecked
+    --- FAIL: TestAuthCacheInvalidationSeparatesPendingAuthorization/legacy_preflight/logout_cookie/late_fill (0.00s)
+        auth_cache_invalidation_test.go:127: old RPC republished allow after invalidation
+        auth_cache_invalidation_test.go:130: post-invalidation authorization was not rechecked
+    --- FAIL: TestAuthCacheInvalidationSeparatesPendingAuthorization/legacy_preflight/logout_cookie/new_request_before_old_returns (1.00s)
+        auth_cache_invalidation_test.go:114: post-invalidation request joined the old singleflight
+        auth_cache_invalidation_test.go:118: post-invalidation request received the old allow
+        auth_cache_invalidation_test.go:127: old RPC republished allow after invalidation
+        auth_cache_invalidation_test.go:130: post-invalidation authorization was not rechecked
+    --- FAIL: TestAuthCacheInvalidationSeparatesPendingAuthorization/combined_preflight/identity/late_fill (0.00s)
+        auth_cache_invalidation_test.go:127: old RPC republished allow after invalidation
+        auth_cache_invalidation_test.go:130: post-invalidation authorization was not rechecked
+    --- FAIL: TestAuthCacheInvalidationSeparatesPendingAuthorization/combined_preflight/identity/new_request_before_old_returns (1.00s)
+        auth_cache_invalidation_test.go:114: post-invalidation request joined the old singleflight
+        auth_cache_invalidation_test.go:118: post-invalidation request received the old allow
+        auth_cache_invalidation_test.go:127: old RPC republished allow after invalidation
+        auth_cache_invalidation_test.go:130: post-invalidation authorization was not rechecked
+    --- FAIL: TestAuthCacheInvalidationSeparatesPendingAuthorization/combined_preflight/clear/late_fill (0.00s)
+        auth_cache_invalidation_test.go:127: old RPC republished allow after invalidation
+        auth_cache_invalidation_test.go:130: post-invalidation authorization was not rechecked
+    --- FAIL: TestAuthCacheInvalidationSeparatesPendingAuthorization/combined_preflight/clear/new_request_before_old_returns (1.00s)
+        auth_cache_invalidation_test.go:114: post-invalidation request joined the old singleflight
+        auth_cache_invalidation_test.go:118: post-invalidation request received the old allow
+        auth_cache_invalidation_test.go:127: old RPC republished allow after invalidation
+        auth_cache_invalidation_test.go:130: post-invalidation authorization was not rechecked
+    --- FAIL: TestAuthCacheInvalidationSeparatesPendingAuthorization/combined_preflight/logout_cookie/late_fill (0.00s)
+        auth_cache_invalidation_test.go:127: old RPC republished allow after invalidation
+        auth_cache_invalidation_test.go:130: post-invalidation authorization was not rechecked
+    --- FAIL: TestAuthCacheInvalidationSeparatesPendingAuthorization/combined_preflight/logout_cookie/new_request_before_old_returns (1.00s)
+        auth_cache_invalidation_test.go:114: post-invalidation request joined the old singleflight
+        auth_cache_invalidation_test.go:118: post-invalidation request received the old allow
+        auth_cache_invalidation_test.go:127: old RPC republished allow after invalidation
+        auth_cache_invalidation_test.go:130: post-invalidation authorization was not rechecked
+    --- FAIL: TestAuthCacheInvalidationSeparatesPendingAuthorization/combined/identity/late_fill (0.00s)
+        auth_cache_invalidation_test.go:127: old RPC republished allow after invalidation
+        auth_cache_invalidation_test.go:130: post-invalidation authorization was not rechecked
+    --- FAIL: TestAuthCacheInvalidationSeparatesPendingAuthorization/combined/identity/new_request_before_old_returns (1.00s)
+        auth_cache_invalidation_test.go:114: post-invalidation request joined the old singleflight
+        auth_cache_invalidation_test.go:118: post-invalidation request received the old allow
+        auth_cache_invalidation_test.go:127: old RPC republished allow after invalidation
+        auth_cache_invalidation_test.go:130: post-invalidation authorization was not rechecked
+    --- FAIL: TestAuthCacheInvalidationSeparatesPendingAuthorization/combined/clear/late_fill (0.00s)
+        auth_cache_invalidation_test.go:127: old RPC republished allow after invalidation
+        auth_cache_invalidation_test.go:130: post-invalidation authorization was not rechecked
+    --- FAIL: TestAuthCacheInvalidationSeparatesPendingAuthorization/combined/clear/new_request_before_old_returns (1.00s)
+        auth_cache_invalidation_test.go:114: post-invalidation request joined the old singleflight
+        auth_cache_invalidation_test.go:118: post-invalidation request received the old allow
+        auth_cache_invalidation_test.go:127: old RPC republished allow after invalidation
+        auth_cache_invalidation_test.go:130: post-invalidation authorization was not rechecked
+    --- FAIL: TestAuthCacheInvalidationSeparatesPendingAuthorization/combined/logout_cookie/late_fill (0.00s)
+        auth_cache_invalidation_test.go:127: old RPC republished allow after invalidation
+        auth_cache_invalidation_test.go:130: post-invalidation authorization was not rechecked
+    --- FAIL: TestAuthCacheInvalidationSeparatesPendingAuthorization/combined/logout_cookie/new_request_before_old_returns (1.00s)
+        auth_cache_invalidation_test.go:114: post-invalidation request joined the old singleflight
+        auth_cache_invalidation_test.go:118: post-invalidation request received the old allow
+        auth_cache_invalidation_test.go:127: old RPC republished allow after invalidation
+        auth_cache_invalidation_test.go:130: post-invalidation authorization was not rechecked
+FAIL
+FAIL	go-reauth-proxy/pkg/proxy	15.696s
+FAIL

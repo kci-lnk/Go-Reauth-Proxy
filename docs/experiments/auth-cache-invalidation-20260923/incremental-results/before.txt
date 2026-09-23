@@ -1,0 +1,42 @@
+goos: darwin
+goarch: arm64
+pkg: go-reauth-proxy/pkg/proxy
+cpu: Apple M5
+BenchmarkHandlerHotPathAuthOff-2    	  270620	      4552 ns/op	 224.95 MB/s	    5354 B/op	      55 allocs/op
+BenchmarkHandlerHotPathCacheHit-2   	  203272	      5954 ns/op	 171.97 MB/s	    6096 B/op	      66 allocs/op
+PASS
+goos: darwin
+goarch: arm64
+pkg: go-reauth-proxy/pkg/proxy
+cpu: Apple M5
+BenchmarkHandlerHotPathAuthOff-2    	  268972	      4346 ns/op	 235.64 MB/s	    5354 B/op	      55 allocs/op
+BenchmarkHandlerHotPathCacheHit-2   	  203058	      5849 ns/op	 175.08 MB/s	    6093 B/op	      66 allocs/op
+PASS
+goos: darwin
+goarch: arm64
+pkg: go-reauth-proxy/pkg/proxy
+cpu: Apple M5
+BenchmarkHandlerHotPathAuthOff-2    	  267355	      4313 ns/op	 237.42 MB/s	    5347 B/op	      55 allocs/op
+BenchmarkHandlerHotPathCacheHit-2   	  204312	      5870 ns/op	 174.44 MB/s	    6098 B/op	      66 allocs/op
+PASS
+goos: darwin
+goarch: arm64
+pkg: go-reauth-proxy/pkg/proxy
+cpu: Apple M5
+BenchmarkHandlerHotPathAuthOff-2    	  271920	      4386 ns/op	 233.49 MB/s	    5353 B/op	      55 allocs/op
+BenchmarkHandlerHotPathCacheHit-2   	  204270	      5883 ns/op	 174.05 MB/s	    6091 B/op	      66 allocs/op
+PASS
+goos: darwin
+goarch: arm64
+pkg: go-reauth-proxy/pkg/proxy
+cpu: Apple M5
+BenchmarkHandlerHotPathAuthOff-2    	  271088	      4300 ns/op	 238.16 MB/s	    5353 B/op	      55 allocs/op
+BenchmarkHandlerHotPathCacheHit-2   	  204961	      5848 ns/op	 175.11 MB/s	    6098 B/op	      66 allocs/op
+PASS
+goos: darwin
+goarch: arm64
+pkg: go-reauth-proxy/pkg/proxy
+cpu: Apple M5
+BenchmarkHandlerHotPathAuthOff-2    	  260042	      4407 ns/op	 232.36 MB/s	    5349 B/op	      55 allocs/op
+BenchmarkHandlerHotPathCacheHit-2   	  201422	      5923 ns/op	 172.88 MB/s	    6092 B/op	      66 allocs/op
+PASS

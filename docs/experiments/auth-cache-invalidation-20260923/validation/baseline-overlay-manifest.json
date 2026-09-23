@@ -1,0 +1,52 @@
+{
+  "baseline": "4d15fa32764e26df58b16930d0e2503a90880002",
+  "working_product": "66998225a2d0d78e40390c179681b6a48b5e5635",
+  "files": [
+    {
+      "path": "pkg/proxy/auth_cache.go",
+      "sha256": "2d960eeae8906f1afd65214a958f881d7145e4c2f4b5b06ee3e57478e1cb60fe",
+      "kind": "original-4d-source"
+    },
+    {
+      "path": "pkg/proxy/auth_cache_invalidation_test.go",
+      "sha256": "dd750f4da1e74cba38041be17fd465d133b407fd1bed62bb4852a8bd78aa2665",
+      "kind": "test-only-first-80-cases"
+    },
+    {
+      "path": "pkg/proxy/auth_cache_test.go",
+      "sha256": "e374b75202d342d2c8c88fe154a0a3cb721322c3c90de225ee72816783e4c343",
+      "kind": "original-4d-source"
+    },
+    {
+      "path": "pkg/proxy/auth_proxy_route_test.go",
+      "sha256": "7d36db25972508c1146eea11affc8451963497224a830438e26f57dc24b6971f",
+      "kind": "original-4d-source"
+    },
+    {
+      "path": "pkg/proxy/handler.go",
+      "sha256": "c3358979366414b87b8837d3f5c70d902a5db8992d7c6e69160e013771a68147",
+      "kind": "original-4d-source"
+    },
+    {
+      "path": "pkg/proxy/handler_config_additional_test.go",
+      "sha256": "ba6ceb0b82de26774dc3b0d652c7b2fc4c176b85ef8080c1684e60389a2d6642",
+      "kind": "original-4d-source"
+    },
+    {
+      "path": "pkg/proxy/http_auth.go",
+      "sha256": "967628be086fe85e0ee43ddd0e4b269ef449a6359bdf3ed8d38577f6d1e4c2f7",
+      "kind": "original-4d-source"
+    },
+    {
+      "path": "pkg/proxy/http_auth_combined.go",
+      "sha256": "2ce14ba689a39d54ac5bfb5c98617af01e00bc98d85178ff4438d3c829eb04ed",
+      "kind": "original-4d-source"
+    },
+    {
+      "path": "pkg/proxy/toolbar_data.go",
+      "sha256": "86aba3e608f9fb170076c8ac3a19e56a02deadb4b3f271c9ab9a242d4655a328",
+      "kind": "original-4d-source"
+    }
+  ],
+  "description": "All modified Go files restored to baseline via test-only overlay; new test file retains only first 80 barrier cases, which use the original API."
+}

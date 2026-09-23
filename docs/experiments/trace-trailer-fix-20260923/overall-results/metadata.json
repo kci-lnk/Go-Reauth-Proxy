@@ -1,0 +1,18 @@
+{
+  "revisions": {
+    "before": "92d4c0cb5495d57801d52893a8f0e8496a1c9182",
+    "after": "748c97e03f6fb9087ac0b3c90064611dc2c6cf66"
+  },
+  "pattern": "^BenchmarkHandlerHotPath(AuthOff|CacheHit)$",
+  "cpu": 2,
+  "pairs": 6,
+  "warmup_benchtime": "200ms",
+  "measurement_benchtime": "1s",
+  "platform": "macOS-26.6.2-arm64-arm-64bit",
+  "started_unix": 1790146525.225012,
+  "go": "go version go1.26.7 darwin/arm64",
+  "binary_sha256": {
+    "before": "d6d65aff189616316a174b350d4f787cd21eef40e5bf9434905e0fd119b1b513",
+    "after": "3cfdb06ccd61e3b60e52b699ad63560547475e0013dfda60e061d4e2d2c52dfe"
+  }
+}

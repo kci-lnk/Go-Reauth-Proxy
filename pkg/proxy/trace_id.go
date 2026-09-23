@@ -73,20 +73,27 @@ func stripTraceResponseHeaders(header http.Header) {
 }
 
 func isTraceResponseHeader(name string) bool {
-	name = strings.ToLower(strings.TrimSpace(name))
-	name = strings.TrimSpace(strings.TrimPrefix(name, strings.ToLower(http.TrailerPrefix)))
-	if strings.Contains(name, "trace") {
+	name = strings.TrimSpace(name)
+	// Wire header names are ASCII. Retain the old lowercase behavior for
+	// unusual names in directly constructed Header maps as well.
+	if !isASCIIString(name) {
+		name = strings.ToLower(name)
+	}
+	if len(name) >= len(http.TrailerPrefix) && equalFoldASCIIString(name[:len(http.TrailerPrefix)], http.TrailerPrefix) {
+		name = strings.TrimSpace(name[len(http.TrailerPrefix):])
+	}
+	if containsFoldASCIIString(name, "trace") {
 		return true
 	}
 
 	// B3 and OpenTracing also use span-only header names that belong to the
 	// same distributed-tracing context as their trace ID.
-	switch name {
-	case "b3", "x-b3-spanid", "x-b3-parentspanid", "x-b3-sampled", "x-b3-flags", "x-ot-span-context":
-		return true
-	default:
-		return false
+	for _, candidate := range [...]string{"b3", "x-b3-spanid", "x-b3-parentspanid", "x-b3-sampled", "x-b3-flags", "x-ot-span-context"} {
+		if equalFoldASCIIString(name, candidate) {
+			return true
+		}
 	}
+	return false
 }
 
 func stripTraceTrailerNames(values []string) []string {

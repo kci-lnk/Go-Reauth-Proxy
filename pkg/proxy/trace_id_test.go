@@ -4,11 +4,33 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"regexp"
+	"strings"
 	"sync"
 	"testing"
 
 	"go-reauth-proxy/pkg/models"
 )
+
+func TestTraceResponseHeaderClassificationMatchesLegacy(t *testing.T) {
+	for _, name := range []string{"Content-Type", "Content-Length", "Trailer", " X-Custom-TrAcE-Token ", "trailer:X-B3-SpanId", "Trailer: B3", "x-b3-sampled", "X-Ot-Span-Context", "X-TRACE-\u212a", "X-TR\u212aCE", "Trailer:X-Application-ID"} {
+		legacy := strings.ToLower(strings.TrimSpace(name))
+		legacy = strings.TrimSpace(strings.TrimPrefix(legacy, strings.ToLower(http.TrailerPrefix)))
+		want := strings.Contains(legacy, "trace")
+		switch legacy {
+		case "b3", "x-b3-spanid", "x-b3-parentspanid", "x-b3-sampled", "x-b3-flags", "x-ot-span-context":
+			want = true
+		}
+		if got := isTraceResponseHeader(name); got != want {
+			t.Errorf("header %q = %v, want %v", name, got, want)
+		}
+	}
+	if allocations := testing.AllocsPerRun(100, func() {
+		isTraceResponseHeader("Content-Type")
+		isTraceResponseHeader("Trailer: X-B3-SpanId")
+	}); allocations != 0 {
+		t.Fatalf("ASCII classification allocated %g times", allocations)
+	}
+}
 
 func TestNewRequestTraceIDFormatAndConcurrentUniqueness(t *testing.T) {
 	const total = 512

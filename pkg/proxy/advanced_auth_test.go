@@ -461,6 +461,45 @@ func TestStripAdvancedAuthGrantCookiePreservesOtherCookies(t *testing.T) {
 	}
 }
 
+func TestStripAdvancedAuthGrantOrdinaryCookiesAreUntouched(t *testing.T) {
+	headers := http.Header{
+		"Cookie":     {"session=one;theme=dark", "malformed; value = two"},
+		"cookie":     {"other=three"},
+		"Set-Cookie": {"session=one; Path=/; HttpOnly", "unrelated malformed header"},
+	}
+	want := headers.Clone()
+	stripAdvancedAuthGrantCookie(headers)
+	stripAdvancedAuthGrantSetCookies(headers)
+	if !reflect.DeepEqual(headers, want) {
+		t.Fatalf("ordinary cookie headers changed: %#v", headers)
+	}
+	if allocations := testing.AllocsPerRun(100, func() {
+		stripAdvancedAuthGrantCookie(headers)
+		stripAdvancedAuthGrantSetCookies(headers)
+	}); allocations != 0 {
+		t.Fatalf("ordinary cookies allocated %g times", allocations)
+	}
+}
+
+func TestStripAdvancedAuthGrantMixedCaseAndMalformedCookies(t *testing.T) {
+	reserved := strings.ToUpper(advancedAuthGrantCookieName)
+	headers := http.Header{
+		"Cookie":     {"session=one"},
+		"cookie":     {reserved + " = malformed; theme=dark"},
+		"Set-Cookie": {"session=one; Path=/"},
+		"set-cookie": {" " + reserved + " = broken; bogus attribute"},
+	}
+	stripAdvancedAuthGrantCookie(headers)
+	stripAdvancedAuthGrantSetCookies(headers)
+	for key, values := range headers {
+		for _, value := range values {
+			if strings.Contains(strings.ToLower(value), advancedAuthGrantCookieName) {
+				t.Fatalf("reserved cookie survived in %s: %s", key, value)
+			}
+		}
+	}
+}
+
 func TestStripAdvancedAuthGrantSetCookiesPreservesMalformedUnrelatedHeaders(t *testing.T) {
 	headers := http.Header{}
 	headers.Add("Set-Cookie", advancedAuthGrantCookieName+"=secret; Path=/")

@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"log"
+	"maps"
 	"net/http"
 	"net/url"
 	"sort"
@@ -32,7 +33,7 @@ const (
 
 type authStateCache struct {
 	mu             sync.RWMutex
-	entries        map[string]authCacheEntry
+	entries        map[string]*authCacheEntry
 	keysByIdentity map[string]map[string]struct{}
 	order          *list.List
 	orderByKey     map[string]*list.Element
@@ -62,7 +63,7 @@ func authRouteIdentityFromRequest(r *http.Request) string {
 
 type preflightStateCache struct {
 	mu             sync.RWMutex
-	entries        map[string]preflightCacheEntry
+	entries        map[string]*preflightCacheEntry
 	keysByIdentity map[string]map[string]struct{}
 	order          *list.List
 	orderByKey     map[string]*list.Element
@@ -124,7 +125,7 @@ type authSetCookieMutations struct {
 
 func newAuthStateCache() authStateCache {
 	return authStateCache{
-		entries:        make(map[string]authCacheEntry),
+		entries:        make(map[string]*authCacheEntry),
 		keysByIdentity: make(map[string]map[string]struct{}),
 		order:          list.New(),
 		orderByKey:     make(map[string]*list.Element),
@@ -133,7 +134,7 @@ func newAuthStateCache() authStateCache {
 
 func newPreflightStateCache() preflightStateCache {
 	return preflightStateCache{
-		entries:        make(map[string]preflightCacheEntry),
+		entries:        make(map[string]*preflightCacheEntry),
 		keysByIdentity: make(map[string]map[string]struct{}),
 		order:          list.New(),
 		orderByKey:     make(map[string]*list.Element),
@@ -477,7 +478,7 @@ func copySetCookieHeaders(values []string) []string {
 	return cloned
 }
 
-func (h *Handler) authCacheGet(cacheKey string, now time.Time) (authCacheEntry, bool) {
+func (h *Handler) authCacheGet(cacheKey string, now time.Time) (*authCacheEntry, bool) {
 	cache := &h.authCache
 
 	cache.mu.RLock()
@@ -485,7 +486,7 @@ func (h *Handler) authCacheGet(cacheKey string, now time.Time) (authCacheEntry, 
 	cache.mu.RUnlock()
 	if !ok {
 		diagnostics.RecordAuthCacheMiss()
-		return authCacheEntry{}, false
+		return nil, false
 	}
 	if !entry.expiresAt.After(now) {
 		cache.mu.Lock()
@@ -494,13 +495,13 @@ func (h *Handler) authCacheGet(cacheKey string, now time.Time) (authCacheEntry, 
 		}
 		cache.mu.Unlock()
 		diagnostics.RecordAuthCacheMiss()
-		return authCacheEntry{}, false
+		return nil, false
 	}
 	diagnostics.RecordAuthCacheHit()
 	return entry, true
 }
 
-func (h *Handler) preflightCacheGet(cacheKey string, now time.Time) (preflightCacheEntry, bool) {
+func (h *Handler) preflightCacheGet(cacheKey string, now time.Time) (*preflightCacheEntry, bool) {
 	cache := &h.preflightCache
 
 	cache.mu.RLock()
@@ -508,7 +509,7 @@ func (h *Handler) preflightCacheGet(cacheKey string, now time.Time) (preflightCa
 	cache.mu.RUnlock()
 	if !ok {
 		diagnostics.RecordAuthCacheMiss()
-		return preflightCacheEntry{}, false
+		return nil, false
 	}
 	if !entry.expiresAt.After(now) {
 		cache.mu.Lock()
@@ -517,18 +518,22 @@ func (h *Handler) preflightCacheGet(cacheKey string, now time.Time) (preflightCa
 		}
 		cache.mu.Unlock()
 		diagnostics.RecordAuthCacheMiss()
-		return preflightCacheEntry{}, false
+		return nil, false
 	}
 	diagnostics.RecordAuthCacheHit()
 	return entry, true
 }
 
-func (h *Handler) authCacheStore(cacheKey string, entry authCacheEntry, _ time.Time) {
+func (h *Handler) authCacheStore(cacheKey string, entry authCacheEntry, _ time.Time) *authCacheEntry {
 	cache := &h.authCache
+	// Published entries are immutable and may outlive invalidation while an
+	// in-flight request still references them. Never recycle their storage.
+	entry.setCookies = copySetCookieHeaders(entry.setCookies)
+	entry.result.allowedSubdomainHosts = maps.Clone(entry.result.allowedSubdomainHosts)
 
 	cache.mu.Lock()
 	cache.deleteEntryLocked(cacheKey)
-	cache.entries[cacheKey] = entry
+	cache.entries[cacheKey] = &entry
 	cache.orderByKey[cacheKey] = cache.order.PushBack(cacheKey)
 	if entry.identityKey != "" {
 		keys := cache.keysByIdentity[entry.identityKey]
@@ -540,14 +545,15 @@ func (h *Handler) authCacheStore(cacheKey string, entry authCacheEntry, _ time.T
 	}
 	cache.enforceMaxEntriesLocked(authCacheMaxEntries)
 	cache.mu.Unlock()
+	return &entry
 }
 
-func (h *Handler) preflightCacheStore(cacheKey string, entry preflightCacheEntry, _ time.Time) {
+func (h *Handler) preflightCacheStore(cacheKey string, entry preflightCacheEntry, _ time.Time) *preflightCacheEntry {
 	cache := &h.preflightCache
 
 	cache.mu.Lock()
 	cache.deleteEntryLocked(cacheKey)
-	cache.entries[cacheKey] = entry
+	cache.entries[cacheKey] = &entry
 	cache.orderByKey[cacheKey] = cache.order.PushBack(cacheKey)
 	if entry.identityKey != "" {
 		keys := cache.keysByIdentity[entry.identityKey]
@@ -559,6 +565,7 @@ func (h *Handler) preflightCacheStore(cacheKey string, entry preflightCacheEntry
 	}
 	cache.enforceMaxEntriesLocked(authCacheMaxEntries)
 	cache.mu.Unlock()
+	return &entry
 }
 
 func (h *Handler) authCacheInvalidateByIdentityKeys(identityKeys ...string) {
@@ -595,14 +602,14 @@ func (h *Handler) clearAuthCache() {
 	preflightCache := &h.preflightCache
 
 	authCache.mu.Lock()
-	authCache.entries = make(map[string]authCacheEntry)
+	authCache.entries = make(map[string]*authCacheEntry)
 	authCache.keysByIdentity = make(map[string]map[string]struct{})
 	authCache.order = list.New()
 	authCache.orderByKey = make(map[string]*list.Element)
 	authCache.mu.Unlock()
 
 	preflightCache.mu.Lock()
-	preflightCache.entries = make(map[string]preflightCacheEntry)
+	preflightCache.entries = make(map[string]*preflightCacheEntry)
 	preflightCache.keysByIdentity = make(map[string]map[string]struct{})
 	preflightCache.order = list.New()
 	preflightCache.orderByKey = make(map[string]*list.Element)

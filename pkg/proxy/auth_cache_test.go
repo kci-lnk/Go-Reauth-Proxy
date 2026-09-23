@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -25,6 +26,58 @@ var (
 )
 
 const benchmarkAuthCacheCapacity = 8192
+
+func TestAuthCachePublishedEntrySurvivesReplacementAndInvalidation(t *testing.T) {
+	h := &Handler{authCache: newAuthStateCache(), preflightCache: newPreflightStateCache()}
+	now := time.Now()
+	source := authCacheEntry{
+		identityKey: "identity", expiresAt: now.Add(time.Hour),
+		result:     authCheckResult{allowed: true, allowedSubdomainHosts: map[string]struct{}{"original.test": {}}},
+		setCookies: []string{"sid=original"},
+	}
+	h.authCacheStore("key", source, now)
+	published, ok := h.authCacheGet("key", now)
+	if !ok {
+		t.Fatal("entry missing")
+	}
+	source.setCookies[0] = "sid=mutated"
+	delete(source.result.allowedSubdomainHosts, "original.test")
+	var workers sync.WaitGroup
+	workers.Go(func() {
+		for range 100 {
+			h.authCacheStore("key", authCacheEntry{identityKey: "identity", expiresAt: now.Add(time.Hour)}, now)
+			h.authCacheInvalidateByIdentityKeys("identity")
+		}
+	})
+	for range 100 {
+		if !published.result.allowed || published.setCookies[0] != "sid=original" {
+			t.Fatal("an in-flight cache entry changed")
+		}
+		if _, ok := published.result.allowedSubdomainHosts["original.test"]; !ok {
+			t.Fatal("published allowed-host map aliases its caller")
+		}
+	}
+	workers.Wait()
+	if _, ok := h.authCacheGet("key", now); ok {
+		t.Fatal("invalidated entry remains reachable from the cache")
+	}
+}
+
+func TestAuthCacheExactEntryPrecedesHostEntry(t *testing.T) {
+	h := &Handler{authCache: newAuthStateCache(), preflightCache: newPreflightStateCache()}
+	now := time.Now()
+	lookup := authCacheLookup{cacheKey: "exact", hostCacheKey: "host"}
+	h.authCacheStore(lookup.hostCacheKey, authCacheEntry{result: authCheckResult{allowed: true}, expiresAt: now.Add(time.Hour)}, now)
+	h.authCacheStore(lookup.cacheKey, authCacheEntry{result: authCheckResult{decision: "denied"}, expiresAt: now.Add(time.Minute)}, now)
+	entry, key, ok := h.cachedAuthEntry(lookup, now)
+	if !ok || key != lookup.cacheKey || entry.result.allowed {
+		t.Fatal("host allow overrode an exact-request denial")
+	}
+	entry, key, ok = h.cachedAuthEntry(lookup, now.Add(2*time.Minute))
+	if !ok || key != lookup.hostCacheKey || !entry.result.allowed {
+		t.Fatal("expired exact entry did not fall back to host entry")
+	}
+}
 
 func TestCanonicalCookieIdentitySkipsProxyPathAndSorts(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "https://app.example.com/path", nil)
@@ -1157,7 +1210,7 @@ func prefilledBenchmarkAuthCache(keys []string) (*authStateCache, authCacheEntry
 func storeAuthCacheEntryWithLimit(cache *authStateCache, cacheKey string, entry authCacheEntry, limit int) {
 	cache.mu.Lock()
 	cache.deleteEntryLocked(cacheKey)
-	cache.entries[cacheKey] = entry
+	cache.entries[cacheKey] = &entry
 	cache.orderByKey[cacheKey] = cache.order.PushBack(cacheKey)
 	if entry.identityKey != "" {
 		keys := cache.keysByIdentity[entry.identityKey]

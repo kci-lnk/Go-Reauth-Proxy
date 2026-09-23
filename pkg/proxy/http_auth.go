@@ -77,7 +77,7 @@ func (h *Handler) cachedCombinedHTTPAuth(r *http.Request, authConfig models.Auth
 				h.authCache.deleteEntryLocked(cacheKey)
 				h.authCache.mu.Unlock()
 			} else {
-				authExecution.entry = &entry
+				authExecution.entry = entry
 				authHit = true
 			}
 		}
@@ -123,8 +123,8 @@ func (h *Handler) storeCombinedHTTPAuth(r *http.Request, authConfig models.AuthC
 		expiresAt:        now.Add(ttl),
 		identityKey:      authLookup.identityKey,
 	}
-	h.authCacheStore(cacheKey, entry, now)
-	execution.auth = authCheckExecution{entry: &entry}
+	stored := h.authCacheStore(cacheKey, entry, now)
+	execution.auth = authCheckExecution{entry: stored}
 	return execution
 }
 
@@ -686,7 +686,7 @@ func shouldProbeAuthForToolbar(r *http.Request, authConfig models.AuthConfig, po
 		!response.ShouldSuppressToolbarForUserAgent(r.UserAgent())
 }
 
-func (h *Handler) cachedAuthEntry(lookup authCacheLookup, now time.Time) (authCacheEntry, string, bool) {
+func (h *Handler) cachedAuthEntry(lookup authCacheLookup, now time.Time) (*authCacheEntry, string, bool) {
 	if entry, ok := h.authCacheGet(lookup.cacheKey, now); ok {
 		return entry, lookup.cacheKey, true
 	}
@@ -695,7 +695,7 @@ func (h *Handler) cachedAuthEntry(lookup authCacheLookup, now time.Time) (authCa
 			return entry, lookup.hostCacheKey, true
 		}
 	}
-	return authCacheEntry{}, "", false
+	return nil, "", false
 }
 
 type authBridgeFailure struct {
@@ -770,7 +770,7 @@ func (h *Handler) executeAuthCheck(r *http.Request, authConfig models.AuthConfig
 						Time("expires_at", entry.expiresAt).
 						Send()
 				}
-				return authCheckExecution{entry: &entry}
+				return authCheckExecution{entry: entry}
 			}
 		}
 
@@ -792,7 +792,7 @@ func (h *Handler) executeAuthCheck(r *http.Request, authConfig models.AuthConfig
 							Time("expires_at", entry.expiresAt).
 							Send()
 					}
-					return authCheckExecution{entry: &entry}, nil
+					return authCheckExecution{entry: entry}, nil
 				}
 			}
 

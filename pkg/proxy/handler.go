@@ -1577,7 +1577,7 @@ func (h *Handler) runPreflight(r *http.Request, authConfig models.AuthConfig, cl
 							Str("redirect_location", logger.SanitizeURL(entry.decision.redirectLocation)).
 							Send()
 					}
-					return preflightCacheExecution{entry: &entry}, nil
+					return preflightCacheExecution{entry: entry}, nil
 				}
 			}
 
@@ -1601,8 +1601,8 @@ func (h *Handler) runPreflight(r *http.Request, authConfig models.AuthConfig, cl
 				identityKey: lookup.identityKey,
 			}
 			if cacheScope == pb.AuthCacheScope_AUTH_CACHE_SCOPE_EXACT_REQUEST && !shouldBypassFNAppNegativePreflightCache(r, decision) {
-				h.preflightCacheStore(lookup.cacheKey, entry, time.Now())
-				return preflightCacheExecution{entry: &entry}, nil
+				stored := h.preflightCacheStore(lookup.cacheKey, entry, time.Now())
+				return preflightCacheExecution{entry: stored}, nil
 			}
 			return preflightCacheExecution{decision: decision}, nil
 		})

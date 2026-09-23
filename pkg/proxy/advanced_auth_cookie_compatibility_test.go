@@ -46,6 +46,11 @@ func TestStripAdvancedAuthGrantCookieNormalizesEmptySegments(t *testing.T) {
 		{"unicode whitespace segment", "sid=ok;\u00a0;theme=dark", "sid=ok; theme=dark"},
 		{"trailing", "sid=ok;", "sid=ok"},
 		{"trailing whitespace", "sid=ok; \t", "sid=ok"},
+		{"unicode prefix", "\u00a0sid=ok", "sid=ok"},
+		{"unicode suffix", "sid=ok\u00a0", "sid=ok"},
+		{"mixed boundary spaces", "sid=ok; \u00a0theme=dark\u00a0 ", "sid=ok; theme=dark"},
+		{"vertical tab helper input", "sid=ok\v", "sid=ok"},
+		{"form feed helper input", "\fsid=ok", "sid=ok"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			headers := http.Header{"cookie": {tc.input}}

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/netip"
+	"net/textproto"
 	"regexp"
 	"slices"
 	"strings"
@@ -107,9 +108,9 @@ func stripAdvancedAuthGrantSetCookies(headers http.Header) {
 }
 
 // Ordinary cookies without empty segments need no rewriting. Keep the legacy
-// normalization of empty request-cookie segments: upstream parsers can count
-// them toward their cookie limit before ignoring them. Scan without allocating,
-// including directly constructed, noncanonical Header maps.
+// normalization of empty request-cookie segments and Unicode boundary spaces:
+// upstream parsers can count empty segments toward their cookie limit and only
+// trim ASCII spaces. Scan without allocating, including noncanonical Headers.
 func needsAdvancedAuthCookieRewrite(headers http.Header, headerName string, request bool) bool {
 	for key, values := range headers {
 		if !strings.EqualFold(key, headerName) {
@@ -121,11 +122,12 @@ func needsAdvancedAuthCookieRewrite(headers http.Header, headerName string, requ
 				more := false
 				if request {
 					part, value, more = strings.Cut(value, ";")
+					trimmed := textproto.TrimString(part)
+					if trimmed == "" || trimmed != strings.TrimSpace(trimmed) {
+						return true
+					}
 				}
 				name, _, ok := strings.Cut(part, "=")
-				if request && !ok && strings.TrimSpace(part) == "" {
-					return true
-				}
 				if ok && strings.EqualFold(strings.TrimSpace(name), advancedAuthGrantCookieName) {
 					return true
 				}

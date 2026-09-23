@@ -513,6 +513,12 @@ func serveReverseProxyWithResponseCoalescer(proxy *httputil.ReverseProxy, writer
 	completed := false
 	defer func() {
 		writer.finish(completed)
+		// ReverseProxy copies trailers only after Body reaches EOF and closes,
+		// so ModifyResponse cannot filter values discovered at that point.
+		// Stop the coalescer before touching its headers; net/http sends final
+		// trailers after the outer handler returns. This also covers Trailer:
+		// keys for names that the upstream did not announce in its headers.
+		stripTraceResponseHeaders(writer.Header())
 	}()
 	proxyCopy.ServeHTTP(writer, r)
 	completed = true

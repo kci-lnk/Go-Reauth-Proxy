@@ -40,7 +40,7 @@ const (
 // callback, so this must run after the proxy request has been built.  Keep all
 // unrelated cookies (including ordinary login/share cookies) intact.
 func stripAdvancedAuthGrantCookie(headers http.Header) {
-	if !hasAdvancedAuthGrantCookie(headers, "Cookie", true) {
+	if !needsAdvancedAuthCookieRewrite(headers, "Cookie", true) {
 		return
 	}
 	values, exists := advancedAuthHeaderValues(headers, "Cookie")
@@ -79,7 +79,7 @@ func stripAdvancedAuthGrantCookie(headers http.Header) {
 // replacing the gateway-only grant.  The auth proxy route deliberately does
 // not call this helper: only the auth service may issue or revoke the grant.
 func stripAdvancedAuthGrantSetCookies(headers http.Header) {
-	if !hasAdvancedAuthGrantCookie(headers, "Set-Cookie", false) {
+	if !needsAdvancedAuthCookieRewrite(headers, "Set-Cookie", false) {
 		return
 	}
 	values, exists := advancedAuthHeaderValues(headers, "Set-Cookie")
@@ -106,9 +106,11 @@ func stripAdvancedAuthGrantSetCookies(headers http.Header) {
 	}
 }
 
-// Ordinary application cookies need no rewriting. Scan all spelling variants
-// without allocating, including directly constructed, noncanonical Header maps.
-func hasAdvancedAuthGrantCookie(headers http.Header, headerName string, request bool) bool {
+// Ordinary cookies without empty segments need no rewriting. Keep the legacy
+// normalization of empty request-cookie segments: upstream parsers can count
+// them toward their cookie limit before ignoring them. Scan without allocating,
+// including directly constructed, noncanonical Header maps.
+func needsAdvancedAuthCookieRewrite(headers http.Header, headerName string, request bool) bool {
 	for key, values := range headers {
 		if !strings.EqualFold(key, headerName) {
 			continue
@@ -121,6 +123,9 @@ func hasAdvancedAuthGrantCookie(headers http.Header, headerName string, request 
 					part, value, more = strings.Cut(value, ";")
 				}
 				name, _, ok := strings.Cut(part, "=")
+				if request && !ok && strings.TrimSpace(part) == "" {
+					return true
+				}
 				if ok && strings.EqualFold(strings.TrimSpace(name), advancedAuthGrantCookieName) {
 					return true
 				}

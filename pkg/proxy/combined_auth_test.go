@@ -18,6 +18,51 @@ import (
 
 const combinedAuthTestCookieValue = "combined-session"
 
+func TestCombinedAuthCacheHitDoesNotMaterializeProto(t *testing.T) {
+	var calls atomic.Int32
+	h := &Handler{authCache: newAuthStateCache(), preflightCache: newPreflightStateCache()}
+	h.authBridge = testAuthBridge{supports: true, authorize: func(_ context.Context, request *pb.AuthorizeHttpRequest) (*pb.AuthorizeHttpResponse, error) {
+		calls.Add(1)
+		return successfulCombinedAuthResponse(request.GetMode(), pb.AuthCacheScope_AUTH_CACHE_SCOPE_EXACT_REQUEST, pb.AuthCacheScope_AUTH_CACHE_SCOPE_HOST, nil), nil
+	}}
+	cfg := models.AuthConfig{AuthURL: "/verify", AuthCacheTTL: 60, AuthCacheFailTTL: 60}
+	for i := range 2 {
+		r := newCombinedAuthTestRequest("host", "/protected/resource")
+		auth := newRequestAuthContext(r, "192.0.2.1", "login_first", newRoutedBackendWithRouteID("http://upstream", "upstream", "route-a"))
+		result, handled := h.executeCombinedHTTPAuth(r, cfg, "192.0.2.1", "login_first", true, "", auth)
+		if !handled || result.auth.entry == nil || !result.auth.entry.result.authenticated {
+			t.Fatalf("request %d did not authorize: %#v", i, result)
+		}
+		if i == 1 && auth.context != nil {
+			t.Fatal("cache hit materialized an unused AuthContext")
+		}
+	}
+	if calls.Load() != 1 {
+		t.Fatalf("AuthorizeHTTP calls = %d, want one", calls.Load())
+	}
+}
+
+func TestRequestAuthContextConcurrentMaterialization(t *testing.T) {
+	r := httptest.NewRequest(http.MethodGet, "https://app.example/a?b=c", nil)
+	r.Header.Set("X-Test", "preserved")
+	auth := newRequestAuthContext(r, "192.0.2.1", "login_first", newRoutedBackendWithRouteID("", "", "route-a"))
+	results := make(chan *pb.AuthContext, 16)
+	var workers sync.WaitGroup
+	for range cap(results) {
+		workers.Go(func() { results <- auth.proto(true) })
+	}
+	workers.Wait()
+	close(results)
+	for got := range results {
+		if got != auth.context || got.RoutedUpstream == nil || got.RoutedUpstreamHost == nil || got.GetRoutedUpstreamRouteId() != "route-a" || got.RequestUri != "/a?b=c" {
+			t.Fatalf("materialized context changed optional presence or request fields: %v", got)
+		}
+		if len(got.ExtraHeaders) != 1 || got.ExtraHeaders[0].GetName() != "X-Test" {
+			t.Fatalf("legacy headers = %v", got.ExtraHeaders)
+		}
+	}
+}
+
 func TestCombinedAuthCapabilityUsesOneRequestForProtectedPathAndHost(t *testing.T) {
 	for _, routeKind := range []string{"path", "host"} {
 		t.Run(routeKind, func(t *testing.T) {

@@ -1113,6 +1113,11 @@ func copyUserAgentHeader(dst, src *http.Request) {
 }
 
 type requestAuthContext struct {
+	request          *http.Request
+	clientIP         string
+	accessMode       string
+	backend          routedBackend
+	protoOnce        sync.Once
 	requirePreflight bool
 	context          *pb.AuthContext
 	headers          http.Header
@@ -1166,6 +1171,17 @@ func (b routedBackend) cacheIdentity() string {
 }
 
 func newRequestAuthContext(r *http.Request, clientIP string, accessMode string, backend routedBackend) *requestAuthContext {
+	c := &requestAuthContext{
+		request: r, clientIP: clientIP, accessMode: accessMode, backend: backend,
+		routeIdentity: backend.cacheIdentity(),
+	}
+	if r != nil {
+		c.headers = r.Header
+	}
+	return c
+}
+
+func buildRequestAuthProto(r *http.Request, clientIP string, accessMode string, backend routedBackend) *pb.AuthContext {
 	var normalizedRoutedUpstream *string
 	var normalizedRoutedUpstreamHost *string
 	var normalizedRoutedUpstreamRouteID *string
@@ -1182,13 +1198,13 @@ func newRequestAuthContext(r *http.Request, clientIP string, accessMode string, 
 		normalizedRoutedUpstreamRouteID = &normalizedRouteID
 	}
 	if r == nil {
-		return &requestAuthContext{routeIdentity: backend.cacheIdentity(), context: &pb.AuthContext{
+		return &pb.AuthContext{
 			ClientIp:              clientIP,
 			AccessMode:            accessMode,
 			RoutedUpstream:        normalizedRoutedUpstream,
 			RoutedUpstreamHost:    normalizedRoutedUpstreamHost,
 			RoutedUpstreamRouteId: normalizedRoutedUpstreamRouteID,
-		}}
+		}
 	}
 	scheme := requestScheme(r)
 	effectiveHost := requestHostForRouting(r)
@@ -1226,11 +1242,7 @@ func newRequestAuthContext(r *http.Request, clientIP string, accessMode string, 
 			Values: append([]string(nil), r.Header.Values("Upgrade")...),
 		}}
 	}
-	return &requestAuthContext{
-		context:       context,
-		headers:       r.Header,
-		routeIdentity: backend.cacheIdentity(),
-	}
+	return context
 }
 
 func authRouteIdentityForContext(r *http.Request, requestAuth *requestAuthContext) string {
@@ -1244,6 +1256,9 @@ func (c *requestAuthContext) proto(includeLegacyHeaders bool) *pb.AuthContext {
 	if c == nil {
 		return &pb.AuthContext{}
 	}
+	c.protoOnce.Do(func() {
+		c.context = buildRequestAuthProto(c.request, c.clientIP, c.accessMode, c.backend)
+	})
 	if includeLegacyHeaders {
 		c.legacyOnce.Do(func() {
 			c.context.ExtraHeaders = headersToProto(c.headers)

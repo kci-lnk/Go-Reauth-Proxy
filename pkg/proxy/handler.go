@@ -3250,6 +3250,10 @@ func hostLocationRouteKey(hostRule *models.HostRule, location *models.HostLocati
 	if location != nil {
 		locationPath = location.Path
 	}
+	return hostLocationRouteKeyParts(host, locationPath)
+}
+
+func hostLocationRouteKeyParts(host, locationPath string) string {
 	if host == "" {
 		return locationPath
 	}
@@ -6460,6 +6464,14 @@ func (h *Handler) proxyToHostLocationTarget(w http.ResponseWriter, r *http.Reque
 			Send()
 	}
 
+	// Capture only the fields needed by callbacks; capturing the large request
+	// snapshot, host rule or auth result moves each whole value to the heap.
+	rules, hostRules, unmatchedRoute := snapshot.rules, snapshot.hostRules, snapshot.unmatchedRoute
+	authenticated := authResult.authenticated
+	basicAuth := matchedRule.BasicAuth
+	host := matchedRule.Host
+	locationPath, stripPath, rewriteHTML := location.Path, location.StripPath, location.RewriteHTML
+
 	proxy := &httputil.ReverseProxy{
 		Transport:  h.monitoredTransport(transport),
 		BufferPool: sharedProxyBufferPool,
@@ -6468,15 +6480,15 @@ func (h *Handler) proxyToHostLocationTarget(w http.ResponseWriter, r *http.Reque
 			copyUserAgentHeader(pr.Out, pr.In)
 			stripAdvancedAuthGrantCookie(pr.Out.Header)
 			pr.SetURL(transportTargetURL)
-			applyBasicAuthInjection(pr.Out, matchedRule.BasicAuth)
+			applyBasicAuthInjection(pr.Out, basicAuth)
 			applyUpstreamPrivateIPv4HintHeader(pr.Out, transportTargetURL)
 			applyPreserveHostPolicy(pr.Out, pr.In, transportTargetURL, preserveHost)
 			h.maybePrepareFnosPortIconHijackHTTPProxyRequest(pr.Out)
 			applyReverseProxyRoutePath(pr.Out.URL, reverseProxyRoutePathOptions{
 				targetURL:  transportTargetURL,
 				incoming:   pr.In.URL,
-				stripPath:  location.StripPath,
-				pathPrefix: location.Path,
+				stripPath:  stripPath,
+				pathPrefix: locationPath,
 			})
 
 			if !preserveHost {
@@ -6492,15 +6504,15 @@ func (h *Handler) proxyToHostLocationTarget(w http.ResponseWriter, r *http.Reque
 						applyReverseProxyRoutePath(ref, reverseProxyRoutePathOptions{
 							targetURL:  transportTargetURL,
 							incoming:   ref,
-							stripPath:  location.StripPath,
-							pathPrefix: location.Path,
+							stripPath:  stripPath,
+							pathPrefix: locationPath,
 						})
 						pr.Out.Header.Set("Referer", ref.String())
 					}
 				}
 			}
 
-			if targetSupportsHTMLFeatures && location.RewriteHTML {
+			if targetSupportsHTMLFeatures && rewriteHTML {
 				pr.Out.Header.Del("Accept-Encoding")
 			}
 			if toolbarCandidate {
@@ -6523,7 +6535,7 @@ func (h *Handler) proxyToHostLocationTarget(w http.ResponseWriter, r *http.Reque
 			}
 			log.Printf("Host location proxy error: %v", err)
 			logger.UpstreamFailure(transportTargetURL, requestTraceID(r), "host_location", classifyUpstreamFailure(err).class, err)
-			h.handleUpstreamUnavailable(w, r, snapshot.unmatchedRoute, snapshot.rules, authResult.authenticated, err)
+			h.handleUpstreamUnavailable(w, r, unmatchedRoute, rules, authenticated, err)
 		},
 	}
 
@@ -6536,11 +6548,11 @@ func (h *Handler) proxyToHostLocationTarget(w http.ResponseWriter, r *http.Reque
 			}
 			h.authCacheInvalidateForSetCookieMutation(r, clientIP, setCookies)
 		}
-		if err := h.maybeRewriteFnosPortIconHijackHTTPResponse(resp, snapshot.hostRules); err != nil {
+		if err := h.maybeRewriteFnosPortIconHijackHTTPResponse(resp, hostRules); err != nil {
 			return err
 		}
 
-		needsRewrite := targetSupportsHTMLFeatures && location.RewriteHTML
+		needsRewrite := targetSupportsHTMLFeatures && rewriteHTML
 		needsToolbar := toolbarCandidate
 		if event := debugProxyEvent("reverse_proxy_response", requestID); event != nil {
 			event.Str("route_type", "host_location").
@@ -6559,35 +6571,35 @@ func (h *Handler) proxyToHostLocationTarget(w http.ResponseWriter, r *http.Reque
 		if needsRewrite {
 			if locationHeader := resp.Header.Get("Location"); locationHeader != "" {
 				if strings.HasPrefix(locationHeader, "/") {
-					resp.Header.Set("Location", location.Path+locationHeader)
+					resp.Header.Set("Location", locationPath+locationHeader)
 				}
 			}
 		}
 
 		return maybeMutateHTMLProxyResponse(resp, htmlResponseMutationOptions{
 			rewrite:       needsRewrite,
-			rewritePrefix: strings.TrimSuffix(location.Path, "/"),
+			rewritePrefix: strings.TrimSuffix(locationPath, "/"),
 			toolbar:       needsToolbar,
 			toolbarHTML: func() string {
 				return response.GenerateToolbarBootstrap()
 			},
 			requestID: requestID,
 			routeType: "host_location",
-			routeKey:  hostLocationRouteKey(&matchedRule, &location),
+			routeKey:  hostLocationRouteKeyParts(host, locationPath),
 		})
 	}
 
 	if h.maybeProxyFnosPortIconHijackWebSocket(w, r, fnosPortIconHijackWebSocketOptions{
 		targetURL:            transportTargetURL,
-		hostRules:            snapshot.hostRules,
-		unmatchedRoute:       snapshot.unmatchedRoute,
+		hostRules:            hostRules,
+		unmatchedRoute:       unmatchedRoute,
 		clientIP:             clientIP,
 		omitForwardedHeaders: omitForwardedHeaders,
 		preserveHost:         preserveHost,
-		basicAuth:            matchedRule.BasicAuth,
+		basicAuth:            basicAuth,
 		rewriteOriginReferer: !preserveHost,
-		stripPath:            location.StripPath,
-		pathPrefix:           location.Path,
+		stripPath:            stripPath,
+		pathPrefix:           locationPath,
 	}) {
 		return
 	}
@@ -6645,6 +6657,12 @@ func (h *Handler) proxyToHostTarget(w http.ResponseWriter, r *http.Request, snap
 			Send()
 	}
 
+	// Capture only the fields needed by callbacks; capturing the large request
+	// snapshot, host rule or auth result moves each whole value to the heap.
+	rules, hostRules, unmatchedRoute := snapshot.rules, snapshot.hostRules, snapshot.unmatchedRoute
+	authenticated := authResult.authenticated
+	basicAuth, host, targetPathMode := matchedRule.BasicAuth, matchedRule.Host, matchedRule.TargetPathMode
+
 	proxy := &httputil.ReverseProxy{
 		Transport:  h.monitoredTransport(transport),
 		BufferPool: sharedProxyBufferPool,
@@ -6656,8 +6674,8 @@ func (h *Handler) proxyToHostTarget(w http.ResponseWriter, r *http.Request, snap
 			copyUserAgentHeader(pr.Out, pr.In)
 			stripAdvancedAuthGrantCookie(pr.Out.Header)
 			pr.SetURL(transportTargetURL)
-			applyHostReverseProxyPath(pr.Out.URL, transportTargetURL, pr.In.URL, matchedRule.TargetPathMode)
-			applyBasicAuthInjection(pr.Out, matchedRule.BasicAuth)
+			applyHostReverseProxyPath(pr.Out.URL, transportTargetURL, pr.In.URL, targetPathMode)
+			applyBasicAuthInjection(pr.Out, basicAuth)
 			applyUpstreamPrivateIPv4HintHeader(pr.Out, transportTargetURL)
 			applyPreserveHostPolicy(pr.Out, pr.In, transportTargetURL, preserveHost)
 			if fnosConnectContext(pr.In) == nil {
@@ -6673,7 +6691,7 @@ func (h *Handler) proxyToHostTarget(w http.ResponseWriter, r *http.Request, snap
 					if err == nil {
 						ref.Scheme = transportTargetURL.Scheme
 						ref.Host = transportTargetURL.Host
-						applyHostReverseProxyPath(ref, transportTargetURL, ref, matchedRule.TargetPathMode)
+						applyHostReverseProxyPath(ref, transportTargetURL, ref, targetPathMode)
 						pr.Out.Header.Set("Referer", ref.String())
 					}
 				}
@@ -6699,7 +6717,7 @@ func (h *Handler) proxyToHostTarget(w http.ResponseWriter, r *http.Request, snap
 			}
 			log.Printf("Host proxy error: %v", err)
 			logger.UpstreamFailure(transportTargetURL, requestTraceID(r), "host_rule", classifyUpstreamFailure(err).class, err)
-			h.handleUpstreamUnavailable(w, r, snapshot.unmatchedRoute, snapshot.rules, authResult.authenticated, err)
+			h.handleUpstreamUnavailable(w, r, unmatchedRoute, rules, authenticated, err)
 		},
 	}
 
@@ -6713,7 +6731,7 @@ func (h *Handler) proxyToHostTarget(w http.ResponseWriter, r *http.Request, snap
 			h.authCacheInvalidateForSetCookieMutation(r, clientIP, setCookies)
 		}
 		if fnosConnectContext(r) == nil {
-			if err := h.maybeRewriteFnosPortIconHijackHTTPResponse(resp, snapshot.hostRules); err != nil {
+			if err := h.maybeRewriteFnosPortIconHijackHTTPResponse(resp, hostRules); err != nil {
 				return err
 			}
 		}
@@ -6739,22 +6757,22 @@ func (h *Handler) proxyToHostTarget(w http.ResponseWriter, r *http.Request, snap
 			},
 			requestID: requestID,
 			routeType: "host_rule",
-			routeKey:  matchedRule.Host,
+			routeKey:  host,
 		})
 	}
 
 	if fnosConnectContext(r) == nil && h.maybeProxyFnosPortIconHijackWebSocket(w, r, fnosPortIconHijackWebSocketOptions{
 		targetURL:            transportTargetURL,
-		hostRules:            snapshot.hostRules,
-		unmatchedRoute:       snapshot.unmatchedRoute,
+		hostRules:            hostRules,
+		unmatchedRoute:       unmatchedRoute,
 		clientIP:             clientIP,
 		omitForwardedHeaders: omitForwardedHeaders,
 		preserveHost:         preserveHost,
-		basicAuth:            matchedRule.BasicAuth,
+		basicAuth:            basicAuth,
 		rewriteOriginReferer: !preserveHost,
 		stripPath:            false,
 		pathPrefix:           "",
-		hostTargetPathMode:   matchedRule.TargetPathMode,
+		hostTargetPathMode:   targetPathMode,
 	}) {
 		return
 	}
@@ -6801,6 +6819,11 @@ func (h *Handler) proxyToRuleTarget(w http.ResponseWriter, r *http.Request, snap
 			Bool("toolbar_candidate", toolbarCandidate).
 			Send()
 	}
+	// Capture only the fields needed by callbacks; capturing the large request
+	// snapshot, host rule or auth result moves each whole value to the heap.
+	rules, hostRules, unmatchedRoute := snapshot.rules, snapshot.hostRules, snapshot.unmatchedRoute
+	authenticated := authResult.authenticated
+
 	proxy := &httputil.ReverseProxy{
 		Transport:  h.monitoredTransport(transport),
 		BufferPool: sharedProxyBufferPool,
@@ -6865,7 +6888,7 @@ func (h *Handler) proxyToRuleTarget(w http.ResponseWriter, r *http.Request, snap
 			}
 			log.Printf("Proxy error: %v", err)
 			logger.UpstreamFailure(transportTargetURL, requestTraceID(r), "path_rule", classifyUpstreamFailure(err).class, err)
-			h.handleUpstreamUnavailable(w, r, snapshot.unmatchedRoute, snapshot.rules, authResult.authenticated, err)
+			h.handleUpstreamUnavailable(w, r, unmatchedRoute, rules, authenticated, err)
 		},
 	}
 
@@ -6873,7 +6896,7 @@ func (h *Handler) proxyToRuleTarget(w http.ResponseWriter, r *http.Request, snap
 		stripAdvancedAuthGrantSetCookies(resp.Header)
 		scopeDockerAdminPanelResponseCookie(resp, matchedRule.Path)
 		addProxyPathCookieIfChanged(resp, r, matchedRule.Path)
-		if err := h.maybeRewriteFnosPortIconHijackHTTPResponse(resp, snapshot.hostRules); err != nil {
+		if err := h.maybeRewriteFnosPortIconHijackHTTPResponse(resp, hostRules); err != nil {
 			return err
 		}
 
@@ -6916,8 +6939,8 @@ func (h *Handler) proxyToRuleTarget(w http.ResponseWriter, r *http.Request, snap
 
 	if h.maybeProxyFnosPortIconHijackWebSocket(w, r, fnosPortIconHijackWebSocketOptions{
 		targetURL:            transportTargetURL,
-		hostRules:            snapshot.hostRules,
-		unmatchedRoute:       snapshot.unmatchedRoute,
+		hostRules:            hostRules,
+		unmatchedRoute:       unmatchedRoute,
 		clientIP:             clientIP,
 		omitForwardedHeaders: false,
 		preserveHost:         preserveHost,

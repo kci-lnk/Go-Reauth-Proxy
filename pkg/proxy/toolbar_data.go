@@ -147,7 +147,7 @@ func (h *Handler) handleToolbarDataRoute(w http.ResponseWriter, r *http.Request,
 		}
 	}
 	routedBackend := h.routedBackendForRequest(pageRequest, snapshot, matchedHostRule, matchedHostLocation, matchedRule)
-	requestAuth := newRequestAuthContext(pageRequest, clientIP, accessMode, routedBackend)
+	requestAuth := newRequestAuthContext(pageRequest, clientIP, accessMode, routedBackend).withCacheGeneration(snapshot.authCacheGeneration)
 	authResult := h.checkToolbarDataAuth(w, pageRequest, snapshot.authConfig, clientIP, accessMode, requestID, requestAuth)
 	if !authResult.authenticated || authResult.suppressToolbar {
 		w.WriteHeader(http.StatusNoContent)

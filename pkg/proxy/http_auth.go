@@ -515,6 +515,10 @@ func canceledAuthCheckExecution(err error) authCheckExecution {
 }
 
 func (h *Handler) executeAuthCheck(r *http.Request, authConfig models.AuthConfig, clientIP string, accessMode string, requestID string, requestAuth *requestAuthContext) authCheckExecution {
+	return h.executeAuthCheckAtGeneration(r, authConfig, clientIP, accessMode, requestID, requestAuth, h.authGenerationForContext(requestAuth))
+}
+
+func (h *Handler) executeAuthCheckAtGeneration(r *http.Request, authConfig models.AuthConfig, clientIP string, accessMode string, requestID string, requestAuth *requestAuthContext, generation uint64) authCheckExecution {
 	now := time.Now()
 	useCache := authCacheEnabled(authConfig)
 	dimensions, canLookup := buildAuthCacheDimensionsWithRouteIdentity(r, clientIP, accessMode, authRouteIdentityForContext(r, requestAuth))
@@ -551,7 +555,7 @@ func (h *Handler) executeAuthCheck(r *http.Request, authConfig models.AuthConfig
 		}
 
 		sharedRequest := r.WithContext(context.WithoutCancel(r.Context()))
-		resultCh := h.authCache.group.DoChan(lookup.cacheKey.flightKey(), func() (any, error) {
+		resultCh := h.authCache.group.DoChan(lookup.cacheKey.flightKey(generation), func() (any, error) {
 			if entry, cacheKey, ok := h.cachedAuthEntry(lookup, time.Now()); ok {
 				if shouldBypassFNAppUnauthorizedAuthCache(r, entry.result) {
 					h.authCache.mu.Lock()
@@ -594,7 +598,7 @@ func (h *Handler) executeAuthCheck(r *http.Request, authConfig models.AuthConfig
 						identityKey:      lookup.identityKey,
 					}
 					if !shouldBypassFNAppUnauthorizedAuthCache(r, plan.result) {
-						h.authCacheStore(cacheKey, entry, time.Now())
+						h.authCacheStore(cacheKey, entry, generation)
 						if event := debugProxyEvent("auth_cache_store", requestID); event != nil {
 							event.Str("decision", entry.result.decision).
 								Bool("allowed", entry.result.allowed).

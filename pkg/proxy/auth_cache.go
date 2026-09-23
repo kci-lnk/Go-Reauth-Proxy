@@ -4,6 +4,7 @@ import (
 	"container/list"
 	"context"
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"log"
 	"maps"
@@ -35,7 +36,12 @@ const (
 // because logout invalidation and active-session tracking share that format.
 type authCacheKey [sha256.Size]byte
 
-func (key authCacheKey) flightKey() string { return string(key[:]) }
+func (key authCacheKey) flightKey(generation uint64) string {
+	var keyWithGeneration [sha256.Size + 8]byte
+	copy(keyWithGeneration[:], key[:])
+	binary.BigEndian.PutUint64(keyWithGeneration[sha256.Size:], generation)
+	return string(keyWithGeneration[:])
+}
 
 func (key authCacheKey) String() string { return hex.EncodeToString(key[:]) }
 
@@ -532,7 +538,7 @@ func (h *Handler) preflightCacheGet(cacheKey authCacheKey, now time.Time) (*pref
 	return entry, true
 }
 
-func (h *Handler) authCacheStore(cacheKey authCacheKey, entry authCacheEntry, _ time.Time) *authCacheEntry {
+func (h *Handler) authCacheStore(cacheKey authCacheKey, entry authCacheEntry, generation uint64) *authCacheEntry {
 	cache := &h.authCache
 	// Published entries are immutable and may outlive invalidation while an
 	// in-flight request still references them. Never recycle their storage.
@@ -540,6 +546,12 @@ func (h *Handler) authCacheStore(cacheKey authCacheKey, entry authCacheEntry, _ 
 	entry.result.allowedSubdomainHosts = maps.Clone(entry.result.allowedSubdomainHosts)
 
 	cache.mu.Lock()
+	if generation != h.authCacheGeneration.Load() {
+		cache.mu.Unlock()
+		// The initiating request may finish with its result, but an invalidated
+		// flight must not publish that result for subsequent requests.
+		return &entry
+	}
 	cache.deleteEntryLocked(cacheKey)
 	cache.entries[cacheKey] = &entry
 	cache.orderByKey[cacheKey] = cache.order.PushBack(cacheKey)
@@ -556,10 +568,14 @@ func (h *Handler) authCacheStore(cacheKey authCacheKey, entry authCacheEntry, _ 
 	return &entry
 }
 
-func (h *Handler) preflightCacheStore(cacheKey authCacheKey, entry preflightCacheEntry, _ time.Time) *preflightCacheEntry {
+func (h *Handler) preflightCacheStore(cacheKey authCacheKey, entry preflightCacheEntry, generation uint64) *preflightCacheEntry {
 	cache := &h.preflightCache
 
 	cache.mu.Lock()
+	if generation != h.authCacheGeneration.Load() {
+		cache.mu.Unlock()
+		return &entry
+	}
 	cache.deleteEntryLocked(cacheKey)
 	cache.entries[cacheKey] = &entry
 	cache.orderByKey[cacheKey] = cache.order.PushBack(cacheKey)
@@ -581,6 +597,11 @@ func (h *Handler) authCacheInvalidateByIdentityKeys(identityKeys ...string) {
 	preflightCache := &h.preflightCache
 
 	authCache.mu.Lock()
+	preflightCache.mu.Lock()
+	// Advance under both locks so a new generation cannot observe either
+	// cache before its invalidation. Flights use this bounded global epoch:
+	// unrelated pending fills are conservatively skipped, without tombstones.
+	h.authCacheGeneration.Add(1)
 	for _, identityKey := range identityKeys {
 		if identityKey == "" {
 			continue
@@ -590,9 +611,6 @@ func (h *Handler) authCacheInvalidateByIdentityKeys(identityKeys ...string) {
 			authCache.deleteEntryLocked(cacheKey)
 		}
 	}
-	authCache.mu.Unlock()
-
-	preflightCache.mu.Lock()
 	for _, identityKey := range identityKeys {
 		if identityKey == "" {
 			continue
@@ -603,6 +621,7 @@ func (h *Handler) authCacheInvalidateByIdentityKeys(identityKeys ...string) {
 		}
 	}
 	preflightCache.mu.Unlock()
+	authCache.mu.Unlock()
 }
 
 func (h *Handler) clearAuthCache() {
@@ -610,18 +629,18 @@ func (h *Handler) clearAuthCache() {
 	preflightCache := &h.preflightCache
 
 	authCache.mu.Lock()
+	preflightCache.mu.Lock()
+	h.authCacheGeneration.Add(1)
 	authCache.entries = make(map[authCacheKey]*authCacheEntry)
 	authCache.keysByIdentity = make(map[string]map[authCacheKey]struct{})
 	authCache.order = list.New()
 	authCache.orderByKey = make(map[authCacheKey]*list.Element)
-	authCache.mu.Unlock()
-
-	preflightCache.mu.Lock()
 	preflightCache.entries = make(map[authCacheKey]*preflightCacheEntry)
 	preflightCache.keysByIdentity = make(map[string]map[authCacheKey]struct{})
 	preflightCache.order = list.New()
 	preflightCache.orderByKey = make(map[authCacheKey]*list.Element)
 	preflightCache.mu.Unlock()
+	authCache.mu.Unlock()
 }
 
 func (c *authStateCache) deleteEntryLocked(cacheKey authCacheKey) {

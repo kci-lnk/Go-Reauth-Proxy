@@ -50,7 +50,7 @@ func (h *Handler) cachedCombinedHTTPAuth(r *http.Request, authConfig models.Auth
 	return preflight, preflightHit, authExecution, authHit
 }
 
-func (h *Handler) storeCombinedHTTPAuth(r *http.Request, authConfig models.AuthConfig, response *pb.AuthorizeHttpResponse, execution combinedHTTPAuthExecution, preflightLookup preflightCacheLookup, canPreflightLookup bool, authLookup authCacheLookup, canAuthLookup bool) combinedHTTPAuthExecution {
+func (h *Handler) storeCombinedHTTPAuth(r *http.Request, authConfig models.AuthConfig, response *pb.AuthorizeHttpResponse, execution combinedHTTPAuthExecution, preflightLookup preflightCacheLookup, canPreflightLookup bool, authLookup authCacheLookup, canAuthLookup bool, generation uint64) combinedHTTPAuthExecution {
 	now := time.Now()
 	if canPreflightLookup && response.GetPreflightCacheScope() == pb.AuthCacheScope_AUTH_CACHE_SCOPE_EXACT_REQUEST {
 		if ttl := preflightCacheTTL(authConfig); ttl > 0 && !shouldBypassFNAppNegativePreflightCache(r, execution.preflight) {
@@ -58,7 +58,7 @@ func (h *Handler) storeCombinedHTTPAuth(r *http.Request, authConfig models.AuthC
 				decision:    execution.preflight,
 				expiresAt:   now.Add(ttl),
 				identityKey: preflightLookup.identityKey,
-			}, now)
+			}, generation)
 		}
 	}
 
@@ -88,12 +88,13 @@ func (h *Handler) storeCombinedHTTPAuth(r *http.Request, authConfig models.AuthC
 		expiresAt:        now.Add(ttl),
 		identityKey:      authLookup.identityKey,
 	}
-	stored := h.authCacheStore(cacheKey, entry, now)
+	stored := h.authCacheStore(cacheKey, entry, generation)
 	execution.auth = authCheckExecution{entry: stored}
 	return execution
 }
 
 func (h *Handler) executeCombinedHTTPAuth(r *http.Request, authConfig models.AuthConfig, clientIP string, accessMode string, isMatch bool, requestID string, requestAuth *requestAuthContext) (combinedHTTPAuthExecution, bool) {
+	generation := h.authGenerationForContext(requestAuth)
 	bridge := h.authBridgeManager()
 	if bridge == nil || !bridge.SupportsCapability(rpcbridge.CapabilityAuthorizeHTTPV1) {
 		return combinedHTTPAuthExecution{}, false
@@ -109,36 +110,36 @@ func (h *Handler) executeCombinedHTTPAuth(r *http.Request, authConfig models.Aut
 	preflight, preflightHit, authExecution, authHit := h.cachedCombinedHTTPAuth(r, authConfig, time.Now(), preflightLookup, canPreflightLookup, authLookup, canAuthLookup)
 	if !preflightHit && h.preflightSkipUntilUnixNano.Load() > time.Now().UnixNano() && !requestAuth.preflightRequired() {
 		if !authHit {
-			authExecution = h.executeAuthCheck(r, authConfig, clientIP, accessMode, requestID, requestAuth)
+			authExecution = h.executeAuthCheckAtGeneration(r, authConfig, clientIP, accessMode, requestID, requestAuth, generation)
 		}
 		return combinedHTTPAuthExecution{auth: authExecution, handled: true}, true
 	}
 	if preflightHit {
 		if !preflightStopsHTTPAuthorization(preflight) && !authHit {
-			authExecution = h.executeAuthCheck(r, authConfig, clientIP, accessMode, requestID, requestAuth)
+			authExecution = h.executeAuthCheckAtGeneration(r, authConfig, clientIP, accessMode, requestID, requestAuth, generation)
 		}
 		return combinedHTTPAuthExecution{preflight: preflight, auth: authExecution, handled: true}, true
 	}
 	if authHit {
-		preflight = h.runPreflight(r, authConfig, clientIP, isMatch, accessMode, requestID, requestAuth)
+		preflight = h.runPreflightAtGeneration(r, authConfig, clientIP, isMatch, accessMode, requestID, requestAuth, generation)
 		return combinedHTTPAuthExecution{preflight: preflight, auth: authExecution, handled: true}, true
 	}
-	return h.executeCombinedHTTPAuthMiss(r, authConfig, clientIP, accessMode, isMatch, requestID, requestAuth, bridge, preflightLookup, authLookup, canLookup)
+	return h.executeCombinedHTTPAuthMiss(r, authConfig, clientIP, accessMode, isMatch, requestID, requestAuth, bridge, preflightLookup, authLookup, canLookup, generation)
 }
 
 // Keep singleflight callbacks out of the hit path so their captured configuration
 // and closures are allocated only when a request needs an authorization RPC.
-func (h *Handler) executeCombinedHTTPAuthMiss(r *http.Request, authConfig models.AuthConfig, clientIP string, accessMode string, isMatch bool, requestID string, requestAuth *requestAuthContext, bridge authBridgeClient, preflightLookup preflightCacheLookup, authLookup authCacheLookup, canLookup bool) (combinedHTTPAuthExecution, bool) {
+func (h *Handler) executeCombinedHTTPAuthMiss(r *http.Request, authConfig models.AuthConfig, clientIP string, accessMode string, isMatch bool, requestID string, requestAuth *requestAuthContext, bridge authBridgeClient, preflightLookup preflightCacheLookup, authLookup authCacheLookup, canLookup bool, generation uint64) (combinedHTTPAuthExecution, bool) {
 	canPreflightLookup, canAuthLookup := canLookup, canLookup
 	resolveCached := func(callRequest *http.Request, preflight preflightDecision, preflightHit bool, authExecution authCheckExecution, authHit bool) (combinedHTTPAuthExecution, bool) {
 		switch {
 		case preflightHit && (preflightStopsHTTPAuthorization(preflight) || authHit):
 			return combinedHTTPAuthExecution{preflight: preflight, auth: authExecution, handled: true}, true
 		case preflightHit:
-			authExecution = h.executeAuthCheck(callRequest, authConfig, clientIP, accessMode, requestID, requestAuth)
+			authExecution = h.executeAuthCheckAtGeneration(callRequest, authConfig, clientIP, accessMode, requestID, requestAuth, generation)
 			return combinedHTTPAuthExecution{preflight: preflight, auth: authExecution, handled: true}, true
 		case authHit:
-			preflight = h.runPreflight(callRequest, authConfig, clientIP, isMatch, accessMode, requestID, requestAuth)
+			preflight = h.runPreflightAtGeneration(callRequest, authConfig, clientIP, isMatch, accessMode, requestID, requestAuth, generation)
 			return combinedHTTPAuthExecution{preflight: preflight, auth: authExecution, handled: true}, true
 		default:
 			return combinedHTTPAuthExecution{}, false
@@ -148,7 +149,7 @@ func (h *Handler) executeCombinedHTTPAuthMiss(r *http.Request, authConfig models
 		if preflight, preflightHit, authExecution, authHit := h.cachedCombinedHTTPAuth(callRequest, authConfig, time.Now(), preflightLookup, canPreflightLookup, authLookup, canAuthLookup); preflightHit || authHit {
 			if !preflightHit && h.preflightSkipUntilUnixNano.Load() > time.Now().UnixNano() && !requestAuth.preflightRequired() {
 				if !authHit {
-					authExecution = h.executeAuthCheck(callRequest, authConfig, clientIP, accessMode, requestID, requestAuth)
+					authExecution = h.executeAuthCheckAtGeneration(callRequest, authConfig, clientIP, accessMode, requestID, requestAuth, generation)
 				}
 				return combinedHTTPAuthExecution{auth: authExecution, handled: true}
 			}
@@ -158,7 +159,7 @@ func (h *Handler) executeCombinedHTTPAuthMiss(r *http.Request, authConfig models
 		}
 		if h.preflightSkipUntilUnixNano.Load() > time.Now().UnixNano() && !requestAuth.preflightRequired() {
 			return combinedHTTPAuthExecution{
-				auth:    h.executeAuthCheck(callRequest, authConfig, clientIP, accessMode, requestID, requestAuth),
+				auth:    h.executeAuthCheckAtGeneration(callRequest, authConfig, clientIP, accessMode, requestID, requestAuth, generation),
 				handled: true,
 			}
 		}
@@ -200,14 +201,14 @@ func (h *Handler) executeCombinedHTTPAuthMiss(r *http.Request, authConfig models
 			handled:   true,
 		}
 		if preflightStopsHTTPAuthorization(execution.preflight) {
-			return h.storeCombinedHTTPAuth(callRequest, authConfig, response, execution, preflightLookup, canPreflightLookup, authLookup, canAuthLookup)
+			return h.storeCombinedHTTPAuth(callRequest, authConfig, response, execution, preflightLookup, canPreflightLookup, authLookup, canAuthLookup, generation)
 		}
 		if response.GetVerify() == nil {
 			execution.auth = canceledAuthCheckExecution(rpcbridge.ErrAuthBridgeInvalidResponse)
 			return execution
 		}
 		execution.auth.plan = h.authCheckPlanFromResponse(callRequest, authConfig, accessMode, requestID, start, response.GetVerify())
-		return h.storeCombinedHTTPAuth(callRequest, authConfig, response, execution, preflightLookup, canPreflightLookup, authLookup, canAuthLookup)
+		return h.storeCombinedHTTPAuth(callRequest, authConfig, response, execution, preflightLookup, canPreflightLookup, authLookup, canAuthLookup, generation)
 	}
 
 	useSingleflight := advancedAuthRuleMatchFromRequest(r) == nil &&
@@ -221,7 +222,7 @@ func (h *Handler) executeCombinedHTTPAuthMiss(r *http.Request, authConfig models
 	}
 
 	sharedRequest := r.WithContext(context.WithoutCancel(r.Context()))
-	key := "authorize-http:" + preflightLookup.cacheKey.flightKey() + ":" + authLookup.cacheKey.flightKey()
+	key := "authorize-http:" + preflightLookup.cacheKey.flightKey(generation) + ":" + authLookup.cacheKey.flightKey(generation)
 	resultCh := h.authCache.group.DoChan(key, func() (any, error) {
 		return run(sharedRequest), nil
 	})

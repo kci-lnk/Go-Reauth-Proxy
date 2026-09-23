@@ -38,11 +38,11 @@ func TestRouteUpdatesClearAuthenticationCaches(t *testing.T) {
 		handler.authCacheStore(testAuthCacheKey("stale-auth"), authCacheEntry{
 			expiresAt:   now.Add(time.Minute),
 			identityKey: "identity",
-		}, now)
+		}, handler.authCacheGeneration.Load())
 		handler.preflightCacheStore(testAuthCacheKey("stale-preflight"), preflightCacheEntry{
 			expiresAt:   now.Add(time.Minute),
 			identityKey: "identity",
-		}, now)
+		}, handler.authCacheGeneration.Load())
 	}
 	assertEmpty := func() {
 		t.Helper()

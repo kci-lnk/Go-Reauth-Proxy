@@ -858,12 +858,12 @@ func TestExpiredSessionClearCookieRedirectsAndInvalidatesAuthCaches(t *testing.T
 		result:      authCheckResult{allowed: true, authenticated: true, decision: "passed"},
 		expiresAt:   now.Add(time.Minute),
 		identityKey: staleAuthLookup.identityKey,
-	}, now)
+	}, handler.authCacheGeneration.Load())
 	handler.preflightCacheStore(stalePreflightLookup.cacheKey, preflightCacheEntry{
 		decision:    preflightDecision{},
 		expiresAt:   now.Add(time.Minute),
 		identityKey: stalePreflightLookup.identityKey,
-	}, now)
+	}, handler.authCacheGeneration.Load())
 
 	request := newRequest("/private")
 	currentPreflightLookup, ok := buildPreflightCacheLookup(request, clientIP, "login_first", true)

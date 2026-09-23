@@ -37,7 +37,7 @@ func TestAuthCachePublishedEntrySurvivesReplacementAndInvalidation(t *testing.T)
 		result:     authCheckResult{allowed: true, allowedSubdomainHosts: map[string]struct{}{"original.test": {}}},
 		setCookies: []string{"sid=original"},
 	}
-	h.authCacheStore(testAuthCacheKey("key"), source, now)
+	h.authCacheStore(testAuthCacheKey("key"), source, h.authCacheGeneration.Load())
 	published, ok := h.authCacheGet(testAuthCacheKey("key"), now)
 	if !ok {
 		t.Fatal("entry missing")
@@ -47,7 +47,7 @@ func TestAuthCachePublishedEntrySurvivesReplacementAndInvalidation(t *testing.T)
 	var workers sync.WaitGroup
 	workers.Go(func() {
 		for range 100 {
-			h.authCacheStore(testAuthCacheKey("key"), authCacheEntry{identityKey: "identity", expiresAt: now.Add(time.Hour)}, now)
+			h.authCacheStore(testAuthCacheKey("key"), authCacheEntry{identityKey: "identity", expiresAt: now.Add(time.Hour)}, h.authCacheGeneration.Load())
 			h.authCacheInvalidateByIdentityKeys("identity")
 		}
 	})
@@ -69,8 +69,8 @@ func TestAuthCacheExactEntryPrecedesHostEntry(t *testing.T) {
 	h := &Handler{authCache: newAuthStateCache(), preflightCache: newPreflightStateCache()}
 	now := time.Now()
 	lookup := authCacheLookup{cacheKey: testAuthCacheKey("exact"), hostCacheKey: testAuthCacheKey("host")}
-	h.authCacheStore(lookup.hostCacheKey, authCacheEntry{result: authCheckResult{allowed: true}, expiresAt: now.Add(time.Hour)}, now)
-	h.authCacheStore(lookup.cacheKey, authCacheEntry{result: authCheckResult{decision: "denied"}, expiresAt: now.Add(time.Minute)}, now)
+	h.authCacheStore(lookup.hostCacheKey, authCacheEntry{result: authCheckResult{allowed: true}, expiresAt: now.Add(time.Hour)}, h.authCacheGeneration.Load())
+	h.authCacheStore(lookup.cacheKey, authCacheEntry{result: authCheckResult{decision: "denied"}, expiresAt: now.Add(time.Minute)}, h.authCacheGeneration.Load())
 	entry, key, ok := h.cachedAuthEntry(lookup, now)
 	if !ok || key != lookup.cacheKey || entry.result.allowed {
 		t.Fatal("host allow overrode an exact-request denial")
@@ -486,22 +486,22 @@ func TestAuthCacheInvalidationClearsAllClientIPVariantsForIdentity(t *testing.T)
 		result:      authCheckResult{allowed: true, authenticated: true},
 		expiresAt:   now.Add(time.Minute),
 		identityKey: first.identityKey,
-	}, now)
+	}, handler.authCacheGeneration.Load())
 	handler.authCacheStore(second.cacheKey, authCacheEntry{
 		result:      authCheckResult{allowed: true, authenticated: true},
 		expiresAt:   now.Add(time.Minute),
 		identityKey: second.identityKey,
-	}, now)
+	}, handler.authCacheGeneration.Load())
 	handler.preflightCacheStore(firstPreflight.cacheKey, preflightCacheEntry{
 		decision:    preflightDecision{},
 		expiresAt:   now.Add(time.Minute),
 		identityKey: firstPreflight.identityKey,
-	}, now)
+	}, handler.authCacheGeneration.Load())
 	handler.preflightCacheStore(secondPreflight.cacheKey, preflightCacheEntry{
 		decision:    preflightDecision{},
 		expiresAt:   now.Add(time.Minute),
 		identityKey: secondPreflight.identityKey,
-	}, now)
+	}, handler.authCacheGeneration.Load())
 
 	handler.authCacheInvalidateByIdentityKeys(first.identityKey)
 
@@ -529,7 +529,7 @@ func TestAuthCacheStoreEnforcesMaxEntriesAndIdentityIndex(t *testing.T) {
 			result:      authCheckResult{allowed: true, authenticated: true},
 			expiresAt:   now.Add(time.Duration(i+1) * time.Second),
 			identityKey: "identity-" + suffix,
-		}, now)
+		}, handler.authCacheGeneration.Load())
 	}
 
 	if got := len(handler.authCache.entries); got != authCacheMaxEntries {
@@ -615,7 +615,7 @@ func TestPreflightCacheStoreEnforcesMaxEntriesAndIdentityIndex(t *testing.T) {
 			decision:    preflightDecision{},
 			expiresAt:   now.Add(time.Duration(i+1) * time.Second),
 			identityKey: "identity-" + suffix,
-		}, now)
+		}, handler.authCacheGeneration.Load())
 	}
 
 	if got := len(handler.preflightCache.entries); got != authCacheMaxEntries {

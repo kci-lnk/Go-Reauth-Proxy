@@ -167,6 +167,7 @@ type Handler struct {
 	preflightSkipUntilUnixNano atomic.Int64
 	authCache                  authStateCache
 	preflightCache             preflightStateCache
+	authCacheGeneration        atomic.Uint64
 	loggedInActiveCount        atomic.Int64
 	loggedInActiveCleanupNano  atomic.Int64
 	loggedInActiveMu           sync.Mutex
@@ -228,26 +229,27 @@ func (h *Handler) VerifyStreamAuth(ctx context.Context, rule models.StreamRule, 
 }
 
 type requestSnapshot struct {
-	rules              []models.Rule
-	rulesByLength      []models.Rule
-	rulesByPath        map[string]*models.Rule
-	hostRules          []models.HostRule
-	hostRulesByHost    map[string]*models.HostRule
-	websiteIconsByPath map[string]websiteIconAsset
-	hostVisibility     map[string]*compiledipset.Set
-	advancedAuth       map[string]*compiledAdvancedAuthPolicy
-	defaultHostRule    *models.HostRule
-	targets            map[string]reverseProxyTargetRuntime
-	toolbarRules       []models.Rule
-	toolbarHostRules   []models.HostRule
-	defaultRoute       string
-	defaultRule        *models.Rule
-	authConfig         models.AuthConfig
-	gatewayPortal      models.GatewayPortalConfig
-	unmatchedRoute     models.GatewayUnmatchedRouteConfig
-	proxyProtocolForce bool
-	routeGeneration    string
-	routeIDs           map[string]string
+	rules               []models.Rule
+	rulesByLength       []models.Rule
+	rulesByPath         map[string]*models.Rule
+	hostRules           []models.HostRule
+	hostRulesByHost     map[string]*models.HostRule
+	websiteIconsByPath  map[string]websiteIconAsset
+	hostVisibility      map[string]*compiledipset.Set
+	advancedAuth        map[string]*compiledAdvancedAuthPolicy
+	defaultHostRule     *models.HostRule
+	targets             map[string]reverseProxyTargetRuntime
+	toolbarRules        []models.Rule
+	toolbarHostRules    []models.HostRule
+	defaultRoute        string
+	defaultRule         *models.Rule
+	authConfig          models.AuthConfig
+	authCacheGeneration uint64
+	gatewayPortal       models.GatewayPortalConfig
+	unmatchedRoute      models.GatewayUnmatchedRouteConfig
+	proxyProtocolForce  bool
+	routeGeneration     string
+	routeIDs            map[string]string
 	// Runtime security policies are updated in place under their own locks
 	// (pointers are stable for the lifetime of the Handler), so publishing the
 	// pointers in the request snapshot keeps the per-request path free of the
@@ -511,9 +513,14 @@ func (h *Handler) snapshotForRequest() requestSnapshot {
 	if h == nil {
 		return requestSnapshot{}
 	}
+	// Capture before loading configuration: a request carrying an old snapshot
+	// must not publish under a generation created by a later configuration clear.
+	generation := h.authCacheGeneration.Load()
 	if value := h.requestState.Load(); value != nil {
 		if snapshot, ok := value.(*requestSnapshot); ok && snapshot != nil {
-			return *snapshot
+			result := *snapshot
+			result.authCacheGeneration = generation
+			return result
 		}
 	}
 
@@ -526,6 +533,7 @@ func (h *Handler) snapshotForRequest() requestSnapshot {
 	)
 	s := h.buildRequestSnapshotLocked()
 	h.mu.Unlock()
+	s.authCacheGeneration = generation
 	return *s
 }
 
@@ -1123,6 +1131,20 @@ type requestAuthContext struct {
 	headers          http.Header
 	routeIdentity    string
 	legacyOnce       sync.Once
+	cacheGeneration  uint64
+	generationSet    bool
+}
+
+func (c *requestAuthContext) withCacheGeneration(generation uint64) *requestAuthContext {
+	c.cacheGeneration, c.generationSet = generation, true
+	return c
+}
+
+func (h *Handler) authGenerationForContext(c *requestAuthContext) uint64 {
+	if c != nil && c.generationSet {
+		return c.cacheGeneration
+	}
+	return h.authCacheGeneration.Load()
 }
 
 // Explicit path authentication must not skip a failed permissions preflight.
@@ -1520,6 +1542,10 @@ func (h *Handler) shouldOmitPreserveHostKey(key string) bool {
 }
 
 func (h *Handler) runPreflight(r *http.Request, authConfig models.AuthConfig, clientIP string, isMatch bool, accessMode string, requestID string, requestAuth *requestAuthContext) preflightDecision {
+	return h.runPreflightAtGeneration(r, authConfig, clientIP, isMatch, accessMode, requestID, requestAuth, h.authGenerationForContext(requestAuth))
+}
+
+func (h *Handler) runPreflightAtGeneration(r *http.Request, authConfig models.AuthConfig, clientIP string, isMatch bool, accessMode string, requestID string, requestAuth *requestAuthContext, generation uint64) preflightDecision {
 	if strings.TrimSpace(authConfig.AuthURL) == "" {
 		if event := debugProxyEvent("preflight_skipped_no_auth_url", requestID); event != nil {
 			event.Send()
@@ -1562,7 +1588,7 @@ func (h *Handler) runPreflight(r *http.Request, authConfig models.AuthConfig, cl
 
 	if canLookup && ttl > 0 {
 		sharedRequest := r.WithContext(context.WithoutCancel(r.Context()))
-		resultCh := h.preflightCache.group.DoChan(lookup.cacheKey.flightKey(), func() (any, error) {
+		resultCh := h.preflightCache.group.DoChan(lookup.cacheKey.flightKey(generation), func() (any, error) {
 			if entry, ok := h.preflightCacheGet(lookup.cacheKey, time.Now()); ok {
 				if shouldBypassFNAppNegativePreflightCache(r, entry.decision) {
 					h.preflightCache.mu.Lock()
@@ -1601,7 +1627,7 @@ func (h *Handler) runPreflight(r *http.Request, authConfig models.AuthConfig, cl
 				identityKey: lookup.identityKey,
 			}
 			if cacheScope == pb.AuthCacheScope_AUTH_CACHE_SCOPE_EXACT_REQUEST && !shouldBypassFNAppNegativePreflightCache(r, decision) {
-				stored := h.preflightCacheStore(lookup.cacheKey, entry, time.Now())
+				stored := h.preflightCacheStore(lookup.cacheKey, entry, generation)
 				return preflightCacheExecution{entry: stored}, nil
 			}
 			return preflightCacheExecution{decision: decision}, nil
@@ -5562,7 +5588,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if shouldRunPreflightForRoute(isBuiltinAuthRoute, isAuthRoute, matchedHostRule, matchedHostLocation, matchedRule) {
 		authTimingStarted = time.Now()
 		if strings.TrimSpace(snapshot.authConfig.AuthURL) != "" {
-			requestAuth = newRequestAuthContext(r, clientIP, authContextAccessMode, routedBackend)
+			requestAuth = newRequestAuthContext(r, clientIP, authContextAccessMode, routedBackend).withCacheGeneration(snapshot.authCacheGeneration)
 			requestAuth.requirePreflight = matchedHostLocation != nil && matchedHostLocation.AuthMode == models.HostLocationAuthModeRequireLogin
 		}
 		preflight := preflightDecision{}
@@ -5757,7 +5783,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 		} else if !staticTarget && !matchedHostRule.SuppressToolbar && snapshotReverseProxyTargetSupportsHTMLFeatures(snapshot, toolbarProbeTarget) && shouldProbeAuthForToolbar(r, snapshot.authConfig, snapshot.gatewayPortal) {
 			if requestAuth == nil {
-				requestAuth = newRequestAuthContext(r, clientIP, "", routedBackend)
+				requestAuth = newRequestAuthContext(r, clientIP, "", routedBackend).withCacheGeneration(snapshot.authCacheGeneration)
 			}
 			authTimingStarted = time.Now()
 			authResult = h.checkAuthForToolbar(w, r, snapshot.authConfig, clientIP, requestID, requestAuth)
@@ -5819,7 +5845,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			strings.TrimSpace(snapshot.authConfig.AuthURL) != "" &&
 			requestHasExplicitAuthIdentity(r) {
 			if requestAuth == nil {
-				requestAuth = newRequestAuthContext(r, clientIP, "", routedBackend)
+				requestAuth = newRequestAuthContext(r, clientIP, "", routedBackend).withCacheGeneration(snapshot.authCacheGeneration)
 			}
 			authTimingStarted = time.Now()
 			authResult = h.checkAuthForToolbar(w, r, snapshot.authConfig, clientIP, requestID, requestAuth)
@@ -5870,7 +5896,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	} else if snapshotReverseProxyTargetSupportsHTMLFeatures(snapshot, matchedRule.Target) && shouldProbeAuthForToolbar(r, snapshot.authConfig, snapshot.gatewayPortal) {
 		if requestAuth == nil {
-			requestAuth = newRequestAuthContext(r, clientIP, "", routedBackend)
+			requestAuth = newRequestAuthContext(r, clientIP, "", routedBackend).withCacheGeneration(snapshot.authCacheGeneration)
 		}
 		authTimingStarted = time.Now()
 		authResult = h.checkAuthForToolbar(w, r, snapshot.authConfig, clientIP, requestID, requestAuth)

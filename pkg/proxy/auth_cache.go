@@ -300,6 +300,23 @@ func buildAuthCacheDimensionsWithRouteIdentity(r *http.Request, clientIP string,
 	if version := advancedAuthPolicyVersionFromRequest(r); version != "" {
 		host += "\x00advanced-auth:" + version
 	}
+	// A current rule match exempts this request from scanner preflight. Keep
+	// both its allow/deny decisions and authorization separate from requests
+	// that did not match, or matched a different rule in the same policy.
+	if match := advancedAuthRuleMatchFromRequest(r); match != nil {
+		var stack [authCacheHashBufferSize]byte
+		buf := appendCacheKeyField(stack[:0], match.host)
+		buf = appendCacheKeyField(buf, match.policyVersion)
+		buf = appendCacheKeyField(buf, match.groupID)
+		host += "\x00advanced-auth-match:" + string(buf)
+	}
+	// The generic cookie identity sorts duplicate values and ignores empty
+	// ones. Rust instead consumes the first matching cookie, including an
+	// empty value. Preserve that raw value so a reordered/stale grant cannot
+	// reuse another request's authorization or scanner exemption.
+	if value, present := advancedAuthGrantCookieCacheValue(r); present {
+		host += "\x00advanced-auth-grant:" + sha256HexString(value)
+	}
 	if routeIdentity = strings.TrimSpace(routeIdentity); routeIdentity != "" {
 		host += "\x00route:" + routeIdentity
 	}

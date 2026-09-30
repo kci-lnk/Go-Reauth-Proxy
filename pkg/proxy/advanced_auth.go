@@ -193,6 +193,28 @@ type advancedAuthRuleMatch struct {
 type advancedAuthRuleMatchContextKey struct{}
 type advancedAuthPolicyVersionContextKey struct{}
 
+// Match Rust's first-cookie selection without decoding or validating it. This
+// is a cache discriminator only; Rust remains the authorization authority.
+func advancedAuthGrantCookieCacheValue(request *http.Request) (string, bool) {
+	if request == nil {
+		return "", false
+	}
+	for _, value := range request.Header.Values("Cookie") {
+		for {
+			part, rest, more := strings.Cut(value, ";")
+			name, raw, ok := strings.Cut(strings.TrimSpace(part), "=")
+			if ok && strings.TrimSpace(name) == advancedAuthGrantCookieName {
+				return raw, true
+			}
+			if !more {
+				break
+			}
+			value = rest
+		}
+	}
+	return "", false
+}
+
 func withAdvancedAuthPolicyVersion(request *http.Request, version string) {
 	if request == nil {
 		return

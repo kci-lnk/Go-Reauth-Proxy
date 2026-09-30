@@ -1429,8 +1429,7 @@ func (m *Manager) baseRuleCountForTable(table string) int {
 	count += len(m.localCIDRsForTable(table))
 	count++
 	if len(m.ExemptPorts) > 0 {
-		chunks := (len(m.ExemptPorts) + 14) / 15
-		count += chunks * 2
+		count += len(exemptPortChunks(m.ExemptPorts)) * 2
 	}
 	return count
 }
@@ -1503,13 +1502,7 @@ func (m *Manager) applyBaseRules(table string) error {
 	}
 
 	if len(m.ExemptPorts) > 0 {
-		chunkSize := 15
-		for i := 0; i < len(m.ExemptPorts); i += chunkSize {
-			end := i + chunkSize
-			if end > len(m.ExemptPorts) {
-				end = len(m.ExemptPorts)
-			}
-			chunk := m.ExemptPorts[i:end]
+		for _, chunk := range exemptPortChunks(m.ExemptPorts) {
 			portsStr := strings.Join(chunk, ",")
 
 			if err := m.runTable(table, "-A", m.Chain, "-p", "tcp", "-m", "multiport", "--dports", portsStr, "-j", "ACCEPT"); err != nil {

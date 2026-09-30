@@ -58,13 +58,13 @@ func UpstreamFailure(target *url.URL, traceID, route, class string, err error) {
 	// explicit portable label for the common connection failures as well.
 	kind := class
 	switch {
-	case errors.Is(err, syscall.ECONNREFUSED):
+	case matchesSocketErrno(err, syscall.ECONNREFUSED):
 		kind = "connection_refused"
-	case errors.Is(err, syscall.ENETUNREACH):
+	case matchesSocketErrno(err, syscall.ENETUNREACH):
 		kind = "network_unreachable"
-	case errors.Is(err, syscall.EHOSTUNREACH):
+	case matchesSocketErrno(err, syscall.EHOSTUNREACH):
 		kind = "host_unreachable"
-	case errors.Is(err, syscall.ECONNRESET):
+	case matchesSocketErrno(err, syscall.ECONNRESET):
 		kind = "connection_reset"
 	case errors.Is(err, syscall.EPIPE):
 		kind = "broken_pipe"

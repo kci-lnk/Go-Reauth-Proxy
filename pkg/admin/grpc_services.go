@@ -884,7 +884,11 @@ func (s *GRPCServer) GetOnlineIps(ctx context.Context, _ *emptypb.Empty) (*pb.On
 	stats := s.admin.ProxyHandler.GetOnlineIPs(time.Now())
 	result := &pb.OnlineIpsStats{OnlineCount: stats.OnlineCount, WindowSeconds: stats.WindowSeconds, Timestamp: stats.Timestamp, Items: make([]*pb.OnlineIpStats, 0, len(stats.Items))}
 	for _, item := range stats.Items {
-		result.Items = append(result.Items, &pb.OnlineIpStats{Ip: item.IP, LastSeenAt: item.LastSeenAt.Format(time.RFC3339Nano), IdentityCount: item.IdentityCount})
+		devices := make([]*pb.OnlineDeviceStats, 0, len(item.Devices))
+		for _, device := range item.Devices {
+			devices = append(devices, &pb.OnlineDeviceStats{Type: device.Type, Count: device.Count})
+		}
+		result.Items = append(result.Items, &pb.OnlineIpStats{Ip: item.IP, LastSeenAt: item.LastSeenAt.Format(time.RFC3339Nano), IdentityCount: item.IdentityCount, Devices: devices})
 	}
 	return result, nil
 }

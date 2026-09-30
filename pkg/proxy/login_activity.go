@@ -15,11 +15,12 @@ const loggedInActiveMaxEntries = 8192
 // loggedInActivity is immutable once published. Membership and updates share
 // loggedInActiveMu so snapshots observe each identity's IP and timestamp together.
 type loggedInActivity struct {
-	ip   string
-	seen int64
+	ip     string
+	seen   int64
+	device string
 }
 
-func (h *Handler) storeLoggedInActive(key, clientIP string, now time.Time) {
+func (h *Handler) storeLoggedInActive(key, clientIP, device string, now time.Time) {
 	if key == "" {
 		return
 	}
@@ -32,7 +33,7 @@ func (h *Handler) storeLoggedInActive(key, clientIP string, now time.Time) {
 	h.loggedInActiveMu.Lock()
 	previous, exists := h.loggedInActive.Load(key)
 	if !exists || previous.(loggedInActivity).seen <= now.UnixNano() {
-		h.loggedInActive.Store(key, loggedInActivity{ip: ip, seen: now.UnixNano()})
+		h.loggedInActive.Store(key, loggedInActivity{ip: ip, seen: now.UnixNano(), device: device})
 		if !exists {
 			h.loggedInActiveCount.Add(1)
 		}
@@ -43,11 +44,11 @@ func (h *Handler) storeLoggedInActive(key, clientIP string, now time.Time) {
 }
 
 func (h *Handler) markLoggedInActive(r *http.Request, clientIP string, now time.Time) {
-	h.storeLoggedInActive(activeIdentityKey(r, clientIP), clientIP, now)
+	h.storeLoggedInActive(activeIdentityKey(r, clientIP), clientIP, onlineDeviceType(r.UserAgent()), now)
 }
 
 func (h *Handler) MarkLoggedInActiveByClientIP(clientIP string, now time.Time) {
-	h.storeLoggedInActive(activeIdentityKeyFromClientIP(clientIP), clientIP, now)
+	h.storeLoggedInActive(activeIdentityKeyFromClientIP(clientIP), clientIP, "unknown", now)
 }
 
 func (h *Handler) hasRecentLoggedInActive(r *http.Request, clientIP string, now time.Time) bool {
@@ -69,10 +70,16 @@ func (h *Handler) hasRecentLoggedInActive(r *http.Request, clientIP string, now 
 	return recent
 }
 
+type OnlineDeviceStats struct {
+	Type  string
+	Count int64
+}
+
 type OnlineIPStats struct {
 	IP            string
 	LastSeenAt    time.Time
 	IdentityCount int64
+	Devices       []OnlineDeviceStats
 }
 
 type OnlineIPsStats struct {
@@ -102,6 +109,17 @@ func (h *Handler) GetOnlineIPs(now time.Time) OnlineIPsStats {
 		item := groups[activity.ip]
 		item.IP = activity.ip
 		item.IdentityCount++
+		found := false
+		for i := range item.Devices {
+			if item.Devices[i].Type == activity.device {
+				item.Devices[i].Count++
+				found = true
+				break
+			}
+		}
+		if !found {
+			item.Devices = append(item.Devices, OnlineDeviceStats{Type: activity.device, Count: 1})
+		}
 		seen := time.Unix(0, activity.seen).UTC()
 		if seen.After(item.LastSeenAt) {
 			item.LastSeenAt = seen
@@ -109,6 +127,7 @@ func (h *Handler) GetOnlineIPs(now time.Time) OnlineIPsStats {
 		groups[activity.ip] = item
 	}
 	for _, item := range groups {
+		sort.Slice(item.Devices, func(i, j int) bool { return item.Devices[i].Type < item.Devices[j].Type })
 		result.Items = append(result.Items, item)
 	}
 	sort.Slice(result.Items, func(i, j int) bool {
@@ -193,5 +212,35 @@ func (h *Handler) enforceLoggedInActiveLimitLocked() {
 			return
 		}
 		h.deleteLoggedInActiveLocked(candidate.key)
+	}
+}
+
+// Only the category is retained; device counts use the existing identity key.
+// Check mobile platforms before desktop tokens embedded in their user agents.
+func onlineDeviceType(userAgent string) string {
+	ua := strings.ToLower(userAgent)
+	switch {
+	// Windows Phone includes Android/iPhone compatibility markers.
+	case strings.Contains(ua, "windows phone"):
+		return "windows"
+	// An iPod UA includes "iPhone OS", but is not an iPhone.
+	case strings.Contains(ua, "ipod"):
+		return "unknown"
+	case strings.Contains(ua, "iphone"):
+		return "iphone"
+	case strings.Contains(ua, "ipad"), strings.Contains(ua, "macintosh") && strings.Contains(ua, "mobile/"):
+		return "ipad"
+	case strings.Contains(ua, "android"):
+		return "android"
+	case strings.Contains(ua, "windows"):
+		return "windows"
+	case strings.Contains(ua, "cros "):
+		return "chromeos"
+	case strings.Contains(ua, "macintosh"), strings.Contains(ua, "mac os x"):
+		return "macos"
+	case strings.Contains(ua, "linux"):
+		return "linux"
+	default:
+		return "unknown"
 	}
 }

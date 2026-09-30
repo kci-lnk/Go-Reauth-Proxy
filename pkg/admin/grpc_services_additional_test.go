@@ -901,4 +901,8 @@ func TestTrafficServiceOnlineIPsAuthenticationAndSnapshot(t *testing.T) {
 	if got.OnlineCount != 1 || got.WindowSeconds != 120 || len(got.Items) != 1 || got.Items[0].Ip != "192.0.2.1" || got.Items[0].IdentityCount != 1 || got.Timestamp < now.UnixMilli() {
 		t.Fatalf("invalid online snapshot: %v", got)
 	}
+	devices := got.Items[0].Devices
+	if len(devices) != 1 || devices[0].Type != "unknown" || devices[0].Count != 1 {
+		t.Fatalf("invalid online devices: %v", devices)
+	}
 }

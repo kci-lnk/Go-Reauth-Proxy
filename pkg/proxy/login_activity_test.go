@@ -10,14 +10,14 @@ import (
 func TestOnlineIPsSnapshotIdentityAggregation(t *testing.T) {
 	h := &Handler{}
 	now := time.Now().UTC()
-	h.storeLoggedInActive("one", "::ffff:192.0.2.1", now)
-	h.storeLoggedInActive("two", "192.0.2.1", now)
-	h.storeLoggedInActive("one", "2001:db8::1", now.Add(time.Second))
+	h.storeLoggedInActive("one", "::ffff:192.0.2.1", "unknown", now)
+	h.storeLoggedInActive("two", "192.0.2.1", "unknown", now)
+	h.storeLoggedInActive("one", "2001:db8::1", "unknown", now.Add(time.Second))
 	// An out-of-order request must not restore the identity's old address.
-	h.storeLoggedInActive("one", "192.0.2.99", now.Add(-time.Second))
-	h.storeLoggedInActive("unknown", "invalid", now)
-	h.storeLoggedInActive("expired", "192.0.2.2", now.Add(-loggedInActiveWindow-time.Nanosecond))
-	h.storeLoggedInActive("boundary", "192.0.2.1", now.Add(-loggedInActiveWindow))
+	h.storeLoggedInActive("one", "192.0.2.99", "unknown", now.Add(-time.Second))
+	h.storeLoggedInActive("unknown", "invalid", "unknown", now)
+	h.storeLoggedInActive("expired", "192.0.2.2", "unknown", now.Add(-loggedInActiveWindow-time.Nanosecond))
+	h.storeLoggedInActive("boundary", "192.0.2.1", "unknown", now.Add(-loggedInActiveWindow))
 	got := h.GetOnlineIPs(now)
 	if got.OnlineCount != 4 || len(got.Items) != 3 || got.WindowSeconds != 120 || got.Timestamp != now.UnixMilli() {
 		t.Fatalf("unexpected snapshot: %+v", got)
@@ -49,7 +49,7 @@ func TestOnlineIPsConcurrentSnapshotAndCapacity(t *testing.T) {
 		go func(worker int) {
 			defer wg.Done()
 			for i := 0; i < 1200; i++ {
-				h.storeLoggedInActive(fmt.Sprintf("%d-%d", worker, i), fmt.Sprintf("192.0.2.%d", worker+1), now)
+				h.storeLoggedInActive(fmt.Sprintf("%d-%d", worker, i), fmt.Sprintf("192.0.2.%d", worker+1), "unknown", now)
 				if i%100 == 0 {
 					snapshot := h.GetOnlineIPs(now)
 					var total int64
@@ -83,7 +83,7 @@ func TestOnlineIPConcurrentMovesKeepLatestAddressAndTimeTogether(t *testing.T) {
 			defer writers.Done()
 			for i := 0; i < 100; i++ {
 				sequence := worker*100 + i
-				h.storeLoggedInActive("same-identity", fmt.Sprintf("192.0.2.%d", sequence%250+1), start.Add(time.Duration(sequence)*time.Nanosecond))
+				h.storeLoggedInActive("same-identity", fmt.Sprintf("192.0.2.%d", sequence%250+1), fmt.Sprintf("device-%d", sequence), start.Add(time.Duration(sequence)*time.Nanosecond))
 				snapshot := h.GetOnlineIPs(start)
 				if snapshot.OnlineCount != 1 || len(snapshot.Items) != 1 {
 					t.Errorf("duplicate identity: %+v", snapshot)
@@ -91,7 +91,7 @@ func TestOnlineIPConcurrentMovesKeepLatestAddressAndTimeTogether(t *testing.T) {
 				}
 				item := snapshot.Items[0]
 				expected := fmt.Sprintf("192.0.2.%d", item.LastSeenAt.Sub(start).Nanoseconds()%250+1)
-				if item.IP != expected {
+				if item.IP != expected || len(item.Devices) != 1 || item.Devices[0].Type != fmt.Sprintf("device-%d", item.LastSeenAt.Sub(start).Nanoseconds()) || item.Devices[0].Count != 1 {
 					t.Errorf("mismatched IP and timestamp: %+v, want %s", item, expected)
 				}
 			}

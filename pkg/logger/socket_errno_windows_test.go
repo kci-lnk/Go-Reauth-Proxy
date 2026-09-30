@@ -4,9 +4,9 @@ import (
 	"net"
 	"os"
 	"syscall"
+	"testing"
 
 	"golang.org/x/sys/windows"
-	"testing"
 )
 
 func TestMatchesWinsockErrno(t *testing.T) {

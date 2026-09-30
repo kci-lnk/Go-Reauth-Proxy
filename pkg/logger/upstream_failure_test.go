@@ -14,8 +14,8 @@ import (
 )
 
 func TestUpstreamFailureDefaultLoggingAndRedaction(t *testing.T) {
-	t.Cleanup(Setup)
 	dir := t.TempDir()
+	t.Cleanup(Setup)
 	t.Setenv(DiagnosticLogDirEnv, dir)
 	t.Setenv(ConsoleLogEnv, "0")
 	t.Setenv(DebugLogEnv, "0")
@@ -62,8 +62,8 @@ func TestUpstreamFailureDefaultLoggingAndRedaction(t *testing.T) {
 }
 
 func TestUpstreamFailureDNSAndInvalidTrace(t *testing.T) {
-	t.Cleanup(Setup)
 	dir := t.TempDir()
+	t.Cleanup(Setup)
 	t.Setenv(DiagnosticLogDirEnv, dir)
 	Setup()
 	target, _ := url.Parse("http://backend.example")

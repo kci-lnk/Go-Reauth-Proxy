@@ -715,8 +715,9 @@ const toolbarTemplate = `
 	            var host = asString(item.host);
 	            var itemLabel = asString(item.label) || host;
 	            var icon = toolbarData.show_app_icon ? resolveAppIconSrc(item.favicon) : '';
-	            var link = createMenuLink(itemLabel, '/', 'host-link', isActiveHost(host, toolbarData.current_host), icon);
+	            var link = createMenuLink(itemLabel, asString(item.href) || '/', 'host-link', isActiveHost(host, toolbarData.current_host), icon);
 	            link.setAttribute('data-host', host);
+	            if (item.href) link.setAttribute('data-direct-href', 'true');
 	            itemsInner.appendChild(link);
 	        }
 	        items.appendChild(itemsInner);
@@ -752,8 +753,9 @@ const toolbarTemplate = `
 	            var host = asString(hostRules[i].host);
 	            var label = asString(hostRules[i].label) || host;
 	            var icon = toolbarData.show_app_icon ? resolveAppIconSrc(hostRules[i].favicon) : '';
-	            var hostLink = createMenuLink(label, '/', 'host-link', isActiveHost(host, toolbarData.current_host), icon);
+	            var hostLink = createMenuLink(label, asString(hostRules[i].href) || '/', 'host-link', isActiveHost(host, toolbarData.current_host), icon);
 	            hostLink.setAttribute('data-host', host);
+	            if (hostRules[i].href) hostLink.setAttribute('data-direct-href', 'true');
 	            menuScroll.appendChild(hostLink);
 	        }
 	        return;
@@ -762,7 +764,7 @@ const toolbarTemplate = `
 	    if (rules.length > 0) {
 	        for (var j = 0; j < rules.length; j++) {
 	            var path = asString(rules[j].path);
-	            menuScroll.appendChild(createMenuLink(path, ensureSlash(path), 'rule-link', isActivePath(path, toolbarData.current_path), ''));
+	            menuScroll.appendChild(createMenuLink(path, asString(rules[j].href) || ensureSlash(path), 'rule-link', isActivePath(path, toolbarData.current_path), ''));
 	        }
 	        return;
 	    }
@@ -892,7 +894,7 @@ const toolbarTemplate = `
 	        var seen = {};
 	        var now = Date.now();
 	        for (var i = 0; i < hostRules.length; i++) {
-	            var origin = toolbarWarmupOrigin(buildHostHref(asString((hostRules[i] || {}).host)));
+	            var origin = toolbarWarmupOrigin(asString((hostRules[i] || {}).href) || buildHostHref(asString((hostRules[i] || {}).host)));
 	            if (!origin || seen[origin]) continue;
 	            seen[origin] = true;
 	            var entry = history[origin] || {};
@@ -921,10 +923,10 @@ const toolbarTemplate = `
     var navLinks = shadow.querySelectorAll('.nav-link');
     for (var i = 0; i < navLinks.length; i++) {
         var host = navLinks[i].getAttribute('data-host');
-        if (host) {
+        if (host && !navLinks[i].hasAttribute('data-direct-href')) {
             navLinks[i].setAttribute('href', buildHostHref(host));
-            attachToolbarWarmup(navLinks[i]);
         }
+        if (host) attachToolbarWarmup(navLinks[i]);
 
         navLinks[i].addEventListener('click', function(e) {
             e.preventDefault(); 
@@ -1685,6 +1687,10 @@ func writeToolbarPayloadJSON(b *strings.Builder, rules []models.Rule, hostRules 
 		}
 		b.WriteString(`{"path":`)
 		writeJSONString(b, rule.Path)
+		if href := gatewayPortalTargetHref(rule.Target, portalConfig); href != "" {
+			b.WriteString(`,"href":`)
+			writeJSONString(b, href)
+		}
 		b.WriteByte('}')
 	}
 	b.WriteString(`],"host_rules":[`)
@@ -1700,6 +1706,10 @@ func writeToolbarPayloadJSON(b *strings.Builder, rules []models.Rule, hostRules 
 		favicon := gatewayPortalHostFavicon(rule, portalConfig)
 		b.WriteString(`{"host":`)
 		writeJSONString(b, rule.Host)
+		if href := gatewayPortalTargetHref(rule.Target, portalConfig); href != "" {
+			b.WriteString(`,"href":`)
+			writeJSONString(b, href)
+		}
 		if label != "" {
 			b.WriteString(`,"label":`)
 			writeJSONString(b, label)
@@ -1770,13 +1780,13 @@ func estimateToolbarPayloadSize(rules []models.Rule, hostRules []models.HostRule
 	size += len(labels.Ungrouped) + len(labels.Applications) + len(labels.All) +
 		len(labels.MoreActions) + len(labels.Close) + len(labels.Current)
 	for _, rule := range rules {
-		size += len(rule.Path) + 16
+		size += len(rule.Path) + 16 + len(gatewayPortalTargetHref(rule.Target, portalConfig))
 	}
 	for _, rule := range hostRules {
 		if toolbarHostMatchesExcludedNormalized(rule.Host, normalizedExcludedHost) {
 			continue
 		}
-		size += len(rule.Host) + len(rule.Title) + len(rule.GroupID) + len(rule.GroupName) + len(gatewayPortalHostFavicon(rule, portalConfig)) + 64
+		size += len(rule.Host) + len(rule.Title) + len(rule.GroupID) + len(rule.GroupName) + len(gatewayPortalHostFavicon(rule, portalConfig)) + len(gatewayPortalTargetHref(rule.Target, portalConfig)) + 64
 	}
 	return size
 }

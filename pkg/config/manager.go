@@ -127,11 +127,12 @@ func defaultConfig() *AppConfig {
 			UpdatedAt: "",
 		},
 		Portal: models.GatewayPortalConfig{
-			Enabled:      true,
-			DisplayStyle: models.GatewayPortalDisplayStyleDomain,
-			ShowAppIcon:  false,
-			IconDragMode: models.GatewayPortalIconDragModeCorners,
-			Version:      models.GatewayPortalVersionV1,
+			NavigationMode: models.GatewayPortalNavigationInternet,
+			Enabled:        true,
+			DisplayStyle:   models.GatewayPortalDisplayStyleDomain,
+			ShowAppIcon:    false,
+			IconDragMode:   models.GatewayPortalIconDragModeCorners,
+			Version:        models.GatewayPortalVersionV1,
 		},
 		UnmatchedRoute: models.GatewayUnmatchedRouteConfig{
 			Behavior:            models.GatewayUnmatchedRouteBehaviorErrorPage,

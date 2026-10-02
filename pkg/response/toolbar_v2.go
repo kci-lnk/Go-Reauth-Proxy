@@ -847,7 +847,7 @@ const toolbarV2Script = `(function(window, document) {
             var seen = {};
             var now = Date.now();
             for (var i = 0; i < hostRules.length; i++) {
-                var origin = toolbarWarmupOrigin(buildHostHref(asString((hostRules[i] || {}).host)));
+                var origin = toolbarWarmupOrigin(asString((hostRules[i] || {}).href) || buildHostHref(asString((hostRules[i] || {}).host)));
                 if (!origin || seen[origin]) continue;
                 seen[origin] = true;
                 var entry = history[origin] || {};
@@ -1116,7 +1116,7 @@ const toolbarV2Script = `(function(window, document) {
             var host = asString(hostRule.host);
             apps.push({
                 label: asString(hostRule.label) || host,
-                href: buildHostHref(host),
+                href: asString(hostRule.href) || buildHostHref(host),
                 icon: toolbarData.show_app_icon ? resolveAppIconSrc(hostRule.favicon) : '',
                 groupId: asString(hostRule.group_id).trim(),
                 groupName: asString(hostRule.group_name).trim(),
@@ -1128,7 +1128,7 @@ const toolbarV2Script = `(function(window, document) {
             var path = asString((pathRules[pathIndex] || {}).path);
             apps.push({
                 label: path,
-                href: ensureSlash(path),
+                href: asString((pathRules[pathIndex] || {}).href) || ensureSlash(path),
                 icon: '',
                 groupId: '',
                 groupName: '',

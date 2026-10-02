@@ -5953,7 +5953,7 @@ func (h *Handler) handleSelectRoute(w http.ResponseWriter, r *http.Request, snap
 	}
 
 	applyNoStoreCacheHeaders(w.Header())
-	portal := snapshot.gatewayPortal
+	portal := gatewayPortalForNavigation(snapshot.gatewayPortal, clientIP)
 	portal.ShowWOL = portal.ShowWOL && authResultAllowsWOL(authResult)
 	response.SelectPageWithPrefilteredRoutes(
 		w,

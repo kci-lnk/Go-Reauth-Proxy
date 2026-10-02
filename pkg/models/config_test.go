@@ -101,3 +101,31 @@ func TestGatewayPortalConfigNormalizesInvalidIconDragModeToCorners(t *testing.T)
 		t.Fatalf("icon drag mode = %q, want corners", normalized.IconDragMode)
 	}
 }
+
+func TestGatewayPortalNavigationJSONDefaultsAndPersistence(t *testing.T) {
+	for _, input := range []string{`{}`, `{"navigation_mode":"future"}`} {
+		var cfg GatewayPortalConfig
+		if err := json.Unmarshal([]byte(input), &cfg); err != nil {
+			t.Fatal(err)
+		}
+		cfg = NormalizeGatewayPortalConfig(cfg)
+		if cfg.NavigationMode != GatewayPortalNavigationInternet || cfg.SmartLANDetection {
+			t.Fatalf("legacy defaults = %#v", cfg)
+		}
+	}
+	var cfg GatewayPortalConfig
+	if err := json.Unmarshal([]byte(`{"navigation_mode":"lan","smart_lan_detection":true}`), &cfg); err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := json.Marshal(NormalizeGatewayPortalConfig(cfg))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var restored GatewayPortalConfig
+	if err := json.Unmarshal(encoded, &restored); err != nil {
+		t.Fatal(err)
+	}
+	if restored.NavigationMode != GatewayPortalNavigationLAN || !restored.SmartLANDetection {
+		t.Fatalf("stored navigation lost: %s", encoded)
+	}
+}

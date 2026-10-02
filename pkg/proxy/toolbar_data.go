@@ -154,7 +154,7 @@ func (h *Handler) handleToolbarDataRoute(w http.ResponseWriter, r *http.Request,
 		return authResult
 	}
 
-	portal := gatewayPortalForAuth(snapshot.gatewayPortal, authResult)
+	portal := gatewayPortalForNavigation(gatewayPortalForAuth(snapshot.gatewayPortal, authResult), clientIP)
 	if matchedHostRule != nil {
 		filteredHostRules = filterAvailableHostRulesByAuthScope(snapshot.toolbarHostRules, authResult, time.Now())
 	}

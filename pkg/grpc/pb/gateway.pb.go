@@ -3359,15 +3359,17 @@ func (x *CrawlerBlockerConfig) GetUpdatedAt() string {
 }
 
 type GatewayPortalConfig struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Enabled       bool                   `protobuf:"varint,1,opt,name=enabled,proto3" json:"enabled,omitempty"`
-	DisplayStyle  string                 `protobuf:"bytes,2,opt,name=display_style,json=displayStyle,proto3" json:"display_style,omitempty"`
-	ShowAppIcon   bool                   `protobuf:"varint,3,opt,name=show_app_icon,json=showAppIcon,proto3" json:"show_app_icon,omitempty"`
-	IconDragMode  string                 `protobuf:"bytes,4,opt,name=icon_drag_mode,json=iconDragMode,proto3" json:"icon_drag_mode,omitempty"`
-	Version       string                 `protobuf:"bytes,5,opt,name=version,proto3" json:"version,omitempty"`
-	ShowWol       bool                   `protobuf:"varint,6,opt,name=show_wol,json=showWol,proto3" json:"show_wol,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state             protoimpl.MessageState `protogen:"open.v1"`
+	Enabled           bool                   `protobuf:"varint,1,opt,name=enabled,proto3" json:"enabled,omitempty"`
+	DisplayStyle      string                 `protobuf:"bytes,2,opt,name=display_style,json=displayStyle,proto3" json:"display_style,omitempty"`
+	ShowAppIcon       bool                   `protobuf:"varint,3,opt,name=show_app_icon,json=showAppIcon,proto3" json:"show_app_icon,omitempty"`
+	IconDragMode      string                 `protobuf:"bytes,4,opt,name=icon_drag_mode,json=iconDragMode,proto3" json:"icon_drag_mode,omitempty"`
+	Version           string                 `protobuf:"bytes,5,opt,name=version,proto3" json:"version,omitempty"`
+	ShowWol           bool                   `protobuf:"varint,6,opt,name=show_wol,json=showWol,proto3" json:"show_wol,omitempty"`
+	NavigationMode    string                 `protobuf:"bytes,7,opt,name=navigation_mode,json=navigationMode,proto3" json:"navigation_mode,omitempty"`
+	SmartLanDetection bool                   `protobuf:"varint,8,opt,name=smart_lan_detection,json=smartLanDetection,proto3" json:"smart_lan_detection,omitempty"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
 }
 
 func (x *GatewayPortalConfig) Reset() {
@@ -3438,6 +3440,20 @@ func (x *GatewayPortalConfig) GetVersion() string {
 func (x *GatewayPortalConfig) GetShowWol() bool {
 	if x != nil {
 		return x.ShowWol
+	}
+	return false
+}
+
+func (x *GatewayPortalConfig) GetNavigationMode() string {
+	if x != nil {
+		return x.NavigationMode
+	}
+	return ""
+}
+
+func (x *GatewayPortalConfig) GetSmartLanDetection() bool {
+	if x != nil {
+		return x.SmartLanDetection
 	}
 	return false
 }
@@ -12597,14 +12613,16 @@ const file_fnknock_v1_gateway_proto_rawDesc = "" +
 	"\x14CrawlerBlockerConfig\x12\x18\n" +
 	"\aenabled\x18\x01 \x01(\bR\aenabled\x12\x1d\n" +
 	"\n" +
-	"updated_at\x18\x02 \x01(\tR\tupdatedAt\"\xd3\x01\n" +
+	"updated_at\x18\x02 \x01(\tR\tupdatedAt\"\xac\x02\n" +
 	"\x13GatewayPortalConfig\x12\x18\n" +
 	"\aenabled\x18\x01 \x01(\bR\aenabled\x12#\n" +
 	"\rdisplay_style\x18\x02 \x01(\tR\fdisplayStyle\x12\"\n" +
 	"\rshow_app_icon\x18\x03 \x01(\bR\vshowAppIcon\x12$\n" +
 	"\x0eicon_drag_mode\x18\x04 \x01(\tR\ficonDragMode\x12\x18\n" +
 	"\aversion\x18\x05 \x01(\tR\aversion\x12\x19\n" +
-	"\bshow_wol\x18\x06 \x01(\bR\ashowWol\"m\n" +
+	"\bshow_wol\x18\x06 \x01(\bR\ashowWol\x12'\n" +
+	"\x0fnavigation_mode\x18\a \x01(\tR\x0enavigationMode\x12.\n" +
+	"\x13smart_lan_detection\x18\b \x01(\bR\x11smartLanDetection\"m\n" +
 	"\x1bGatewayUnmatchedRouteConfig\x12\x1a\n" +
 	"\bbehavior\x18\x01 \x01(\tR\bbehavior\x122\n" +
 	"\x15upstream_error_detail\x18\x02 \x01(\tR\x13upstreamErrorDetail\"S\n" +

@@ -219,6 +219,8 @@ func TestCrawlerBlockerProtoRoundTrip(t *testing.T) {
 
 func TestGatewayPortalProtoRoundTrip(t *testing.T) {
 	input := models.NewGatewayPortalConfig(true, "title", true, "free", models.GatewayPortalVersionV2, true)
+	input.NavigationMode = models.GatewayPortalNavigationLAN
+	input.SmartLANDetection = true
 	if got := protoToGatewayPortal(gatewayPortalToProto(input)); !reflect.DeepEqual(got, input) {
 		t.Fatalf("round trip = %#v", got)
 	}

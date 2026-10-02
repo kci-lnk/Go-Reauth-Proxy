@@ -814,12 +814,14 @@ func protoToCrawlerBlocker(cfg *pb.CrawlerBlockerConfig) models.CrawlerBlockerCo
 
 func gatewayPortalToProto(cfg models.GatewayPortalConfig) *pb.GatewayPortalConfig {
 	return &pb.GatewayPortalConfig{
-		Enabled:      cfg.Enabled,
-		DisplayStyle: cfg.DisplayStyle,
-		ShowAppIcon:  cfg.ShowAppIcon,
-		ShowWol:      cfg.ShowWOL,
-		IconDragMode: cfg.IconDragMode,
-		Version:      cfg.Version,
+		Enabled:           cfg.Enabled,
+		DisplayStyle:      cfg.DisplayStyle,
+		ShowAppIcon:       cfg.ShowAppIcon,
+		ShowWol:           cfg.ShowWOL,
+		NavigationMode:    cfg.NavigationMode,
+		SmartLanDetection: cfg.SmartLANDetection,
+		IconDragMode:      cfg.IconDragMode,
+		Version:           cfg.Version,
 	}
 }
 
@@ -827,7 +829,7 @@ func protoToGatewayPortal(cfg *pb.GatewayPortalConfig) models.GatewayPortalConfi
 	if cfg == nil {
 		return models.GatewayPortalConfig{}
 	}
-	return models.NewGatewayPortalConfig(
+	portal := models.NewGatewayPortalConfig(
 		cfg.GetEnabled(),
 		cfg.GetDisplayStyle(),
 		cfg.GetShowAppIcon(),
@@ -835,6 +837,9 @@ func protoToGatewayPortal(cfg *pb.GatewayPortalConfig) models.GatewayPortalConfi
 		cfg.GetVersion(),
 		cfg.GetShowWol(),
 	)
+	portal.NavigationMode = cfg.GetNavigationMode()
+	portal.SmartLANDetection = cfg.GetSmartLanDetection()
+	return portal
 }
 
 func gatewayUnmatchedRouteToProto(cfg models.GatewayUnmatchedRouteConfig) *pb.GatewayUnmatchedRouteConfig {

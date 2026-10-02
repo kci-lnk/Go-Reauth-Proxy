@@ -509,14 +509,21 @@ const (
 	GatewayPortalVersionV2 = "v2"
 )
 
+const (
+	GatewayPortalNavigationInternet = "internet"
+	GatewayPortalNavigationLAN      = "lan"
+)
+
 type GatewayPortalConfig struct {
-	Enabled      bool   `json:"enabled" example:"true"`
-	DisplayStyle string `json:"display_style,omitempty" example:"domain"`
-	ShowAppIcon  bool   `json:"show_app_icon,omitempty" example:"false"`
-	ShowWOL      bool   `json:"show_wol,omitempty" example:"false"`
-	IconDragMode string `json:"icon_drag_mode,omitempty" example:"corners"`
-	Version      string `json:"version,omitempty" example:"v1"`
-	enabledSet   bool
+	Enabled           bool   `json:"enabled" example:"true"`
+	DisplayStyle      string `json:"display_style,omitempty" example:"domain"`
+	ShowAppIcon       bool   `json:"show_app_icon,omitempty" example:"false"`
+	ShowWOL           bool   `json:"show_wol,omitempty" example:"false"`
+	IconDragMode      string `json:"icon_drag_mode,omitempty" example:"corners"`
+	Version           string `json:"version,omitempty" example:"v1"`
+	NavigationMode    string `json:"navigation_mode"`
+	SmartLANDetection bool   `json:"smart_lan_detection"`
+	enabledSet        bool
 }
 
 // NewGatewayPortalConfig builds a portal config whose enabled value was
@@ -535,12 +542,14 @@ func NewGatewayPortalConfig(enabled bool, displayStyle string, showAppIcon bool,
 
 func (cfg *GatewayPortalConfig) UnmarshalJSON(data []byte) error {
 	var raw struct {
-		Enabled      *bool  `json:"enabled"`
-		DisplayStyle string `json:"display_style"`
-		ShowAppIcon  bool   `json:"show_app_icon"`
-		ShowWOL      bool   `json:"show_wol"`
-		IconDragMode string `json:"icon_drag_mode"`
-		Version      string `json:"version"`
+		Enabled           *bool  `json:"enabled"`
+		DisplayStyle      string `json:"display_style"`
+		ShowAppIcon       bool   `json:"show_app_icon"`
+		ShowWOL           bool   `json:"show_wol"`
+		IconDragMode      string `json:"icon_drag_mode"`
+		Version           string `json:"version"`
+		NavigationMode    string `json:"navigation_mode"`
+		SmartLANDetection bool   `json:"smart_lan_detection"`
 	}
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return err
@@ -557,6 +566,8 @@ func (cfg *GatewayPortalConfig) UnmarshalJSON(data []byte) error {
 	cfg.ShowWOL = raw.ShowWOL
 	cfg.IconDragMode = raw.IconDragMode
 	cfg.Version = raw.Version
+	cfg.NavigationMode = raw.NavigationMode
+	cfg.SmartLANDetection = raw.SmartLANDetection
 	return nil
 }
 
@@ -567,9 +578,11 @@ func NormalizeGatewayPortalConfig(cfg GatewayPortalConfig) GatewayPortalConfig {
 	}
 
 	normalized := GatewayPortalConfig{
-		Enabled:     enabled,
-		ShowAppIcon: cfg.ShowAppIcon,
-		ShowWOL:     cfg.ShowWOL,
+		Enabled:           enabled,
+		ShowAppIcon:       cfg.ShowAppIcon,
+		ShowWOL:           cfg.ShowWOL,
+		SmartLANDetection: cfg.SmartLANDetection,
+		NavigationMode:    GatewayPortalNavigationInternet,
 		IconDragMode: func() string {
 			if cfg.IconDragMode == GatewayPortalIconDragModeFree {
 				return GatewayPortalIconDragModeFree
@@ -583,6 +596,9 @@ func NormalizeGatewayPortalConfig(cfg GatewayPortalConfig) GatewayPortalConfig {
 			return GatewayPortalVersionV1
 		}(),
 		enabledSet: true,
+	}
+	if cfg.NavigationMode == GatewayPortalNavigationLAN {
+		normalized.NavigationMode = GatewayPortalNavigationLAN
 	}
 	if cfg.DisplayStyle == GatewayPortalDisplayStyleTitle {
 		normalized.DisplayStyle = GatewayPortalDisplayStyleTitle

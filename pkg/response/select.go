@@ -18,6 +18,10 @@ var htmlFuncMap = template.FuncMap{
 		return path
 	},
 	"hostDisplayLabel": GatewayPortalHostLabel,
+	"hostDirectHref": func(rule models.HostRule, portal models.GatewayPortalConfig) string {
+		return gatewayPortalTargetHref(rule.Target, portal)
+	},
+	"pathHref": gatewayPortalPathHref,
 	"hostFaviconURL": func(rule models.HostRule, portalConfig models.GatewayPortalConfig) template.URL {
 		return template.URL(gatewayPortalHostInlineFavicon(rule, models.NormalizeGatewayPortalConfig(portalConfig)))
 	},
@@ -554,7 +558,7 @@ const selectContent = `
 					</div>
 					<div class="routes-grid">
 						{{range .Rules}}
-						<a href="/" data-host="{{.Host}}" class="route-card host-route-card">
+						<a href="{{with hostDirectHref . $.GatewayPortal}}{{.}}{{else}}/{{end}}" data-host="{{.Host}}" {{if hostDirectHref . $.GatewayPortal}}data-direct-href="true"{{end}} class="route-card host-route-card">
 							<div class="route-main">
 								{{with hostFaviconURL . $.GatewayPortal}}
 								<span class="route-icon-shell"><img class="route-icon-img" src="{{.}}" alt=""></span>
@@ -584,7 +588,7 @@ const selectContent = `
 			</div>
 			{{else}}
 			{{range .HostRules}}
-			<a href="/" data-host="{{.Host}}" class="route-card host-route-card">
+			<a href="{{with hostDirectHref . $.GatewayPortal}}{{.}}{{else}}/{{end}}" data-host="{{.Host}}" {{if hostDirectHref . $.GatewayPortal}}data-direct-href="true"{{end}} class="route-card host-route-card">
 				<div class="route-main">
 					{{with hostFaviconURL . $.GatewayPortal}}
 					<span class="route-icon-shell"><img class="route-icon-img" src="{{.}}" alt=""></span>
@@ -611,7 +615,7 @@ const selectContent = `
 			{{end}}
 		{{else if .Rules}}
 			{{range .Rules}}
-			<a href="{{ensureSlash .Path}}" class="route-card">
+			<a href="{{pathHref . $.GatewayPortal}}" class="route-card">
 				<div class="route-main">
 					<span class="route-icon-shell">
 						<svg class="route-icon-fallback" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
@@ -662,7 +666,7 @@ const selectContent = `
 		var hostLinks = document.querySelectorAll('.host-route-card[data-host]');
 		for (var i = 0; i < hostLinks.length; i++) {
 			var host = hostLinks[i].getAttribute('data-host');
-			if (!host) {
+			if (!host || hostLinks[i].hasAttribute('data-direct-href')) {
 				continue;
 			}
 			hostLinks[i].setAttribute('href', buildHostHref(host));

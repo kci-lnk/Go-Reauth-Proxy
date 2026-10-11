@@ -742,18 +742,28 @@ func (s *GRPCServer) QueryLogEntries(ctx context.Context, req *pb.GatewayLogQuer
 	if limit <= 0 {
 		limit = 20
 	}
-	result, err := s.admin.ProxyHandler.QueryLogEntriesContext(
-		ctx,
-		req.GetDate(),
-		page,
-		limit,
-		req.GetSearch(),
-		req.GetStatus(),
-		req.GetLoggedIn(),
-		req.GetCredential(),
-		req.GetCursor(),
-		paginationMode,
-	)
+	var result gatewaylog.QueryResult
+	var err error
+	if req.GetFrom() != "" || req.GetTo() != "" || req.GetSort() != "" || req.GetOrder() != "" {
+		result, err = s.admin.ProxyHandler.QueryLogRangeContext(ctx, gatewaylog.RangeQuery{
+			Date: req.GetDate(), From: req.GetFrom(), To: req.GetTo(), Sort: req.GetSort(), Order: req.GetOrder(),
+			Limit: limit, Page: page, Pagination: paginationMode, Cursor: req.GetCursor(),
+			Search: req.GetSearch(), Status: req.GetStatus(), LoggedIn: req.GetLoggedIn(), Credential: req.GetCredential(), ClientIP: req.GetClientIp(), WAFStatus: req.GetWafStatus(),
+		})
+	} else {
+		result, err = s.admin.ProxyHandler.QueryLogEntriesContext(
+			ctx,
+			req.GetDate(),
+			page,
+			limit,
+			req.GetSearch(),
+			req.GetStatus(),
+			req.GetLoggedIn(),
+			req.GetCredential(),
+			req.GetCursor(),
+			paginationMode,
+		)
+	}
 	if err != nil {
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 			return nil, status.FromContextError(err).Err()

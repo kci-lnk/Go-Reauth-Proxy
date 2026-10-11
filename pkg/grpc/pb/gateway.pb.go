@@ -28,18 +28,18 @@ type ControlApiVersion int32
 
 const (
 	ControlApiVersion_CONTROL_API_VERSION_UNSPECIFIED ControlApiVersion = 0
-	ControlApiVersion_CONTROL_API_VERSION_CURRENT     ControlApiVersion = 26
+	ControlApiVersion_CONTROL_API_VERSION_CURRENT     ControlApiVersion = 27
 )
 
 // Enum value maps for ControlApiVersion.
 var (
 	ControlApiVersion_name = map[int32]string{
 		0:  "CONTROL_API_VERSION_UNSPECIFIED",
-		26: "CONTROL_API_VERSION_CURRENT",
+		27: "CONTROL_API_VERSION_CURRENT",
 	}
 	ControlApiVersion_value = map[string]int32{
 		"CONTROL_API_VERSION_UNSPECIFIED": 0,
-		"CONTROL_API_VERSION_CURRENT":     26,
+		"CONTROL_API_VERSION_CURRENT":     27,
 	}
 )
 
@@ -5970,6 +5970,12 @@ type GatewayLogQuery struct {
 	Credential    string                 `protobuf:"bytes,7,opt,name=credential,proto3" json:"credential,omitempty"`
 	Cursor        string                 `protobuf:"bytes,8,opt,name=cursor,proto3" json:"cursor,omitempty"`
 	Pagination    string                 `protobuf:"bytes,9,opt,name=pagination,proto3" json:"pagination,omitempty"`
+	From          string                 `protobuf:"bytes,10,opt,name=from,proto3" json:"from,omitempty"`
+	To            string                 `protobuf:"bytes,11,opt,name=to,proto3" json:"to,omitempty"`
+	Sort          string                 `protobuf:"bytes,12,opt,name=sort,proto3" json:"sort,omitempty"`
+	Order         string                 `protobuf:"bytes,13,opt,name=order,proto3" json:"order,omitempty"`
+	ClientIp      string                 `protobuf:"bytes,14,opt,name=client_ip,json=clientIp,proto3" json:"client_ip,omitempty"`
+	WafStatus     string                 `protobuf:"bytes,15,opt,name=waf_status,json=wafStatus,proto3" json:"waf_status,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -6067,6 +6073,48 @@ func (x *GatewayLogQuery) GetPagination() string {
 	return ""
 }
 
+func (x *GatewayLogQuery) GetFrom() string {
+	if x != nil {
+		return x.From
+	}
+	return ""
+}
+
+func (x *GatewayLogQuery) GetTo() string {
+	if x != nil {
+		return x.To
+	}
+	return ""
+}
+
+func (x *GatewayLogQuery) GetSort() string {
+	if x != nil {
+		return x.Sort
+	}
+	return ""
+}
+
+func (x *GatewayLogQuery) GetOrder() string {
+	if x != nil {
+		return x.Order
+	}
+	return ""
+}
+
+func (x *GatewayLogQuery) GetClientIp() string {
+	if x != nil {
+		return x.ClientIp
+	}
+	return ""
+}
+
+func (x *GatewayLogQuery) GetWafStatus() string {
+	if x != nil {
+		return x.WafStatus
+	}
+	return ""
+}
+
 type GatewayLogQueryResult struct {
 	state          protoimpl.MessageState `protogen:"open.v1"`
 	Date           string                 `protobuf:"bytes,1,opt,name=date,proto3" json:"date,omitempty"`
@@ -6080,6 +6128,8 @@ type GatewayLogQueryResult struct {
 	NextCursor     string                 `protobuf:"bytes,9,opt,name=next_cursor,json=nextCursor,proto3" json:"next_cursor,omitempty"`
 	HasMore        bool                   `protobuf:"varint,10,opt,name=has_more,json=hasMore,proto3" json:"has_more,omitempty"`
 	Items          []*GatewayLogEntry     `protobuf:"bytes,11,rep,name=items,proto3" json:"items,omitempty"`
+	From           string                 `protobuf:"bytes,12,opt,name=from,proto3" json:"from,omitempty"`
+	To             string                 `protobuf:"bytes,13,opt,name=to,proto3" json:"to,omitempty"`
 	unknownFields  protoimpl.UnknownFields
 	sizeCache      protoimpl.SizeCache
 }
@@ -6189,6 +6239,20 @@ func (x *GatewayLogQueryResult) GetItems() []*GatewayLogEntry {
 		return x.Items
 	}
 	return nil
+}
+
+func (x *GatewayLogQueryResult) GetFrom() string {
+	if x != nil {
+		return x.From
+	}
+	return ""
+}
+
+func (x *GatewayLogQueryResult) GetTo() string {
+	if x != nil {
+		return x.To
+	}
+	return ""
 }
 
 type GatewayLogTraceRequest struct {
@@ -12891,7 +12955,7 @@ const file_fnknock_v1_gateway_proto_rawDesc = "" +
 	"\x0fGatewayLogDates\x12\x14\n" +
 	"\x05today\x18\x01 \x01(\tR\x05today\x12\x19\n" +
 	"\blogs_dir\x18\x02 \x01(\tR\alogsDir\x12\x14\n" +
-	"\x05dates\x18\x03 \x03(\tR\x05dates\"\xf4\x01\n" +
+	"\x05dates\x18\x03 \x03(\tR\x05dates\"\xfe\x02\n" +
 	"\x0fGatewayLogQuery\x12\x12\n" +
 	"\x04date\x18\x01 \x01(\tR\x04date\x12\x12\n" +
 	"\x04page\x18\x02 \x01(\x05R\x04page\x12\x14\n" +
@@ -12905,7 +12969,15 @@ const file_fnknock_v1_gateway_proto_rawDesc = "" +
 	"\x06cursor\x18\b \x01(\tR\x06cursor\x12\x1e\n" +
 	"\n" +
 	"pagination\x18\t \x01(\tR\n" +
-	"pagination\"\xd6\x02\n" +
+	"pagination\x12\x12\n" +
+	"\x04from\x18\n" +
+	" \x01(\tR\x04from\x12\x0e\n" +
+	"\x02to\x18\v \x01(\tR\x02to\x12\x12\n" +
+	"\x04sort\x18\f \x01(\tR\x04sort\x12\x14\n" +
+	"\x05order\x18\r \x01(\tR\x05order\x12\x1b\n" +
+	"\tclient_ip\x18\x0e \x01(\tR\bclientIp\x12\x1d\n" +
+	"\n" +
+	"waf_status\x18\x0f \x01(\tR\twafStatus\"\xfa\x02\n" +
 	"\x15GatewayLogQueryResult\x12\x12\n" +
 	"\x04date\x18\x01 \x01(\tR\x04date\x12\x19\n" +
 	"\blogs_dir\x18\x02 \x01(\tR\alogsDir\x12'\n" +
@@ -12921,7 +12993,9 @@ const file_fnknock_v1_gateway_proto_rawDesc = "" +
 	"nextCursor\x12\x19\n" +
 	"\bhas_more\x18\n" +
 	" \x01(\bR\ahasMore\x121\n" +
-	"\x05items\x18\v \x03(\v2\x1b.fnknock.v1.GatewayLogEntryR\x05items\"3\n" +
+	"\x05items\x18\v \x03(\v2\x1b.fnknock.v1.GatewayLogEntryR\x05items\x12\x12\n" +
+	"\x04from\x18\f \x01(\tR\x04from\x12\x0e\n" +
+	"\x02to\x18\r \x01(\tR\x02to\"3\n" +
 	"\x16GatewayLogTraceRequest\x12\x19\n" +
 	"\btrace_id\x18\x01 \x01(\tR\atraceId\"{\n" +
 	"\x15GatewayLogTraceResult\x12\x19\n" +
@@ -13485,7 +13559,7 @@ const file_fnknock_v1_gateway_proto_rawDesc = "" +
 	"last_error\x18\t \x01(\tR\tlastError*Y\n" +
 	"\x11ControlApiVersion\x12#\n" +
 	"\x1fCONTROL_API_VERSION_UNSPECIFIED\x10\x00\x12\x1f\n" +
-	"\x1bCONTROL_API_VERSION_CURRENT\x10\x1a*\xa1\x01\n" +
+	"\x1bCONTROL_API_VERSION_CURRENT\x10\x1b*\xa1\x01\n" +
 	"\x12HostRuleTargetType\x12%\n" +
 	"!HOST_RULE_TARGET_TYPE_UNSPECIFIED\x10\x00\x12\x1f\n" +
 	"\x1bHOST_RULE_TARGET_TYPE_PROXY\x10\x01\x12\x1e\n" +

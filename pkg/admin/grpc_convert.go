@@ -1415,6 +1415,7 @@ func logQueryResultToProto(result gatewaylog.QueryResult) *pb.GatewayLogQueryRes
 		items = append(items, logEntryToProto(item))
 	}
 	return &pb.GatewayLogQueryResult{
+		From: result.From, To: result.To,
 		Date:           result.Date,
 		LogsDir:        result.LogsDir,
 		AvailableDates: result.AvailableDates,

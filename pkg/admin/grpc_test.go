@@ -707,3 +707,46 @@ func TestGatewayLogCapacityLegacyUpdatePreservesLimits(t *testing.T) {
 		t.Fatal("zero capacity accepted")
 	}
 }
+
+func TestGatewayLogRangeGRPCContract(t *testing.T) {
+	server := newGatewayControlTestServer(t, "secret")
+	ctx := authTestContext()
+	config, err := server.GetLoggingConfig(ctx, &emptypb.Empty{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = os.MkdirAll(config.GetLogsDir(), 0700); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(config.GetLogsDir(), "2026-09-21.log")
+	if err = os.WriteFile(path, []byte("{\"time\":\"2026-09-21T02:00:00Z\",\"client_ip\":\"8.8.8.8\"}\n{\"time\":\"2026-09-21T01:00:00Z\",\"client_ip\":\"1.1.1.1\"}\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	request := &pb.GatewayLogQuery{From: "2026-09-20", To: "2026-09-21", Sort: "time", Order: "asc", Pagination: "cursor", Limit: 1}
+	result, err := server.QueryLogEntries(ctx, request)
+	if err != nil || result.GetFrom() != request.From || result.GetTo() != request.To || len(result.GetItems()) != 1 || result.Items[0].ClientIp != "1.1.1.1" || !result.HasMore {
+		t.Fatalf("%+v %v", result, err)
+	}
+	request.Cursor = result.NextCursor
+	result, err = server.QueryLogEntries(ctx, request)
+	if err != nil || len(result.GetItems()) != 1 || result.Items[0].ClientIp != "8.8.8.8" || result.HasMore {
+		t.Fatalf("%+v %v", result, err)
+	}
+	request.ClientIp = "1.1.1.1"
+	if _, err = server.QueryLogEntries(ctx, request); status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("changed-filter cursor: %v", err)
+	}
+	request.Cursor = ""
+	result, err = server.QueryLogEntries(ctx, request)
+	if err != nil || len(result.GetItems()) != 1 || result.Items[0].ClientIp != "1.1.1.1" || result.HasMore {
+		t.Fatalf("%+v %v", result, err)
+	}
+	request.Date = "2026-09-21"
+	if _, err = server.QueryLogEntries(ctx, request); status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("mixed date/range: %v", err)
+	}
+	legacy, err := server.QueryLogEntries(ctx, &pb.GatewayLogQuery{Date: "2026-09-21", Limit: 20})
+	if err != nil || len(legacy.GetItems()) != 2 {
+		t.Fatalf("legacy query: %+v %v", legacy, err)
+	}
+}

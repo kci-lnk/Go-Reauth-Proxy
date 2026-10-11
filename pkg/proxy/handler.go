@@ -4118,6 +4118,13 @@ func (h *Handler) QueryLogEntriesContext(ctx context.Context, date string, page 
 	return h.gatewayLogManager.QueryContext(ctx, date, page, limit, search, status, loggedIn, credential, cursor, pagination)
 }
 
+func (h *Handler) QueryLogRangeContext(ctx context.Context, query gatewaylog.RangeQuery) (gatewaylog.QueryResult, error) {
+	if h.gatewayLogManager == nil {
+		return gatewaylog.QueryResult{}, nil
+	}
+	return h.gatewayLogManager.QueryRangeContext(ctx, query)
+}
+
 func (h *Handler) AnalyzeLogEntries(fromDate string, toDate string) (gatewaylog.AnalyticsResult, error) {
 	return h.AnalyzeLogEntriesContext(context.Background(), fromDate, toDate)
 }

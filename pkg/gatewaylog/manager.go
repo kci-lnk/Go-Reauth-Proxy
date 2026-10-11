@@ -135,6 +135,8 @@ type DatesResult struct {
 }
 
 type QueryResult struct {
+	From           string   `json:"from"`
+	To             string   `json:"to"`
 	Date           string   `json:"date"`
 	LogsDir        string   `json:"logs_dir"`
 	AvailableDates []string `json:"available_dates"`

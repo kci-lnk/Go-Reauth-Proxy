@@ -135,8 +135,9 @@ func defaultConfig() *AppConfig {
 			Version:        models.GatewayPortalVersionV1,
 		},
 		UnmatchedRoute: models.GatewayUnmatchedRouteConfig{
-			Behavior:            models.GatewayUnmatchedRouteBehaviorErrorPage,
-			UpstreamErrorDetail: models.GatewayUpstreamErrorDetailLess,
+			Behavior:             models.GatewayUnmatchedRouteBehaviorErrorPage,
+			UpstreamErrorDetail:  models.GatewayUpstreamErrorDetailLess,
+			DisabledHostBehavior: models.GatewayUnmatchedRouteBehaviorErrorPage,
 		},
 		FnosPortIconHijack: models.FnosPortIconHijackConfig{
 			Enabled:   false,

@@ -1,8 +1,11 @@
 package proxy
 
 import (
-	"go-reauth-proxy/pkg/models"
+	"net/http"
 	"time"
+
+	"go-reauth-proxy/pkg/models"
+	"go-reauth-proxy/pkg/response"
 )
 
 const (
@@ -70,4 +73,21 @@ func filterAvailableHostRules(hostRules []models.HostRule, now time.Time) []mode
 
 func formatHostAvailabilityWindow(value *models.HostRuleAvailability) string {
 	return models.FormatDailyAvailabilityWindow(value)
+}
+
+func (h *Handler) respondHostUnavailable(w http.ResponseWriter, r *http.Request, decision hostAvailabilityDecision, cfg models.GatewayUnmatchedRouteConfig) {
+	if decision.Reason == hostUnavailableReasonDisabled && cfg.DisabledHostBehavior == models.GatewayUnmatchedRouteBehaviorResetConnection {
+		markConnectionResetStatus(w)
+		// ErrAbortHandler resets only this stream in HTTP/2 and HTTP/3.
+		// abortConnection intentionally closes the entire QUIC connection.
+		if r.ProtoMajor >= 2 {
+			panic(http.ErrAbortHandler)
+		}
+		h.abortConnection(w)
+		return
+	}
+	response.HostUnavailable(w, r, response.HostUnavailableOptions{
+		Reason: decision.Reason,
+		Window: decision.Window,
+	})
 }

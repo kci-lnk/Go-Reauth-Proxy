@@ -662,3 +662,48 @@ func loadConfigFromJSON(t *testing.T, raw string) *AppConfig {
 	}
 	return cfg
 }
+
+func TestManagerLoadNormalizesDisabledHostBehavior(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		raw  string
+		want string
+	}{
+		{name: "missing", raw: `{}`, want: models.GatewayUnmatchedRouteBehaviorErrorPage},
+		{name: "invalid", raw: `{"unmatched_route":{"disabled_host_behavior":"drop"}}`, want: models.GatewayUnmatchedRouteBehaviorErrorPage},
+		{name: "reset", raw: `{"unmatched_route":{"disabled_host_behavior":"reset_connection"}}`, want: models.GatewayUnmatchedRouteBehaviorResetConnection},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := loadConfigFromJSON(t, tc.raw)
+			if got := cfg.UnmatchedRoute.DisabledHostBehavior; got != tc.want {
+				t.Fatalf("behavior = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestDisabledHostBehaviorDefaultsOnFreshConfig(t *testing.T) {
+	if got := DefaultConfig().UnmatchedRoute.DisabledHostBehavior; got != models.GatewayUnmatchedRouteBehaviorErrorPage {
+		t.Fatalf("DefaultConfig disabled_host_behavior = %q, want error_page", got)
+	}
+	path := filepath.Join(t.TempDir(), "config.json")
+	manager := NewManager(path)
+	cfg, err := manager.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := cfg.UnmatchedRoute.DisabledHostBehavior; got != models.GatewayUnmatchedRouteBehaviorErrorPage {
+		t.Fatalf("fresh config disabled_host_behavior = %q, want error_page", got)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var stored AppConfig
+	if err := json.Unmarshal(data, &stored); err != nil {
+		t.Fatal(err)
+	}
+	if stored.UnmatchedRoute.DisabledHostBehavior != models.GatewayUnmatchedRouteBehaviorErrorPage {
+		t.Fatalf("persisted default disabled_host_behavior = %q", stored.UnmatchedRoute.DisabledHostBehavior)
+	}
+}

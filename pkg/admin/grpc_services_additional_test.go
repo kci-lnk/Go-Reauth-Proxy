@@ -671,13 +671,14 @@ func TestGatewayControlGatewayUnmatchedRouteRoundTrip(t *testing.T) {
 	server := newGatewayControlTestServer(t, "secret")
 	ctx := authTestContext()
 	got, err := server.SetGatewayUnmatchedRouteConfig(ctx, &pb.GatewayUnmatchedRouteConfig{
-		Behavior:            models.GatewayUnmatchedRouteBehaviorResetConnection,
-		UpstreamErrorDetail: models.GatewayUpstreamErrorDetailResetConnection,
+		Behavior:             models.GatewayUnmatchedRouteBehaviorResetConnection,
+		UpstreamErrorDetail:  models.GatewayUpstreamErrorDetailResetConnection,
+		DisabledHostBehavior: models.GatewayUnmatchedRouteBehaviorResetConnection,
 	})
 	if err != nil {
 		t.Fatalf("SetGatewayUnmatchedRouteConfig() returned error: %v", err)
 	}
-	if got.GetBehavior() != models.GatewayUnmatchedRouteBehaviorResetConnection ||
+	if got.GetDisabledHostBehavior() != models.GatewayUnmatchedRouteBehaviorResetConnection || got.GetBehavior() != models.GatewayUnmatchedRouteBehaviorResetConnection ||
 		got.GetUpstreamErrorDetail() != models.GatewayUpstreamErrorDetailResetConnection {
 		t.Fatalf("set response = %#v", got)
 	}
@@ -685,18 +686,19 @@ func TestGatewayControlGatewayUnmatchedRouteRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetGatewayUnmatchedRouteConfig() returned error: %v", err)
 	}
-	if reloaded.GetBehavior() != models.GatewayUnmatchedRouteBehaviorResetConnection ||
+	if reloaded.GetDisabledHostBehavior() != models.GatewayUnmatchedRouteBehaviorResetConnection || reloaded.GetBehavior() != models.GatewayUnmatchedRouteBehaviorResetConnection ||
 		reloaded.GetUpstreamErrorDetail() != models.GatewayUpstreamErrorDetailResetConnection {
 		t.Fatalf("get response = %#v", reloaded)
 	}
 
 	normalized, err := server.SetGatewayUnmatchedRouteConfig(ctx, &pb.GatewayUnmatchedRouteConfig{
-		Behavior: "invalid",
+		Behavior:             "invalid",
+		DisabledHostBehavior: "invalid",
 	})
 	if err != nil {
 		t.Fatalf("invalid-value SetGatewayUnmatchedRouteConfig() returned error: %v", err)
 	}
-	if normalized.GetBehavior() != models.GatewayUnmatchedRouteBehaviorErrorPage {
+	if normalized.GetDisabledHostBehavior() != models.GatewayUnmatchedRouteBehaviorErrorPage || normalized.GetBehavior() != models.GatewayUnmatchedRouteBehaviorErrorPage {
 		t.Fatalf("invalid behavior normalized to %q", normalized.GetBehavior())
 	}
 	if normalized.GetUpstreamErrorDetail() != models.GatewayUpstreamErrorDetailLess {

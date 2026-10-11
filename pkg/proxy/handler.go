@@ -4684,6 +4684,7 @@ func (h *Handler) SetGatewayUnmatchedRouteConfig(cfg models.GatewayUnmatchedRout
 	if event := debugProxyEvent("gateway_unmatched_route_config_set", ""); event != nil {
 		event.Str("behavior", normalized.Behavior).
 			Str("upstream_error_detail", normalized.UpstreamErrorDetail).
+			Str("disabled_host_behavior", normalized.DisabledHostBehavior).
 			Send()
 	}
 
@@ -5302,17 +5303,13 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			accessEntry.Matched = true
 			accessEntry.AuthDecision = availability.Reason
 			accessEntry.AccessMode = accessMode
-			loggedStatusCode = http.StatusServiceUnavailable
 			if event := debugProxyEvent("host_unavailable", requestID); event != nil {
 				event.Str("host", logger.SanitizeLogString(matchedHostRule.Host)).
 					Str("reason", logger.SanitizeLogString(availability.Reason)).
 					Str("window", logger.SanitizeLogString(availability.Window)).
 					Send()
 			}
-			response.HostUnavailable(w, r, response.HostUnavailableOptions{
-				Reason: availability.Reason,
-				Window: availability.Window,
-			})
+			h.respondHostUnavailable(w, r, availability, snapshot.unmatchedRoute)
 			return
 		}
 	}

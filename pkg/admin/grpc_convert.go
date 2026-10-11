@@ -844,8 +844,9 @@ func protoToGatewayPortal(cfg *pb.GatewayPortalConfig) models.GatewayPortalConfi
 
 func gatewayUnmatchedRouteToProto(cfg models.GatewayUnmatchedRouteConfig) *pb.GatewayUnmatchedRouteConfig {
 	return &pb.GatewayUnmatchedRouteConfig{
-		Behavior:            cfg.Behavior,
-		UpstreamErrorDetail: cfg.UpstreamErrorDetail,
+		Behavior:             cfg.Behavior,
+		UpstreamErrorDetail:  cfg.UpstreamErrorDetail,
+		DisabledHostBehavior: cfg.DisabledHostBehavior,
 	}
 }
 
@@ -854,8 +855,9 @@ func protoToGatewayUnmatchedRoute(cfg *pb.GatewayUnmatchedRouteConfig) models.Ga
 		return models.GatewayUnmatchedRouteConfig{}
 	}
 	return models.GatewayUnmatchedRouteConfig{
-		Behavior:            cfg.GetBehavior(),
-		UpstreamErrorDetail: cfg.GetUpstreamErrorDetail(),
+		Behavior:             cfg.GetBehavior(),
+		UpstreamErrorDetail:  cfg.GetUpstreamErrorDetail(),
+		DisabledHostBehavior: cfg.GetDisabledHostBehavior(),
 	}
 }
 

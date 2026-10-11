@@ -597,3 +597,55 @@ func TestHTTP3ShutdownInterruptsExistingDrain(t *testing.T) {
 		t.Fatalf("listener reopened: %+v", status)
 	}
 }
+
+func TestHTTP3DisabledHostAbortsOnlyCurrentStream(t *testing.T) {
+	var upstreamHits atomic.Int32
+	_, h, addr := http3Fixture(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamHits.Add(1)
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	rules := h.GetHostRules()
+	rules[0].Disabled = true
+	if err := h.SetHostRules(rules); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.SetGatewayUnmatchedRouteConfig(models.GatewayUnmatchedRouteConfig{
+		DisabledHostBehavior: models.GatewayUnmatchedRouteBehaviorResetConnection,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	conn, err := quic.DialAddr(ctx, addr, &tls.Config{InsecureSkipVerify: true, ServerName: "app.example.test", NextProtos: []string{"h3"}}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.CloseWithError(0, "")
+	transport := &http3.Transport{}
+	defer transport.Close()
+	// Pin both requests to one QUIC connection: Transport.RoundTrip evicts
+	// connections on any request error, including a stream-only reset.
+	client := &http.Client{Transport: transport.NewClientConn(conn), Timeout: 5 * time.Second}
+	if response, err := client.Get("https://app.example.test/private"); err == nil {
+		response.Body.Close()
+		t.Fatal("disabled host returned HTTP/3 response")
+	}
+	if upstreamHits.Load() != 0 {
+		t.Fatal("disabled host reached upstream")
+	}
+	rules[0].Disabled = false
+	if err := h.SetHostRules(rules); err != nil {
+		t.Fatal(err)
+	}
+	response, err := client.Get("https://app.example.test/active")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusNoContent || response.ProtoMajor != 3 {
+		t.Fatalf("response = %#v", response)
+	}
+	if upstreamHits.Load() != 1 {
+		t.Fatalf("upstream hits = %d", upstreamHits.Load())
+	}
+}

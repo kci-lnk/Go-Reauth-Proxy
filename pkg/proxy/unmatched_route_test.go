@@ -54,7 +54,8 @@ func TestGatewayUnmatchedRouteConfigPersistsRestartsAndResets(t *testing.T) {
 	t.Cleanup(handler.gatewayLogManager.Close)
 
 	if _, err := handler.SetGatewayUnmatchedRouteConfig(models.GatewayUnmatchedRouteConfig{
-		Behavior: models.GatewayUnmatchedRouteBehaviorResetConnection,
+		Behavior:             models.GatewayUnmatchedRouteBehaviorResetConnection,
+		DisabledHostBehavior: models.GatewayUnmatchedRouteBehaviorResetConnection,
 	}); err != nil {
 		t.Fatalf("set unmatched route: %v", err)
 	}
@@ -64,6 +65,9 @@ func TestGatewayUnmatchedRouteConfigPersistsRestartsAndResets(t *testing.T) {
 	}
 	restarted := NewHandler(7996, 7999, manager, reloaded, filepath.Join(t.TempDir(), "restart-logs"), nil)
 	t.Cleanup(restarted.gatewayLogManager.Close)
+	if got := restarted.GetGatewayUnmatchedRouteConfig().DisabledHostBehavior; got != models.GatewayUnmatchedRouteBehaviorResetConnection {
+		t.Fatalf("restarted disabled host behavior = %q", got)
+	}
 	if got := restarted.GetGatewayUnmatchedRouteConfig().Behavior; got != models.GatewayUnmatchedRouteBehaviorResetConnection {
 		t.Fatalf("restarted behavior = %q, want reset_connection", got)
 	}
@@ -76,6 +80,9 @@ func TestGatewayUnmatchedRouteConfigPersistsRestartsAndResets(t *testing.T) {
 	}
 	if got := restarted.GetGatewayUnmatchedRouteConfig().Behavior; got != models.GatewayUnmatchedRouteBehaviorErrorPage {
 		t.Fatalf("reset behavior = %q, want error_page", got)
+	}
+	if got := restarted.GetGatewayUnmatchedRouteConfig().DisabledHostBehavior; got != models.GatewayUnmatchedRouteBehaviorErrorPage {
+		t.Fatalf("reset disabled host behavior = %q", got)
 	}
 	if got := restarted.GetGatewayUnmatchedRouteConfig().UpstreamErrorDetail; got != models.GatewayUpstreamErrorDetailLess {
 		t.Fatalf("reset upstream error detail = %q, want less", got)
@@ -94,12 +101,16 @@ func TestGatewayUnmatchedRouteConfigRollsBackOnSaveFailure(t *testing.T) {
 	t.Cleanup(handler.gatewayLogManager.Close)
 
 	if _, err := handler.SetGatewayUnmatchedRouteConfig(models.GatewayUnmatchedRouteConfig{
-		Behavior: models.GatewayUnmatchedRouteBehaviorResetConnection,
+		Behavior:             models.GatewayUnmatchedRouteBehaviorResetConnection,
+		DisabledHostBehavior: models.GatewayUnmatchedRouteBehaviorResetConnection,
 	}); err == nil {
 		t.Fatal("SetGatewayUnmatchedRouteConfig returned nil error")
 	}
 	if got := handler.GetGatewayUnmatchedRouteConfig().Behavior; got != models.GatewayUnmatchedRouteBehaviorErrorPage {
 		t.Fatalf("runtime behavior after save failure = %q, want error_page", got)
+	}
+	if got := handler.snapshotForRequest().unmatchedRoute.DisabledHostBehavior; got != models.GatewayUnmatchedRouteBehaviorErrorPage {
+		t.Fatalf("disabled host behavior after save failure = %q", got)
 	}
 	if got := handler.snapshotForRequest().unmatchedRoute.Behavior; got != models.GatewayUnmatchedRouteBehaviorErrorPage {
 		t.Fatalf("snapshot behavior after save failure = %q, want error_page", got)

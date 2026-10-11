@@ -3459,11 +3459,12 @@ func (x *GatewayPortalConfig) GetSmartLanDetection() bool {
 }
 
 type GatewayUnmatchedRouteConfig struct {
-	state               protoimpl.MessageState `protogen:"open.v1"`
-	Behavior            string                 `protobuf:"bytes,1,opt,name=behavior,proto3" json:"behavior,omitempty"`
-	UpstreamErrorDetail string                 `protobuf:"bytes,2,opt,name=upstream_error_detail,json=upstreamErrorDetail,proto3" json:"upstream_error_detail,omitempty"`
-	unknownFields       protoimpl.UnknownFields
-	sizeCache           protoimpl.SizeCache
+	state                protoimpl.MessageState `protogen:"open.v1"`
+	Behavior             string                 `protobuf:"bytes,1,opt,name=behavior,proto3" json:"behavior,omitempty"`
+	UpstreamErrorDetail  string                 `protobuf:"bytes,2,opt,name=upstream_error_detail,json=upstreamErrorDetail,proto3" json:"upstream_error_detail,omitempty"`
+	DisabledHostBehavior string                 `protobuf:"bytes,3,opt,name=disabled_host_behavior,json=disabledHostBehavior,proto3" json:"disabled_host_behavior,omitempty"`
+	unknownFields        protoimpl.UnknownFields
+	sizeCache            protoimpl.SizeCache
 }
 
 func (x *GatewayUnmatchedRouteConfig) Reset() {
@@ -3506,6 +3507,13 @@ func (x *GatewayUnmatchedRouteConfig) GetBehavior() string {
 func (x *GatewayUnmatchedRouteConfig) GetUpstreamErrorDetail() string {
 	if x != nil {
 		return x.UpstreamErrorDetail
+	}
+	return ""
+}
+
+func (x *GatewayUnmatchedRouteConfig) GetDisabledHostBehavior() string {
+	if x != nil {
+		return x.DisabledHostBehavior
 	}
 	return ""
 }
@@ -12622,10 +12630,11 @@ const file_fnknock_v1_gateway_proto_rawDesc = "" +
 	"\aversion\x18\x05 \x01(\tR\aversion\x12\x19\n" +
 	"\bshow_wol\x18\x06 \x01(\bR\ashowWol\x12'\n" +
 	"\x0fnavigation_mode\x18\a \x01(\tR\x0enavigationMode\x12.\n" +
-	"\x13smart_lan_detection\x18\b \x01(\bR\x11smartLanDetection\"m\n" +
+	"\x13smart_lan_detection\x18\b \x01(\bR\x11smartLanDetection\"\xa3\x01\n" +
 	"\x1bGatewayUnmatchedRouteConfig\x12\x1a\n" +
 	"\bbehavior\x18\x01 \x01(\tR\bbehavior\x122\n" +
-	"\x15upstream_error_detail\x18\x02 \x01(\tR\x13upstreamErrorDetail\"S\n" +
+	"\x15upstream_error_detail\x18\x02 \x01(\tR\x13upstreamErrorDetail\x124\n" +
+	"\x16disabled_host_behavior\x18\x03 \x01(\tR\x14disabledHostBehavior\"S\n" +
 	"\x18FnosPortIconHijackConfig\x12\x18\n" +
 	"\aenabled\x18\x01 \x01(\bR\aenabled\x12\x1d\n" +
 	"\n" +

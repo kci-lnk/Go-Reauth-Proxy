@@ -137,6 +137,7 @@ func TestOutsideAvailabilityWindowReturnsUnavailableAndLogsHost(t *testing.T) {
 	startTime := formatAvailabilityTestMinute(startMinute)
 	endTime := formatAvailabilityTestMinute(endMinute)
 	handler := &Handler{
+		GatewayUnmatchedRoute: models.GatewayUnmatchedRouteConfig{DisabledHostBehavior: models.GatewayUnmatchedRouteBehaviorResetConnection},
 		HostRules: []models.HostRule{{
 			Host:    "app.example.com",
 			Target:  upstream.URL,

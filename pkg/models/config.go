@@ -617,8 +617,9 @@ const (
 )
 
 type GatewayUnmatchedRouteConfig struct {
-	Behavior            string `json:"behavior,omitempty" example:"error_page"`
-	UpstreamErrorDetail string `json:"upstream_error_detail,omitempty" example:"less"`
+	DisabledHostBehavior string `json:"disabled_host_behavior,omitempty" example:"error_page"`
+	Behavior             string `json:"behavior,omitempty" example:"error_page"`
+	UpstreamErrorDetail  string `json:"upstream_error_detail,omitempty" example:"less"`
 }
 
 func NormalizeGatewayUnmatchedRouteConfig(cfg GatewayUnmatchedRouteConfig) GatewayUnmatchedRouteConfig {
@@ -633,9 +634,14 @@ func NormalizeGatewayUnmatchedRouteConfig(cfg GatewayUnmatchedRouteConfig) Gatew
 	case GatewayUpstreamErrorDetailResetConnection:
 		upstreamErrorDetail = GatewayUpstreamErrorDetailResetConnection
 	}
+	disabledHostBehavior := GatewayUnmatchedRouteBehaviorErrorPage
+	if cfg.DisabledHostBehavior == GatewayUnmatchedRouteBehaviorResetConnection {
+		disabledHostBehavior = GatewayUnmatchedRouteBehaviorResetConnection
+	}
 	return GatewayUnmatchedRouteConfig{
-		Behavior:            behavior,
-		UpstreamErrorDetail: upstreamErrorDetail,
+		DisabledHostBehavior: disabledHostBehavior,
+		Behavior:             behavior,
+		UpstreamErrorDetail:  upstreamErrorDetail,
 	}
 }
 

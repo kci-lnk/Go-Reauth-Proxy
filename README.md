@@ -259,6 +259,8 @@ Host 也可以由网关直接映射单个文件或只读目录：
 
 根路径没有直接命中时，网关依次考虑默认 Host、`__proxy_path`、`default_route`，最后进入 `/__select__` 或返回未匹配页面。该行为也可以通过 `unmatched_route` 调整为直接重置连接。
 
+`portal.select_page_enabled` 控制内置映射选择页，默认为 `true`（旧配置缺失时同样开启）。设为 `false` 后，直接访问 `/__select__` 和原本跳转选择页的根路径请求按 `unmatched_route.behavior` 返回无映射导航的错误页或重置连接。已有映射、默认 Host、自定义默认路由与无映射欢迎页保持原有行为；传送门工具栏仍由 `portal.enabled` 独立控制。
+
 ### TCP / UDP 路由
 
 ```json

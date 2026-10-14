@@ -3368,6 +3368,7 @@ type GatewayPortalConfig struct {
 	ShowWol           bool                   `protobuf:"varint,6,opt,name=show_wol,json=showWol,proto3" json:"show_wol,omitempty"`
 	NavigationMode    string                 `protobuf:"bytes,7,opt,name=navigation_mode,json=navigationMode,proto3" json:"navigation_mode,omitempty"`
 	SmartLanDetection bool                   `protobuf:"varint,8,opt,name=smart_lan_detection,json=smartLanDetection,proto3" json:"smart_lan_detection,omitempty"`
+	SelectPageEnabled *bool                  `protobuf:"varint,9,opt,name=select_page_enabled,json=selectPageEnabled,proto3,oneof" json:"select_page_enabled,omitempty"`
 	unknownFields     protoimpl.UnknownFields
 	sizeCache         protoimpl.SizeCache
 }
@@ -3454,6 +3455,13 @@ func (x *GatewayPortalConfig) GetNavigationMode() string {
 func (x *GatewayPortalConfig) GetSmartLanDetection() bool {
 	if x != nil {
 		return x.SmartLanDetection
+	}
+	return false
+}
+
+func (x *GatewayPortalConfig) GetSelectPageEnabled() bool {
+	if x != nil && x.SelectPageEnabled != nil {
+		return *x.SelectPageEnabled
 	}
 	return false
 }
@@ -12685,7 +12693,7 @@ const file_fnknock_v1_gateway_proto_rawDesc = "" +
 	"\x14CrawlerBlockerConfig\x12\x18\n" +
 	"\aenabled\x18\x01 \x01(\bR\aenabled\x12\x1d\n" +
 	"\n" +
-	"updated_at\x18\x02 \x01(\tR\tupdatedAt\"\xac\x02\n" +
+	"updated_at\x18\x02 \x01(\tR\tupdatedAt\"\xf9\x02\n" +
 	"\x13GatewayPortalConfig\x12\x18\n" +
 	"\aenabled\x18\x01 \x01(\bR\aenabled\x12#\n" +
 	"\rdisplay_style\x18\x02 \x01(\tR\fdisplayStyle\x12\"\n" +
@@ -12694,7 +12702,9 @@ const file_fnknock_v1_gateway_proto_rawDesc = "" +
 	"\aversion\x18\x05 \x01(\tR\aversion\x12\x19\n" +
 	"\bshow_wol\x18\x06 \x01(\bR\ashowWol\x12'\n" +
 	"\x0fnavigation_mode\x18\a \x01(\tR\x0enavigationMode\x12.\n" +
-	"\x13smart_lan_detection\x18\b \x01(\bR\x11smartLanDetection\"\xa3\x01\n" +
+	"\x13smart_lan_detection\x18\b \x01(\bR\x11smartLanDetection\x123\n" +
+	"\x13select_page_enabled\x18\t \x01(\bH\x00R\x11selectPageEnabled\x88\x01\x01B\x16\n" +
+	"\x14_select_page_enabled\"\xa3\x01\n" +
 	"\x1bGatewayUnmatchedRouteConfig\x12\x1a\n" +
 	"\bbehavior\x18\x01 \x01(\tR\bbehavior\x122\n" +
 	"\x15upstream_error_detail\x18\x02 \x01(\tR\x13upstreamErrorDetail\x124\n" +
@@ -14233,6 +14243,7 @@ func file_fnknock_v1_gateway_proto_init() {
 	file_fnknock_v1_gateway_proto_msgTypes[20].OneofWrappers = []any{}
 	file_fnknock_v1_gateway_proto_msgTypes[21].OneofWrappers = []any{}
 	file_fnknock_v1_gateway_proto_msgTypes[33].OneofWrappers = []any{}
+	file_fnknock_v1_gateway_proto_msgTypes[38].OneofWrappers = []any{}
 	file_fnknock_v1_gateway_proto_msgTypes[131].OneofWrappers = []any{}
 	file_fnknock_v1_gateway_proto_msgTypes[142].OneofWrappers = []any{
 		(*AuthBridgeEnvelope_Ready)(nil),

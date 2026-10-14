@@ -53,7 +53,7 @@ const wolPageHTML = `<!doctype html>
 </head>
 <body>
 <main class="shell">
-  <header class="top"><a class="back" href="/__select__" aria-label="{{.Data.Back}}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m15 18-6-6 6-6"/></svg><span class="sr-only">{{.Data.Back}}</span></a><div class="heading"><h1 class="title">{{.Data.Title}}</h1></div><span class="top-balance" aria-hidden="true"></span></header>
+  <header class="top">{{if .ShowSelectLink}}<a class="back" href="/__select__" aria-label="{{.Data.Back}}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m15 18-6-6 6-6"/></svg><span class="sr-only">{{.Data.Back}}</span></a>{{else}}<span class="top-balance" aria-hidden="true"></span>{{end}}<div class="heading"><h1 class="title">{{.Data.Title}}</h1></div><span class="top-balance" aria-hidden="true"></span></header>
   <section id="state" class="state" role="status">{{.Data.Loading}}</section>
   <section id="grid" class="grid" aria-live="polite" hidden></section>
 </main>
@@ -94,11 +94,16 @@ const wolPageHTML = `<!doctype html>
 </body></html>`
 
 type wolPageTemplateData struct {
-	Locale string
-	Data   wolPageData
+	ShowSelectLink bool
+	Locale         string
+	Data           wolPageData
 }
 
 func WOLPage(w http.ResponseWriter, r *http.Request) {
+	WOLPageWithSelectLink(w, r, true)
+}
+
+func WOLPageWithSelectLink(w http.ResponseWriter, r *http.Request, showSelectLink bool) {
 	locale := i18n.ResolveRequestLocale(r)
 	data := wolPageData{
 		Title:                    i18n.T(locale, "gateway.wol.title"),
@@ -136,7 +141,7 @@ func WOLPage(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("X-Frame-Options", "DENY")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("Referrer-Policy", "no-referrer")
-	if err := wolPageTmpl.Execute(w, wolPageTemplateData{Locale: locale, Data: data}); err != nil {
+	if err := wolPageTmpl.Execute(w, wolPageTemplateData{Locale: locale, Data: data, ShowSelectLink: showSelectLink}); err != nil {
 		http.Error(w, "Failed to render Wake-on-LAN page", http.StatusInternalServerError)
 	}
 }

@@ -127,7 +127,7 @@ func (h *Handler) handleUpstreamUnavailable(
 	r *http.Request,
 	cfg models.GatewayUnmatchedRouteConfig,
 	rules []models.Rule,
-	authenticated bool,
+	showSelectLink bool,
 	err error,
 ) {
 	failure := classifyUpstreamFailure(err)
@@ -150,6 +150,6 @@ func (h *Handler) handleUpstreamUnavailable(
 		failure.code,
 		upstreamUnavailableMessage(r, cfg, err, failure.code),
 		rules,
-		authenticated,
+		showSelectLink,
 	)
 }

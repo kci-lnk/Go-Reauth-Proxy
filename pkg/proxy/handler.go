@@ -5221,6 +5221,25 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Keep the disabled built-in endpoint reserved: it must never fall through
+	// to a host/path mapping, default host, or authentication service.
+	if fnosConnect == nil && r.URL.Path == "/__select__" && !snapshot.gatewayPortal.IsSelectPageEnabled() {
+		accessEntry.RouteType = "not_found"
+		accessEntry.RouteKey = r.URL.Path
+		accessEntry.Matched = false
+		accessEntry.AuthDecision = "not_required"
+		if snapshot.unmatchedRoute.Behavior == models.GatewayUnmatchedRouteBehaviorResetConnection {
+			accessEntry.RouteType = "unmatched_route_blocked"
+			accessEntry.AuthDecision = "connection_reset"
+			loggedStatusCode = 499
+			markConnectionResetStatus(w)
+			h.abortConnection(w)
+		} else {
+			response.RouteNotFound(w, r, nil, false)
+		}
+		return
+	}
+
 	http1Required := isHTTP1OnlyHostOverHTTP2(r, matchedHostRule)
 	http2Required := isHTTP2OnlyHostOverHTTP1(r, matchedHostRule)
 	if http1Required || http2Required {
@@ -5813,7 +5832,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			case models.HostLocationActionProxy:
 				h.proxyToHostLocationTarget(w, r, snapshot, *matchedHostRule, *matchedHostLocation, clientIP, authResult, requestID)
 			default:
-				response.HTMLWithSelectLink(w, r, errors.CodeProxyTargetInvalid, "Invalid host location configuration", snapshot.rules, authResult.authenticated)
+				response.HTMLWithSelectLink(w, r, errors.CodeProxyTargetInvalid, "Invalid host location configuration", snapshot.rules, authResult.authenticated && snapshot.gatewayPortal.IsSelectPageEnabled())
 			}
 			return
 		}
@@ -5945,30 +5964,6 @@ func filterAvailableHostRulesByAuthScope(hostRules []models.HostRule, authResult
 	return filterSelectHostRulesByAuthScope(filterAvailableHostRules(hostRules, now), authResult)
 }
 
-func (h *Handler) handleSelectRoute(w http.ResponseWriter, r *http.Request, snapshot requestSnapshot, clientIP string, requestID string, requestAuth *requestAuthContext, prepared *authCheckExecution) authCheckResult {
-	authResult := h.checkAuth(w, r, snapshot.authConfig, clientIP, "", "", requestID, requestAuth, prepared)
-	if !authResult.allowed {
-		return authResult
-	}
-	if !authResult.authenticated {
-		applyNoStoreCacheHeaders(w.Header())
-		http.Redirect(w, r, authLoginRedirectLocation(snapshot.authConfig, r), http.StatusFound)
-		return authCheckResult{decision: "redirected"}
-	}
-
-	applyNoStoreCacheHeaders(w.Header())
-	portal := gatewayPortalForNavigation(snapshot.gatewayPortal, clientIP)
-	portal.ShowWOL = portal.ShowWOL && authResultAllowsWOL(authResult)
-	response.SelectPageWithPrefilteredRoutes(
-		w,
-		r,
-		snapshot.toolbarRules,
-		filterAvailableHostRulesByAuthScope(snapshot.toolbarHostRules, authResult, time.Now()),
-		portal,
-	)
-	return authResult
-}
-
 func authResultAllowsWOL(authResult authCheckResult) bool {
 	if !authResult.subdomainAccessCustom {
 		return true
@@ -5997,7 +5992,7 @@ func (h *Handler) handleWOLRoute(w http.ResponseWriter, r *http.Request, snapsho
 		return authCheckResult{decision: "scope_denied", statusCode: http.StatusForbidden}
 	}
 	applyNoStoreCacheHeaders(w.Header())
-	response.WOLPage(w, r)
+	response.WOLPageWithSelectLink(w, r, snapshot.gatewayPortal.IsSelectPageEnabled())
 	return authResult
 }
 
@@ -6432,20 +6427,6 @@ func longestPathRuleMatch(requestPath string, snapshot requestSnapshot) (*models
 	return nil, 0
 }
 
-func (h *Handler) handleNoMatchRoute(w http.ResponseWriter, r *http.Request, snapshot requestSnapshot, authenticated bool) {
-	if r.URL.Path == "/" {
-		if len(snapshot.rules) == 0 && len(snapshot.hostRules) == 0 {
-			response.Welcome(w, r, nil)
-			return
-		}
-		if len(snapshot.rules) > 0 {
-			http.Redirect(w, r, "/__select__", http.StatusFound)
-			return
-		}
-	}
-	response.RouteNotFound(w, r, snapshot.rules, authenticated)
-}
-
 func serveHostLocationResponse(w http.ResponseWriter, location models.HostLocation) {
 	for name, value := range location.Response.Headers {
 		w.Header().Set(name, value)
@@ -6476,7 +6457,7 @@ func (h *Handler) proxyToHostLocationTarget(w http.ResponseWriter, r *http.Reque
 				Str("error", logger.SanitizeLogString(targetRuntime.err.Error())).
 				Send()
 		}
-		response.HTMLWithSelectLink(w, r, errors.CodeProxyTargetInvalid, "Invalid target URL configuration", snapshot.rules, authResult.authenticated)
+		response.HTMLWithSelectLink(w, r, errors.CodeProxyTargetInvalid, "Invalid target URL configuration", snapshot.rules, authResult.authenticated && snapshot.gatewayPortal.IsSelectPageEnabled())
 		return
 	}
 	targetURL := targetRuntime.targetURL
@@ -6513,6 +6494,7 @@ func (h *Handler) proxyToHostLocationTarget(w http.ResponseWriter, r *http.Reque
 	// snapshot, host rule or auth result moves each whole value to the heap.
 	rules, hostRules, unmatchedRoute := snapshot.rules, snapshot.hostRules, snapshot.unmatchedRoute
 	authenticated := authResult.authenticated
+	showSelectLink := authenticated && snapshot.gatewayPortal.IsSelectPageEnabled()
 	basicAuth := matchedRule.BasicAuth
 	host := matchedRule.Host
 	locationPath, stripPath, rewriteHTML := location.Path, location.StripPath, location.RewriteHTML
@@ -6580,7 +6562,7 @@ func (h *Handler) proxyToHostLocationTarget(w http.ResponseWriter, r *http.Reque
 			}
 			log.Printf("Host location proxy error: %v", err)
 			logger.UpstreamFailure(transportTargetURL, requestTraceID(r), "host_location", classifyUpstreamFailure(err).class, err)
-			h.handleUpstreamUnavailable(w, r, unmatchedRoute, rules, authenticated, err)
+			h.handleUpstreamUnavailable(w, r, unmatchedRoute, rules, showSelectLink, err)
 		},
 	}
 
@@ -6665,7 +6647,7 @@ func (h *Handler) proxyToHostTarget(w http.ResponseWriter, r *http.Request, snap
 				Str("error", logger.SanitizeLogString(targetRuntime.err.Error())).
 				Send()
 		}
-		response.HTMLWithSelectLink(w, r, errors.CodeProxyTargetInvalid, "Invalid target URL configuration", snapshot.rules, authResult.authenticated)
+		response.HTMLWithSelectLink(w, r, errors.CodeProxyTargetInvalid, "Invalid target URL configuration", snapshot.rules, authResult.authenticated && snapshot.gatewayPortal.IsSelectPageEnabled())
 		return
 	}
 	targetURL := targetRuntime.targetURL
@@ -6706,6 +6688,7 @@ func (h *Handler) proxyToHostTarget(w http.ResponseWriter, r *http.Request, snap
 	// snapshot, host rule or auth result moves each whole value to the heap.
 	rules, hostRules, unmatchedRoute := snapshot.rules, snapshot.hostRules, snapshot.unmatchedRoute
 	authenticated := authResult.authenticated
+	showSelectLink := authenticated && snapshot.gatewayPortal.IsSelectPageEnabled()
 	basicAuth, host, targetPathMode := matchedRule.BasicAuth, matchedRule.Host, matchedRule.TargetPathMode
 
 	proxy := &httputil.ReverseProxy{
@@ -6762,7 +6745,7 @@ func (h *Handler) proxyToHostTarget(w http.ResponseWriter, r *http.Request, snap
 			}
 			log.Printf("Host proxy error: %v", err)
 			logger.UpstreamFailure(transportTargetURL, requestTraceID(r), "host_rule", classifyUpstreamFailure(err).class, err)
-			h.handleUpstreamUnavailable(w, r, unmatchedRoute, rules, authenticated, err)
+			h.handleUpstreamUnavailable(w, r, unmatchedRoute, rules, showSelectLink, err)
 		},
 	}
 
@@ -6838,7 +6821,7 @@ func (h *Handler) proxyToRuleTarget(w http.ResponseWriter, r *http.Request, snap
 				Str("error", logger.SanitizeLogString(targetRuntime.err.Error())).
 				Send()
 		}
-		response.HTMLWithSelectLink(w, r, errors.CodeProxyTargetInvalid, "Invalid target URL configuration", snapshot.rules, authResult.authenticated)
+		response.HTMLWithSelectLink(w, r, errors.CodeProxyTargetInvalid, "Invalid target URL configuration", snapshot.rules, authResult.authenticated && snapshot.gatewayPortal.IsSelectPageEnabled())
 		return
 	}
 	targetURL := targetRuntime.targetURL
@@ -6868,6 +6851,7 @@ func (h *Handler) proxyToRuleTarget(w http.ResponseWriter, r *http.Request, snap
 	// snapshot, host rule or auth result moves each whole value to the heap.
 	rules, hostRules, unmatchedRoute := snapshot.rules, snapshot.hostRules, snapshot.unmatchedRoute
 	authenticated := authResult.authenticated
+	showSelectLink := authenticated && snapshot.gatewayPortal.IsSelectPageEnabled()
 
 	proxy := &httputil.ReverseProxy{
 		Transport:  h.monitoredTransport(transport),
@@ -6933,7 +6917,7 @@ func (h *Handler) proxyToRuleTarget(w http.ResponseWriter, r *http.Request, snap
 			}
 			log.Printf("Proxy error: %v", err)
 			logger.UpstreamFailure(transportTargetURL, requestTraceID(r), "path_rule", classifyUpstreamFailure(err).class, err)
-			h.handleUpstreamUnavailable(w, r, unmatchedRoute, rules, authenticated, err)
+			h.handleUpstreamUnavailable(w, r, unmatchedRoute, rules, showSelectLink, err)
 		},
 	}
 

@@ -813,7 +813,9 @@ func protoToCrawlerBlocker(cfg *pb.CrawlerBlockerConfig) models.CrawlerBlockerCo
 }
 
 func gatewayPortalToProto(cfg models.GatewayPortalConfig) *pb.GatewayPortalConfig {
+	selectPageEnabled := cfg.IsSelectPageEnabled()
 	return &pb.GatewayPortalConfig{
+		SelectPageEnabled: &selectPageEnabled,
 		Enabled:           cfg.Enabled,
 		DisplayStyle:      cfg.DisplayStyle,
 		ShowAppIcon:       cfg.ShowAppIcon,
@@ -837,6 +839,7 @@ func protoToGatewayPortal(cfg *pb.GatewayPortalConfig) models.GatewayPortalConfi
 		cfg.GetVersion(),
 		cfg.GetShowWol(),
 	)
+	portal.SetSelectPageEnabled(cfg.SelectPageEnabled == nil || cfg.GetSelectPageEnabled())
 	portal.NavigationMode = cfg.GetNavigationMode()
 	portal.SmartLANDetection = cfg.GetSmartLanDetection()
 	return portal

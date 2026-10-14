@@ -515,33 +515,57 @@ const (
 )
 
 type GatewayPortalConfig struct {
-	Enabled           bool   `json:"enabled" example:"true"`
-	DisplayStyle      string `json:"display_style,omitempty" example:"domain"`
-	ShowAppIcon       bool   `json:"show_app_icon,omitempty" example:"false"`
-	ShowWOL           bool   `json:"show_wol,omitempty" example:"false"`
-	IconDragMode      string `json:"icon_drag_mode,omitempty" example:"corners"`
-	Version           string `json:"version,omitempty" example:"v1"`
-	NavigationMode    string `json:"navigation_mode"`
-	SmartLANDetection bool   `json:"smart_lan_detection"`
-	enabledSet        bool
+	SelectPageEnabled    bool   `json:"select_page_enabled"`
+	Enabled              bool   `json:"enabled" example:"true"`
+	DisplayStyle         string `json:"display_style,omitempty" example:"domain"`
+	ShowAppIcon          bool   `json:"show_app_icon,omitempty" example:"false"`
+	ShowWOL              bool   `json:"show_wol,omitempty" example:"false"`
+	IconDragMode         string `json:"icon_drag_mode,omitempty" example:"corners"`
+	Version              string `json:"version,omitempty" example:"v1"`
+	NavigationMode       string `json:"navigation_mode"`
+	SmartLANDetection    bool   `json:"smart_lan_detection"`
+	enabledSet           bool
+	selectPageEnabledSet bool
 }
 
 // NewGatewayPortalConfig builds a portal config whose enabled value was
 // explicitly supplied by a caller rather than inferred from a legacy payload.
 func NewGatewayPortalConfig(enabled bool, displayStyle string, showAppIcon bool, iconDragMode string, version string, showWOL bool) GatewayPortalConfig {
 	return GatewayPortalConfig{
-		Enabled:      enabled,
-		DisplayStyle: displayStyle,
-		ShowAppIcon:  showAppIcon,
-		ShowWOL:      showWOL,
-		IconDragMode: iconDragMode,
-		Version:      version,
-		enabledSet:   true,
+		Enabled:              enabled,
+		SelectPageEnabled:    true,
+		selectPageEnabledSet: true,
+		DisplayStyle:         displayStyle,
+		ShowAppIcon:          showAppIcon,
+		ShowWOL:              showWOL,
+		IconDragMode:         iconDragMode,
+		Version:              version,
+		enabledSet:           true,
 	}
+}
+
+// IsSelectPageEnabled preserves the enabled default for legacy configurations.
+func (cfg GatewayPortalConfig) IsSelectPageEnabled() bool {
+	return !cfg.selectPageEnabledSet || cfg.SelectPageEnabled
+}
+
+// SetSelectPageEnabled records an explicit preference, including false.
+func (cfg *GatewayPortalConfig) SetSelectPageEnabled(enabled bool) {
+	cfg.SelectPageEnabled = enabled
+	cfg.selectPageEnabledSet = true
+}
+
+// MarshalJSON must preserve the effective default even for a zero-value config
+// that has not passed through NormalizeGatewayPortalConfig yet.
+func (cfg GatewayPortalConfig) MarshalJSON() ([]byte, error) {
+	type portalJSON GatewayPortalConfig
+	cfg.SelectPageEnabled = cfg.IsSelectPageEnabled()
+	return json.Marshal(portalJSON(cfg))
 }
 
 func (cfg *GatewayPortalConfig) UnmarshalJSON(data []byte) error {
 	var raw struct {
+		SelectPageEnabled *bool  `json:"select_page_enabled"`
 		Enabled           *bool  `json:"enabled"`
 		DisplayStyle      string `json:"display_style"`
 		ShowAppIcon       bool   `json:"show_app_icon"`
@@ -555,6 +579,11 @@ func (cfg *GatewayPortalConfig) UnmarshalJSON(data []byte) error {
 		return err
 	}
 
+	cfg.SelectPageEnabled = true
+	cfg.selectPageEnabledSet = raw.SelectPageEnabled != nil
+	if raw.SelectPageEnabled != nil {
+		cfg.SelectPageEnabled = *raw.SelectPageEnabled
+	}
 	cfg.Enabled = true
 	cfg.enabledSet = false
 	if raw.Enabled != nil {
@@ -578,11 +607,13 @@ func NormalizeGatewayPortalConfig(cfg GatewayPortalConfig) GatewayPortalConfig {
 	}
 
 	normalized := GatewayPortalConfig{
-		Enabled:           enabled,
-		ShowAppIcon:       cfg.ShowAppIcon,
-		ShowWOL:           cfg.ShowWOL,
-		SmartLANDetection: cfg.SmartLANDetection,
-		NavigationMode:    GatewayPortalNavigationInternet,
+		SelectPageEnabled:    cfg.IsSelectPageEnabled(),
+		selectPageEnabledSet: true,
+		Enabled:              enabled,
+		ShowAppIcon:          cfg.ShowAppIcon,
+		ShowWOL:              cfg.ShowWOL,
+		SmartLANDetection:    cfg.SmartLANDetection,
+		NavigationMode:       GatewayPortalNavigationInternet,
 		IconDragMode: func() string {
 			if cfg.IconDragMode == GatewayPortalIconDragModeFree {
 				return GatewayPortalIconDragModeFree

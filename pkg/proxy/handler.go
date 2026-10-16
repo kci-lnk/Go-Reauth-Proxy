@@ -5996,86 +5996,6 @@ func (h *Handler) handleWOLRoute(w http.ResponseWriter, r *http.Request, snapsho
 	return authResult
 }
 
-func (h *Handler) handleAuthProxyRoute(w http.ResponseWriter, r *http.Request, snapshot requestSnapshot, clientIP string) bool {
-	if !strings.HasPrefix(r.URL.Path, "/__auth__/") {
-		return false
-	}
-
-	if snapshot.authConfig.AuthPort <= 0 {
-		response.HTML(w, r, errors.CodeInternal, "Authentication service is not configured", nil)
-		return true
-	}
-	if !authProxyOriginAllowed(r) {
-		applyNoStoreCacheHeaders(w.Header())
-		http.Error(w, "Cross-origin authentication request denied", http.StatusForbidden)
-		return true
-	}
-	bodyDigest, err := authProxyRequestBodyDigest(r)
-	if err != nil {
-		applyNoStoreCacheHeaders(w.Header())
-		status := http.StatusBadRequest
-		if stderrors.Is(err, errAuthProxyRequestBodyTooLarge) {
-			status = http.StatusRequestEntityTooLarge
-		}
-		http.Error(w, "Failed to read authentication request body", status)
-		return true
-	}
-	targetURL := localServiceTargetURL(snapshot.authConfig.AuthPort)
-
-	proxyPath := r.URL.Path
-	switch r.URL.Path {
-	case "/__auth__/login":
-		proxyPath = snapshot.authConfig.LoginURL
-		if proxyPath == "" {
-			proxyPath = "/login"
-		}
-		if redirectTarget := buildInternalAuthLoginRedirect(proxyPath, r.URL.RawQuery); redirectTarget != "" {
-			applyNoStoreCacheHeaders(w.Header())
-			http.Redirect(w, r, redirectTarget, http.StatusFound)
-			return true
-		}
-	case "/__auth__/logout", "/__auth__/api/auth/logout":
-		proxyPath = snapshot.authConfig.LogoutURL
-		if proxyPath == "" {
-			proxyPath = "/api/auth/logout"
-		}
-	case "/__auth__/oidc/bind", "/__auth__/oidc/bind/":
-		proxyPath = "/api/auth/oidc/bind"
-	default:
-		rawProxyPath := strings.TrimPrefix(r.URL.Path, "/__auth__")
-		proxyPath = path.Clean(ensureLeadingSlash(rawProxyPath))
-	}
-
-	targetURL.Path = singleJoiningSlash(targetURL.Path, proxyPath)
-
-	proxy := httputil.NewSingleHostReverseProxy(targetURL)
-	proxy.BufferPool = sharedProxyBufferPool
-	transport := h.authTransport()
-	proxy.Transport = h.monitoredTransport(transport)
-	proxy.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
-		logger.UpstreamFailure(targetURL, requestTraceID(r), "auth_proxy", classifyUpstreamFailure(err).class, err)
-		applyNoStoreCacheHeaders(w.Header())
-		h.handleUpstreamUnavailable(w, r, snapshot.unmatchedRoute, snapshot.rules, false, err)
-	}
-
-	originalDirector := proxy.Director
-	proxy.Director = func(req *http.Request) {
-		originalDirector(req)
-		applyInternalAuthProxyHeaders(req, r, targetURL, clientIP, snapshot.authConfig, h.authHMACSecret, bodyDigest)
-	}
-	proxy.ModifyResponse = func(resp *http.Response) error {
-		setCookies := resp.Header.Values("Set-Cookie")
-		if shouldDisableAuthResponseCaching(proxyPath) || len(setCookies) > 0 {
-			applyNoStoreCacheHeaders(resp.Header)
-		}
-		h.authCacheInvalidateForSetCookieMutation(r, clientIP, setCookies)
-		return nil
-	}
-
-	serveReverseProxyWithResponseCoalescing(proxy, w, r)
-	return true
-}
-
 func matchRuleFromProxyPathCookie(r *http.Request, snapshot requestSnapshot) *models.Rule {
 	cookie, err := r.Cookie(proxyPathCookieName)
 	if err != nil || cookie.Value == "" {
@@ -6474,7 +6394,8 @@ func (h *Handler) proxyToHostLocationTarget(w http.ResponseWriter, r *http.Reque
 	suppressToolbarForUA := response.ShouldSuppressToolbarForUserAgent(r.UserAgent())
 	toolbarCandidate := targetSupportsHTMLFeatures && gatewayPortalEnabled && authResult.authenticated && !matchedRule.SuppressToolbar && !authResult.suppressToolbar && !suppressToolbarForUA
 	isAuthHostProxy := snapshot.authConfig.AuthHost != "" && normalizeRequestHost(matchedRule.Host) == snapshot.authConfig.AuthHost
-	if isAuthHostProxy && isInternalAuthTarget(transportTargetURL, snapshot.authConfig.AuthPort) {
+	trustedAuthTarget := isAuthHostProxy && isInternalAuthTarget(transportTargetURL, snapshot.authConfig.AuthPort)
+	if trustedAuthTarget {
 		transport = h.authTransport()
 	}
 	if event := debugProxyEvent("reverse_proxy_start", requestID); event != nil {
@@ -6554,6 +6475,9 @@ func (h *Handler) proxyToHostLocationTarget(w http.ResponseWriter, r *http.Reque
 			}
 		},
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
+			if h.handleAuthUnmatchedError(w, r, err) {
+				return
+			}
 			if event := debugProxyEvent("reverse_proxy_error", requestID); event != nil {
 				event.Str("route_type", "host_location").
 					Str("target", logger.SanitizeURL(targetURL.String())).
@@ -6567,6 +6491,9 @@ func (h *Handler) proxyToHostLocationTarget(w http.ResponseWriter, r *http.Reque
 	}
 
 	proxy.ModifyResponse = func(resp *http.Response) error {
+		if err := checkAuthUnmatchedResponse(resp, trustedAuthTarget, unmatchedRoute); err != nil {
+			return err
+		}
 		stripAdvancedAuthGrantSetCookies(resp.Header)
 		if isAuthHostProxy {
 			setCookies := resp.Header.Values("Set-Cookie")
@@ -6670,7 +6597,8 @@ func (h *Handler) proxyToHostTarget(w http.ResponseWriter, r *http.Request, snap
 	suppressToolbarForUA := response.ShouldSuppressToolbarForUserAgent(r.UserAgent())
 	toolbarCandidate := targetSupportsHTMLFeatures && gatewayPortalEnabled && authResult.authenticated && !matchedRule.SuppressToolbar && !authResult.suppressToolbar && !suppressToolbarForUA
 	isAuthHostProxy := snapshot.authConfig.AuthHost != "" && normalizeRequestHost(matchedRule.Host) == snapshot.authConfig.AuthHost
-	if isAuthHostProxy && isInternalAuthTarget(transportTargetURL, snapshot.authConfig.AuthPort) {
+	trustedAuthTarget := isAuthHostProxy && isInternalAuthTarget(transportTargetURL, snapshot.authConfig.AuthPort)
+	if trustedAuthTarget {
 		transport = h.authTransport()
 	}
 	if event := debugProxyEvent("reverse_proxy_start", requestID); event != nil {
@@ -6737,6 +6665,9 @@ func (h *Handler) proxyToHostTarget(w http.ResponseWriter, r *http.Request, snap
 			}
 		},
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
+			if h.handleAuthUnmatchedError(w, r, err) {
+				return
+			}
 			if event := debugProxyEvent("reverse_proxy_error", requestID); event != nil {
 				event.Str("route_type", "host_rule").
 					Str("target", logger.SanitizeURL(targetURL.String())).
@@ -6750,6 +6681,9 @@ func (h *Handler) proxyToHostTarget(w http.ResponseWriter, r *http.Request, snap
 	}
 
 	proxy.ModifyResponse = func(resp *http.Response) error {
+		if err := checkAuthUnmatchedResponse(resp, trustedAuthTarget, unmatchedRoute); err != nil {
+			return err
+		}
 		stripAdvancedAuthGrantSetCookies(resp.Header)
 		if isAuthHostProxy {
 			setCookies := resp.Header.Values("Set-Cookie")
@@ -6831,6 +6765,7 @@ func (h *Handler) proxyToRuleTarget(w http.ResponseWriter, r *http.Request, snap
 	if transport == nil {
 		transport = newProxyTransport()
 	}
+	trustedAuthTarget := isInternalAuthTarget(transportTargetURL, snapshot.authConfig.AuthPort)
 	targetSupportsHTMLFeatures := targetRuntime.supportsHTMLFeatures
 	preserveHost := !h.shouldOmitPreserveHostKey(targetRuntime.policyKey)
 	gatewayPortalEnabled := snapshot.gatewayPortal.Enabled
@@ -6909,6 +6844,9 @@ func (h *Handler) proxyToRuleTarget(w http.ResponseWriter, r *http.Request, snap
 			}
 		},
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
+			if h.handleAuthUnmatchedError(w, r, err) {
+				return
+			}
 			if event := debugProxyEvent("reverse_proxy_error", requestID); event != nil {
 				event.Str("route_type", "path_rule").
 					Str("target", logger.SanitizeURL(targetURL.String())).
@@ -6922,6 +6860,9 @@ func (h *Handler) proxyToRuleTarget(w http.ResponseWriter, r *http.Request, snap
 	}
 
 	proxy.ModifyResponse = func(resp *http.Response) error {
+		if err := checkAuthUnmatchedResponse(resp, trustedAuthTarget, unmatchedRoute); err != nil {
+			return err
+		}
 		stripAdvancedAuthGrantSetCookies(resp.Header)
 		scopeDockerAdminPanelResponseCookie(resp, matchedRule.Path)
 		addProxyPathCookieIfChanged(resp, r, matchedRule.Path)

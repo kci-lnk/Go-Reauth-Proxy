@@ -494,6 +494,8 @@ func serveReverseProxyWithResponseCoalescer(proxy *httputil.ReverseProxy, writer
 		}
 		stripTraceResponseHeaders(resp.Header)
 		stripTraceResponseHeaders(resp.Trailer)
+		stripAuthRouteUnmatchedHeaders(resp.Header)
+		stripAuthRouteUnmatchedHeaders(resp.Trailer)
 		if (proxy.BufferPool == nil || proxy.BufferPool == sharedProxyBufferPool) && useSmallProxyCopyBuffer(resp) {
 			// This is a per-request ReverseProxy copy: selection cannot change
 			// the buffer size used by another request or the shared proxy.
@@ -519,6 +521,7 @@ func serveReverseProxyWithResponseCoalescer(proxy *httputil.ReverseProxy, writer
 		// trailers after the outer handler returns. This also covers Trailer:
 		// keys for names that the upstream did not announce in its headers.
 		stripTraceResponseHeaders(writer.Header())
+		stripAuthRouteUnmatchedHeaders(writer.Header())
 	}()
 	proxyCopy.ServeHTTP(writer, r)
 	completed = true

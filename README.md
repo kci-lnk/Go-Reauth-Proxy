@@ -102,12 +102,14 @@ flowchart LR
 
 ### 环境要求
 
-- Go `1.26.0+`；仓库通过 `toolchain` 指定 Go `1.26.7`，同时覆盖 `os.Root` 越界及 2026 年 8 月标准库安全修复
+- Go `1.26.10+`；`go.mod` 要求包含 2026 年 10 月 HTTP/TLS、模板及证书信任安全修复的工具链
 - 可选：[Task](https://taskfile.dev/) 用于统一执行构建与测试命令
 - 配套的 FN-Knock Rust 后端，用于建立 AuthBridge 和管理网关
 - 使用防火墙能力时需要 Linux、`iptables` / `ip6tables` 及相应权限
 
 CI 和 `task security:vuln` 会使用 `govulncheck` 检查实际可达的 Go/依赖漏洞；若升级依赖或工具链后重新引入已知漏洞，构建会直接失败。
+
+安全更新需要同时更新工具链与模块依赖：当前使用 `golang.org/x/net v0.60.0` 和 `Coraza v3.8.1`，覆盖 HTTP/2 及 WAF 请求解析的安全修复。更新后必须重新构建并替换、重启已部署的网关；仅更新主机上的 Go 安装不会修复已有二进制。上游 TLS 保留既有的跳过证书验证设计。
 
 ### 1. 准备配置
 

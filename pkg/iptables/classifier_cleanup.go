@@ -1,6 +1,7 @@
 package iptables
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 )
@@ -14,12 +15,68 @@ func (m *Manager) chainRulesIfExists(table, chain string) (string, bool, error) 
 		return output, true, nil
 	}
 	message := strings.ToLower(err.Error())
-	if !strings.Contains(message, "permission denied") && !strings.Contains(message, "operation not permitted") &&
-		(strings.Contains(message, "no chain/target/match by that name") ||
-			(strings.Contains(message, "chain") && strings.Contains(message, "does not exist"))) {
+	for _, fatal := range []string{"permission denied", "operation not permitted", "resource temporarily unavailable", "xtables lock"} {
+		if strings.Contains(message, fatal) {
+			return "", false, err
+		}
+	}
+	// iptables-nft 1.8.9 can report an absent chain as incompatible. Do not
+	// suppress that diagnostic unless nft independently confirms its absence;
+	// an existing chain with native expressions still needs to fail closed.
+	if m.nftCommand != "" && strings.Contains(message, "(nf_tables)") &&
+		strings.Contains(message, "chain `"+strings.ToLower(chain)+"' in table `filter' is incompatible, use 'nft' tool") {
+		exists, inspectErr := m.nftFilterChainExists(table, chain)
+		if inspectErr != nil {
+			return "", false, fmt.Errorf("%w; verifying chain with nft: %v", err, inspectErr)
+		}
+		if !exists {
+			return "", false, nil
+		}
+	}
+	if strings.Contains(message, "no chain/target/match by that name") ||
+		(strings.Contains(message, "chain") && strings.Contains(message, "does not exist")) {
 		return "", false, nil
 	}
 	return "", false, err
+}
+
+func (m *Manager) nftFilterChainExists(table, chain string) (bool, error) {
+	var family string
+	switch table {
+	case "iptables":
+		family = "ip"
+	case "ip6tables":
+		family = "ip6"
+	default:
+		return false, fmt.Errorf("unknown iptables command %q", table)
+	}
+	// Enumerate chain metadata only, avoiding translation of native rules and
+	// ambiguity between a missing object and a failed nft inspection.
+	output, err := m.runner.CombinedOutput(m.nftCommand, "-j", "list", "chains", family)
+	if err != nil {
+		return false, fmt.Errorf("%s list chains %s: %w, output: %s", m.nftCommand, family, err, output)
+	}
+	var listing struct {
+		Nftables []struct {
+			Chain *struct {
+				Family string `json:"family"`
+				Table  string `json:"table"`
+				Name   string `json:"name"`
+			} `json:"chain"`
+		} `json:"nftables"`
+	}
+	if err := json.Unmarshal(output, &listing); err != nil {
+		return false, fmt.Errorf("decode nft chain listing: %w", err)
+	}
+	if listing.Nftables == nil {
+		return false, fmt.Errorf("nft chain listing is missing the nftables array")
+	}
+	for _, object := range listing.Nftables {
+		if c := object.Chain; c != nil && c.Family == family && c.Table == "filter" && c.Name == chain {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // Use descending rule numbers to avoid parsing the unavailable mark extension

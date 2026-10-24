@@ -262,3 +262,62 @@ func (r integrationMissingMarkRunner) CombinedOutputWithInput(input, command str
 	}
 	return r.execRunner.CombinedOutputWithInput(input, command, args...)
 }
+
+// Reproduce iptables-nft 1.8.9's misleading -S error on an absent chain,
+// while ensuring a genuinely incompatible native chain is never discarded.
+func TestClassifierCleanupNftCompatibility(t *testing.T) {
+	mode := os.Getenv("FN_KNOCK_FIREWALL_INTEGRATION")
+	if mode == "" {
+		t.Skip("requires isolated Linux firewall integration")
+	}
+	if mode != "isolated" {
+		binary, err := os.Executable()
+		if err != nil {
+			t.Fatal(err)
+		}
+		cmd := exec.Command("unshare", "--net", binary, "-test.run=^TestClassifierCleanupNftCompatibility$", "-test.v")
+		cmd.Env = append(os.Environ(), "FN_KNOCK_FIREWALL_INTEGRATION=isolated")
+		output, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("isolated cleanup: %v\n%s", err, output)
+		}
+		t.Log(string(output))
+		return
+	}
+	m := NewManager(Options{ChainName: "FN-KNOCK-FW", ParentChain: []string{"INPUT", "DOCKER-USER"}})
+	m.runner = execRunner{}
+	check := func(err error) {
+		t.Helper()
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Cleanup must be idempotent even before installation.
+	check(m.Destroy())
+	check(m.Init())
+	for _, family := range []string{"ip", "ip6"} {
+		cmd := exec.Command("nft", "-f", "-")
+		cmd.Stdin = strings.NewReader("add chain " + family + " filter FNK-NATIVE-TEST { type filter hook input priority -10; policy accept; }\nadd rule " + family + " filter FNK-NATIVE-TEST tcp dport { 22, 23 } accept\n")
+		if output, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("seed native chain: %v: %s", err, output)
+		}
+	}
+	check(m.Destroy())
+	check(m.Destroy())
+	for _, table := range []string{"iptables", "ip6tables"} {
+		family := "ip"
+		if table == "ip6tables" {
+			family = "ip6"
+		}
+		before, err := exec.Command("nft", "-j", "list", "chain", family, "filter", "FNK-NATIVE-TEST").CombinedOutput()
+		check(err)
+		if err := m.removeUnusedChain(table, "FNK-NATIVE-TEST"); err == nil {
+			t.Fatal("genuinely incompatible chain was removed")
+		}
+		after, err := exec.Command("nft", "-j", "list", "chain", family, "filter", "FNK-NATIVE-TEST").CombinedOutput()
+		check(err)
+		if string(before) != string(after) {
+			t.Fatal("native chain changed")
+		}
+	}
+}

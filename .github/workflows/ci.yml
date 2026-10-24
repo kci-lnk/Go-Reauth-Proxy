@@ -62,7 +62,7 @@ jobs:
           sudo apt-get install -y iptables nftables iproute2 util-linux
           go test -c -o /tmp/fn-knock-firewall.test ./pkg/iptables
           sudo env FN_KNOCK_FIREWALL_INTEGRATION=1 /tmp/fn-knock-firewall.test \
-            -test.run='^TestClassifierFirewallIntegration$' -test.v -test.timeout=150s
+            -test.run='^TestClassifier(FirewallIntegration|CleanupNftCompatibility)$' -test.v -test.timeout=150s
 
       - name: Test compact matchers
         run: |

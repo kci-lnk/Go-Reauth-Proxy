@@ -174,3 +174,67 @@ func TestSmallSSHPolicyRemovesOldActionsBeforeClassifier(t *testing.T) {
 		t.Fatalf("classifier removed before all consumers: %#v", r.events)
 	}
 }
+
+type incompatibleChainRunner struct {
+	recordingIptablesRunner
+	listing, diagnostic string
+	nftErr              error
+	nftCalls            int
+}
+
+func (r *incompatibleChainRunner) CombinedOutput(command string, args ...string) ([]byte, error) {
+	if command == "nft" {
+		r.nftCalls++
+		if strings.Join(args, " ") != "-j list chains ip" && strings.Join(args, " ") != "-j list chains ip6" {
+			return nil, errors.New("unexpected nft command")
+		}
+		return []byte(r.listing), r.nftErr
+	}
+	return []byte(r.diagnostic), errors.New("exit status 1")
+}
+
+func TestIncompatibleChainRequiresConfirmedAbsence(t *testing.T) {
+	for _, table := range []string{"iptables", "ip6tables"} {
+		family := "ip"
+		if table == "ip6tables" {
+			family = "ip6"
+		}
+		for _, tc := range []struct {
+			name, listing, diagnostic string
+			nftErr                    error
+			noNft, missing            bool
+		}{
+			{name: "absent", listing: `{"nftables":[]}`, missing: true},
+			{name: "present", listing: `{"nftables":[{"chain":{"family":"` + family + `","table":"filter","name":"FN-KNOCK-SSH"}}]}`},
+			{name: "different-table", listing: `{"nftables":[{"chain":{"family":"` + family + `","table":"nat","name":"FN-KNOCK-SSH"}}]}`, missing: true},
+			{name: "different-family", listing: `{"nftables":[{"chain":{"family":"inet","table":"filter","name":"FN-KNOCK-SSH"}}]}`, missing: true},
+			{name: "no-nft", noNft: true},
+			{name: "nft-permission", listing: "Operation not permitted", nftErr: errors.New("exit status 1")},
+			{name: "nft-missing-object", listing: "No such file or directory", nftErr: errors.New("exit status 1")},
+			{name: "invalid-json", listing: "{"},
+			{name: "missing-array", listing: "{}"},
+			{name: "null-array", listing: `{"nftables":null}`},
+			{name: "permission", diagnostic: "Permission denied", listing: `{"nftables":[]}`},
+			{name: "lock", diagnostic: "xtables lock", listing: `{"nftables":[]}`},
+		} {
+			t.Run(table+"/"+tc.name, func(t *testing.T) {
+				r := &incompatibleChainRunner{listing: tc.listing, nftErr: tc.nftErr,
+					diagnostic: table + " v1.8.9 (nf_tables): chain `FN-KNOCK-SSH' in table `filter' is incompatible, use 'nft' tool.\n" + tc.diagnostic}
+				m := newClassifierTestManager(r)
+				if tc.noNft {
+					m.nftCommand = ""
+				}
+				_, exists, err := m.chainRulesIfExists(table, DefaultSSHFirewallChain)
+				if exists || (err == nil) != tc.missing {
+					t.Fatalf("exists=%v, err=%v, want missing=%v", exists, err, tc.missing)
+				}
+				if err != nil && !strings.Contains(err.Error(), "incompatible") {
+					t.Fatalf("original diagnostic lost: %v", err)
+				}
+				if (tc.noNft || tc.diagnostic != "") && r.nftCalls != 0 {
+					t.Fatal("unexpected fallback inspection")
+				}
+			})
+		}
+	}
+}

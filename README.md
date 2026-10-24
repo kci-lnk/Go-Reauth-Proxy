@@ -353,6 +353,27 @@ Linux 构建提供 `firewall.iptables` capability，可管理 iptables/ip6tables
 
 默认自定义链名为 `REAUTH_FW`，父链为 `INPUT` 与 `DOCKER-USER`。
 
+白名单与大规模 SSH 名单优先使用 nft interval set 分类。网关会先在未挂接流量的临时链中探测各地址族的 `MARK --set-xmark` 和 `-m mark` 能力；任一地址族明确缺少扩展时，两类策略统一使用逐来源的 iptables/ip6tables 规则。无 nft 时也使用逐来源规则。回退保留访问控制语义，但大规模地域名单的规则数量和匹配成本会增加。
+
+能力结果在 Manager 生命周期内复用，恢复扩展后重启网关即可重新探测。回退会记录 `iptables / classifier_fallback / mark_unavailable` 诊断事件，包含失败地址族和底层错误。权限、锁竞争、提交或清理失败仍返回错误，不会被当作兼容回退或就绪成功。
+
+防火墙测试：
+
+```bash
+go test ./pkg/iptables ./pkg/admin
+go test -race ./pkg/iptables ./pkg/admin
+```
+
+Linux 实际流量回归测试需要 `ip`、`unshare`、`nft`、`iptables`、`ip6tables` 及对应 restore 工具，以及 `CAP_SYS_ADMIN`、`CAP_NET_ADMIN`。测试启动后先创建独立的网络和挂载命名空间，再建立 veth 客户端；缺失扩展通过命令执行器注入，其余规则和 IPv4/IPv6 TCP 流量由真实内核处理：
+
+```bash
+go test -c -o /tmp/fn-knock-firewall.test ./pkg/iptables
+sudo env FN_KNOCK_FIREWALL_INTEGRATION=1 /tmp/fn-knock-firewall.test \
+  -test.run='^TestClassifierFirewallIntegration$' -test.v
+```
+
+该测试覆盖正常 nft、IPv4/IPv6 MARK 缺失、mark 匹配缺失、无 nft、旧分类规则迁移、名单撤销和清空、SSH 默认动作及其他应用规则保留；不能替代 fnOS 1.2.0800 的安装和启动实机验证。
+
 ## 内部 gRPC 控制面
 
 控制面固定绑定 `127.0.0.1` 与 `::1`，所有 unary、stream 和标准 health 请求都要求携带 `FN_KNOCK_INTERNAL_RPC_TOKEN` 对应的 metadata。这里没有 HTTP Admin API，浏览器管理后台应访问 Rust 后端提供的 HTTP API。

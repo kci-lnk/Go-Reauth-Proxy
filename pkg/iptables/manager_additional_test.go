@@ -313,10 +313,11 @@ func TestSyncTCPPortAccessPolicyWritesRestoreInput(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SyncTCPPortAccessPolicy() returned error: %v", err)
 	}
-	if len(runner.restores) != 1 {
-		t.Fatalf("restore count = %d, want 1; calls=%#v", len(runner.restores), runner.calls)
+	policies := policyRestoresForChain(runner.restores, "SSH_TEST")
+	if len(policies) != 1 {
+		t.Fatalf("policy restore count = %d, want 1", len(policies))
 	}
-	input := runner.restores[0].Input
+	input := policies[0].Input
 	rulesInOrder := []string{
 		"-A SSH_TEST -i lo -j ACCEPT",
 		"-A SSH_TEST -s 10.0.0.0/8 -j ACCEPT",
@@ -353,10 +354,11 @@ func TestSyncTCPPortAccessPolicyAllowsLoopbackAndPrivateIPv6(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SyncTCPPortAccessPolicy() returned error: %v", err)
 	}
-	if len(runner.restores) != 1 {
-		t.Fatalf("restore count = %d, want 1; calls=%#v", len(runner.restores), runner.calls)
+	policies := policyRestoresForChain(runner.restores, "SSH_TEST")
+	if len(policies) != 1 {
+		t.Fatalf("policy restore count = %d, want 1", len(policies))
 	}
-	input := runner.restores[0].Input
+	input := policies[0].Input
 	for _, want := range []string{
 		"-A SSH_TEST -i lo -j ACCEPT",
 		"-A SSH_TEST -s fc00::/7 -j ACCEPT",
@@ -384,10 +386,11 @@ func TestSyncTCPPortAccessPolicyDoesNotTrustLocalSourcesWhenDisabled(t *testing.
 	if err != nil {
 		t.Fatalf("SyncTCPPortAccessPolicy() returned error: %v", err)
 	}
-	if len(runner.restores) != 1 {
-		t.Fatalf("restore count = %d, want 1; calls=%#v", len(runner.restores), runner.calls)
+	policies := policyRestoresForChain(runner.restores, "SSH_TEST")
+	if len(policies) != 1 {
+		t.Fatalf("policy restore count = %d, want 1", len(policies))
 	}
-	input := runner.restores[0].Input
+	input := policies[0].Input
 	for _, unwanted := range []string{" -i lo -j ACCEPT", " -s 10.0.0.0/8 -j ACCEPT", " -s 100.64.0.0/10 -j ACCEPT"} {
 		if strings.Contains(input, unwanted) {
 			t.Fatalf("restore input unexpectedly trusts %q:\n%s", unwanted, input)
@@ -477,10 +480,10 @@ func TestSyncWhitelistIPSetUsesOneNativeIntervalPolicy(t *testing.T) {
 	if err := manager.SyncWhitelistIPSet([]string{"192.0.2.0/24", "2001:db8::/48"}); err != nil {
 		t.Fatalf("SyncWhitelistIPSet() returned error: %v", err)
 	}
-	if len(runner.restores) != 1 {
-		t.Fatalf("nft restore count = %d, want 1", len(runner.restores))
+	if len(runner.restores) != 3 || runner.restores[2].Command != "nft" {
+		t.Fatalf("restores = %#v, want two atomic support chains and one nft policy", runner.restores)
 	}
-	input := runner.restores[0].Input
+	input := runner.restores[2].Input
 	for _, want := range []string{
 		"add set inet fnknock_whitelist allow4 { type ipv4_addr; flags interval; }",
 		"add set inet fnknock_whitelist allow6 { type ipv6_addr; flags interval; }",
@@ -514,10 +517,10 @@ func TestSyncEmptyWhitelistKeepsMarkSanitizerActive(t *testing.T) {
 	if err := manager.SyncWhitelistIPSet(nil); err != nil {
 		t.Fatalf("SyncWhitelistIPSet(nil) returned error: %v", err)
 	}
-	if len(runner.restores) != 1 {
-		t.Fatalf("nft restore count = %d, want 1", len(runner.restores))
+	if len(runner.restores) != 3 || runner.restores[2].Command != "nft" {
+		t.Fatalf("restores = %#v, want two atomic support chains and one nft policy", runner.restores)
 	}
-	input := runner.restores[0].Input
+	input := runner.restores[2].Input
 	if !strings.Contains(input, "input_mark meta mark set meta mark & 0xbfffffff") {
 		t.Fatalf("empty whitelist must retain the mark sanitizer:\n%s", input)
 	}
@@ -560,7 +563,7 @@ func TestDestroyRemovesClassifierSupportChainsAndTables(t *testing.T) {
 		whitelistChainName,
 		whitelistMarkChainName,
 	} {
-		if !callContains(runner.calls, "-F", chain) || !callContains(runner.calls, "-X", chain) {
+		if !hasAtomicChainRemoval(runner.restores, chain) {
 			t.Fatalf("Destroy() did not remove %s: %#v", chain, runner.calls)
 		}
 	}
@@ -578,7 +581,7 @@ func TestSyncTCPPortAccessPolicyClearsWhenPortsEmpty(t *testing.T) {
 	if err := manager.SyncTCPPortAccessPolicy(TCPPortAccessPolicy{Chain: "SSH_TEST"}); err != nil {
 		t.Fatalf("SyncTCPPortAccessPolicy() returned error: %v", err)
 	}
-	if !callContains(runner.calls, "-F", "SSH_TEST") || !callContains(runner.calls, "-X", "SSH_TEST") {
+	if !hasAtomicChainRemoval(runner.restores, "SSH_TEST") {
 		t.Fatalf("clear calls not recorded: %#v", runner.calls)
 	}
 }
@@ -702,4 +705,24 @@ func newRecordingManager() *Manager {
 	manager.runner = &recordingIptablesRunner{}
 	manager.setBaseFirewallEnabledForTable("iptables", false)
 	return manager
+}
+
+func policyRestoresForChain(restores []recordedRestore, chain string) []recordedRestore {
+	var policies []recordedRestore
+	for _, restore := range restores {
+		if strings.Contains(restore.Input, "\n-A "+chain+" ") {
+			policies = append(policies, restore)
+		}
+	}
+	return policies
+}
+
+func hasAtomicChainRemoval(restores []recordedRestore, chain string) bool {
+	for _, restore := range restores {
+		if strings.Contains(restore.Input, "\n-F "+chain+"\n-X "+chain+"\n") &&
+			reflect.DeepEqual(restore.Args, []string{"--noflush"}) {
+			return true
+		}
+	}
+	return false
 }

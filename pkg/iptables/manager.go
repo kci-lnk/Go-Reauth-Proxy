@@ -98,6 +98,9 @@ type Manager struct {
 	disabled                   bool
 	whitelistPolicyMu          sync.Mutex
 	whitelistNftReady          bool
+	classificationMu           sync.Mutex
+	classificationChecked      bool
+	classificationEnabled      bool
 }
 
 type TCPPortAccessPolicy struct {
@@ -410,7 +413,11 @@ func (m *Manager) Init() error {
 		}
 
 		for _, parent := range m.ParentChains {
-			if !m.parentChainExists(table, parent) {
+			exists, err := m.parentChainExists(table, parent)
+			if err != nil {
+				return err
+			}
+			if !exists {
 				if event := logger.DebugEvent("iptables", "parent_chain_missing"); event != nil {
 					event.Str("table", logger.SanitizeLogString(table)).
 						Str("chain", logger.SanitizeLogString(m.Chain)).
@@ -459,7 +466,7 @@ func (m *Manager) Init() error {
 			Interface("tables", debugArgs(m.tables)).
 			Send()
 	}
-	return nil
+	return m.cleanupLegacyWhitelistClassifier()
 }
 
 func (m *Manager) Flush() error {
@@ -503,7 +510,7 @@ func (m *Manager) Flush() error {
 	if event := logger.DebugEvent("iptables", "flush_end"); event != nil {
 		event.Str("chain", logger.SanitizeLogString(m.Chain)).Send()
 	}
-	return nil
+	return m.cleanupLegacyWhitelistClassifier()
 }
 
 func (m *Manager) localCIDRsForTable(table string) []string {
@@ -576,69 +583,67 @@ func (m *Manager) ensureChain(table string, chain string) error {
 }
 
 func (m *Manager) prepareWhitelistSupportChains(table string) error {
-	for _, chain := range []string{whitelistChainName, whitelistMarkChainName} {
-		if err := m.ensureChain(table, chain); err != nil {
-			return err
-		}
-		if err := m.runTable(table, "-F", chain); err != nil {
-			return err
-		}
-	}
-	if err := m.runTable(
-		table,
-		"-A", whitelistMarkChainName,
-		"-j", "MARK",
-		"--set-xmark", "0x0/0x40000000",
-	); err != nil {
+	classified, err := m.nftClassificationEnabled()
+	if err != nil {
 		return err
 	}
-	return m.runTable(table, "-A", whitelistMarkChainName, "-j", "ACCEPT")
-}
-
-func (m *Manager) parentChainExists(table string, parent string) bool {
-	return m.runTable(table, "-L", parent, "-n") == nil
-}
-
-func (m *Manager) deleteParentJumpsToChain(table string, parent string, chain string) {
-	if !m.parentChainExists(table, parent) {
-		return
+	// Do not flush the live whitelist here. Its replacement is committed by
+	// restore (legacy) or nft (classifier), after all preparation succeeds.
+	if err := m.ensureChain(table, whitelistChainName); err != nil {
+		return err
 	}
+	if !classified {
+		return nil
+	}
+	if err := m.ensureChain(table, whitelistMarkChainName); err != nil {
+		return err
+	}
+	return m.runTableRestore(table, "*filter\n-F "+whitelistMarkChainName+
+		"\n-A "+whitelistMarkChainName+" -j MARK --set-xmark 0x0/0x40000000\n-A "+
+		whitelistMarkChainName+" -j ACCEPT\nCOMMIT\n")
+}
 
-	output, err := m.runTableOutput(table, "-S", parent)
-	if err == nil {
-		for start := 0; start < len(output); {
-			end := strings.IndexByte(output[start:], '\n')
-			lineEnd := len(output)
-			if end >= 0 {
-				lineEnd = start + end
-			}
-			if args, ok := parentJumpDeleteArgs(output[start:lineEnd], parent, chain); ok {
-				_ = m.runTable(table, args...)
-			}
-			if end < 0 {
-				break
-			}
-			start = lineEnd + 1
+func (m *Manager) parentChainExists(table string, parent string) (bool, error) {
+	_, exists, err := m.chainRulesIfExists(table, parent)
+	return exists, err
+}
+
+func (m *Manager) deleteParentJumpsToChain(table string, parent string, chain string) error {
+	rules, exists, err := m.chainRulesIfExists(table, parent)
+	if err != nil || !exists {
+		return err
+	}
+	var builder strings.Builder
+	builder.WriteString("*filter\n")
+	for _, line := range strings.Split(rules, "\n") {
+		if firewallRuleJumpsTo(line, parent, chain) {
+			line = strings.TrimSpace(line)
+			builder.WriteString("-D" + line[2:])
+			builder.WriteByte('\n')
 		}
 	}
-
-	for {
-		if err := m.runTable(table, "-D", parent, "-j", chain); err != nil {
-			break
-		}
+	if builder.Len() == len("*filter\n") {
+		return nil
 	}
+	builder.WriteString("COMMIT\n")
+	return m.runTableRestore(table, builder.String())
 }
 
-func (m *Manager) clearTCPPortAccessPolicyForTable(table string, chain string, parents []string) {
+func (m *Manager) clearTCPPortAccessPolicyForTable(table string, chain string, parents []string) error {
 	for _, parent := range parents {
-		m.deleteParentJumpsToChain(table, parent, chain)
+		if err := m.deleteParentJumpsToChain(table, parent, chain); err != nil {
+			return err
+		}
 	}
-	_ = m.runTable(table, "-F", chain)
-	_ = m.runTable(table, "-X", chain)
+	if err := m.removeUnusedChain(table, chain); err != nil {
+		return err
+	}
 	for _, actionChain := range sshActionChains() {
-		_ = m.runTable(table, "-F", actionChain)
-		_ = m.runTable(table, "-X", actionChain)
+		if err := m.removeUnusedChain(table, actionChain); err != nil {
+			return err
+		}
 	}
+	return nil
 }
 
 func (m *Manager) tablesForAccessPolicy(policy TCPPortAccessPolicy) ([]string, error) {
@@ -739,7 +744,11 @@ func (m *Manager) SyncTCPPortAccessPolicy(policy TCPPortAccessPolicy) error {
 		return m.ClearTCPPortAccessPolicy(chain, parents)
 	}
 
-	if m.nftCommand != "" &&
+	classified, err := m.nftClassificationEnabled()
+	if err != nil {
+		return err
+	}
+	if classified &&
 		len(allowSources)+len(blockSources) >= nftIntervalSetMinSourceSize {
 		if err := m.syncNftTCPPortAccessPolicy(normalizedPolicy); err != nil {
 			return err
@@ -750,7 +759,9 @@ func (m *Manager) SyncTCPPortAccessPolicy(policy TCPPortAccessPolicy) error {
 		}
 		for _, table := range m.tables {
 			if _, ok := activeTables[table]; !ok {
-				m.clearTCPPortAccessPolicyForTable(table, chain, parents)
+				if err := m.clearTCPPortAccessPolicyForTable(table, chain, parents); err != nil {
+					return err
+				}
 				continue
 			}
 			if err := m.ensureChain(table, chain); err != nil {
@@ -768,10 +779,16 @@ func (m *Manager) SyncTCPPortAccessPolicy(policy TCPPortAccessPolicy) error {
 				}
 			}
 			for _, parent := range parents {
-				if !m.parentChainExists(table, parent) {
+				exists, err := m.parentChainExists(table, parent)
+				if err != nil {
+					return err
+				}
+				if !exists {
 					continue
 				}
-				m.deleteParentJumpsToChain(table, parent, chain)
+				if err := m.deleteParentJumpsToChain(table, parent, chain); err != nil {
+					return err
+				}
 				for _, port := range ports {
 					if err := m.addTCPPortJump(table, parent, chain, port); err != nil {
 						return errors.New(
@@ -800,7 +817,9 @@ func (m *Manager) SyncTCPPortAccessPolicy(policy TCPPortAccessPolicy) error {
 	}
 	for _, table := range m.tables {
 		if _, ok := activeTables[table]; !ok {
-			m.clearTCPPortAccessPolicyForTable(table, chain, parents)
+			if err := m.clearTCPPortAccessPolicyForTable(table, chain, parents); err != nil {
+				return err
+			}
 			continue
 		}
 
@@ -814,10 +833,16 @@ func (m *Manager) SyncTCPPortAccessPolicy(policy TCPPortAccessPolicy) error {
 			return errors.New(errors.CodeIptablesInitError, fmt.Sprintf("Failed to create SSH chain (%s): %v", table, err))
 		}
 		for _, parent := range parents {
-			if !m.parentChainExists(table, parent) {
+			exists, err := m.parentChainExists(table, parent)
+			if err != nil {
+				return err
+			}
+			if !exists {
 				continue
 			}
-			m.deleteParentJumpsToChain(table, parent, chain)
+			if err := m.deleteParentJumpsToChain(table, parent, chain); err != nil {
+				return err
+			}
 			for _, port := range ports {
 				if err := m.addTCPPortJump(table, parent, chain, port); err != nil {
 					if event := logger.DebugEvent("iptables", "tcp_port_access_policy_sync_failed"); event != nil {
@@ -841,6 +866,13 @@ func (m *Manager) SyncTCPPortAccessPolicy(policy TCPPortAccessPolicy) error {
 					Send()
 			}
 			return err
+		}
+		// The direct policy has replaced every classifier consumer in this
+		// chain. Only now is it safe to remove its old action chains.
+		for _, actionChain := range sshActionChains() {
+			if err := m.removeUnusedChain(table, actionChain); err != nil {
+				return err
+			}
 		}
 	}
 	if err := m.clearNftTCPPortAccessPolicy(); err != nil {
@@ -1010,7 +1042,9 @@ func (m *Manager) ClearTCPPortAccessPolicy(chain string, parents []string) error
 		parents = []string{"INPUT"}
 	}
 	for _, table := range m.tables {
-		m.clearTCPPortAccessPolicyForTable(table, chain, parents)
+		if err := m.clearTCPPortAccessPolicyForTable(table, chain, parents); err != nil {
+			return err
+		}
 	}
 	if err := m.clearNftTCPPortAccessPolicy(); err != nil {
 		return err
@@ -1056,8 +1090,9 @@ func (m *Manager) syncNftTCPPortAccessPolicy(policy TCPPortAccessPolicy) error {
 }
 
 func (m *Manager) ensureNftWhitelistClassifier() error {
-	if m.nftCommand == "" || m.isDisabled() {
-		return nil
+	classified, err := m.nftClassificationEnabled()
+	if err != nil || !classified {
+		return err
 	}
 	m.whitelistPolicyMu.Lock()
 	defer m.whitelistPolicyMu.Unlock()
@@ -1105,7 +1140,7 @@ func nftObjectMissing(output []byte) bool {
 
 // SyncWhitelistIPSet atomically replaces the complete direct-mode whitelist.
 // Native nft interval sets keep large regional policies compact. On older
-// systems without nft, one iptables-restore transaction per address family
+// systems without nft or MARK support, one restore transaction per family
 // provides a compatible, bounded-RPC fallback.
 func (m *Manager) SyncWhitelistIPSet(sources []string) error {
 	m.whitelistPolicyMu.Lock()
@@ -1118,6 +1153,10 @@ func (m *Manager) SyncWhitelistIPSet(sources []string) error {
 	if err != nil {
 		return err
 	}
+	classified, err := m.nftClassificationEnabled()
+	if err != nil {
+		return err
+	}
 	for _, table := range m.tables {
 		if err := m.prepareWhitelistSupportChains(table); err != nil {
 			return errors.New(
@@ -1126,10 +1165,13 @@ func (m *Manager) SyncWhitelistIPSet(sources []string) error {
 			)
 		}
 	}
-	if m.nftCommand == "" {
+	if !classified {
 		return m.syncLegacyWhitelistIPSet(ipv4, ipv6)
 	}
-	return m.replaceNftWhitelistIPSetLocked(ipv4, ipv6)
+	if err := m.replaceNftWhitelistIPSetLocked(ipv4, ipv6); err != nil {
+		return err
+	}
+	return m.clearLegacyWhitelistRules()
 }
 
 func (m *Manager) replaceNftWhitelistIPSetLocked(ipv4 []string, ipv6 []string) error {
@@ -1165,11 +1207,20 @@ func (m *Manager) ClearWhitelistIPSet() error {
 }
 
 func (m *Manager) clearWhitelistIPSetLocked() error {
-	if m.nftCommand != "" {
-		if err := m.replaceNftWhitelistIPSetLocked(nil, nil); err != nil {
-			return err
-		}
+	classified, err := m.nftClassificationEnabled()
+	if err != nil {
+		return err
 	}
+	if !classified {
+		return m.syncLegacyWhitelistIPSet(nil, nil)
+	}
+	if err := m.replaceNftWhitelistIPSetLocked(nil, nil); err != nil {
+		return err
+	}
+	return m.clearLegacyWhitelistRules()
+}
+
+func (m *Manager) clearLegacyWhitelistRules() error {
 	for _, table := range m.tables {
 		if err := m.ensureChain(table, whitelistChainName); err != nil {
 			return err
@@ -1182,10 +1233,10 @@ func (m *Manager) clearWhitelistIPSetLocked() error {
 }
 
 func (m *Manager) syncLegacyWhitelistIPSet(ipv4 []string, ipv6 []string) error {
-	if err := m.clearNftTable(whitelistNftTableName); err != nil {
-		return err
-	}
 	for _, table := range m.tables {
+		if err := m.ensureChain(table, whitelistChainName); err != nil {
+			return err
+		}
 		values := ipv4
 		if table == "ip6tables" {
 			values = ipv6
@@ -1201,6 +1252,11 @@ func (m *Manager) syncLegacyWhitelistIPSet(ipv4 []string, ipv6 []string) error {
 			builder.WriteString(source)
 			builder.WriteString(" -j ACCEPT\n")
 		}
+		// Drop old mark consumers in the same transaction as the new source
+		// policy. Numeric deletion does not need the unavailable mark match.
+		if err := m.writeWhitelistClassifierRemoval(table, &builder); err != nil {
+			return err
+		}
 		builder.WriteString("COMMIT\n")
 		if err := m.runTableRestore(table, builder.String()); err != nil {
 			return errors.New(
@@ -1209,7 +1265,8 @@ func (m *Manager) syncLegacyWhitelistIPSet(ipv4 []string, ipv6 []string) error {
 			)
 		}
 	}
-	return nil
+	m.whitelistNftReady = false
+	return m.clearNftTable(whitelistNftTableName)
 }
 
 func buildNftWhitelistIPSet(parents []string, ipv4 []string, ipv6 []string) string {
@@ -1578,24 +1635,18 @@ func (m *Manager) Destroy() error {
 			Send()
 	}
 	for _, table := range m.tables {
-		m.clearTCPPortAccessPolicyForTable(
-			table,
-			DefaultSSHFirewallChain,
-			m.ParentChains,
-		)
+		if err := m.clearTCPPortAccessPolicyForTable(table, DefaultSSHFirewallChain, m.ParentChains); err != nil {
+			return err
+		}
 		for _, parent := range m.ParentChains {
-			for {
-				if err := m.runTable(table, "-D", parent, "-j", m.Chain); err != nil {
-					break
-				}
+			if err := m.deleteParentJumpsToChain(table, parent, m.Chain); err != nil {
+				return err
 			}
 		}
-
-		_ = m.runTable(table, "-F", m.Chain)
-		_ = m.runTable(table, "-X", m.Chain)
-		for _, chain := range []string{whitelistChainName, whitelistMarkChainName} {
-			_ = m.runTable(table, "-F", chain)
-			_ = m.runTable(table, "-X", chain)
+		for _, chain := range []string{m.Chain, whitelistChainName, whitelistMarkChainName} {
+			if err := m.removeUnusedChain(table, chain); err != nil {
+				return err
+			}
 		}
 	}
 	if err := m.clearNftTCPPortAccessPolicy(); err != nil {

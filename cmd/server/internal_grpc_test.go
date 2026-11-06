@@ -103,6 +103,49 @@ func TestInternalGRPCHealthIsNamedAndTokenProtected(t *testing.T) {
 	}
 }
 
+func TestAuthBridgeHealthUsesCurrentStreamForLateNotifications(t *testing.T) {
+	manager := rpcbridge.NewAuthBridgeManager("secret")
+	server, err := startInternalGRPCServer(0, "secret", &internalGRPCTestControl{}, manager)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer server.Stop(context.Background())
+	invalidations := 0
+	hook := server.authBridgeHealthHook(manager, func() { invalidations++ })
+	check := func(notification bool, want healthpb.HealthCheckResponse_ServingStatus) {
+		t.Helper()
+		hook(notification)
+		response, err := server.health.Check(t.Context(), &healthpb.HealthCheckRequest{Service: healthGatewayAuthBridge})
+		if err != nil || response.GetStatus() != want {
+			t.Fatalf("late notification %t: got %v, %v; want %v", notification, response, err, want)
+		}
+	}
+	check(true, healthpb.HealthCheckResponse_NOT_SERVING)
+
+	conn, err := grpc.NewClient(server.listeners[0].Addr().String(), grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
+	defer cancel()
+	ctx = metadata.NewOutgoingContext(ctx, metadata.Pairs(rpcbridge.InternalTokenMetadataKey, "secret"))
+	stream, err := pb.NewAuthBridgeServiceClient(conn).ConnectAuthBridge(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := stream.Header(); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.WaitReady(ctx); err != nil {
+		t.Fatal(err)
+	}
+	check(false, healthpb.HealthCheckResponse_SERVING)
+	if invalidations != 1 {
+		t.Fatalf("missed disconnect invalidation: got %d, want 1", invalidations)
+	}
+}
+
 func TestInternalGRPCMutationGateDropsExpiredQueuedRetry(t *testing.T) {
 	interceptor := newInternalUnaryInterceptor("secret")
 	authContext := func(ctx context.Context) context.Context {

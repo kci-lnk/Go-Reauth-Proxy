@@ -108,12 +108,6 @@ func (h *Handler) executeCombinedHTTPAuth(r *http.Request, authConfig models.Aut
 		authLookup = dimensions.authLookup()
 	}
 	preflight, preflightHit, authExecution, authHit := h.cachedCombinedHTTPAuth(r, authConfig, time.Now(), preflightLookup, canPreflightLookup, authLookup, canAuthLookup)
-	if !preflightHit && h.preflightSkipUntilUnixNano.Load() > time.Now().UnixNano() && !requestAuth.preflightRequired() {
-		if !authHit {
-			authExecution = h.executeAuthCheckAtGeneration(r, authConfig, clientIP, accessMode, requestID, requestAuth, generation)
-		}
-		return combinedHTTPAuthExecution{auth: authExecution, handled: true}, true
-	}
 	if preflightHit {
 		if !preflightStopsHTTPAuthorization(preflight) && !authHit {
 			authExecution = h.executeAuthCheckAtGeneration(r, authConfig, clientIP, accessMode, requestID, requestAuth, generation)
@@ -147,20 +141,8 @@ func (h *Handler) executeCombinedHTTPAuthMiss(r *http.Request, authConfig models
 	}
 	run := func(callRequest *http.Request) combinedHTTPAuthExecution {
 		if preflight, preflightHit, authExecution, authHit := h.cachedCombinedHTTPAuth(callRequest, authConfig, time.Now(), preflightLookup, canPreflightLookup, authLookup, canAuthLookup); preflightHit || authHit {
-			if !preflightHit && h.preflightSkipUntilUnixNano.Load() > time.Now().UnixNano() && !requestAuth.preflightRequired() {
-				if !authHit {
-					authExecution = h.executeAuthCheckAtGeneration(callRequest, authConfig, clientIP, accessMode, requestID, requestAuth, generation)
-				}
-				return combinedHTTPAuthExecution{auth: authExecution, handled: true}
-			}
 			if execution, resolved := resolveCached(callRequest, preflight, preflightHit, authExecution, authHit); resolved {
 				return execution
-			}
-		}
-		if h.preflightSkipUntilUnixNano.Load() > time.Now().UnixNano() && !requestAuth.preflightRequired() {
-			return combinedHTTPAuthExecution{
-				auth:    h.executeAuthCheckAtGeneration(callRequest, authConfig, clientIP, accessMode, requestID, requestAuth, generation),
-				handled: true,
 			}
 		}
 

@@ -586,6 +586,12 @@ func (h *Handler) authCacheStore(cacheKey authCacheKey, entry authCacheEntry, ge
 }
 
 func (h *Handler) preflightCacheStore(cacheKey authCacheKey, entry preflightCacheEntry, generation uint64) *preflightCacheEntry {
+	// Legacy preflight replies have no cache scope. A transient outage must
+	// be retried even when the configured authorization TTL is long.
+	if entry.decision.serviceUnavailable {
+		return &entry
+	}
+
 	cache := &h.preflightCache
 
 	cache.mu.Lock()

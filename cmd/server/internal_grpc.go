@@ -253,6 +253,20 @@ func isSerializedFirewallMutation(fullMethod string) bool {
 	}
 }
 
+func (s *internalGRPCServer) authBridgeHealthHook(manager *rpcbridge.AuthBridgeManager, invalidate func()) func(bool) {
+	var publishMu sync.Mutex
+	return func(ready bool) {
+		if !ready {
+			invalidate()
+		}
+		// An old disconnect callback can finish after the replacement is ready.
+		// Publish the current state in order, even if invalidation took longer.
+		publishMu.Lock()
+		defer publishMu.Unlock()
+		s.SetServingStatus(healthGatewayAuthBridge, manager.IsReady())
+	}
+}
+
 func (s *internalGRPCServer) SetServingStatus(service string, serving bool) {
 	if s == nil || s.health == nil {
 		return

@@ -14,6 +14,7 @@ import (
 
 	"go-reauth-proxy/pkg/grpc/pb"
 	"go-reauth-proxy/pkg/models"
+	"go-reauth-proxy/pkg/rpcbridge"
 )
 
 const combinedAuthTestCookieValue = "combined-session"
@@ -430,6 +431,115 @@ func TestCombinedAuthCacheScopeHostReusesVerifyAcrossPaths(t *testing.T) {
 	}
 	if got := verifyComputations.Load(); got != 1 {
 		t.Fatalf("verify computations = %d, want 1", got)
+	}
+}
+
+func TestProtectedRouteRequiresPreflightDespiteCachedHostVerification(t *testing.T) {
+	for _, routeKind := range []string{"host", "path"} {
+		t.Run(routeKind, func(t *testing.T) {
+			var upstreamCalls, rpcCalls atomic.Int32
+			target := newCombinedAuthTestTarget(t, &upstreamCalls)
+			defer target.Close()
+			bridge := testAuthBridge{supports: true, authorize: func(_ context.Context, req *pb.AuthorizeHttpRequest) (*pb.AuthorizeHttpResponse, error) {
+				switch rpcCalls.Add(1) {
+				case 1:
+					return successfulCombinedAuthResponse(req.GetMode(), pb.AuthCacheScope_AUTH_CACHE_SCOPE_EXACT_REQUEST, pb.AuthCacheScope_AUTH_CACHE_SCOPE_HOST, nil), nil
+				case 2:
+					if req.GetMode() != pb.HttpAuthMode_HTTP_AUTH_MODE_PREFLIGHT_ONLY {
+						t.Errorf("expected cached verify and uncached preflight, got %s", req.GetMode())
+					}
+					return nil, context.DeadlineExceeded
+				default:
+					return successfulCombinedAuthResponse(req.GetMode(), pb.AuthCacheScope_AUTH_CACHE_SCOPE_EXACT_REQUEST, pb.AuthCacheScope_AUTH_CACHE_SCOPE_HOST, nil), nil
+				}
+			}}
+			handler := newCombinedAuthTestHandler(target.URL, bridge, routeKind, 60)
+			for i, path := range []string{"/protected/warm.js", "/protected/timeout.js", "/protected/recovered.js"} {
+				want := http.StatusOK
+				if i == 1 {
+					want = http.StatusServiceUnavailable
+				}
+				rec, recovered := serveCombinedAuthTestRequest(handler, newCombinedAuthTestRequest(routeKind, path))
+				if recovered != nil || rec.Code != want {
+					t.Fatalf("%s: status %d, want %d, panic %v", path, rec.Code, want, recovered)
+				}
+			}
+			if upstreamCalls.Load() != 2 || rpcCalls.Load() != 3 {
+				t.Fatalf("upstream calls=%d, auth calls=%d; want 2, 3", upstreamCalls.Load(), rpcCalls.Load())
+			}
+		})
+	}
+}
+
+func TestLegacyPreflightUnavailableIsRetried(t *testing.T) {
+	var calls, upstream atomic.Int32
+	target := newCombinedAuthTestTarget(t, &upstream)
+	defer target.Close()
+	bridge := testAuthBridge{preflight: func(context.Context, *pb.PreflightAuthRequest) (*pb.PreflightAuthResponse, error) {
+		if calls.Add(1) == 1 {
+			return &pb.PreflightAuthResponse{Deny: true, AccessDeniedReason: reauthServiceUnavailableReason}, nil
+		}
+		return &pb.PreflightAuthResponse{}, nil
+	}}
+	handler := newCombinedAuthTestHandler(target.URL, bridge, "host", 60)
+	for _, want := range []int{503, 200} {
+		rec, recovered := serveCombinedAuthTestRequest(handler, newCombinedAuthTestRequest("host", "/same.js"))
+		if recovered != nil || rec.Code != want {
+			t.Fatalf("status %d want %d, panic %v", rec.Code, want, recovered)
+		}
+	}
+	if upstream.Load() != 1 || calls.Load() != 2 {
+		t.Fatalf("upstream=%d, preflight=%d", upstream.Load(), calls.Load())
+	}
+}
+
+func TestBuiltinSelectRequiresPreflightOnPublicHost(t *testing.T) {
+	var verifyCalls atomic.Int32
+	bridge := testAuthBridge{
+		preflight: func(context.Context, *pb.PreflightAuthRequest) (*pb.PreflightAuthResponse, error) {
+			return nil, rpcbridge.ErrAuthBridgeUnavailable
+		},
+		verify: func(context.Context, *pb.VerifyAuthRequest) (*pb.VerifyAuthResponse, error) {
+			verifyCalls.Add(1)
+			return successfulVerifyAuthResponse(nil), nil
+		},
+	}
+	handler := newCombinedAuthTestHandler("http://127.0.0.1:1", bridge, "host", 60)
+	handler.HostRules[0].UseAuth = false
+	handler.publishRequestSnapshotLocked()
+	rec, recovered := serveCombinedAuthTestRequest(handler, newCombinedAuthTestRequest("host", "/__select__"))
+	if rec.Code != http.StatusServiceUnavailable || recovered != nil || verifyCalls.Load() != 0 {
+		t.Fatalf("status=%d, panic=%v, verify calls=%d", rec.Code, recovered, verifyCalls.Load())
+	}
+}
+
+func TestBridgeDisconnectInvalidatesCachedPreflightAndVerification(t *testing.T) {
+	var upstreamCalls, rpcCalls atomic.Int32
+	target := newCombinedAuthTestTarget(t, &upstreamCalls)
+	defer target.Close()
+	var disconnected atomic.Bool
+	bridge := testAuthBridge{supports: true, authorize: func(_ context.Context, req *pb.AuthorizeHttpRequest) (*pb.AuthorizeHttpResponse, error) {
+		rpcCalls.Add(1)
+		if disconnected.Load() {
+			return nil, rpcbridge.ErrAuthBridgeDisconnected
+		}
+		return successfulCombinedAuthResponse(req.GetMode(), pb.AuthCacheScope_AUTH_CACHE_SCOPE_EXACT_REQUEST, pb.AuthCacheScope_AUTH_CACHE_SCOPE_HOST, nil), nil
+	}}
+	handler := newCombinedAuthTestHandler(target.URL, bridge, "host", 60)
+	request := func(want int) {
+		t.Helper()
+		rec, recovered := serveCombinedAuthTestRequest(handler, newCombinedAuthTestRequest("host", "/cached"))
+		if rec.Code != want || recovered != nil {
+			t.Fatalf("status=%d want=%d, panic=%v", rec.Code, want, recovered)
+		}
+	}
+	request(http.StatusOK)
+	request(http.StatusOK)
+	disconnected.Store(true)
+	handler.AuthBridgeDisconnected()
+	request(http.StatusServiceUnavailable)
+	if upstreamCalls.Load() != 2 || rpcCalls.Load() != 2 {
+		t.Fatalf("upstream calls=%d, bridge calls=%d, want 2 each", upstreamCalls.Load(), rpcCalls.Load())
 	}
 }
 

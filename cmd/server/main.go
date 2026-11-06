@@ -891,9 +891,7 @@ func run(options runOptions) error {
 	if err != nil {
 		return fmt.Errorf("start internal gRPC server: %w", err)
 	}
-	authBridgeManager.SetReadyChangeHook(func(ready bool) {
-		grpcServer.SetServingStatus(healthGatewayAuthBridge, ready)
-	})
+	authBridgeManager.SetReadyChangeHook(grpcServer.authBridgeHealthHook(authBridgeManager, proxyHandler.AuthBridgeDisconnected))
 
 	http3Runtime = newHTTP3Runtime(proxyHandler, options.ProxyPort)
 	proxyHandler.SetHTTP3Hooks(http3Runtime.Apply, http3Runtime.Status)

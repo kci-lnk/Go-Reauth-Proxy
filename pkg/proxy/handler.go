@@ -196,6 +196,11 @@ func (h *Handler) SetAuthBridgeManager(manager *rpcbridge.AuthBridgeManager) {
 	h.authBridge = manager
 }
 
+// AuthBridgeDisconnected invalidates cached permissions from the previous bridge.
+func (h *Handler) AuthBridgeDisconnected() {
+	h.clearAuthCache()
+}
+
 func (h *Handler) Close() {
 	if h == nil {
 		return
@@ -1147,7 +1152,7 @@ func (h *Handler) authGenerationForContext(c *requestAuthContext) uint64 {
 	return h.authCacheGeneration.Load()
 }
 
-// Explicit path authentication must not skip a failed permissions preflight.
+// A cached host verification cannot authorize a protected route when its preflight fails.
 func (c *requestAuthContext) preflightRequired() bool {
 	return c != nil && c.requirePreflight
 }
@@ -1579,7 +1584,8 @@ func (h *Handler) runPreflightAtGeneration(r *http.Request, authConfig models.Au
 			}
 		}
 	}
-	if skipUntil := h.preflightSkipUntilUnixNano.Load(); skipUntil > now.UnixNano() {
+	// Only optional preflights may skip the RPC during the global cooldown.
+	if skipUntil := h.preflightSkipUntilUnixNano.Load(); !requestAuth.preflightRequired() && skipUntil > now.UnixNano() {
 		if event := debugProxyEvent("preflight_skipped_cooldown", requestID); event != nil {
 			event.Time("skip_until", time.Unix(0, skipUntil)).Send()
 		}
@@ -1616,7 +1622,7 @@ func (h *Handler) runPreflightAtGeneration(r *http.Request, authConfig models.Au
 						Time("cooldown_until", time.Unix(0, cooldownUntil)).
 						Send()
 				}
-				log.Printf("Preflight request failed, skipping checks for %s: %v", preflightFailureCooldown, err)
+				log.Printf("Preflight request failed, optional preflight cooldown %s: %v", preflightFailureCooldown, err)
 				return preflightCacheExecution{decision: requestAuth.preflightFailureDecision()}, nil
 			}
 			h.preflightSkipUntilUnixNano.Store(0)
@@ -5612,12 +5618,10 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		authTimingStarted = time.Now()
 		if strings.TrimSpace(snapshot.authConfig.AuthURL) != "" {
 			requestAuth = newRequestAuthContext(r, clientIP, authContextAccessMode, routedBackend).withCacheGeneration(snapshot.authCacheGeneration)
-			requestAuth.requirePreflight = matchedHostLocation != nil && matchedHostLocation.AuthMode == models.HostLocationAuthModeRequireLogin
+			requestAuth.requirePreflight = isBuiltinAuthRoute || effectiveHostUseAuth || (matchedRule != nil && matchedRule.UseAuth)
 		}
 		preflight := preflightDecision{}
-		verifyRequired := strings.TrimSpace(snapshot.authConfig.AuthURL) != "" && !isAuthRoute &&
-			(isBuiltinAuthRoute || effectiveHostUseAuth || (matchedRule != nil && matchedRule.UseAuth))
-		if verifyRequired {
+		if requestAuth.preflightRequired() {
 			if combined, used := h.executeCombinedHTTPAuth(r, snapshot.authConfig, clientIP, authContextAccessMode, isMatch, requestID, requestAuth); used {
 				preflight = combined.preflight
 				preparedAuth = &combined.auth

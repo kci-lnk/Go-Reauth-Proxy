@@ -343,6 +343,42 @@ func TestWAFDrainToProtoIncludesLeaseCompletionFields(t *testing.T) {
 	}
 }
 
+func TestWAFLeaseMixedUTF8EventsCanMarshal(t *testing.T) {
+	store := proxywaf.NewEventStore(10, time.Minute)
+	store.Add(proxywaf.Event{
+		TraceID: "binary", Action: "deny", Status: 403, RuleIDs: []int{123},
+		Interruption: &proxywaf.InterruptionInfo{RuleID: 123, Action: "deny\xfe", Status: 403},
+		UserAgent:    "client\xff", Rules: []proxywaf.RuleMatch{{
+			ID: 123, Data: "数据\xff尾", Tags: []string{"tag\xff"},
+			MatchedVariables: []proxywaf.MatchedVariable{{Key: "upload", ValuePreview: "A\xff\xfeB"}},
+		}},
+	})
+	store.Add(proxywaf.Event{TraceID: "normal", Path: "/文档", RuleIDs: []int{456}, Action: "log", Status: 200})
+
+	lease := store.Lease(2)
+	wire, err := proto.Marshal(wafDrainToProto(lease))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got pb.WafDrainResult
+	if err := proto.Unmarshal(wire, &got); err != nil {
+		t.Fatal(err)
+	}
+	want := &pb.WafDrainResult{LeaseId: lease.LeaseID, Drained: 2, Events: []*pb.WafEvent{
+		{TraceId: "binary", Action: "deny", Status: 403, RuleIds: []int32{123}, UserAgent: "client?",
+			Interruption: &pb.WafInterruptionInfo{RuleId: 123, Action: "deny?", Status: 403},
+			Rules: []*pb.WafRuleMatch{{Id: 123, Data: "数据?尾", Tags: []string{"tag?"},
+				MatchedVariables: []*pb.WafMatchedVariable{{Key: "upload", ValuePreview: "A?B"}}}}},
+		{TraceId: "normal", Path: "/文档", RuleIds: []int32{456}, Action: "log", Status: 200},
+	}}
+	if !proto.Equal(&got, want) {
+		t.Fatalf("decoded batch = %v, want %v", &got, want)
+	}
+	if ack := store.Acknowledge(got.LeaseId); ack.Acknowledged != 2 || ack.Remaining != 0 {
+		t.Fatalf("unexpected acknowledgement: %+v", ack)
+	}
+}
+
 func TestWAFLeaseOversizedUTF8EventCanMarshal(t *testing.T) {
 	for _, character := range []string{"界", "🙂"} {
 		t.Run(character, func(t *testing.T) {

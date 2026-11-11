@@ -1,6 +1,7 @@
 package admin
 
 import (
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -1139,26 +1140,36 @@ func wafDrainToProto(result proxywaf.DrainResult) *pb.WafDrainResult {
 	}
 }
 
+// WAF evidence may contain raw bytes. A single-byte replacement keeps
+// previews within their existing byte limits on the protobuf wire.
+func wafProtoText(value string) string {
+	return strings.ToValidUTF8(value, "?")
+}
+
 func wafEventToProto(event proxywaf.Event) *pb.WafEvent {
 	rules := make([]*pb.WafRuleMatch, 0, len(event.Rules))
 	for _, rule := range event.Rules {
 		vars := make([]*pb.WafMatchedVariable, 0, len(rule.MatchedVariables))
 		for _, matched := range rule.MatchedVariables {
 			vars = append(vars, &pb.WafMatchedVariable{
-				Variable:     matched.Variable,
-				Key:          matched.Key,
-				ValuePreview: matched.ValuePreview,
+				Variable:     wafProtoText(matched.Variable),
+				Key:          wafProtoText(matched.Key),
+				ValuePreview: wafProtoText(matched.ValuePreview),
 			})
+		}
+		tags := slices.Clone(rule.Tags)
+		for i, tag := range tags {
+			tags[i] = wafProtoText(tag)
 		}
 		rules = append(rules, &pb.WafRuleMatch{
 			Id:               int32(rule.ID),
-			Message:          rule.Message,
-			Data:             rule.Data,
-			Severity:         rule.Severity,
+			Message:          wafProtoText(rule.Message),
+			Data:             wafProtoText(rule.Data),
+			Severity:         wafProtoText(rule.Severity),
 			Phase:            int32(rule.Phase),
-			File:             rule.File,
+			File:             wafProtoText(rule.File),
 			Line:             int32(rule.Line),
-			Tags:             rule.Tags,
+			Tags:             tags,
 			Disruptive:       rule.Disruptive,
 			MatchedVariables: vars,
 		})
@@ -1171,36 +1182,36 @@ func wafEventToProto(event proxywaf.Event) *pb.WafEvent {
 	if event.Interruption != nil {
 		interruption = &pb.WafInterruptionInfo{
 			RuleId: int32(event.Interruption.RuleID),
-			Action: event.Interruption.Action,
+			Action: wafProtoText(event.Interruption.Action),
 			Status: int32(event.Interruption.Status),
 		}
 	}
 	return &pb.WafEvent{
-		TraceId:       event.TraceID,
-		TransactionId: event.TransactionID,
-		Time:          event.Time,
-		Mode:          event.Mode,
-		Action:        event.Action,
+		TraceId:       wafProtoText(event.TraceID),
+		TransactionId: wafProtoText(event.TransactionID),
+		Time:          wafProtoText(event.Time),
+		Mode:          wafProtoText(event.Mode),
+		Action:        wafProtoText(event.Action),
 		Status:        int32(event.Status),
-		ClientIp:      event.ClientIP,
-		RemoteAddr:    event.RemoteAddr,
-		Method:        event.Method,
-		Scheme:        event.Scheme,
-		Host:          event.Host,
-		Path:          event.Path,
-		Query:         event.Query,
-		RequestUri:    event.RequestURI,
-		UserAgent:     event.UserAgent,
-		Referer:       event.Referer,
-		RouteType:     event.RouteType,
-		RouteKey:      event.RouteKey,
-		Upstream:      event.Upstream,
-		BundleId:      event.BundleID,
-		BundleHash:    event.BundleHash,
+		ClientIp:      wafProtoText(event.ClientIP),
+		RemoteAddr:    wafProtoText(event.RemoteAddr),
+		Method:        wafProtoText(event.Method),
+		Scheme:        wafProtoText(event.Scheme),
+		Host:          wafProtoText(event.Host),
+		Path:          wafProtoText(event.Path),
+		Query:         wafProtoText(event.Query),
+		RequestUri:    wafProtoText(event.RequestURI),
+		UserAgent:     wafProtoText(event.UserAgent),
+		Referer:       wafProtoText(event.Referer),
+		RouteType:     wafProtoText(event.RouteType),
+		RouteKey:      wafProtoText(event.RouteKey),
+		Upstream:      wafProtoText(event.Upstream),
+		BundleId:      wafProtoText(event.BundleID),
+		BundleHash:    wafProtoText(event.BundleHash),
 		RuleIds:       ruleIDs,
 		Rules:         rules,
 		Interruption:  interruption,
-		Error:         event.Error,
+		Error:         wafProtoText(event.Error),
 	}
 }
 

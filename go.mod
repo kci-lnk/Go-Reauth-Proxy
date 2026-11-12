@@ -1,6 +1,6 @@
 module go-reauth-proxy
 
-go 1.26.10
+go 1.26.11
 
 require (
 	github.com/corazawaf/coraza/v3 v3.8.1

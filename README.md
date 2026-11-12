@@ -102,7 +102,7 @@ flowchart LR
 
 ### 环境要求
 
-- Go `1.26.10+`；`go.mod` 要求包含 2026 年 10 月 HTTP/TLS、模板及证书信任安全修复的工具链
+- Go `1.26.11+`；`go.mod` 要求包含 2026 年 10 月 HTTP/TLS、模板及证书信任安全修复的工具链
 - 可选：[Task](https://taskfile.dev/) 用于统一执行构建与测试命令
 - 配套的 FN-Knock Rust 后端，用于建立 AuthBridge 和管理网关
 - 使用防火墙能力时需要 Linux、`iptables` / `ip6tables` 及相应权限

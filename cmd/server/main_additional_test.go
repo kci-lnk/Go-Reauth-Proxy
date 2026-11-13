@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -575,11 +576,49 @@ func newServerTestProxyHandler(t testing.TB) *proxy.Handler {
 }
 
 func TestLiteManagedCloudflareListenerUsesSeparatePort(t *testing.T) {
+	t.Cleanup(func() {
+		if err := proxy.ConfigureManagedCloudflarePort(); err != nil {
+			t.Error(err)
+		}
+	})
 	t.Setenv("FN_KNOCK_RUNTIME_TARGET", "fpk-lite")
+	if err := proxy.ConfigureManagedCloudflarePort(); err != nil {
+		t.Fatal(err)
+	}
 	targets := proxyListenTargets("0.0.0.0", 8999, true)
 	managed := targets[len(targets)-1]
 	if managed.host != "127.0.0.1" || managed.port != 18999 || managed.proxyProtocol {
 		t.Fatalf("Lite managed Cloudflare target = %#v", managed)
+	}
+}
+
+func TestManagedCloudflareBusyReportsBoundAddress(t *testing.T) {
+	held, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer held.Close()
+	t.Cleanup(func() {
+		if err := proxy.ConfigureManagedCloudflarePort(); err != nil {
+			t.Error(err)
+		}
+	})
+	t.Setenv(proxy.CloudflarePortEnv, strconv.Itoa(held.Addr().(*net.TCPAddr).Port))
+	if err := proxy.ConfigureManagedCloudflarePort(); err != nil {
+		t.Fatal(err)
+	}
+	public, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	port := public.Addr().(*net.TCPAddr).Port
+	public.Close()
+	handler := newServerTestProxyHandler(t)
+	defer handler.Close()
+	_, _, err = startProxyServers("127.0.0.1", port, handler, &http.Server{}, &http.Server{})
+	var busy *cloudflareIngressBusyError
+	if !errors.As(err, &busy) || busy.addr != held.Addr().String() {
+		t.Fatalf("bind: %v", err)
 	}
 }
 

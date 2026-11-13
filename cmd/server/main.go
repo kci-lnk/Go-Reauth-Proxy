@@ -27,6 +27,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/pires/go-proxyproto"
@@ -429,7 +430,17 @@ func proxyProtocolConnContext(ctx context.Context, connection net.Conn) context.
 	return ctx
 }
 
+// The native package launcher translates this exit status into the fnOS dialog.
+const cloudflareIngressBusyExitCode = 98
+
+type cloudflareIngressBusyError struct{ addr string }
+
+func (e *cloudflareIngressBusyError) Error() string {
+	return fmt.Sprintf("Cloudflare Tunnel ingress %s is already in use; change %s", e.addr, proxy.CloudflarePortEnv)
+}
+
 type proxyListenTarget struct {
+	cloudflare    bool
 	host          string
 	port          int
 	proxyProtocol bool
@@ -449,7 +460,7 @@ func proxyListenTargets(host string, proxyPort int, useProxyProtocol bool) []pro
 	}
 	// This dedicated loopback ingress authenticates Cloudflare through its own
 	// edge headers and must remain a plain HTTP/TLS listener.
-	return append(targets, proxyListenTarget{host: "127.0.0.1", port: managedCloudflarePort})
+	return append(targets, proxyListenTarget{host: "127.0.0.1", port: managedCloudflarePort, cloudflare: true})
 }
 
 func startProxyServers(host string, proxyPort int, proxyHandler *proxy.Handler, httpServer *http.Server, httpsServer *http.Server) (func(), string, error) {
@@ -474,6 +485,9 @@ func startProxyServers(host string, proxyPort int, proxyHandler *proxy.Handler, 
 			}
 			for _, l := range listeners {
 				_ = l.Close()
+			}
+			if target.cloudflare && errors.Is(err, syscall.EADDRINUSE) {
+				return nil, "", &cloudflareIngressBusyError{addr: addr}
 			}
 			return nil, "", err
 		}
@@ -744,6 +758,19 @@ func run(options runOptions) error {
 	}
 	if resolvedAdminPort > 65535 {
 		return fmt.Errorf("admin port must be between 1 and 65535")
+	}
+	if err := proxy.ConfigureManagedCloudflarePort(); err != nil {
+		return err
+	}
+	for _, field := range []struct {
+		name string
+		port int
+	}{
+		{"GO_BACKEND_PORT", resolvedAdminPort}, {"GO_REPROXY_PORT", options.ProxyPort},
+	} {
+		if field.port == proxy.ManagedCloudflarePort() {
+			return fmt.Errorf("%s and %s both use port %d", proxy.CloudflarePortEnv, field.name, field.port)
+		}
 	}
 	logger.SetDebugAdminPortForRedaction(resolvedAdminPort)
 	if event := logger.DebugEvent("server", "startup_config_loaded"); event != nil {
@@ -1037,6 +1064,13 @@ func main() {
 		InternalRPCToken: os.Getenv("FN_KNOCK_INTERNAL_RPC_TOKEN"),
 		DiagnosticsAddr:  os.Getenv(diagnosticsAddrEnv),
 	}); err != nil {
+		var busy *cloudflareIngressBusyError
+		if errors.As(err, &busy) {
+			logger.Diagnostic("ERROR", "gateway_process", "startup_failed", "cloudflare_ingress_port_in_use", map[string]any{"port": proxy.ManagedCloudflarePort()})
+			fmt.Fprintln(os.Stderr, busy)
+			logger.FlushDiagnosticLogger()
+			os.Exit(cloudflareIngressBusyExitCode)
+		}
 		logger.Diagnostic("ERROR", "gateway_process", "stopped", "runtime_error", map[string]any{"result": "failed"})
 		log.Printf("Go Reauth Proxy failed: %v", err)
 		logger.FlushDebugLogger()

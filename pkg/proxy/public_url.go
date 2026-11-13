@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"encoding/json"
+	"fmt"
 	"go-reauth-proxy/pkg/models"
 	"net"
 	"net/http"
@@ -9,6 +10,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync/atomic"
 )
 
 // ManagedCloudflareIngressPort is a dedicated loopback listener used by
@@ -18,10 +20,30 @@ import (
 const ManagedCloudflareIngressPort = 17999
 const ManagedCloudflareLiteIngressPort = 18999
 
-// ManagedCloudflarePort selects the private ingress for this runtime instance.
-func ManagedCloudflarePort() int {
+const CloudflarePortEnv = "FN_KNOCK_CLOUDFLARE_INGRESS_PORT"
+
+var cloudflarePort atomic.Int32
+
+// ConfigureManagedCloudflarePort runs before any listeners or workers start.
+func ConfigureManagedCloudflarePort() error {
+	port := ManagedCloudflareIngressPort
 	if os.Getenv("FN_KNOCK_RUNTIME_TARGET") == "fpk-lite" {
-		return ManagedCloudflareLiteIngressPort
+		port = ManagedCloudflareLiteIngressPort
+	}
+	if raw := os.Getenv(CloudflarePortEnv); raw != "" {
+		value, err := strconv.ParseUint(raw, 10, 16)
+		if err != nil || value == 0 || strconv.FormatUint(value, 10) != raw {
+			return fmt.Errorf("%s must be a decimal port between 1 and 65535", CloudflarePortEnv)
+		}
+		port = int(value)
+	}
+	cloudflarePort.Store(int32(port))
+	return nil
+}
+
+func ManagedCloudflarePort() int {
+	if port := cloudflarePort.Load(); port != 0 {
+		return int(port)
 	}
 	return ManagedCloudflareIngressPort
 }

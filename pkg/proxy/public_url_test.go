@@ -919,7 +919,15 @@ func TestResolveClientIPOrdinaryIngressDoesNotTrustCloudflareConnectingIPv6(t *t
 }
 
 func TestLiteManagedCloudflareIngressTrustBoundary(t *testing.T) {
+	t.Cleanup(func() {
+		if err := ConfigureManagedCloudflarePort(); err != nil {
+			t.Error(err)
+		}
+	})
 	t.Setenv("FN_KNOCK_RUNTIME_TARGET", "fpk-lite")
+	if err := ConfigureManagedCloudflarePort(); err != nil {
+		t.Fatal(err)
+	}
 	for _, tc := range []struct {
 		ip   string
 		port int
@@ -939,13 +947,24 @@ func TestLiteManagedCloudflareIngressTrustBoundary(t *testing.T) {
 
 // The same resolved identity must reach authentication and application upstreams.
 func TestManagedCloudflareClientIPForwarding(t *testing.T) {
-	for _, port := range []int{ManagedCloudflareIngressPort, ManagedCloudflareLiteIngressPort} {
+	for _, port := range []int{ManagedCloudflareIngressPort, ManagedCloudflareLiteIngressPort, 27999} {
 		t.Run(strconv.Itoa(port), func(t *testing.T) {
 			target := "fpk"
 			if port == ManagedCloudflareLiteIngressPort {
 				target = "fpk-lite"
 			}
+			t.Cleanup(func() {
+				if err := ConfigureManagedCloudflarePort(); err != nil {
+					t.Error(err)
+				}
+			})
 			t.Setenv("FN_KNOCK_RUNTIME_TARGET", target)
+			if port == 27999 {
+				t.Setenv(CloudflarePortEnv, "27999")
+			}
+			if err := ConfigureManagedCloudflarePort(); err != nil {
+				t.Fatal(err)
+			}
 			req := requestWithLocalAddress(httptest.NewRequest(http.MethodGet, "http://app.example/", nil), "127.0.0.1", port)
 			req.RemoteAddr = "127.0.0.1:49952"
 			req.Header.Set("CF-Connecting-IP", "198.51.100.25")

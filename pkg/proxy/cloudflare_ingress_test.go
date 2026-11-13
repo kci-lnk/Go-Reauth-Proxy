@@ -15,7 +15,15 @@ import (
 func TestCloudflareIngressRejectsMissingIdentityBeforeUpstream(t *testing.T) {
 	for _, runtime := range []string{"fpk", "fpk-lite"} {
 		t.Run(runtime, func(t *testing.T) {
+			t.Cleanup(func() {
+				if err := ConfigureManagedCloudflarePort(); err != nil {
+					t.Error(err)
+				}
+			})
 			t.Setenv("FN_KNOCK_RUNTIME_TARGET", runtime)
+			if err := ConfigureManagedCloudflarePort(); err != nil {
+				t.Fatal(err)
+			}
 			var calls atomic.Int32
 			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				calls.Add(1)

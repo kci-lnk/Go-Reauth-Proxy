@@ -1066,7 +1066,7 @@ func main() {
 	}); err != nil {
 		var busy *cloudflareIngressBusyError
 		if errors.As(err, &busy) {
-			logger.Diagnostic("ERROR", "gateway_process", "startup_failed", "cloudflare_ingress_port_in_use", map[string]any{"port": proxy.ManagedCloudflarePort()})
+			logger.Diagnostic("ERROR", "gateway_process", "startup_failed", "cloudflare_ingress_port_in_use", map[string]any{"listener": busy.addr})
 			fmt.Fprintln(os.Stderr, busy)
 			logger.FlushDiagnosticLogger()
 			os.Exit(cloudflareIngressBusyExitCode)

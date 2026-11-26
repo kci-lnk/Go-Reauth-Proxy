@@ -27,7 +27,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
 	"github.com/pires/go-proxyproto"
@@ -486,7 +485,7 @@ func startProxyServers(host string, proxyPort int, proxyHandler *proxy.Handler, 
 			for _, l := range listeners {
 				_ = l.Close()
 			}
-			if target.cloudflare && errors.Is(err, syscall.EADDRINUSE) {
+			if target.cloudflare && errors.Is(err, listenAddressInUse) {
 				return nil, "", &cloudflareIngressBusyError{addr: addr}
 			}
 			return nil, "", err

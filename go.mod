@@ -5,7 +5,7 @@ go 1.26.11
 require (
 	github.com/corazawaf/coraza/v3 v3.8.1
 	github.com/gorilla/mux v1.8.1
-	github.com/gorilla/websocket v1.5.3
+	github.com/gorilla/websocket v1.5.4-0.20240701034025-d67f41855da4
 	github.com/medama-io/go-useragent v1.2.3
 	github.com/microcosm-cc/bluemonday v1.0.27
 	github.com/pires/go-proxyproto v0.11.0

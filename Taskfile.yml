@@ -1,7 +1,7 @@
 version: '3'
 
 vars:
-  VERSION: '{{.FN_KNOCK_VERSION | default "2.5.11"}}'
+  VERSION: '{{.FN_KNOCK_VERSION | default "2.5.12"}}'
   COMMIT: '{{.FN_KNOCK_COMMIT | default "unknown"}}'
 
 tasks:

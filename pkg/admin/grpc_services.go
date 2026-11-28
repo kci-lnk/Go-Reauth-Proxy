@@ -244,17 +244,13 @@ func (s *GRPCServer) SetStreamRules(ctx context.Context, req *pb.StreamRules) (*
 	}
 	s.admin.streamConfigMu.Lock()
 	defer s.admin.streamConfigMu.Unlock()
-	previousRuntime := captureStreamRuntime(s.admin.StreamManager)
-	if s.admin.StreamManager != nil {
-		if err := s.admin.StreamManager.ReconcileConfigBundle(normalizedRules, normalizedAvailability, normalizedPolicies); err != nil {
-			return nil, grpcBadRequest("failed to reconcile stream configuration: %v", err)
+	if err, persistFailed := s.admin.applyStreamConfig(normalizedRules, normalizedAvailability, normalizedPolicies, func() error {
+		return s.admin.ProxyHandler.SetStreamRulesBundle(normalizedRules, normalizedAvailability, normalizedPolicies)
+	}); err != nil {
+		if persistFailed {
+			return nil, grpcInternal("failed to persist stream rules: %v", err)
 		}
-	}
-	if err := s.admin.ProxyHandler.SetStreamRulesBundle(normalizedRules, normalizedAvailability, normalizedPolicies); err != nil {
-		if rollbackErr := restoreStreamRuntime(s.admin.StreamManager, previousRuntime); rollbackErr != nil {
-			return nil, grpcInternal("failed to persist stream rules: %v; runtime rollback failed: %v", err, rollbackErr)
-		}
-		return nil, grpcInternal("failed to persist stream rules: %v", err)
+		return nil, grpcBadRequest("failed to reconcile stream configuration: %v", err)
 	}
 	storedRules, storedAvailability, storedPolicies := s.admin.ProxyHandler.GetStreamRulesBundle()
 	return streamRulesBundleToProto(storedRules, storedAvailability, storedPolicies), nil
@@ -305,17 +301,11 @@ func (s *GRPCServer) FlushStreamRules(ctx context.Context, _ *emptypb.Empty) (*p
 	}
 	s.admin.streamConfigMu.Lock()
 	defer s.admin.streamConfigMu.Unlock()
-	previousRuntime := captureStreamRuntime(s.admin.StreamManager)
-	if s.admin.StreamManager != nil {
-		if err := s.admin.StreamManager.ReconcileConfig(nil, nil); err != nil {
-			return nil, grpcBadRequest("failed to flush stream listeners: %v", err)
+	if err, persistFailed := s.admin.applyStreamConfig(nil, nil, nil, s.admin.ProxyHandler.FlushStreamRules); err != nil {
+		if persistFailed {
+			return nil, grpcInternal("failed to flush stream rules: %v", err)
 		}
-	}
-	if err := s.admin.ProxyHandler.FlushStreamRules(); err != nil {
-		if rollbackErr := restoreStreamRuntime(s.admin.StreamManager, previousRuntime); rollbackErr != nil {
-			return nil, grpcInternal("failed to flush stream rules: %v; runtime rollback failed: %v", err, rollbackErr)
-		}
-		return nil, grpcInternal("failed to flush stream rules: %v", err)
+		return nil, grpcBadRequest("failed to flush stream listeners: %v", err)
 	}
 	return rpcOK(), nil
 }

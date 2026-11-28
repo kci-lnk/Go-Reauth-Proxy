@@ -108,6 +108,17 @@ func (h *Handler) ValidateStreamRulesBundle(
 		if err != nil {
 			return nil, nil, err
 		}
+		nextRule.Visibility.Mode, err = models.ParseStreamVisibilityMode(nextRule.Visibility)
+		if err == nil {
+			nextRule.Visibility, err = prepareRuleVisibilityPolicy(nextRule.Visibility, normalizedPolicies, decodedPolicies)
+		}
+		if err != nil {
+			return nil, nil, fmt.Errorf("stream rule %s visibility: %w", streamRuleMapKey(nextRule), err)
+		}
+		if nextRule.Visibility.Mode == models.HostVisibilityModeCustom &&
+			decodedPolicies[nextRule.Visibility.PolicyID].RangeCount() == 0 {
+			return nil, nil, fmt.Errorf("stream rule %s visibility requires a nonempty compiled IP set", streamRuleMapKey(nextRule))
+		}
 		for groupIndex := range nextRule.BypassPolicy.Groups {
 			group := &nextRule.BypassPolicy.Groups[groupIndex]
 			positive := false

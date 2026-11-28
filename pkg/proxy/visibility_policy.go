@@ -63,7 +63,7 @@ func addLegacyVisibilityPolicy(cidrs []string, policies map[string]models.Compil
 	return policy.ID, nil
 }
 
-func prepareHostVisibilityPolicy(
+func prepareRuleVisibilityPolicy(
 	visibility models.HostRuleVisibility,
 	policies map[string]models.CompiledIPSet,
 	sets map[string]*compiledipset.Set,
@@ -86,7 +86,7 @@ func prepareHostVisibilityPolicy(
 		}
 	}
 	if sets[policyID] == nil {
-		return models.HostRuleVisibility{}, fmt.Errorf("custom host visibility references missing policy %s", policyID)
+		return models.HostRuleVisibility{}, fmt.Errorf("custom visibility references missing policy %s", policyID)
 	}
 	normalized.PolicyID = policyID
 	if !legacyCIDRs {

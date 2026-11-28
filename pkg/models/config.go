@@ -2,6 +2,7 @@ package models
 
 import (
 	"encoding/json"
+	"errors"
 	"strings"
 )
 
@@ -36,6 +37,20 @@ func NormalizeHostVisibilityMode(value string) string {
 		return HostVisibilityModeDisabled
 	default:
 		return HostVisibilityModeInherit
+	}
+}
+
+func ParseStreamVisibilityMode(visibility HostRuleVisibility) (string, error) {
+	switch mode := strings.ToLower(strings.TrimSpace(visibility.Mode)); mode {
+	case "":
+		if strings.TrimSpace(visibility.PolicyID) != "" || len(visibility.CIDRs) != 0 {
+			return "", errors.New("stream visibility policy requires an explicit mode")
+		}
+		return HostVisibilityModeInherit, nil
+	case HostVisibilityModeInherit, HostVisibilityModeCustom, HostVisibilityModeDisabled:
+		return mode, nil
+	default:
+		return "", errors.New("stream visibility mode must be inherit, custom or disabled")
 	}
 }
 
@@ -261,6 +276,7 @@ type StreamRule struct {
 	ServiceProfile StreamServiceProfile `json:"service_profile,omitempty"`
 	BypassPolicy   StreamBypassPolicy   `json:"bypass_policy,omitempty"`
 	ProbeStatus    string               `json:"probe_status,omitempty"`
+	Visibility     HostRuleVisibility   `json:"visibility,omitzero"`
 }
 
 type StreamServiceProfile struct {

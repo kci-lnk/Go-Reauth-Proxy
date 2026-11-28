@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"go-reauth-proxy/pkg/config"
+	compiledipset "go-reauth-proxy/pkg/ipset"
 	"go-reauth-proxy/pkg/models"
 	"go-reauth-proxy/pkg/proxy"
 )
@@ -119,6 +120,29 @@ func TestAdminHandleSetStreamRulesRejectsInvalidJSON(t *testing.T) {
 	server.handleSetStreamRules(rec, httptest.NewRequest(http.MethodPost, "/api/stream-rules", bytes.NewReader([]byte(`{`))))
 	if rec.Code != http.StatusOK || !bytes.Contains(rec.Body.Bytes(), []byte(`"success":false`)) {
 		t.Fatalf("status = %d, body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestLegacyAdminStreamRuleEditPreservesVisibility(t *testing.T) {
+	server := newAdditionalAdminHTTPServer(t)
+	policy, err := compiledipset.Compile([]string{"203.0.113.0/24"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	visibility := models.HostRuleVisibility{Mode: models.HostVisibilityModeCustom, PolicyID: policy.ID}
+	if err := server.ProxyHandler.SetStreamRulesBundle([]models.StreamRule{{
+		Protocol: "tcp", ListenPort: 8053, Target: "127.0.0.1:53", Visibility: visibility,
+	}}, nil, map[string]models.CompiledIPSet{policy.ID: policy}); err != nil {
+		t.Fatal(err)
+	}
+	rec := httptest.NewRecorder()
+	server.handleSetStreamRules(rec, httptest.NewRequest(http.MethodPost, "/api/stream-rules",
+		bytes.NewBufferString(`[{"listen_port":8053,"target":"127.0.0.1:5353"}]`)))
+	rules, _, policies := server.ProxyHandler.GetStreamRulesBundle()
+	if rec.Code != http.StatusOK || len(rules) != 1 || rules[0].Target != "127.0.0.1:5353" ||
+		rules[0].Visibility.PolicyID != policy.ID || rules[0].Visibility.Mode != models.HostVisibilityModeCustom ||
+		policies[policy.ID].ID != policy.ID {
+		t.Fatalf("status = %d, rules = %#v, body = %s", rec.Code, rules, rec.Body.String())
 	}
 }
 

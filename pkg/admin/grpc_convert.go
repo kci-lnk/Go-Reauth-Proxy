@@ -615,6 +615,7 @@ func streamRulesBundleToProto(
 			ServiceProfile: streamServiceProfileToProto(rule.ServiceProfile),
 			BypassPolicy:   streamBypassPolicyToProto(rule.BypassPolicy),
 			ProbeStatus:    rule.ProbeStatus,
+			Visibility:     hostRuleVisibilityToProto(rule.Visibility),
 		})
 	}
 	return &pb.StreamRules{
@@ -643,6 +644,7 @@ func protoToStreamRules(req *pb.StreamRules) []models.StreamRule {
 			ServiceProfile: protoToStreamServiceProfile(rule.GetServiceProfile()),
 			BypassPolicy:   protoToStreamBypassPolicy(rule.GetBypassPolicy()),
 			ProbeStatus:    rule.GetProbeStatus(),
+			Visibility:     protoToHostRuleVisibility(rule.GetVisibility()),
 		})
 	}
 	return rules

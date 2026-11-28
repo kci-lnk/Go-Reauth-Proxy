@@ -826,6 +826,7 @@ func copyStringMap(values map[string]string) map[string]string {
 
 func copyStreamRule(rule models.StreamRule) *models.StreamRule {
 	r := rule
+	r.Visibility.CIDRs = append([]string(nil), rule.Visibility.CIDRs...)
 	r.ServiceProfile.EvidenceCodes = append([]string(nil), rule.ServiceProfile.EvidenceCodes...)
 	r.ServiceProfile.Metadata = copyStringMap(rule.ServiceProfile.Metadata)
 	r.BypassPolicy.Groups = make([]models.StreamBypassGroup, 0, len(rule.BypassPolicy.Groups))
@@ -1922,7 +1923,7 @@ func NewHandler(adminPort int, proxyPort int, cfgManager *config.Manager, initia
 		initialStreamPolicies = make(map[string]models.CompiledIPSet)
 	}
 	for i := range initialHostRules {
-		visibility, err := prepareHostVisibilityPolicy(
+		visibility, err := prepareRuleVisibilityPolicy(
 			initialHostRules[i].Visibility,
 			initialPolicies,
 			initialCompiledPolicies,
@@ -3581,7 +3582,7 @@ func (h *Handler) AddHostRule(newRule models.HostRule) error {
 		candidateSets[id] = set
 	}
 	for i := range nextRules {
-		visibility, visibilityErr := prepareHostVisibilityPolicy(
+		visibility, visibilityErr := prepareRuleVisibilityPolicy(
 			nextRules[i].Visibility,
 			candidatePolicies,
 			candidateSets,
@@ -3740,7 +3741,7 @@ func (h *Handler) SetHostRulesBundle(
 				normalizedRules[i].AdvancedAuth = existingPolicy
 			}
 		}
-		visibility, visibilityErr := prepareHostVisibilityPolicy(
+		visibility, visibilityErr := prepareRuleVisibilityPolicy(
 			normalizedRules[i].Visibility,
 			candidatePolicies,
 			candidateSets,
@@ -4459,53 +4460,24 @@ func (h *Handler) IsGatewayTrustedClientIP(clientIP string) bool {
 }
 
 func (h *Handler) IsClientIPVisible(clientIP string) bool {
+	return h.IsClientIPVisibleForStream(clientIP, models.HostVisibilityModeInherit, nil)
+}
+
+func (h *Handler) IsClientIPVisibleForStream(clientIP, mode string, policy *compiledipset.Set) bool {
 	h.mu.RLock()
 	visibility := h.gatewayVisibility
 	h.mu.RUnlock()
-
-	if visibility == nil {
-		return true
-	}
-	if !visibility.enabled() {
-		return true
-	}
-	return visibility.contains(clientIP)
+	return visibility.allowsRule(clientIP, mode, policy)
 }
 
 func (h *Handler) IsClientIPVisibleForHost(clientIP string, rule *models.HostRule, snapshot requestSnapshot) bool {
 	visibility := snapshot.gatewayVisibility
 
-	if visibility == nil {
-		return true
-	}
-	if !visibility.enabled() {
-		return true
-	}
 	if rule == nil || normalizeRequestHost(rule.Host) == normalizeRequestHost(snapshot.authConfig.AuthHost) {
 		return visibility.contains(clientIP)
 	}
-	if rule.Visibility.Mode == models.HostVisibilityModeDisabled {
-		return true
-	}
-	if rule.Visibility.Mode != models.HostVisibilityModeCustom {
-		return visibility.contains(clientIP)
-	}
 	host := normalizeRequestHost(rule.Host)
-	policy, ok := snapshot.hostVisibility[host]
-	if !ok || policy == nil {
-		// A missing custom policy is a corrupt security boundary. Keep the
-		// request fail-closed instead of widening it to inherited visibility.
-		addr, valid := visibilityClientAddr(clientIP)
-		return valid && isVisibilityExemptAddr(addr)
-	}
-	addr, valid := visibilityClientAddr(clientIP)
-	if !valid {
-		return false
-	}
-	if isVisibilityExemptAddr(addr) {
-		return true
-	}
-	return policy.Contains(addr)
+	return visibility.allowsRule(clientIP, rule.Visibility.Mode, snapshot.hostVisibility[host])
 }
 
 func gatewayVisibilityPolicyContext(rule *models.HostRule, snapshot requestSnapshot) (string, string) {

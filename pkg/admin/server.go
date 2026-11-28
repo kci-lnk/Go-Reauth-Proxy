@@ -439,29 +439,35 @@ func (s *Server) handleSetStreamRules(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
-	normalizedRules, err := s.ProxyHandler.ValidateStreamRules(nextRules)
+	s.streamConfigMu.Lock()
+	defer s.streamConfigMu.Unlock()
+	previousRules, availability, policies := s.ProxyHandler.GetStreamRulesBundle()
+	normalizedRules, normalizedPolicies, err := s.ProxyHandler.ValidateStreamRulesBundle(nextRules, policies)
 	if err != nil {
 		response.Error(w, errors.CodeInvalidRule, fmt.Sprintf("Failed to set stream rules: %v", err))
 		return
 	}
-	s.streamConfigMu.Lock()
-	defer s.streamConfigMu.Unlock()
-	previousRuntime := captureStreamRuntime(s.StreamManager)
-	previousAvailability := s.ProxyHandler.GetStreamAvailability()
-
-	if s.StreamManager != nil {
-		if err := s.StreamManager.ReconcileConfig(normalizedRules, previousAvailability); err != nil {
-			response.Error(w, errors.CodeInvalidRule, fmt.Sprintf("Failed to reconcile stream listeners: %v", err))
-			return
+	type listenerKey struct {
+		protocol string
+		port     int
+	}
+	visibilityByListener := make(map[listenerKey]models.HostRuleVisibility, len(previousRules))
+	for _, rule := range previousRules {
+		visibilityByListener[listenerKey{rule.Protocol, rule.ListenPort}] = rule.Visibility
+	}
+	for i, rule := range normalizedRules {
+		if visibility, ok := visibilityByListener[listenerKey{rule.Protocol, rule.ListenPort}]; ok {
+			normalizedRules[i].Visibility = visibility
 		}
 	}
-
-	if err := s.ProxyHandler.SetStreamRules(normalizedRules); err != nil {
-		if rollbackErr := restoreStreamRuntime(s.StreamManager, previousRuntime); rollbackErr != nil {
-			response.Error(w, errors.CodeInternal, fmt.Sprintf("Failed to persist stream rules: %v; runtime rollback failed: %v", err, rollbackErr))
-			return
+	if err, persistFailed := s.applyStreamConfig(normalizedRules, availability, normalizedPolicies, func() error {
+		return s.ProxyHandler.SetStreamRulesBundle(normalizedRules, availability, normalizedPolicies)
+	}); err != nil {
+		if persistFailed {
+			response.Error(w, errors.CodeInternal, "Failed to persist stream rules: "+err.Error())
+		} else {
+			response.Error(w, errors.CodeInvalidRule, "Failed to reconcile stream listeners: "+err.Error())
 		}
-		response.Error(w, errors.CodeInternal, fmt.Sprintf("Failed to persist stream rules: %v", err))
 		return
 	}
 
@@ -471,19 +477,12 @@ func (s *Server) handleSetStreamRules(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleFlushStreamRules(w http.ResponseWriter, r *http.Request) {
 	s.streamConfigMu.Lock()
 	defer s.streamConfigMu.Unlock()
-	previousRuntime := captureStreamRuntime(s.StreamManager)
-	if s.StreamManager != nil {
-		if err := s.StreamManager.ReconcileConfig(nil, nil); err != nil {
-			response.Error(w, errors.CodeInvalidRule, fmt.Sprintf("Failed to flush stream listeners: %v", err))
-			return
+	if err, persistFailed := s.applyStreamConfig(nil, nil, nil, s.ProxyHandler.FlushStreamRules); err != nil {
+		if persistFailed {
+			response.Error(w, errors.CodeInternal, "Failed to flush stream rules: "+err.Error())
+		} else {
+			response.Error(w, errors.CodeInvalidRule, "Failed to flush stream listeners: "+err.Error())
 		}
-	}
-	if err := s.ProxyHandler.FlushStreamRules(); err != nil {
-		if rollbackErr := restoreStreamRuntime(s.StreamManager, previousRuntime); rollbackErr != nil {
-			response.Error(w, errors.CodeInternal, fmt.Sprintf("Failed to flush stream rules: %v; runtime rollback failed: %v", err, rollbackErr))
-			return
-		}
-		response.Error(w, errors.CodeInternal, "Failed to flush stream rules: "+err.Error())
 		return
 	}
 	response.Success(w, nil)

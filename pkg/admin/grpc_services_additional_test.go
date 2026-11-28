@@ -11,6 +11,7 @@ import (
 
 	"go-reauth-proxy/internal/testutil"
 	"go-reauth-proxy/pkg/grpc/pb"
+	compiledipset "go-reauth-proxy/pkg/ipset"
 	"go-reauth-proxy/pkg/models"
 	"go-reauth-proxy/pkg/rpcbridge"
 	"go-reauth-proxy/pkg/stream"
@@ -365,8 +366,16 @@ func TestGatewayControlFlushHostRulesClearsRules(t *testing.T) {
 func TestGatewayControlStreamRulesRoundTrip(t *testing.T) {
 	server := newGatewayControlTestServer(t, "secret")
 	ctx := authTestContext()
-	_, err := server.SetStreamRules(ctx, &pb.StreamRules{
-		Items: []*pb.StreamRule{{Protocol: "udp", ListenPort: 5353, Target: "127.0.0.1:5354", UseAuth: true}},
+	policy, err := compiledipset.Compile([]string{"203.0.113.0/24"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = server.SetStreamRules(ctx, &pb.StreamRules{
+		Items: []*pb.StreamRule{{
+			Protocol: "udp", ListenPort: 5353, Target: "127.0.0.1:5354", UseAuth: true,
+			Visibility: &pb.HostRuleVisibility{Mode: models.HostVisibilityModeCustom, PolicyId: policy.ID},
+		}},
+		AccessPolicies: []*pb.CompiledIpSet{compiledIPSetToProto(policy)},
 		Availability: &pb.StreamAvailability{
 			Enabled:   true,
 			StartTime: "22:00",
@@ -382,6 +391,11 @@ func TestGatewayControlStreamRulesRoundTrip(t *testing.T) {
 	}
 	if len(got.GetItems()) != 1 || got.GetItems()[0].GetProtocol() != "udp" {
 		t.Fatalf("stream rules = %#v", got.GetItems())
+	}
+	visibility := got.GetItems()[0].GetVisibility()
+	if visibility.GetMode() != models.HostVisibilityModeCustom || visibility.GetPolicyId() != policy.ID ||
+		len(got.GetAccessPolicies()) != 1 || got.GetAccessPolicies()[0].GetId() != policy.ID {
+		t.Fatalf("stream visibility = %v, access policies = %v", visibility, got.GetAccessPolicies())
 	}
 	if got.GetAvailability().GetStartTime() != "22:00" || got.GetAvailability().GetEndTime() != "06:00" {
 		t.Fatalf("stream availability = %#v", got.GetAvailability())
@@ -427,6 +441,29 @@ func TestGatewayControlInvalidStrictUpdateKeepsExistingTCPListener(t *testing.T)
 		t.Fatalf("existing TCP listener was removed: %v", err)
 	}
 	_ = conn.Close()
+}
+
+func TestGatewayControlRejectsInvalidAndEmptyStreamVisibility(t *testing.T) {
+	server := newGatewayControlTestServer(t, "secret")
+	empty, err := compiledipset.Compile(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, visibility := range []*pb.HostRuleVisibility{
+		{Mode: "custm"},
+		{PolicyId: empty.ID},
+		{Mode: models.HostVisibilityModeCustom, PolicyId: empty.ID},
+	} {
+		_, err := server.SetStreamRules(authTestContext(), &pb.StreamRules{
+			Items: []*pb.StreamRule{{
+				Protocol: "tcp", ListenPort: 8053, Target: "127.0.0.1:53", Visibility: visibility,
+			}},
+			AccessPolicies: []*pb.CompiledIpSet{compiledIPSetToProto(empty)},
+		})
+		if status.Code(err) != codes.InvalidArgument {
+			t.Fatalf("visibility = %v, error = %v", visibility, err)
+		}
+	}
 }
 
 func TestGatewayControlSetStreamRulesRejectsInvalidAvailability(t *testing.T) {

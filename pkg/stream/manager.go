@@ -263,7 +263,7 @@ func NewManager(handler *proxy.Handler) *Manager {
 }
 
 func (m *Manager) Reconcile(rules []models.StreamRule) error {
-	return m.reconcile(rules, nil, false, nil, nil, false)
+	return m.reconcile(rules, nil, false, nil, nil, false, nil)
 }
 
 func (m *Manager) ReconcileConfig(
@@ -274,13 +274,24 @@ func (m *Manager) ReconcileConfig(
 	if err != nil {
 		return err
 	}
-	return m.reconcile(rules, normalizedAvailability, true, nil, nil, false)
+	return m.reconcile(rules, normalizedAvailability, true, nil, nil, false, nil)
 }
 
 func (m *Manager) ReconcileConfigBundle(
 	rules []models.StreamRule,
 	availability *models.StreamAvailability,
 	policies map[string]models.CompiledIPSet,
+) error {
+	return m.ReconcileConfigBundleWithCommit(rules, availability, policies, nil)
+}
+
+// ReconcileConfigBundleWithCommit reserves the candidate listeners first, then
+// calls commit before publishing the new configuration to traffic handlers.
+func (m *Manager) ReconcileConfigBundleWithCommit(
+	rules []models.StreamRule,
+	availability *models.StreamAvailability,
+	policies map[string]models.CompiledIPSet,
+	commit func() error,
 ) error {
 	normalizedAvailability, err := models.NormalizeDailyAvailability(availability)
 	if err != nil {
@@ -290,7 +301,7 @@ func (m *Manager) ReconcileConfigBundle(
 	if err != nil {
 		return err
 	}
-	return m.reconcile(rules, normalizedAvailability, true, normalizedPolicies, compiledPolicies, true)
+	return m.reconcile(rules, normalizedAvailability, true, normalizedPolicies, compiledPolicies, true, commit)
 }
 
 func (m *Manager) reconcile(
@@ -300,6 +311,7 @@ func (m *Manager) reconcile(
 	accessPolicies map[string]models.CompiledIPSet,
 	compiledAccessPolicies map[string]*compiledipset.Set,
 	replaceAccessPolicies bool,
+	commit func() error,
 ) error {
 	start := time.Now()
 	if event := logger.DebugEvent("stream", "reconcile_start"); event != nil {
@@ -325,6 +337,12 @@ func (m *Manager) reconcile(
 		}
 	}
 	for _, rule := range normalizedRules {
+		if rule.Visibility.Mode == models.HostVisibilityModeCustom {
+			set := effectiveCompiledPolicies[rule.Visibility.PolicyID]
+			if set == nil || set.RangeCount() == 0 {
+				return fmt.Errorf("stream rule %s visibility requires a nonempty compiled IP set", streamRuleKeyFromRule(rule))
+			}
+		}
 		if !rule.UseAuth || !rule.BypassPolicy.Enabled {
 			continue
 		}
@@ -423,6 +441,16 @@ func (m *Manager) reconcile(
 				Send()
 		}
 		return fmt.Errorf("stream manager is closed")
+	}
+
+	if commit != nil {
+		if err := commit(); err != nil {
+			m.mu.Unlock()
+			for _, candidate := range created {
+				candidate.close()
+			}
+			return err
+		}
 	}
 
 	for key, state := range created {
@@ -548,19 +576,19 @@ func (m *Manager) Stop() {
 }
 
 func (m *Manager) currentRule(key streamRuleKey) (models.StreamRule, bool) {
-	rule, _, ok := m.currentRuleConfig(key)
+	rule, _, _, ok := m.currentRuleConfig(key)
 	return rule, ok
 }
 
 func (m *Manager) currentRuleConfig(
 	key streamRuleKey,
-) (models.StreamRule, *models.StreamAvailability, bool) {
+) (models.StreamRule, *models.StreamAvailability, *compiledipset.Set, bool) {
 	snapshot := m.ruleSnapshot.Load()
 	if snapshot == nil {
-		return models.StreamRule{}, nil, false
+		return models.StreamRule{}, nil, nil, false
 	}
 	rule, ok := snapshot.rules[key]
-	return rule, snapshot.availability, ok
+	return rule, snapshot.availability, snapshot.compiledAccessPolicies[rule.Visibility.PolicyID], ok
 }
 
 func (m *Manager) ConfigSnapshot() ([]models.StreamRule, *models.StreamAvailability) {
@@ -1331,7 +1359,7 @@ func (m *Manager) handleConn(client net.Conn, key streamRuleKey) {
 		}
 	}()
 
-	rule, availability, ok := m.currentRuleConfig(key)
+	rule, availability, visibility, ok := m.currentRuleConfig(key)
 	if !ok {
 		entry.Matched = false
 		entry.Status = http.StatusNotFound
@@ -1367,7 +1395,7 @@ func (m *Manager) handleConn(client net.Conn, key streamRuleKey) {
 		return
 	}
 
-	if !m.handler.IsClientIPVisible(clientIP) {
+	if !m.handler.IsClientIPVisibleForStream(clientIP, rule.Visibility.Mode, visibility) {
 		entry.Status = 499
 		entry.AuthDecision = "visibility_denied"
 		if event := logger.DebugEvent("stream", "tcp_visibility_denied"); event != nil {
@@ -1559,7 +1587,7 @@ func (m *Manager) handleUDPPacket(listener *udpListenerState, packetConn net.Pac
 		return
 	}
 
-	rule, availability, ok := m.currentRuleConfig(key)
+	rule, availability, visibility, ok := m.currentRuleConfig(key)
 	if !ok {
 		releaseUDPPacket(packet)
 		entry := newStreamEntry(key, addrString(clientAddr), extractRemoteIP(clientAddr))
@@ -1604,14 +1632,14 @@ func (m *Manager) handleUDPPacket(listener *udpListenerState, packetConn net.Pac
 	if loaded {
 		return
 	}
-	if !listener.startSession(session, func() { m.runUDPSession(listener, session) }) {
+	if !listener.startSession(session, func() { m.runUDPSession(listener, session, visibility) }) {
 		session.close()
 		listener.removeSession(session.id, session)
 		session.releaseInitReservation()
 	}
 }
 
-func (m *Manager) initializeUDPSession(session *udpSession) bool {
+func (m *Manager) initializeUDPSession(session *udpSession, visibility *compiledipset.Set) bool {
 	rule := session.rule
 	key := streamRuleKeyFromRule(rule)
 	clientIP := extractRemoteIP(session.clientAddr)
@@ -1625,7 +1653,7 @@ func (m *Manager) initializeUDPSession(session *udpSession) bool {
 			Send()
 	}
 
-	if !m.handler.IsClientIPVisible(clientIP) {
+	if !m.handler.IsClientIPVisibleForStream(clientIP, rule.Visibility.Mode, visibility) {
 		session.setStatus(499)
 		session.setAuthResult("visibility_denied", false)
 		if event := logger.DebugEvent("stream", "udp_visibility_denied"); event != nil {
@@ -1738,7 +1766,7 @@ func (m *Manager) initializeUDPSession(session *udpSession) bool {
 	return true
 }
 
-func (m *Manager) runUDPSession(listener *udpListenerState, session *udpSession) {
+func (m *Manager) runUDPSession(listener *udpListenerState, session *udpSession, visibility *compiledipset.Set) {
 	defer listener.wg.Done()
 	defer listener.removeSession(session.id, session)
 	defer session.close()
@@ -1760,7 +1788,7 @@ func (m *Manager) runUDPSession(listener *udpListenerState, session *udpSession)
 		}
 	}()
 
-	initialized := m.initializeUDPSession(session)
+	initialized := m.initializeUDPSession(session, visibility)
 	session.releaseInitReservation()
 	if !initialized {
 		return
@@ -2249,6 +2277,11 @@ func (m *Manager) normalizeRule(rule models.StreamRule) (models.StreamRule, erro
 		return models.StreamRule{}, err
 	}
 	rule.Protocol = protocol
+	rule.Visibility.Mode, err = models.ParseStreamVisibilityMode(rule.Visibility)
+	if err != nil {
+		return models.StreamRule{}, err
+	}
+	rule.Visibility.PolicyID = strings.TrimSpace(rule.Visibility.PolicyID)
 
 	if rule.ListenPort <= 0 || rule.ListenPort > 65535 {
 		return models.StreamRule{}, fmt.Errorf("listen_port must be between 1 and 65535")

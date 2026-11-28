@@ -110,6 +110,10 @@ func (v *gatewayVisibility) getConfig() models.GatewayVisibilityConfig {
 }
 
 func (v *gatewayVisibility) contains(clientIP string) bool {
+	return v.allowsRule(clientIP, models.HostVisibilityModeInherit, nil)
+}
+
+func (v *gatewayVisibility) allowsRule(clientIP, mode string, policy *compiledipset.Set) bool {
 	if v == nil {
 		return true
 	}
@@ -117,8 +121,11 @@ func (v *gatewayVisibility) contains(clientIP string) bool {
 	enabled := v.config.Enabled
 	set := v.set
 	v.mu.RUnlock()
-	if !enabled {
+	if !enabled || mode == models.HostVisibilityModeDisabled {
 		return true
+	}
+	if mode == models.HostVisibilityModeCustom {
+		set = policy
 	}
 	addr, ok := visibilityClientAddr(clientIP)
 	if !ok {
@@ -131,15 +138,6 @@ func (v *gatewayVisibility) contains(clientIP string) bool {
 		return set.Contains(addr)
 	}
 	return false
-}
-
-func (v *gatewayVisibility) enabled() bool {
-	if v == nil {
-		return false
-	}
-	v.mu.RLock()
-	defer v.mu.RUnlock()
-	return v.config.Enabled
 }
 
 func normalizeHostRuleVisibility(cfg models.HostRuleVisibility) (models.HostRuleVisibility, error) {
